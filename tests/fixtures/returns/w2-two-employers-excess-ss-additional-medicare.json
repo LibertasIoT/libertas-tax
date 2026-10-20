@@ -1,0 +1,44 @@
+{
+  "name": "w2-two-employers-excess-ss-additional-medicare",
+  "filing_status": "Single",
+  "birth_dates": { "taxpayer": "1982-11-02" },
+  "w2": [
+    {
+      "employer": "Northgate Manufacturing",
+      "box1_wages": 120000.00,
+      "box2_withheld": 20000.00,
+      "box3": 120000.00,
+      "box4": 7440.00,
+      "box5": 120000.00,
+      "box6": 1740.00
+    },
+    {
+      "employer": "Beacon Consulting",
+      "box1_wages": 95000.00,
+      "box2_withheld": 14000.00,
+      "box3": 95000.00,
+      "box4": 5890.00,
+      "box5": 95000.00,
+      "box6": 1377.50
+    }
+  ],
+  "int1099": [],
+  "div1099": [],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 215000.00,
+      "9": 215000.00,
+      "11a / 11b": 215000.00,
+      "12e": 16100.00,
+      "15": 198900.00,
+      "16": 40334.00,
+      "24a": 40469.00,
+      "25a": 34000.00,
+      "33": 35891.00,
+      "37": 4578.00
+    }
+  },
+  "computation": "Single filer, born 1982-11-02 (age 44 in 2026, not a senior, not blind, not a dependent). Two employers, each within the 2026 per-employer limits, so neither triggers the single-employer excess-SS or under-withheld-Medicare refusal (federal_rules.rs Wage arm / forms/w2.rs collect): Northgate box1=box3=box5=$120,000.00, box2=$20,000.00, box4=$7,440.00 (exactly 6.2% x $120,000.00), box6=$1,740.00 (exactly 1.45% x $120,000.00); Beacon box1=box3=box5=$95,000.00, box2=$14,000.00, box4=$5,890.00 (exactly 6.2% x $95,000.00), box6=$1,377.50 (exactly 1.45% x $95,000.00). Combined box1/box3/box5 = $215,000.00, box2 = $34,000.00, box4 = $13,330.00, box6 = $3,117.50. Form 1040 line 1a W-2 wages = $120,000.00 + $95,000.00 = $215,000.00 (no other wage documents). Line 9 total income = $215,000.00 (no interest, dividends or other income). Line 10 adjustments = $0.00. Line 11a/11b AGI = $215,000.00. Line 12e standard deduction: Rev. Proc. 2025-32 Table 8 2026 single base amount is $16,100 (standard_base() in src/federal_rules.rs); not a dependent, not 65 or older, not blind, so no addition: $16,100.00. Line 13a/13b = $0.00 (no Schedule 1-A claims, no QBI). Line 14 total deductions = $16,100.00. Line 15 taxable income = $215,000.00 - $16,100.00 = $198,900.00. Line 16 tax (Tax Computation Worksheet, 2026 Single brackets in src/income_tax.rs Rates::with_method: boundaries 12400/50400/105700/201775/256225/640600 at rates 10/12/22/24/32/35/37, taxable income $198,900 falls in the 24% bracket since it is below $201,775): 12,400 x 10% = $1,240.00; (50,400-12,400)=38,000 x 12% = $4,560.00; (105,700-50,400)=55,300 x 22% = $12,166.00; (198,900-105,700)=93,200 x 24% = $22,368.00; sum = $1,240.00+$4,560.00+$12,166.00+$22,368.00 = $40,334.00. Line 17 AMT/repayments = $0.00. Line 18 income tax before credits = $40,334.00. Lines 19-21 credits = $0.00 (none claimed; no dependents, no clean-vehicle, no mortgage, education or care credits entered). Line 22 income tax after credits = $40,334.00. Form 8959 Additional Medicare Tax (Schedule 2 line 17b, additional_medicare in federal_rules.rs): combined Medicare wages $215,000.00 exceed the 2026 single $200,000.00 threshold by $15,000.00; 0.9% x $15,000.00 = $135.00. No self-employment income, so the Part II self-employment share is $0.00. Line 23 additional taxes = $135.00 (no self-employment tax, NIIT -- there is no interest, dividend or capital-gain investment income for the 3.8% base even though MAGI exceeds the threshold --, or other Schedule 2 Part II tax). Line 24a total tax = $40,334.00 + $135.00 = $40,469.00 (no Form 1062 farmland election). Form 8959 Part IV reconciliation (medicare_withheld in federal_rules.rs): combined box6 $3,117.50 equals exactly 1.45% x $215,000.00 Medicare wages ($3,117.50), so no employer over-withheld the 0.9% surtax and the Form 8959 line 24 additional withholding on line 25c is $0.00; 25b is also $0.00 (no 1099 withholding). Line 25a W-2 federal income tax withheld = $20,000.00 + $14,000.00 = $34,000.00. Line 25d = $34,000.00 + $0.00 + $0.00 = $34,000.00. Line 26 estimated payments = $0.00. Schedule 3 line 11 excess Social Security withholding (excess_social in federal_rules.rs, one taxpayer, 2026 per-person maximum $11,439.00 = 6.2% x $184,500.00 wage base): combined box4 Social Security tax withheld $13,330.00 (no box 12 A/M uncollected Social Security tax) exceeds $11,439.00 by $1,891.00, credited because it comes from two separate employers, neither of which itself over-withheld. Line 27a-30 = $0.00 (AGI $215,000.00 is far above every 2026 draft EIC/ACTC/education/adoption threshold; no dependents). Line 31 other payments = $1,891.00 (the excess Social Security credit only; no extension payment, premium credit, section 1341 credit, or fuel/bond credits). Line 32a/33 total payments and refundable credits = $34,000.00 (25d) + $0.00 (26) + $0.00 (27a) + $0.00 (28) + $0.00 (29) + $0.00 (30) + $1,891.00 (31) = $35,891.00. Line 34 overpayment = max($35,891.00 - $40,469.00, 0) = $0.00 (not a separate expected line here). Line 37 balance due = max($40,469.00 - $35,891.00, 0) = $4,578.00."
+}

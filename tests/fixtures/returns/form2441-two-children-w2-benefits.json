@@ -1,0 +1,19 @@
+{
+  "name": "form2441-two-children-w2-benefits",
+  "filing_status": "Joint",
+  "birth_dates": {"taxpayer": "1985-04-10", "spouse": "1986-09-22"},
+  "dependents": [
+    {"first_name": "Ava", "last_name": "Sample", "birth_date": "2018-02-14", "care_expenses": 5000},
+    {"first_name": "Ben", "last_name": "Sample", "birth_date": "2021-09-30", "care_expenses": 3000}
+  ],
+  "w2": [
+    {"employer": "Example First", "owner": "Taxpayer", "box1_wages": 60000, "box2_withheld": 5000, "box3": 60000, "box4": 3720, "box5": 60000, "box6": 870, "box10": 5000},
+    {"employer": "Example Second", "owner": "Spouse", "box1_wages": 40000, "box2_withheld": 3000, "box3": 40000, "box4": 2480, "box5": 40000, "box6": 580}
+  ],
+  "care": {"provider_name": "Example Care Center", "provider_address": "1 Example Way", "combined_plan_maximum": 7500},
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {"1a": 100000, "1e": 0, "9": 100000, "11a / 11b": 100000, "12e": 32200, "15": 67800, "16": 7643, "19": 4400, "20": 350, "24a": 2893, "25a": 8000, "33": 8000, "34": 5107}
+  },
+  "computation": "Independent approved F1 full-return control. Two under-13 qualifying children have $5,000 and $3,000 work-related care paid to the recorded organization. W-2 wages are $60,000/$40,000; employer statement allows a $7,500 maximum, with $5,000 in box 10, none already in box 1 and none forfeited. Form2441 PartIII: lines12/15=$5,000, line16=$8,000, lines18/19=$60,000/$40,000, line20=$5,000, line21=$7,500, line24=$0, line25=$5,000 and line26=$0. PartII line3 is min($8,000-$5,000,$6,000-$5,000)=$1,000; earned income does not limit it. AGI $100,000 gives the 35% joint rate, so lines9a/11=$350. Standard deduction $32,200 gives taxable income $67,800. The unchanged official2026 draft TaxTable row67800,67850,9634,7643,9634,7823 gives joint tax $7,643. Two children produce $4,400 nonrefundable child credit without phaseout or tax limit. Total tax=$7,643-$350-$4,400=$2,893; W-2 withholding=$8,000, no other payments, so refund=$5,107. Sources: 2026 draft Form2441 and instructions; RevProc2025-32; immutable tests/fixtures/irs-tax-table-2026.csv. All figures are independently specified, not generated from App output."
+}

@@ -1,0 +1,656 @@
+{
+  "finding": "F01",
+  "cases": [
+    {
+      "name": "ArcherExcessAccounting explicit null",
+      "type": "ArcherExcessAccounting",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "ArcherExcessAccounting valid present",
+      "type": "ArcherExcessAccounting",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "later_return_year_deposits": 100,
+        "later_employer_deposits": 100
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "ArcherExcessAccounting invalid present",
+      "type": "ArcherExcessAccounting",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "later_return_year_deposits": 100,
+        "later_employer_deposits": 101
+      },
+      "expectedErrors": [
+        "ARCHER_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER"
+      ]
+    },
+    {
+      "name": "HsaExcessAccounting explicit null",
+      "type": "HsaExcessAccounting",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "HsaExcessAccounting valid present",
+      "type": "HsaExcessAccounting",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "later_return_year_deposits": 100,
+        "later_employer_deposits": 100
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "HsaExcessAccounting invalid present",
+      "type": "HsaExcessAccounting",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "later_return_year_deposits": 100,
+        "later_employer_deposits": 101
+      },
+      "expectedErrors": [
+        "HSA_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER"
+      ]
+    },
+    {
+      "name": "BusinessDepletion explicit null",
+      "type": "BusinessDepletion",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "BusinessDepletion valid present",
+      "type": "BusinessDepletion",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "kind": {
+          "OilGas": null
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "BusinessDepletion invalid present",
+      "type": "BusinessDepletion",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "kind": {
+          "Intangible": null
+        }
+      },
+      "expectedErrors": [
+        "BUSINESS_DEPLETION_NEEDS_A_DEPOSIT"
+      ]
+    },
+    {
+      "name": "DeMinimisElection explicit null",
+      "type": "DeMinimisElection",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "DeMinimisElection valid present",
+      "type": "DeMinimisElection",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "purchases": 250000,
+        "largest_item": 250000,
+        "financial_statement": false
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "DeMinimisElection invalid present",
+      "type": "DeMinimisElection",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "purchases": 250001,
+        "largest_item": 250001,
+        "financial_statement": false
+      },
+      "expectedErrors": [
+        "DE_MINIMIS_ITEM_ABOVE_LIMIT"
+      ]
+    },
+    {
+      "name": "EmployeeHealthCoverage explicit null",
+      "type": "EmployeeHealthCoverage",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "EmployeeHealthCoverage valid present",
+      "type": "EmployeeHealthCoverage",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "total_premium": 100,
+        "employer_paid": 100
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "EmployeeHealthCoverage invalid present",
+      "type": "EmployeeHealthCoverage",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "total_premium": 100,
+        "employer_paid": 101
+      },
+      "expectedErrors": [
+        "SMALL_EMPLOYER_HEALTH_SHARE_ABOVE_PREMIUM"
+      ]
+    },
+    {
+      "name": "EstateCurrentPeriodPage explicit null",
+      "type": "EstateCurrentPeriodPage",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "EstateCurrentPeriodPage valid present",
+      "type": "EstateCurrentPeriodPage",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "began": 20260101,
+        "ended": 20261231,
+        "accounting": {
+          "CalendarFiscalOrShort": null
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "EstateCurrentPeriodPage invalid present",
+      "type": "EstateCurrentPeriodPage",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "began": 20261231,
+        "ended": 20260101,
+        "accounting": {
+          "CalendarFiscalOrShort": null
+        }
+      },
+      "expectedErrors": [
+        "ESTATE_NOL_PERIOD_INVALID"
+      ]
+    },
+    {
+      "name": "FarmAveraging explicit null",
+      "type": "FarmAveraging",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "FarmAveraging valid present",
+      "type": "FarmAveraging",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "elected": 100,
+        "selection": {
+          "unrecaptured": 0,
+          "sources": [],
+          "capital_elected": 0
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "FarmAveraging invalid present",
+      "type": "FarmAveraging",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "elected": 100,
+        "selection": {
+          "unrecaptured": 0,
+          "sources": [],
+          "capital_elected": 101
+        }
+      },
+      "expectedErrors": [
+        "FARM_AVERAGING_SELECTION_INVALID"
+      ]
+    },
+    {
+      "name": "FederalHomeKerosene explicit null",
+      "type": "FederalHomeKerosene",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "FederalHomeKerosene valid present",
+      "type": "FederalHomeKerosene",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "thousandths_of_gallon": 1000,
+        "actual_cost": 25
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "FederalHomeKerosene invalid present",
+      "type": "FederalHomeKerosene",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "thousandths_of_gallon": 1000,
+        "actual_cost": 24
+      },
+      "expectedErrors": [
+        "KEROSENE_COST_BELOW_CREDIT"
+      ]
+    },
+    {
+      "name": "FinalEstateTrustLossPeriod explicit null",
+      "type": "FinalEstateTrustLossPeriod",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "FinalEstateTrustLossPeriod valid present",
+      "type": "FinalEstateTrustLossPeriod",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "began": 20250101,
+        "ended": 20251231
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "FinalEstateTrustLossPeriod invalid present",
+      "type": "FinalEstateTrustLossPeriod",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "began": 20251231,
+        "ended": 20250101
+      },
+      "expectedErrors": [
+        "ESTATE_NOL_PERIOD_INVALID"
+      ]
+    },
+    {
+      "name": "FinalEstateTrustNol explicit null",
+      "type": "FinalEstateTrustNol",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "FinalEstateTrustNol valid present",
+      "type": "FinalEstateTrustNol",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "terminated_on": null,
+        "years": [],
+        "taxable_periods": []
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "FinalEstateTrustNol invalid present",
+      "type": "FinalEstateTrustNol",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "terminated_on": 20251231,
+        "years": [],
+        "taxable_periods": []
+      },
+      "expectedErrors": [
+        "ESTATE_NOL_PERIOD_INVALID"
+      ]
+    },
+    {
+      "name": "MoveTrip explicit null",
+      "type": "MoveTrip",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "MoveTrip valid present",
+      "type": "MoveTrip",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "arrived": 20260101
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "MoveTrip invalid present",
+      "type": "MoveTrip",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "arrived": 20251231
+      },
+      "expectedErrors": [
+        "MOVING_ARRIVAL_OUTSIDE_CURRENT_YEAR"
+      ]
+    },
+    {
+      "name": "NonfarmSeHistory explicit null",
+      "type": "NonfarmSeHistory",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "NonfarmSeHistory valid present",
+      "type": "NonfarmSeHistory",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "prior_years": [
+          2024,
+          2025
+        ]
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "NonfarmSeHistory invalid present",
+      "type": "NonfarmSeHistory",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "prior_years": [
+          2025,
+          2025
+        ]
+      },
+      "expectedErrors": [
+        "NONFARM_OPTIONAL_HISTORY_INVALID"
+      ]
+    },
+    {
+      "name": "PaidLeaveCredit explicit null",
+      "type": "PaidLeaveCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "PaidLeaveCredit valid present",
+      "type": "PaidLeaveCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "employees": [],
+        "insurance": {}
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "PaidLeaveCredit invalid present",
+      "type": "PaidLeaveCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "employees": [],
+        "insurance": null
+      },
+      "expectedErrors": [
+        "PAID_LEAVE_NOTHING_CLAIMED"
+      ]
+    },
+    {
+      "name": "PartnerSeparateItems explicit null",
+      "type": "PartnerSeparateItems",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "PartnerSeparateItems valid present",
+      "type": "PartnerSeparateItems",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "dividends": 100,
+        "qualified_dividends": 100
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "PartnerSeparateItems invalid present",
+      "type": "PartnerSeparateItems",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "dividends": 100,
+        "qualified_dividends": 101
+      },
+      "expectedErrors": [
+        "PARTNER_QUALIFIED_ABOVE_DIVIDENDS"
+      ]
+    },
+    {
+      "name": "RehabilitationCredit explicit null",
+      "type": "RehabilitationCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "RehabilitationCredit valid present",
+      "type": "RehabilitationCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "building_basis": 500000,
+        "period_expenditures": 500001,
+        "earlier": []
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "RehabilitationCredit invalid present",
+      "type": "RehabilitationCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "building_basis": 500000,
+        "period_expenditures": 500000,
+        "earlier": []
+      },
+      "expectedErrors": [
+        "REHABILITATION_NOT_SUBSTANTIAL"
+      ]
+    },
+    {
+      "name": "ReimbursedHealthPremiums explicit null",
+      "type": "ReimbursedHealthPremiums",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "ReimbursedHealthPremiums valid present",
+      "type": "ReimbursedHealthPremiums",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "premiums": 100,
+        "child_increase": 100
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "ReimbursedHealthPremiums invalid present",
+      "type": "ReimbursedHealthPremiums",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "premiums": 100,
+        "child_increase": 101
+      },
+      "expectedErrors": [
+        "HEALTH_REIMBURSED_CHILD_ABOVE_TOTAL"
+      ]
+    },
+    {
+      "name": "ReimbursedPolicyPremiums explicit null",
+      "type": "ReimbursedPolicyPremiums",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "ReimbursedPolicyPremiums valid present",
+      "type": "ReimbursedPolicyPremiums",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "premiums": 100,
+        "coverage": 100,
+        "child": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "ReimbursedPolicyPremiums invalid present",
+      "type": "ReimbursedPolicyPremiums",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "premiums": 100,
+        "coverage": 101,
+        "child": null
+      },
+      "expectedErrors": [
+        "HEALTH_REIMBURSED_COVERAGE_ABOVE_TOTAL"
+      ]
+    },
+    {
+      "name": "ScheduleK3 explicit null",
+      "type": "ScheduleK3",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "ScheduleK3 valid present",
+      "type": "ScheduleK3",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "countries": [],
+        "withholding": [],
+        "items": [
+          0
+        ]
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "ScheduleK3 invalid present",
+      "type": "ScheduleK3",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "countries": [],
+        "withholding": [],
+        "items": [
+          0,
+          0
+        ]
+      },
+      "expectedErrors": [
+        "K3_ITEM_TWICE"
+      ]
+    },
+    {
+      "name": "SmallEmployerHealthCredit explicit null",
+      "type": "SmallEmployerHealthCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": null,
+      "expectedErrors": []
+    },
+    {
+      "name": "SmallEmployerHealthCredit valid present",
+      "type": "SmallEmployerHealthCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "coverage": "Marketplace",
+        "first_credit_year": 2026,
+        "employees": [
+          {
+            "label": "Employee",
+            "coverage": {
+              "total_premium": 100,
+              "employer_paid": 100
+            }
+          }
+        ]
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "SmallEmployerHealthCredit invalid present",
+      "type": "SmallEmployerHealthCredit",
+      "nullable": true,
+      "rulesOnly": true,
+      "value": {
+        "coverage": "Marketplace",
+        "first_credit_year": 2026,
+        "employees": []
+      },
+      "expectedErrors": [
+        "SMALL_EMPLOYER_HEALTH_NOBODY_ENROLLED"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+{
+  "cases": [
+    {
+      "name": "F07 duplicates",
+      "type": "EducationCredits",
+      "value": {
+        "students": [
+          {
+            "student": -1,
+            "tuition": 300000,
+            "scholarships": 0,
+            "half_time": true,
+            "graduate": false,
+            "more": {
+              "books_from_school": 0,
+              "other_books": 0,
+              "refunds": 0,
+              "tax_free_529": 0,
+              "scholarship_in_income": {
+                "None": null
+              },
+              "american_opportunity_used_up": false
+            }
+          },
+          {
+            "student": -1,
+            "tuition": 200000,
+            "scholarships": 0,
+            "half_time": true,
+            "graduate": false,
+            "more": {
+              "books_from_school": 0,
+              "other_books": 0,
+              "refunds": 0,
+              "tax_free_529": 0,
+              "scholarship_in_income": {
+                "None": null
+              },
+              "american_opportunity_used_up": false
+            }
+          }
+        ],
+        "people": [
+          {
+            "id": -1,
+            "label": ""
+          },
+          {
+            "id": -2,
+            "label": ""
+          }
+        ]
+      },
+      "expectedErrors": [
+        "unique"
+      ]
+    },
+    {
+      "name": "F07 distinct students",
+      "type": "EducationCredits",
+      "value": {
+        "students": [
+          {
+            "student": -1,
+            "tuition": 300000,
+            "scholarships": 0,
+            "half_time": true,
+            "graduate": false,
+            "more": {
+              "books_from_school": 0,
+              "other_books": 0,
+              "refunds": 0,
+              "tax_free_529": 0,
+              "scholarship_in_income": {
+                "None": null
+              },
+              "american_opportunity_used_up": false
+            }
+          },
+          {
+            "student": -2,
+            "tuition": 200000,
+            "scholarships": 0,
+            "half_time": true,
+            "graduate": false,
+            "more": {
+              "books_from_school": 0,
+              "other_books": 0,
+              "refunds": 0,
+              "tax_free_529": 0,
+              "scholarship_in_income": {
+                "None": null
+              },
+              "american_opportunity_used_up": false
+            }
+          }
+        ],
+        "people": [
+          {
+            "id": -1,
+            "label": ""
+          },
+          {
+            "id": -2,
+            "label": ""
+          }
+        ]
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F07 empty list",
+      "type": "EducationCredits",
+      "value": {
+        "students": [],
+        "people": [
+          {
+            "id": -1,
+            "label": ""
+          },
+          {
+            "id": -2,
+            "label": ""
+          }
+        ]
+      },
+      "expectedErrors": []
+    }
+  ],
+  "finding": "F07"
+}

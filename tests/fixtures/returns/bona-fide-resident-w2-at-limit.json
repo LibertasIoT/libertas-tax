@@ -1,0 +1,45 @@
+{
+  "name": "bona-fide-resident-w2-at-limit",
+  "filing_status": "Single",
+  "birth_dates": { "taxpayer": "1985-04-11" },
+  "w2": [
+    {
+      "employer": "Example Systems Inc.",
+      "box1_wages": 160000.00,
+      "box2_withheld": 4000.00,
+      "box3": 160000.00,
+      "box4": 9920.00,
+      "box5": 160000.00,
+      "box6": 2320.00,
+      "abroad": 160000.00
+    }
+  ],
+  "int1099": [
+    { "payer": "Example Bank", "box1_interest": 1200.00 }
+  ],
+  "form2555": [
+    {
+      "qualification": "Residence",
+      "began": "2024-09-01",
+      "tax_home": "Yes",
+      "exclusion": true
+    }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 160000.00,
+      "2b": 1200.00,
+      "8": -132900.00,
+      "9": 28300.00,
+      "11a / 11b": 28300.00,
+      "12e": 16100.00,
+      "15": 12200.00,
+      "16": 2928.00,
+      "25a": 4000.00,
+      "34": 1072.00
+    }
+  },
+  "computation": "Single filer, a U.S. citizen born 1985-04-11 who has been a bona fide resident of Germany since 2024-09-01 (still continuing). One W-2 from Example Systems Inc. with box 1 $160,000 and all of it pay for work done in Germany (W-2 answer abroad = $160,000); box 2 $4,000; boxes 3 and 5 $160,000, box 4 $9,920 (6.2%) and box 6 $2,320 (1.45%). A U.S. bank pays $1,200 interest. Form 2555: residence began 2024-09-01 and includes all of 2025, so the Part II whole-year test is met; the tax home is abroad; the exclusion is chosen; no housing. Qualifying days in 2026 = 365, so line 39 = 365/365 and line 40 = $132,900 (Rev. Proc. 2025-32 section 4.39). Line 19 = line 27 = $160,000 (the W-2 box 1 pay for work abroad); line 41 = $160,000 - $0; line 42 = min($132,900, $160,000) = $132,900; lines 43 and 45 = $132,900 (no deductions allocable, line 44 = 0). Form 1040: line 1a $160,000; line 2b $1,200; Schedule 1 line 8d = -$132,900, so line 9 = $160,000 + $1,200 - $132,900 = $28,300 and line 11 = $28,300. Line 12e standard deduction $16,100; line 15 = $12,200. Foreign Earned Income Tax Worksheet: line 1 = $12,200; line 2a = $132,900; line 3 = $145,100; line 4 = tax on $145,100 = $1,240 + $4,560 + $12,166 + 24% x $39,400 = $27,422 (the 2026 single brackets: 10% to $12,400, 12% to $50,400, 22% to $105,700, 24% to $201,775); line 5 = tax on $132,900 = $17,966 + 24% x $27,200 = $24,494; line 6 = $27,422 - $24,494 = $2,928 (= $12,200 x 24%, the bracket the excluded income stacks into). Line 16 = $2,928. Line 25a = $4,000, so line 34 = $4,000 - $2,928 = $1,072. No earned income credit is allowed with Form 2555."
+}

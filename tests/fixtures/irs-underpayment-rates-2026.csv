@@ -1,0 +1,14 @@
+// IRS underpayment interest rate for individuals (section 6621(a)(2)), which section 6654(a)(1)
+// applies to the Form 2210 penalty. Each 2026 rate period of the Form 2210 penalty worksheet
+// uses one calendar quarter below. Primary source only: the noncorporate overpayments and
+// underpayments table of Rev. Rul. 2026-15 (and its text for the quarter beginning
+// October 1, 2026), https://www.irs.gov/pub/irs-drop/rr-26-15.pdf, retrieved 2026-09-25,
+// PDF SHA-256 025d2ab1cc5bfddfc4d3e17a0bffbbf79fe13f28026d852c36356f8d91a307f1
+// Columns: quarter, annual rate in percent, source.
+quarter,annual_rate,source
+2026-Q2,6,Rev. Rul. 2026-15 noncorporate table (Apr. 1 2026 - Jun. 30 2026)
+2026-Q3,7,Rev. Rul. 2026-15 noncorporate table (Jul. 1 2026 - Sep. 30 2026)
+2026-Q4,7,Rev. Rul. 2026-15 text and noncorporate table (Oct. 1 2026 - Dec. 31 2026)
+// 2027-Q1 is not published as of 2026-09-25: the IRS sets it from the October 2026 federal
+// short-term rate and announces it late in 2026. The calculation uses the last published rate.
+2027-Q1,,

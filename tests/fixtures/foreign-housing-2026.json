@@ -1,0 +1,669 @@
+{
+  "tax_year": 2026,
+  "source": "https://www.irs.gov/irb/2026-17_IRB",
+  "notice_pdf": "https://www.irs.gov/pub/irs-drop/n-26-25.pdf",
+  "pdf_sha256": "9a5657ed3162160a7ea011683e9a0b6ccb83a68e15eba9e57774e75d81ec736e",
+  "status": "Reference table integrated into foreign_housing.rs; published annual and daily limits preserved independently.",
+  "standard_annual_limit_dollars": 39870,
+  "annual_base_housing_dollars": 21264,
+  "published_daily_discrepancies": [
+    "Australia: Wollongong",
+    "Switzerland: Bern"
+  ],
+  "locations": [
+    {
+      "country": "Angola",
+      "locations": "Luanda",
+      "annual_dollars": 84000,
+      "daily_cents": 23014
+    },
+    {
+      "country": "Argentina",
+      "locations": "Buenos Aires",
+      "annual_dollars": 56500,
+      "daily_cents": 15479
+    },
+    {
+      "country": "Aruba",
+      "locations": "All cities",
+      "annual_dollars": 46200,
+      "daily_cents": 12658
+    },
+    {
+      "country": "Australia",
+      "locations": "Melbourne",
+      "annual_dollars": 40600,
+      "daily_cents": 11123
+    },
+    {
+      "country": "Australia",
+      "locations": "Sydney",
+      "annual_dollars": 65600,
+      "daily_cents": 17973
+    },
+    {
+      "country": "Australia",
+      "locations": "Wollongong",
+      "annual_dollars": 46000,
+      "daily_cents": 12306
+    },
+    {
+      "country": "Bahamas, The",
+      "locations": "Nassau",
+      "annual_dollars": 49700,
+      "daily_cents": 13616
+    },
+    {
+      "country": "Bahrain",
+      "locations": "Bahrain",
+      "annual_dollars": 48300,
+      "daily_cents": 13233
+    },
+    {
+      "country": "Belgium",
+      "locations": "Brussels",
+      "annual_dollars": 42900,
+      "daily_cents": 11753
+    },
+    {
+      "country": "Bermuda",
+      "locations": "Bermuda",
+      "annual_dollars": 90000,
+      "daily_cents": 24658
+    },
+    {
+      "country": "Brazil",
+      "locations": "Sao Paulo",
+      "annual_dollars": 56600,
+      "daily_cents": 15507
+    },
+    {
+      "country": "Canada",
+      "locations": "Calgary",
+      "annual_dollars": 45100,
+      "daily_cents": 12356
+    },
+    {
+      "country": "Canada",
+      "locations": "Montreal",
+      "annual_dollars": 52000,
+      "daily_cents": 14247
+    },
+    {
+      "country": "Canada",
+      "locations": "Ottawa",
+      "annual_dollars": 50800,
+      "daily_cents": 13918
+    },
+    {
+      "country": "Canada",
+      "locations": "Toronto",
+      "annual_dollars": 62700,
+      "daily_cents": 17178
+    },
+    {
+      "country": "Canada",
+      "locations": "Vancouver",
+      "annual_dollars": 73400,
+      "daily_cents": 20110
+    },
+    {
+      "country": "Canada",
+      "locations": "Victoria",
+      "annual_dollars": 45800,
+      "daily_cents": 12548
+    },
+    {
+      "country": "Cayman Islands",
+      "locations": "Grand Cayman",
+      "annual_dollars": 64193,
+      "daily_cents": 17587
+    },
+    {
+      "country": "China",
+      "locations": "Beijing",
+      "annual_dollars": 69000,
+      "daily_cents": 18904
+    },
+    {
+      "country": "China",
+      "locations": "Hong Kong",
+      "annual_dollars": 114300,
+      "daily_cents": 31315
+    },
+    {
+      "country": "China",
+      "locations": "Shanghai",
+      "annual_dollars": 57001,
+      "daily_cents": 15617
+    },
+    {
+      "country": "Colombia",
+      "locations": "Bogota",
+      "annual_dollars": 58700,
+      "daily_cents": 16082
+    },
+    {
+      "country": "Colombia",
+      "locations": "All cities other than Bogota",
+      "annual_dollars": 49400,
+      "daily_cents": 13534
+    },
+    {
+      "country": "Curacao",
+      "locations": "Curacao",
+      "annual_dollars": 45800,
+      "daily_cents": 12548
+    },
+    {
+      "country": "Democratic Republic of the Congo",
+      "locations": "Kinshasa",
+      "annual_dollars": 42000,
+      "daily_cents": 11507
+    },
+    {
+      "country": "Denmark",
+      "locations": "Copenhagen",
+      "annual_dollars": 43704,
+      "daily_cents": 11974
+    },
+    {
+      "country": "Dominican Republic",
+      "locations": "Santo Domingo",
+      "annual_dollars": 45500,
+      "daily_cents": 12466
+    },
+    {
+      "country": "Estonia",
+      "locations": "Tallinn",
+      "annual_dollars": 46600,
+      "daily_cents": 12767
+    },
+    {
+      "country": "France",
+      "locations": "Garches, Paris, Sevres, Suresnes, and Versailles",
+      "annual_dollars": 73600,
+      "daily_cents": 20164
+    },
+    {
+      "country": "France",
+      "locations": "Lyon",
+      "annual_dollars": 40700,
+      "daily_cents": 11151
+    },
+    {
+      "country": "Germany",
+      "locations": "Berlin",
+      "annual_dollars": 44100,
+      "daily_cents": 12082
+    },
+    {
+      "country": "Germany",
+      "locations": "Boeblingen, Ludwigsburg, Nellingen, and Stuttgart",
+      "annual_dollars": 46100,
+      "daily_cents": 12630
+    },
+    {
+      "country": "Germany",
+      "locations": "Bonn and Wahn",
+      "annual_dollars": 42000,
+      "daily_cents": 11507
+    },
+    {
+      "country": "Germany",
+      "locations": "Cologne",
+      "annual_dollars": 56200,
+      "daily_cents": 15397
+    },
+    {
+      "country": "Germany",
+      "locations": "Garmisch-Partenkirchen and Oberammergau",
+      "annual_dollars": 40700,
+      "daily_cents": 11151
+    },
+    {
+      "country": "Germany",
+      "locations": "Gelnhausen and Hanau",
+      "annual_dollars": 45500,
+      "daily_cents": 12466
+    },
+    {
+      "country": "Germany",
+      "locations": "Ingolstadt and Munich",
+      "annual_dollars": 51500,
+      "daily_cents": 14110
+    },
+    {
+      "country": "Germany",
+      "locations": "Kaiserslautern, Landkreis, Pirmasens, Sembach, and Zweibrucken",
+      "annual_dollars": 48100,
+      "daily_cents": 13178
+    },
+    {
+      "country": "Germany",
+      "locations": "Mainz and Wiesbaden",
+      "annual_dollars": 50400,
+      "daily_cents": 13808
+    },
+    {
+      "country": "Guatemala",
+      "locations": "Guatemala City",
+      "annual_dollars": 42000,
+      "daily_cents": 11507
+    },
+    {
+      "country": "Guinea",
+      "locations": "Conakry",
+      "annual_dollars": 51300,
+      "daily_cents": 14055
+    },
+    {
+      "country": "Holy See, The",
+      "locations": "Holy See, The",
+      "annual_dollars": 49000,
+      "daily_cents": 13425
+    },
+    {
+      "country": "India",
+      "locations": "Mumbai",
+      "annual_dollars": 67920,
+      "daily_cents": 18608
+    },
+    {
+      "country": "India",
+      "locations": "New Delhi",
+      "annual_dollars": 56124,
+      "daily_cents": 15376
+    },
+    {
+      "country": "Ireland",
+      "locations": "Dublin",
+      "annual_dollars": 42600,
+      "daily_cents": 11671
+    },
+    {
+      "country": "Israel",
+      "locations": "Beer Sheva",
+      "annual_dollars": 61800,
+      "daily_cents": 16932
+    },
+    {
+      "country": "Israel",
+      "locations": "Jerusalem and West Bank",
+      "annual_dollars": 49000,
+      "daily_cents": 13425
+    },
+    {
+      "country": "Israel",
+      "locations": "Tel Aviv",
+      "annual_dollars": 50800,
+      "daily_cents": 13918
+    },
+    {
+      "country": "Italy",
+      "locations": "Genoa",
+      "annual_dollars": 41800,
+      "daily_cents": 11452
+    },
+    {
+      "country": "Italy",
+      "locations": "La Spezia",
+      "annual_dollars": 40400,
+      "daily_cents": 11068
+    },
+    {
+      "country": "Italy",
+      "locations": "Milan",
+      "annual_dollars": 73200,
+      "daily_cents": 20055
+    },
+    {
+      "country": "Italy",
+      "locations": "Naples",
+      "annual_dollars": 50300,
+      "daily_cents": 13781
+    },
+    {
+      "country": "Italy",
+      "locations": "Rome",
+      "annual_dollars": 49000,
+      "daily_cents": 13425
+    },
+    {
+      "country": "Italy",
+      "locations": "Vicenza",
+      "annual_dollars": 40900,
+      "daily_cents": 11205
+    },
+    {
+      "country": "Jamaica",
+      "locations": "Kingston",
+      "annual_dollars": 41200,
+      "daily_cents": 11288
+    },
+    {
+      "country": "Japan",
+      "locations": "Gifu, Komaki, and Nagoya",
+      "annual_dollars": 74300,
+      "daily_cents": 20356
+    },
+    {
+      "country": "Japan",
+      "locations": "Okinawa Prefecture",
+      "annual_dollars": 41300,
+      "daily_cents": 11315
+    },
+    {
+      "country": "Japan",
+      "locations": "Osaka-Kobe",
+      "annual_dollars": 90664,
+      "daily_cents": 24839
+    },
+    {
+      "country": "Japan",
+      "locations": "Tokyo City",
+      "annual_dollars": 67300,
+      "daily_cents": 18438
+    },
+    {
+      "country": "Kazakhstan",
+      "locations": "Almaty",
+      "annual_dollars": 48000,
+      "daily_cents": 13151
+    },
+    {
+      "country": "Kuwait",
+      "locations": "Kuwait City",
+      "annual_dollars": 64400,
+      "daily_cents": 17644
+    },
+    {
+      "country": "Kuwait",
+      "locations": "All cities other than Kuwait City",
+      "annual_dollars": 57700,
+      "daily_cents": 15808
+    },
+    {
+      "country": "Luxembourg",
+      "locations": "Luxembourg",
+      "annual_dollars": 57900,
+      "daily_cents": 15863
+    },
+    {
+      "country": "Malaysia",
+      "locations": "Kuala Lumpur",
+      "annual_dollars": 46200,
+      "daily_cents": 12658
+    },
+    {
+      "country": "Malta",
+      "locations": "Malta",
+      "annual_dollars": 55100,
+      "daily_cents": 15096
+    },
+    {
+      "country": "Mexico",
+      "locations": "Mexico City",
+      "annual_dollars": 47900,
+      "daily_cents": 13123
+    },
+    {
+      "country": "Netherlands",
+      "locations": "Amsterdam and Schiphol",
+      "annual_dollars": 52900,
+      "daily_cents": 14493
+    },
+    {
+      "country": "Netherlands",
+      "locations": "The Hague",
+      "annual_dollars": 58400,
+      "daily_cents": 16000
+    },
+    {
+      "country": "Oman",
+      "locations": "Muscat",
+      "annual_dollars": 41300,
+      "daily_cents": 11315
+    },
+    {
+      "country": "Poland",
+      "locations": "Krakow",
+      "annual_dollars": 54900,
+      "daily_cents": 15041
+    },
+    {
+      "country": "Poland",
+      "locations": "Warsaw",
+      "annual_dollars": 62300,
+      "daily_cents": 17068
+    },
+    {
+      "country": "Portugal",
+      "locations": "Alverca and Lisbon",
+      "annual_dollars": 44800,
+      "daily_cents": 12274
+    },
+    {
+      "country": "Qatar",
+      "locations": "Doha",
+      "annual_dollars": 45888,
+      "daily_cents": 12572
+    },
+    {
+      "country": "Romania",
+      "locations": "Bucharest",
+      "annual_dollars": 41200,
+      "daily_cents": 11288
+    },
+    {
+      "country": "Russia",
+      "locations": "Moscow",
+      "annual_dollars": 108000,
+      "daily_cents": 29589
+    },
+    {
+      "country": "Russia",
+      "locations": "Saint Petersburg",
+      "annual_dollars": 60000,
+      "daily_cents": 16438
+    },
+    {
+      "country": "Saudi Arabia",
+      "locations": "Riyadh",
+      "annual_dollars": 40000,
+      "daily_cents": 10959
+    },
+    {
+      "country": "Singapore",
+      "locations": "Singapore",
+      "annual_dollars": 86700,
+      "daily_cents": 23753
+    },
+    {
+      "country": "Slovenia",
+      "locations": "Ljubljana",
+      "annual_dollars": 51400,
+      "daily_cents": 14082
+    },
+    {
+      "country": "South Korea",
+      "locations": "Camp Colbern and Camp Mercer",
+      "annual_dollars": 54200,
+      "daily_cents": 14849
+    },
+    {
+      "country": "South Korea",
+      "locations": "K-16, Kimpo Airfield, Seoul, and Suwon",
+      "annual_dollars": 44300,
+      "daily_cents": 12137
+    },
+    {
+      "country": "Spain",
+      "locations": "Barcelona",
+      "annual_dollars": 40600,
+      "daily_cents": 11123
+    },
+    {
+      "country": "Spain",
+      "locations": "Madrid",
+      "annual_dollars": 59700,
+      "daily_cents": 16356
+    },
+    {
+      "country": "Switzerland",
+      "locations": "Bern",
+      "annual_dollars": 82200,
+      "daily_cents": 22466
+    },
+    {
+      "country": "Switzerland",
+      "locations": "Geneva",
+      "annual_dollars": 116900,
+      "daily_cents": 32027
+    },
+    {
+      "country": "Switzerland",
+      "locations": "Zurich",
+      "annual_dollars": 67218,
+      "daily_cents": 18416
+    },
+    {
+      "country": "Taiwan",
+      "locations": "Taipei",
+      "annual_dollars": 46188,
+      "daily_cents": 12654
+    },
+    {
+      "country": "Tanzania",
+      "locations": "Dar Es Salaam",
+      "annual_dollars": 44000,
+      "daily_cents": 12055
+    },
+    {
+      "country": "Thailand",
+      "locations": "Bangkok",
+      "annual_dollars": 59000,
+      "daily_cents": 16164
+    },
+    {
+      "country": "Trinidad and Tobago",
+      "locations": "Port of Spain",
+      "annual_dollars": 54500,
+      "daily_cents": 14932
+    },
+    {
+      "country": "Ukraine",
+      "locations": "Kiev",
+      "annual_dollars": 72000,
+      "daily_cents": 19726
+    },
+    {
+      "country": "United Arab Emirates",
+      "locations": "Abu Dhabi",
+      "annual_dollars": 49687,
+      "daily_cents": 13613
+    },
+    {
+      "country": "United Arab Emirates",
+      "locations": "Dubai",
+      "annual_dollars": 57174,
+      "daily_cents": 15664
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Basingstoke",
+      "annual_dollars": 41099,
+      "daily_cents": 11260
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Bath",
+      "annual_dollars": 41000,
+      "daily_cents": 11233
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Bracknell, High Wycombe, and Reading",
+      "annual_dollars": 62100,
+      "daily_cents": 17014
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Caversham",
+      "annual_dollars": 73800,
+      "daily_cents": 20219
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Cheltenham",
+      "annual_dollars": 54300,
+      "daily_cents": 14877
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Croughton",
+      "annual_dollars": 45000,
+      "daily_cents": 12329
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Farnborough",
+      "annual_dollars": 54700,
+      "daily_cents": 14986
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Gibraltar",
+      "annual_dollars": 44616,
+      "daily_cents": 12224
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Harrogate and Menwith Hill",
+      "annual_dollars": 46600,
+      "daily_cents": 12767
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "London",
+      "annual_dollars": 68600,
+      "daily_cents": 18795
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Loudwater",
+      "annual_dollars": 57400,
+      "daily_cents": 15726
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "Surrey",
+      "annual_dollars": 48402,
+      "daily_cents": 13261
+    },
+    {
+      "country": "United Kingdom",
+      "locations": "All cities* other than Aldermaston, Belfast, Birmingham, Bristol, Brough, Cambridge, Chelmsford, Chicksands, Dunstable, Edinburgh, Edzell, Fairford, Felixstowe, Ft. Halstead, Glenrothes, Gloucestershire, Greenham Common, Hythe, Kemble, Liverpool, Nottingham, Oxfordshire, Plymouth, Portsmouth, Rochester, Waterbeach, Welford, West Byfleet, and Wiltshire, which are subject to the generally applicable limitation *Excluding those cities previously listed",
+      "annual_dollars": 44200,
+      "daily_cents": 12110
+    },
+    {
+      "country": "Venezuela",
+      "locations": "Caracas",
+      "annual_dollars": 57000,
+      "daily_cents": 15616
+    },
+    {
+      "country": "Vietnam",
+      "locations": "Hanoi",
+      "annual_dollars": 46800,
+      "daily_cents": 12822
+    },
+    {
+      "country": "Vietnam",
+      "locations": "Ho Chi Minh City",
+      "annual_dollars": 42000,
+      "daily_cents": 11507
+    }
+  ]
+}

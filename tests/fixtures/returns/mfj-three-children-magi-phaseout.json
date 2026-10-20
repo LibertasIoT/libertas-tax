@@ -1,0 +1,54 @@
+{
+  "name": "mfj-three-children-magi-phaseout",
+  "filing_status": "Joint",
+  "birth_dates": { "taxpayer": "1985-04-10", "spouse": "1986-09-22" },
+  "dependents": [
+    { "first_name": "Emma", "last_name": "Sample", "birth_date": "2015-03-12" },
+    { "first_name": "Noah", "last_name": "Sample", "birth_date": "2018-07-04" },
+    { "first_name": "Olivia", "last_name": "Sample", "birth_date": "2022-11-30" }
+  ],
+  "w2": [
+    {
+      "employer": "Example Co (taxpayer)",
+      "box1_wages": 210000.00,
+      "box2_withheld": 45000.00,
+      "box3": 184500.00,
+      "box4": 11439.00,
+      "box5": 210000.00,
+      "box6": 3135.00
+    },
+    {
+      "employer": "Sample Corp (spouse)",
+      "owner": "Spouse",
+      "box1_wages": 205000.00,
+      "box2_withheld": 40000.00,
+      "box3": 184500.00,
+      "box4": 11439.00,
+      "box5": 205000.00,
+      "box6": 3017.50
+    }
+  ],
+  "int1099": [],
+  "div1099": [],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 415000.00,
+      "9": 415000.00,
+      "11a / 11b": 415000.00,
+      "12e": 32200.00,
+      "15": 382800.00,
+      "16": 77068.00,
+      "19": 5850.00,
+      "24a": 72703.00,
+      "25a": 85000.00,
+      "28": 0.00,
+      "33": 85135.00,
+      "34": 12432.00,
+      "37": 0.00
+    }
+  },
+  "computation": "Married filing jointly, taxpayer born 1985-04-10 (age 41), spouse born 1986-09-22 (age 40), neither a senior, blind or dependent. Three dependents, each Child, lived with the filers all of 2026, valid Social Security numbers: Emma Sample born 2015-03-12 (age 11 at year end), Noah Sample born 2018-07-04 (age 8) and Olivia Sample born 2022-11-30 (age 4); no care expenses. Two W-2s, both employers required by law to withhold the 0.9% Additional Medicare surtax on wages above $200,000 per employee (Form W-2 instructions; the App's forms/w2.rs collect only enforces a floor of 1.45% x box5 on box6, so this is chosen for a realistic fixture, not a modeled requirement): taxpayer box1 wages $210,000.00, box2 federal withholding $45,000.00 (chosen), box3 Social Security wages capped at the 2026 wage base $184,500.00 (6.2% x $184,500.00 = $11,439.00 = box4, matching the App's single-employer excess-SS ceiling in forms/w2.rs), box5 Medicare wages (uncapped) $210,000.00, box6 = 1.45% x $210,000.00 ($3,045.00) + 0.9% x ($210,000.00-$200,000.00) = $3,045.00 + $90.00 = $3,135.00; spouse box1 wages $205,000.00, box2 federal withholding $40,000.00 (chosen), box3 $184,500.00, box4 $11,439.00, box5 $205,000.00, box6 = 1.45% x $205,000.00 ($2,972.50) + 0.9% x ($205,000.00-$200,000.00) = $2,972.50 + $45.00 = $3,017.50. No other income, adjustments, itemized deductions, other credits or estimated payments. Household eligibility (family() in src/federal_rules.rs): all three children are related (Child), lived with the filers all of 2026 (365 days) and are under 19 (ages 11, 8, 4), so all three are dependency children with valid SSNs; age(birth_date) = 2026 - birth_year gives 11, 8 and 4, all under 17, so family.ctc = 3 and family.odc = 0. Form 1040 line 1a wages = $210,000.00 + $205,000.00 = $415,000.00. Line 9 total income = $415,000.00 (no interest, dividends or other income; adjustments = $0.00). Line 11a/11b AGI = $415,000.00. Line 12e standard deduction: Rev. Proc. 2025-32 Table 8 2026 MFJ base amount is $32,200 (standard_base() in src/federal_rules.rs); neither filer is 65+, blind or a dependent, so no addition: $32,200.00. Line 15 taxable income = $415,000.00 - $32,200.00 = $382,800.00. Line 16 tax (2026 MFJ brackets in src/income_tax.rs Rates::with_method: boundaries 24,800/100,800/211,400/403,550/512,450/768,700 at 10/12/22/24/32/35/37%; $382,800 falls in the 24% bracket since it is below $403,550): $24,800 x 10% = $2,480.00; ($100,800-$24,800)=$76,000 x 12% = $9,120.00; ($211,400-$100,800)=$110,600 x 22% = $24,332.00; ($382,800-$211,400)=$171,400 x 24% = $41,136.00; sum = $2,480.00+$9,120.00+$24,332.00+$41,136.00 = $77,068.00. Line 17 AMT: Form 6251's post-2018 line1+2a equivalent (amt_base in src/federal_rules.rs) is AGI minus the standard deduction that was subtracted plus that same standard deduction added back (the App's `agi - unlimited_deduction + standard`, since `unlimited_deduction == deduction == standard` here) minus the $0.00 QBI deduction, i.e. $415,000.00 (no ISO, private-activity or other AMT preference items). 2026 MFJ AMT exemption $140,200.00 phases out starting at $1,000,000.00 (Rev. Proc. 2025-32, AmtRates::for_year in src/income_tax.rs), so the full exemption applies: AMT taxable = $415,000.00 - $140,200.00 = $274,800.00. Tentative minimum tax at 26%/28% (2026 breakpoint $244,500.00): $244,500.00 x 26% + ($274,800.00-$244,500.00) x 28% = $63,570.00 + $8,484.00 = $72,054.00, which is less than the $77,068.00 regular tax, so AMT = $0.00. Line 18 income tax before credits = $77,068.00 (no Form 8978, premium repayment or clean-vehicle repayment). Schedule 8812 (forms/schedule_8812.rs): line 4 children = 3 (x $2,200.00 = $6,600.00, line 5); line 6 other dependents = 0 (line 7 = $0.00); line 8 = $6,600.00. Line 3 MAGI (foreign_magi) = AGI + $0.00 excluded = $415,000.00 (line 9 threshold for MFJ is $400,000.00). Line 10 = ceiling($415,000.00-$400,000.00, $1,000) = ceiling($15,000.00, $1,000) = 15; line 11 = 15 x $50.00 = $750.00. Line 12 potential = $6,600.00 - $750.00 = $5,850.00. Credit Limit Worksheet A (line 13): no care, education, elderly, saver's, clean-vehicle, mortgage, adoption, DC-homebuyer or residential-energy credits are claimed, so the full $77,068.00 of line-18 tax (less $0.00 foreign tax credit) remains available; line 13 = $77,068.00. Line 14 (smaller of line 12 or 13) = $5,850.00: Form 1040 line 19. Part II-A: line 16b = 3 x $1,700.00 = $5,100.00 (three-or-more-children branch, Part II-B, applies because family.ctc >= 3). Line 18a earned income = $415,000.00 (both W-2 box1 wages; no self-employment). Line 19 = $415,000.00 - $2,500.00 = $412,500.00; line 20 = 15% x $412,500.00 = $61,875.00. Part II-B lines 21-25 (payroll alternative, forms/schedule_8812.rs `alternate`): line 21 payroll = combined box4 + box6 = ($11,439.00+$11,439.00) + ($3,135.00+$3,017.50) = $22,878.00 + $6,152.50 = $29,030.50, rounded to the nearest whole dollar by the App's `dollars()` helper = $29,031.00 (Schedule 8812 amounts are whole dollars). Form 8959 Part IV (medicare_withheld in federal_rules.rs): combined box6 $6,152.50 minus 1.45% x combined box5 $415,000.00 ($6,017.50) = $135.00 of employer-withheld Additional Medicare tax. Schedule 2 line 17b (additional_medicare_wages) / Form 8959 Additional Medicare Tax: combined Medicare wages $415,000.00 exceed the 2026 MFJ $250,000.00 threshold by $165,000.00; 0.9% x $165,000.00 = $1,485.00 (no self-employment income, so this is the full Schedule 2 line 17b/line 11 combined amount). Line 25 alternate = $29,031.00 - $135.00 + $1,485.00 + $0.00 (no half-SE, EIC or excess Social Security) = $30,381.00. Line 26 = larger of line 20 ($61,875.00) and line 25 ($30,381.00) = $61,875.00. Line 17/actc_limit = smaller of line 16b ($5,100.00) and line 26 ($61,875.00) = $5,100.00. Line 27 (additional child tax credit) = smaller of the unused potential (line 12 $5,850.00 minus line 14 $5,850.00 = $0.00, since the full nonrefundable credit was already used against the $77,068.00 of available tax) and the $5,100.00 ceiling = $0.00: Form 1040 line 28. Form 1040 line 19 (child and other-dependent credits) = $5,850.00. Line 20 (other nonrefundable credits) = $0.00. Line 21 = $5,850.00. Line 22 = $77,068.00 - $5,850.00 = $71,218.00. Line 23 additional taxes: Schedule 2 Additional Medicare Tax (combined, computed above) = $1,485.00; no self-employment tax, no NIIT (no interest, dividend or capital-gain investment income even though MAGI exceeds the $250,000.00 joint NIIT threshold), no other Schedule 2 Part II tax. Line 23 = $1,485.00. Line 24a total tax = $71,218.00 + $1,485.00 = $72,703.00. Line 25a W-2 withholding = $45,000.00 + $40,000.00 = $85,000.00 (box 2 only). Line 25c also carries the $135.00 Form 8959 Part IV over-withheld Additional Medicare amount (not itself a checked line here); line 25d = $85,000.00 + $0.00 + $135.00 = $85,135.00. Line 26 estimated payments = $0.00. Line 27a earned income credit = $0.00 (AGI $415,000.00 is far above every 2026 draft EIC threshold). Line 28 additional child tax credit = $0.00 (from Schedule 8812 above). Lines 29-31 = $0.00 (no education, adoption or other payments; no excess Social Security since each spouse's own single employer withheld exactly the $11,439.00 per-person maximum). Line 33 total payments and refundable credits = $85,135.00 (25d) + $0.00 (26) + $0.00 (27a) + $0.00 (28) + $0.00 (29-31) = $85,135.00. Line 34 overpayment = max($85,135.00 - $72,703.00, 0) = $12,432.00 (a refund). Line 37 balance due = max($72,703.00 - $85,135.00, 0) = $0.00.",
+  "fields_touched": 26
+}

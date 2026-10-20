@@ -1,0 +1,231 @@
+{
+  "finding": "F09",
+  "cases": [
+    {
+      "name": "zero history",
+      "type": "EmergencyHistory",
+      "value": {
+        "amount": 0,
+        "repaid": 0,
+        "contributed": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "repayment equals original",
+      "type": "EmergencyHistory",
+      "value": {
+        "amount": 10000,
+        "repaid": 10000,
+        "contributed": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "contributions may exceed original",
+      "type": "EmergencyHistory",
+      "value": {
+        "amount": 10000,
+        "repaid": 10000,
+        "contributed": 50000
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "repayment exceeds original",
+      "type": "EmergencyHistory",
+      "value": {
+        "amount": 10000,
+        "repaid": 10001,
+        "contributed": 0
+      },
+      "expectedErrors": [
+        "EMERGENCY_REPAID_ABOVE_DISTRIBUTION"
+      ]
+    },
+    {
+      "name": "primary emergency exception null remaining exception and repayment",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 1,
+        "ira": true,
+        "allowed_treatments": [
+          1
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Early": {
+            "what_happened": {
+              "Kept": null
+            },
+            "exception": {
+              "Applies": {
+                "distributed": 20260601,
+                "facts": {
+                  "Emergency": {
+                    "balance": 1000000,
+                    "history": {
+                      "amount": 10000,
+                      "repaid": 10000,
+                      "contributed": 0
+                    },
+                    "eligible": 0
+                  }
+                },
+                "second": null,
+                "repaid": null
+              }
+            }
+          }
+        },
+        "after_death": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "primary emergency exception excess repayment",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 1,
+        "ira": true,
+        "allowed_treatments": [
+          1
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Early": {
+            "what_happened": {
+              "Kept": null
+            },
+            "exception": {
+              "Applies": {
+                "distributed": 20260601,
+                "facts": {
+                  "Emergency": {
+                    "balance": 1000000,
+                    "history": {
+                      "amount": 10000,
+                      "repaid": 10001,
+                      "contributed": 0
+                    },
+                    "eligible": 0
+                  }
+                },
+                "second": null,
+                "repaid": null
+              }
+            }
+          }
+        },
+        "after_death": null
+      },
+      "expectedErrors": [
+        "EMERGENCY_REPAID_ABOVE_DISTRIBUTION"
+      ]
+    },
+    {
+      "name": "second emergency exception null remaining exception and repayment",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 1,
+        "ira": true,
+        "allowed_treatments": [
+          1
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Early": {
+            "what_happened": {
+              "Kept": null
+            },
+            "exception": {
+              "Applies": {
+                "distributed": 20260601,
+                "facts": {
+                  "Medical": {
+                    "expenses": 0
+                  }
+                },
+                "second": {
+                  "Emergency": {
+                    "balance": 1000000,
+                    "history": {
+                      "amount": 10000,
+                      "repaid": 10000,
+                      "contributed": 0
+                    },
+                    "eligible": 0
+                  }
+                },
+                "repaid": null
+              }
+            }
+          }
+        },
+        "after_death": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "second emergency exception excess repayment",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 1,
+        "ira": true,
+        "allowed_treatments": [
+          1
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Early": {
+            "what_happened": {
+              "Kept": null
+            },
+            "exception": {
+              "Applies": {
+                "distributed": 20260601,
+                "facts": {
+                  "Medical": {
+                    "expenses": 0
+                  }
+                },
+                "second": {
+                  "Emergency": {
+                    "balance": 1000000,
+                    "history": {
+                      "amount": 10000,
+                      "repaid": 10001,
+                      "contributed": 0
+                    },
+                    "eligible": 0
+                  }
+                },
+                "repaid": null
+              }
+            }
+          }
+        },
+        "after_death": null
+      },
+      "expectedErrors": [
+        "EMERGENCY_REPAID_ABOVE_DISTRIBUTION"
+      ]
+    }
+  ]
+}

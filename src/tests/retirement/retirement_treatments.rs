@@ -1,0 +1,1262 @@
+use crate::tests::support::assert::line_amount as cents;
+use crate::tests::support::builders::survey::survey_uncatalogued_document as unanswered_document;
+// Retirement treatments (unit B5, 2026-10-09): fixtures F1-F13 of the map, each a Pub. 575, 721 or
+// 939 worked example or a boundary, saved through the 1099-R page and read back from the
+// estimate. Amounts in the comments are dollars; the records carry cents. Unless stated: single
+// filer born 1960-03-01 (age 66), one document, no other income, box 7b unchecked, every
+// confirmation Yes.
+use super::*;
+use crate::tests::cross::interview::{
+    accepted, document, open_topic, page_documents, r1099, save_topic,
+};
+use crate::{
+    AnnuityBalance, ChildAnnuity, ChildAnnuityPayment, LegacyAnnuity, PropertyRollover,
+    RailroadRecipient, RailroadRecovery, RailroadRepayment, Rrb1099R, TaxableMethod as M,
+};
+
+fn filer(birth: u32) -> FederalDraft {
+    let mut d = complete(FederalStatus::Single);
+    d.people.as_mut().unwrap().taxpayer.birth_date = birth;
+    d
+}
+// One 1099-R in dollars: box 1, box 2a, the printed box 7a and box 7b, the branch and the box 2b method.
+fn form(
+    printed: &str,
+    ira: bool,
+    gross: i64,
+    taxable: i64,
+    code: DistributionCode,
+    method: M,
+) -> R1099 {
+    let mut r = printed_as(r1099(gross * 100, code, ira), printed);
+    r.taxable = taxable * 100;
+    r.more.taxable_method = method;
+    r
+}
+fn normal() -> DistributionCode {
+    DistributionCode::Normal { what_happened: Disposition::Kept }
+}
+fn early() -> DistributionCode {
+    DistributionCode::Early { what_happened: Disposition::Kept, exception: EarlyException::None }
+}
+// Saves the rows on the Retirement page and returns the session.
+fn save(d: &FederalDraft, rows: Vec<R1099>) -> Interview {
+    let mut s = Interview::new(TEST_USER, d.clone());
+    let documents = rows.into_iter().map(|r| document(0, IncomeDocument::R1099(r))).collect();
+    accepted(&send(&mut s, save_topic(d, TaxSection::Retirement, documents)));
+    s
+}
+// The key of the Problem a save of these rows is refused with.
+fn refusal(d: &FederalDraft, rows: Vec<R1099>) -> alloc::vec::Vec<u8> {
+    let mut s = Interview::new(TEST_USER, d.clone());
+    let documents = rows.into_iter().map(|r| document(0, IncomeDocument::R1099(r))).collect();
+    let Reply::Response(P::Problem { message, .. }) =
+        send(&mut s, save_topic(d, TaxSection::Retirement, documents))
+    else {
+        panic!("expected a refused save")
+    };
+    assert_eq!(s.draft, *d);
+    message
+}
+fn key(k: &str) -> alloc::vec::Vec<u8> {
+    libertas::libertas_formatted_text(k, &[])
+}
+fn stored(s: &Interview) -> &FederalRetirement {
+    let FederalIncome::Retirement { data } = &s.draft.income[1].income else {
+        panic!("a retirement record")
+    };
+    data
+}
+// Saves, estimates, reopens the page and saves it unchanged: the records are the same.
+fn round_trips(s: &Interview) {
+    let mut again = restart(s.draft.clone());
+    let request = open_topic(&mut again, TaxSection::Retirement);
+    accepted(&send(&mut again, request));
+    assert_eq!(again.draft, s.draft);
+}
+
+#[test]
+fn validation_f08_cash_rollovers_are_bounded_by_the_distribution() {
+    let d = filer(19600301);
+    for branch in 0..4 {
+        for amount in [9_999, 10_000, 10_001] {
+            let disposition =
+                Disposition::RolledOver { amount, into: crate::RolloverDestination::Ira };
+            let code = match branch {
+                0 => DistributionCode::Normal { what_happened: disposition },
+                1 => DistributionCode::Early {
+                    what_happened: disposition,
+                    exception: EarlyException::None,
+                },
+                2 => DistributionCode::NormalLumpSum {
+                    tax: LumpSumTax::WithOtherIncome { what_happened: disposition },
+                },
+                _ => DistributionCode::EarlySimple {
+                    what_happened: SimpleDisposition::RolledOver { amount },
+                },
+            };
+            let row = r1099(10_000, code, branch == 3);
+            if amount > row.gross {
+                assert_eq!(refusal(&d, vec![row]), key("R_ROLLOVER_ABOVE_GROSS"));
+            } else {
+                round_trips(&save(&d, vec![row]));
+            }
+        }
+    }
+}
+
+#[test]
+fn validation_f08_conversions_are_bounded_by_the_distribution() {
+    let d = filer(19600301);
+    for branch in 0..3 {
+        for amount in [9_999, 10_000, 10_001] {
+            let disposition = Disposition::Converted { amount };
+            let code = match branch {
+                0 => DistributionCode::Normal { what_happened: disposition },
+                1 => DistributionCode::Early {
+                    what_happened: disposition,
+                    exception: EarlyException::None,
+                },
+                _ => DistributionCode::NormalLumpSum {
+                    tax: LumpSumTax::WithOtherIncome { what_happened: disposition },
+                },
+            };
+            let row = r1099(10_000, code, false);
+            if amount > row.gross {
+                assert_eq!(refusal(&d, vec![row]), key("R_CONVERSION_ABOVE_GROSS"));
+            } else {
+                round_trips(&save(&d, vec![row]));
+            }
+        }
+    }
+}
+
+#[test]
+fn validation_f09_emergency_repayments_fit_the_earlier_withdrawal() {
+    let d = filer(19600301);
+    for branch in 0..4 {
+        for (amount, repaid, contributed) in
+            [(0, 0, 0), (10_000, 10_000, 50_000), (10_000, 10_001, 0)]
+        {
+            let emergency = RetirementException::Emergency {
+                balance: 1_000_000,
+                history: EmergencyHistory { amount, repaid, contributed },
+                eligible: true,
+            };
+            let exception = EarlyException::Applies {
+                distributed: 20260601,
+                facts: if branch == 3 {
+                    RetirementException::Medical { expenses: 0 }
+                } else {
+                    emergency.clone()
+                },
+                second: (branch == 3).then_some(emergency.clone()),
+                repaid: None,
+            };
+            let code = match branch {
+                0 | 3 => DistributionCode::Early { what_happened: Disposition::Kept, exception },
+                1 => DistributionCode::ProhibitedTransaction { exception },
+                _ => DistributionCode::RothIra {
+                    roth: RothIraCode::Early {
+                        distributed: 20260601,
+                        exception: Some(emergency),
+                        repaid: None,
+                    },
+                    rolled_over: 0,
+                    sequence: None,
+                },
+            };
+            let row = r1099(10_000, code, true);
+            if repaid > amount {
+                assert_eq!(refusal(&d, vec![row]), key("EMERGENCY_REPAID_ABOVE_DISTRIBUTION"));
+            } else {
+                round_trips(&save(&d, vec![row]));
+            }
+        }
+    }
+}
+fn general_annuity() -> GeneralAnnuity {
+    GeneralAnnuity {
+        frequency: AnnuityFrequency::Monthly,
+        earlier_payments: 0,
+        qualified_age: None,
+        started: 20261001,
+        cost: 2_205_000,
+        increase: 0,
+        periodic: 12_500,
+        duration: AnnuityDuration::SingleLife { age: 61, guaranteed: 0, delay: 1 },
+        received: 3,
+        partial: 0,
+        recovered: 0,
+        eligible: true,
+    }
+}
+
+// F1: Pub. 939's general rule example. Monthly from 2026-10-01, cost 22,050, 125 a month,
+// single life aged 61 (multiple 23.3), three payments received.
+//   expected return 125 x 12 x 23.3 = 34,950; ratio 22,050 / 34,950 = 63.1%
+//   excluded 375 x 0.631 = 236.625 -> 236.63 (cents kept across installments)
+//   taxable 375 - 236.63 = 138.37; the insurer's statement printed 7D: a nonqualified annuity,
+//   so the 138.37 is net investment income (Form 8960) too.
+#[test]
+fn f1_general_rule_fixed_payments_from_a_7d_statement() {
+    let d = filer(19600301);
+    let row = form("7D", false, 375, 375, normal(), M::GeneralRule { data: general_annuity() });
+    let s = save(&d, vec![row]);
+    assert_eq!(stored(&s).kind, RetirementKind::Nonqualified);
+    assert_eq!(stored(&s).box7, box7("7D"));
+    let r = supported(&s.draft);
+    assert_eq!(cents(&r, "annuity_2_expected_return"), 3_495_000);
+    assert_eq!(cents(&r, "annuity_2_basis_recovery"), 23_663);
+    assert_eq!(return_line(&r, "5a"), 37_500);
+    assert_eq!(return_line(&r, "5b"), 13_800);
+    assert_eq!(value(&r, "nonqualified_annuity_investment_income"), 138);
+    round_trips(&s);
+}
+
+// F1b: the general rule for a qualified plan annuity that started before November 19, 1996, with
+// the cost recovered: Pub. 939's survivor example (22.5%). Cost 7,938, 147 a month, single life
+// aged 65 (multiple 20.0): expected return 147 x 12 x 20.0 = 35,280, ratio 22.5%. Box 1 =
+// 147 x 12 + 228 (a cost-of-living increase) = 1,992. The exclusion 22.5% x 1,764 = 396.90 is
+// limited to cost less recovered = 7,938 - 7,938 = 0 (a start after 1986), so 5b = 1,992.
+#[test]
+fn f1b_general_rule_stops_when_the_cost_is_recovered() {
+    let d = filer(19600301);
+    let annuity = GeneralAnnuity {
+        started: 19960101,
+        cost: 793_800,
+        increase: 22_800,
+        periodic: 14_700,
+        duration: AnnuityDuration::SingleLife { age: 65, guaranteed: 0, delay: 1 },
+        received: 12,
+        recovered: 793_800,
+        ..general_annuity()
+    };
+    let s =
+        save(&d, vec![form("7", false, 1_992, 1_992, normal(), M::GeneralRule { data: annuity })]);
+    assert_eq!(stored(&s).kind, RetirementKind::Pension);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5a"), 199_200);
+    assert_eq!(return_line(&r, "5b"), 199_200);
+    assert_eq!(cents(&r, "annuity_2_basis_recovery"), 0);
+}
+
+// F2: Pub. 939's variable annuity, new. Code 7D, box 1 920; cost 12,000, annual, one payment,
+// age 65 (Table V 20.0, annual adjustment at 6 months 0): 12,000 / 20 = 600 excluded, 5b 320.
+#[test]
+fn f2_variable_annuity_new() {
+    let d = filer(19600301);
+    let s = save(
+        &d,
+        vec![form(
+            "7D",
+            false,
+            920,
+            920,
+            normal(),
+            M::VariablePayments { data: variable_annuity() },
+        )],
+    );
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5b"), 32_000);
+    assert_eq!(cents(&r, "variable_annuity_2_annual_exclusion"), 60_000);
+    round_trips(&s);
+}
+
+// F2b: the refigure of Pub. 939's third year. Started 2024-01-01, annual 600, 1,100 recovered in
+// the earlier years, box 1 1,200. Shortfall 600 - 500 = 100; 100 / 18.4 = 5.43; new annual
+// 605.43; 5b = 1,200 - 605.43 = 594.57.
+#[test]
+fn f2b_variable_annuity_refigures_a_shortfall() {
+    let d = filer(19600301);
+    let mut annuity = variable_annuity();
+    annuity.started = 20240101;
+    annuity.history = VariableHistory::Prior {
+        annual: 60_000,
+        recovered: 110_000,
+        refigure: Some(VariableRefigure {
+            years: 1,
+            paid: 50_000,
+            remaining: VariablePayments::Life { age: 67, delay: 6 },
+        }),
+    };
+    let s = save(
+        &d,
+        vec![form("7D", false, 1_200, 1_200, normal(), M::VariablePayments { data: annuity })],
+    );
+    let r = supported(&s.draft);
+    assert_eq!(cents(&r, "variable_annuity_2_annual_exclusion"), 60_543);
+    assert_eq!(return_line(&r, "5b"), 59_500);
+    assert_eq!(cents(&r, "variable_annuity_2_election"), 1_200_000);
+}
+
+// F3: a withdrawal from a contract with investment from before August 14, 1982 (code 1D, aged 54).
+// Box 1 18,000; issued 1980-06-01; before = value 16,000, investment 10,000; after = value 7,000,
+// investment 5,000. Order: 10,000 pre-1982 investment (free), 6,000 pre-1982 earnings, 2,000
+// post-1982 earnings, 0 post-1982 investment: 5b = 8,000; the 10% tax leaves out the 6,000
+// pre-1982 earnings (section 72(q)(2)(F)): 10% x 2,000 = 200.
+#[test]
+fn f3_pre_1982_withdrawal_orders_investment_first() {
+    let d = filer(19720501);
+    let legacy = LegacyAnnuity {
+        issued: 19800601,
+        before: AnnuityBalance { value: 1_600_000, investment: 1_000_000 },
+        after: AnnuityBalance { value: 700_000, investment: 500_000 },
+        confirmed: true,
+    };
+    let s = save(
+        &d,
+        vec![form("1D", false, 18_000, 18_000, early(), M::Pre1982Withdrawal { data: legacy })],
+    );
+    assert_eq!(stored(&s).kind, RetirementKind::Nonqualified);
+    assert_eq!(stored(&s).ordinary_distribution, RetirementTreatment::Early);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5b"), 800_000);
+    assert_eq!(value(&r, "early_distribution_tax"), 200);
+}
+
+// F4: the whole contract ended. (a) code 7D, box 1 30,000, investment 22,000 -> 8,000. (b) a loss:
+// box 1 18,000 against 22,000 -> 0, no deduction. (c) a gift of the contract (the insurer
+// reported the cash surrender value 50,000, box 2b checked), investment 35,000 -> 15,000.
+// (d) the confirmation answered No takes the whole 30,000 with a note.
+#[test]
+fn f4_whole_contract_ended_surrender_loss_gift_and_unconfirmed() {
+    let d = filer(19600301);
+    let whole = |gross: i64, investment: i64, eligible: bool| {
+        form(
+            "7D",
+            false,
+            gross,
+            gross,
+            normal(),
+            M::WholeContract {
+                data: crate::ContractDischarge { investment: investment * 100, eligible },
+            },
+        )
+    };
+    let s = save(&d, vec![whole(30_000, 22_000, true)]);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5a"), 3_000_000);
+    assert_eq!(return_line(&r, "5b"), 800_000);
+    round_trips(&s);
+    let r = supported(&save(&d, vec![whole(18_000, 22_000, true)]).draft);
+    assert_eq!(return_line(&r, "5b"), 0);
+    let r = supported(&save(&d, vec![whole(50_000, 35_000, true)]).draft);
+    assert_eq!(return_line(&r, "5b"), 1_500_000);
+    let r = supported(&save(&d, vec![whole(30_000, 22_000, false)]).draft);
+    assert!(noted(&r, "WARN_RETIREMENT_BASIS_LEFT_OUT"));
+    assert_eq!(return_line(&r, "5b"), 3_000_000);
+}
+
+// F5: a withdrawal from an employer plan before annuity payments (Pub. 575, Ann Brown and Ryan).
+// (a) code 7, box 1 50,000, account 100,000, investment 10,000: tax-free 50,000 x 10,000 /
+// 100,000 = 5,000, 5b 45,000. (b) Ryan, a separate contract: box 1 5,000, value 12,500,
+// investment 10,000: tax-free 4,000, 5b 1,000. (c) as (a) with code 1 (aged 50, no exception):
+// 10% x 45,000 = 4,500.
+#[test]
+fn f5_plan_withdrawal_takes_the_investments_share_of_the_account() {
+    let plan = |value: i64, investment: i64| M::PlanWithdrawal {
+        data: crate::PlanDistribution {
+            value: value * 100,
+            investment: investment * 100,
+            eligible: true,
+        },
+    };
+    let d = filer(19600301);
+    let s = save(&d, vec![form("7", false, 50_000, 50_000, normal(), plan(100_000, 10_000))]);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5b"), 4_500_000);
+    assert_eq!(stored(&s).kind, RetirementKind::Pension);
+    round_trips(&s);
+    let r = supported(
+        &save(&d, vec![form("7", false, 5_000, 5_000, normal(), plan(12_500, 10_000))]).draft,
+    );
+    assert_eq!(return_line(&r, "5b"), 100_000);
+    let d = filer(19760301);
+    let r = supported(
+        &save(&d, vec![form("1", false, 50_000, 50_000, early(), plan(100_000, 10_000))]).draft,
+    );
+    assert_eq!(return_line(&r, "5b"), 4_500_000);
+    assert_eq!(value(&r, "early_distribution_tax"), 4_500);
+}
+
+// F6: a withdrawal from a commercial annuity before payments (Pub. 575 example). (a) code 7D,
+// box 1 7,000, value 16,000, investment 10,000: min(7,000, 6,000) = 6,000 taxable. (b) a related
+// contract {value 9,000, investment 8,000}: 25,000 - 18,000 = 7,000 -> all 7,000. (c) as (a) with
+// code 1D (aged 54): 10% x 6,000 = 600.
+#[test]
+fn f6_annuity_withdrawal_earnings_first_with_a_related_contract() {
+    let withdrawal = |related: Vec<AnnuityBalance>| M::AnnuityWithdrawal {
+        data: crate::AnnuityDistribution {
+            loan_pledge: false,
+            value: 1_600_000,
+            investment: 1_000_000,
+            related,
+            eligible: true,
+        },
+    };
+    let d = filer(19600301);
+    let s = save(&d, vec![form("7D", false, 7_000, 7_000, normal(), withdrawal(vec![]))]);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5b"), 600_000);
+    round_trips(&s);
+    let related = vec![AnnuityBalance { value: 900_000, investment: 800_000 }];
+    let r = supported(
+        &save(&d, vec![form("7D", false, 7_000, 7_000, normal(), withdrawal(related))]).draft,
+    );
+    assert_eq!(return_line(&r, "5b"), 700_000);
+    let d = filer(19720501);
+    let r = supported(
+        &save(&d, vec![form("1D", false, 7_000, 7_000, early(), withdrawal(vec![]))]).draft,
+    );
+    assert_eq!(return_line(&r, "5b"), 600_000);
+    assert_eq!(value(&r, "early_distribution_tax"), 600);
+}
+
+// F7: a CSRS lump sum after a death (Pub. 721 Worksheet D). Code 4, died 2024-12-15, box 1
+// 38,400, cost 45,000, 1,000 recovered earlier: 38,400 + 1,000 - 45,000 < 0 -> 5b 0. (b) the
+// employee died before retiring: box 1 21,500, cost 20,000 -> the interest, 1,500.
+#[test]
+fn f7_civil_service_lump_sum_after_a_death() {
+    let d = filer(19600301);
+    let lump = |cost: i64, recovered: i64| M::CivilServiceLumpSum {
+        data: crate::SurvivorLumpSum {
+            cost: cost * 100,
+            recovered: recovered * 100,
+            eligible: true,
+        },
+    };
+    let death = DistributionCode::Death { died: 20241215 };
+    let s = save(&d, vec![form("4", false, 38_400, 38_400, death.clone(), lump(45_000, 1_000))]);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5a"), 3_840_000);
+    assert_eq!(return_line(&r, "5b"), 0);
+    round_trips(&s);
+    let r =
+        supported(&save(&d, vec![form("4", false, 21_500, 21_500, death, lump(20_000, 0))]).draft);
+    assert_eq!(return_line(&r, "5b"), 150_000);
+}
+
+// F8: a CSRS child survivor annuity (Pub. 721, surviving child only). The filer is the child, born
+// 2011-01-15; code 4, box 1 6,000. Started 2026-01-01, term (2033 x 12 + 1) - (2026 x 12 + 1) = 84
+// months, cost 36,000: 36,000 / 84 = 428.57 a month, 12 x 428.57 = 5,142.84 excluded, 5b 857.16.
+// A child born a month later fails the term check against People.
+#[test]
+fn f8_child_survivor_annuity_recovers_cost_over_the_months_to_age_22() {
+    let annuity = ChildAnnuity {
+        ended: None,
+        started: 20260101,
+        term: 84,
+        cost: 3_600_000,
+        recovered: 0,
+        deferred: 0,
+        payments: (0..12).map(|_| ChildAnnuityPayment { amount: 50_000 }).collect(),
+        confirmed: true,
+    };
+    let death = DistributionCode::Death { died: 20251220 };
+    let d = filer(20110115);
+    let s = save(
+        &d,
+        vec![form(
+            "4",
+            false,
+            6_000,
+            6_000,
+            death.clone(),
+            M::ChildAnnuity { data: annuity.clone() },
+        )],
+    );
+    let r = estimate(&s.draft);
+    assert_eq!(cents(&r, "child_annuity_2_income_exclusion"), 514_284);
+    round_trips(&s);
+    let d = filer(20110215);
+    let s =
+        save(&d, vec![form("4", false, 6_000, 6_000, death, M::ChildAnnuity { data: annuity })]);
+    assert!(
+        estimate(&s.draft).issues.iter().any(|i| i.display.key.contains("SINGLE_CHILD_CSRS_FERS")),
+        "{:?}",
+        estimate(&s.draft).issues
+    );
+}
+
+fn simplified_cost(cost: i64) -> PensionBasis {
+    PensionBasis {
+        earlier_months: 0,
+        changes: vec![],
+        share: None,
+        started: 20260101,
+        cost: Some(cost * 100),
+        months: 12,
+        history: PensionHistory::New { duration: PensionDuration::Single { age: 65 } },
+        eligible: true,
+    }
+}
+// A Form 1040 line, zero when the return shows none.
+fn line_or_zero(r: &FederalResult, reference: &str) -> i64 {
+    let line = FormLine::new(TaxForm::Form1040, reference);
+    ReturnRows::rows(r)
+        .iter()
+        .find(|row| row.form_line.as_ref() == Some(&line))
+        .map_or(0, |row| row.amount)
+}
+
+// F10: distributed property sold and the proceeds rolled over (Pub. 575, Paul, Examples 3 and 4).
+// Code 7, box 1 = box 2a 50,000 (nonemployer stock distributed 2026-09-04). (a) sold 2026-09-24
+// for 60,000, 45,000 deposited into an IRA: kept 15,000; ordinary 50,000 x 15,000 / 60,000 =
+// 12,500 (line 5b), short-term gain 15,000 - 12,500 = 2,500. (b) sold for 40,000, 25,000
+// deposited: ordinary 50,000 x 15,000 / 40,000 = 18,750, short-term loss 15,000 - 18,750 = -3,750.
+// (c) box 7b checked: refused.
+#[test]
+fn f10_property_sold_and_rolled_over() {
+    let sold = |proceeds: i64, deposited: i64, ira: bool| {
+        form(
+            "7",
+            ira,
+            50_000,
+            50_000,
+            DistributionCode::Normal {
+                what_happened: Disposition::SoldAndRolledOver {
+                    data: PropertyRollover {
+                        distributed: 20260904,
+                        sold: 20260924,
+                        proceeds: proceeds * 100,
+                        confirmed: true,
+                    },
+                    amount: deposited * 100,
+                    into: crate::RolloverDestination::Ira,
+                },
+            },
+            M::BoxTwoA,
+        )
+    };
+    let d = filer(19600301);
+    let s = save(&d, vec![sold(60_000, 45_000, false)]);
+    assert!(matches!(stored(&s).taxable, RetirementTaxable::PropertyProceeds { .. }));
+    assert_eq!(
+        stored(&s).ordinary_distribution,
+        RetirementTreatment::Rollover {
+            destination: crate::RolloverDestination::Ira,
+            amount: 4_500_000,
+            early: false
+        }
+    );
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5b"), 1_250_000);
+    assert_eq!(cents(&r, "property_rollover_2_retained_capital_gain"), 250_000);
+    round_trips(&s);
+    // The sale may appreciate: proceeds, rather than box 1, bound this rollover.
+    round_trips(&save(&d, vec![sold(60_000, 60_000, false)]));
+    let r = supported(&save(&d, vec![sold(40_000, 25_000, false)]).draft);
+    assert_eq!(return_line(&r, "5b"), 1_875_000);
+    assert_eq!(cents(&r, "property_rollover_2_retained_capital_gain"), -375_000);
+    assert_eq!(
+        refusal(&d, vec![sold(60_000, 45_000, true)]),
+        key("PROPERTY_ROLLOVER_NOT_FROM_A_PLAN")
+    );
+    assert_eq!(
+        refusal(&d, vec![sold(60_000, 61_000, false)]),
+        key("PROPERTY_ROLLOVER_ABOVE_PROCEEDS")
+    );
+}
+
+// F11: a section 1035 exchange (code 6). Box 1 80,000, box 2a 0 -> lines 5a and 5b 0 (Pub. 575:
+// "You need not report this on your tax return"); a box 2a above zero is refused.
+#[test]
+fn f11_code_6_exchange_shows_nothing_on_the_return() {
+    let d = filer(19600301);
+    let before = supported(&d);
+    let s = save(&d, vec![form("6", false, 80_000, 0, DistributionCode::Exchange, M::BoxTwoA)]);
+    assert_eq!(stored(&s).ordinary_distribution, RetirementTreatment::Ordinary);
+    assert_eq!(stored(&s).taxable, RetirementTaxable::Payer { amount: 0 });
+    let r = supported(&s.draft);
+    assert_eq!(line_or_zero(&r, "5a"), 0);
+    assert_eq!(line_or_zero(&r, "5b"), 0);
+    assert_eq!(value(&r, "agi"), value(&before, "agi"));
+    round_trips(&s);
+    assert_eq!(
+        refusal(&d, vec![form("6", false, 80_000, 1_000, DistributionCode::Exchange, M::BoxTwoA)]),
+        key("R_BOX7_EXCHANGE_TAXABLE")
+    );
+}
+
+// F12: employer stock with net unrealized appreciation, through the payer's box 2a. Code 7, box 1
+// 100,000 (cash 40,000 + shares 60,000), box 6 45,000, box 2a 55,000 -> line 5a 100,000, line 5b
+// 55,000; the 45,000 stays untaxed until the shares are sold.
+#[test]
+fn f12_nua_through_the_payers_box_2a() {
+    let d = filer(19600301);
+    let mut row = form("7", false, 100_000, 55_000, normal(), M::BoxTwoA);
+    row.more.box_6 = 4_500_000;
+    let s = save(&d, vec![row]);
+    assert_eq!(stored(&s).taxable, RetirementTaxable::Payer { amount: 5_500_000 });
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5a"), 10_000_000);
+    assert_eq!(return_line(&r, "5b"), 5_500_000);
+}
+
+// F13: code D printed with a numeric code leads to that code's branch and the kind comes from box
+// 7a. 7D with box 2a 4,000 of box 1 12,000, method "Box 2a shows it": a nonqualified annuity, 5b
+// 4,000 and net investment income 4,000 (today refused as "codes 7 and D printed together").
+// 7D rolled over: refused.
+#[test]
+fn f13_code_d_with_a_numeric_code_routes_to_the_numeric_branch() {
+    let d = filer(19600301);
+    let s = save(&d, vec![form("7D", false, 12_000, 4_000, normal(), M::BoxTwoA)]);
+    assert_eq!(stored(&s).kind, RetirementKind::Nonqualified);
+    assert_eq!(stored(&s).box7, box7("7D"));
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5a"), 1_200_000);
+    assert_eq!(return_line(&r, "5b"), 400_000);
+    assert_eq!(value(&r, "nonqualified_annuity_investment_income"), 4_000);
+    round_trips(&s);
+    let rolled = DistributionCode::Normal {
+        what_happened: Disposition::RolledOver {
+            amount: 1_200_000,
+            into: crate::RolloverDestination::Ira,
+        },
+    };
+    assert_eq!(
+        refusal(&d, vec![form("7D", false, 12_000, 4_000, rolled, M::BoxTwoA)]),
+        key("R_NONQUALIFIED_KEPT")
+    );
+    // D with box 7b checked is not a nonqualified annuity.
+    assert_eq!(
+        refusal(&d, vec![form("7D", true, 12_000, 4_000, normal(), M::BoxTwoA)]),
+        key("R_BOX7B_NOT_IRA")
+    );
+}
+
+// 7D, 1D, 2D, 3D and 4D statements compute as the numeric code does, taxed as a nonqualified
+// annuity; the branch reopens as printed.
+#[test]
+fn d_with_1_2_3_4_or_7_computes_and_reopens() {
+    let d = filer(19720501);
+    let disability = DistributionCode::Disability { began: 20250101, wages: DisabilityWages::None };
+    let death = DistributionCode::Death { died: 20260301 };
+    for (printed, code) in
+        [("7D", normal()), ("1D", early()), ("2D", early()), ("3D", disability), ("4D", death)]
+    {
+        let s = save(&d, vec![form(printed, false, 12_000, 4_000, code, M::BoxTwoA)]);
+        assert_eq!(stored(&s).kind, RetirementKind::Nonqualified, "{printed}");
+        let r = supported(&s.draft);
+        assert_eq!(return_line(&r, "5b"), 400_000, "{printed}");
+        assert_eq!(value(&r, "nonqualified_annuity_investment_income"), 4_000, "{printed}");
+        round_trips(&s);
+    }
+    // Code 1D without an exception adds the 10% tax on the taxable 4,000.
+    let r = supported(&save(&d, vec![form("1D", false, 12_000, 4_000, early(), M::BoxTwoA)]).draft);
+    assert_eq!(value(&r, "early_distribution_tax"), 400);
+}
+
+// Box7Options replies the methods the row's codes allow; a method outside the set is refused
+// on the server (R_BOX2B_METHOD).
+#[test]
+fn the_box_2b_methods_follow_the_box_7a_codes() {
+    let mut s = Interview::new(TEST_USER, filer(19600301));
+    let pension = vec![0, 1, 2, 4, 5];
+    let survivor = vec![0, 1, 2, 4, 5, 8, 9];
+    let annuity = vec![0, 2, 3, 4, 6, 7];
+    for (printed, ira, trump, methods) in [
+        ("7", false, false, pension.clone()),
+        ("1", false, false, pension.clone()),
+        ("3", false, false, pension.clone()),
+        ("7A", false, false, pension),
+        ("4", false, false, survivor.clone()),
+        ("4A", false, false, survivor),
+        ("7D", false, false, annuity.clone()),
+        ("1D", false, false, annuity.clone()),
+        ("4D", false, false, annuity.clone()),
+        ("D", false, false, annuity),
+        ("7", true, false, vec![0]),
+        ("4", true, false, vec![0]),
+        ("G", false, false, vec![0]),
+        ("6", false, false, vec![0]),
+        ("Q", false, false, vec![0]),
+        ("4", false, true, vec![0]),
+    ] {
+        let reply =
+            send(&mut s, P::Box7Options { user: TEST_USER, box7: box7(printed), ira, trump });
+        let Reply::Response(P::Box7Treatments { allowed_methods, .. }) = reply else {
+            panic!("expected the methods for {printed}")
+        };
+        assert_eq!(allowed_methods, methods, "{printed} {ira} {trump}");
+    }
+    // An IRA takes only box 2a; a nonqualified annuity has no Simplified Method.
+    let d = filer(19600301);
+    let simplified = M::Simplified { data: simplified_cost(20_000) };
+    assert_eq!(
+        refusal(&d, vec![form("7", true, 1_000, 1_000, normal(), simplified.clone())]),
+        key("R_BOX2B_METHOD")
+    );
+    assert_eq!(
+        refusal(&d, vec![form("7D", false, 1_000, 1_000, normal(), simplified)]),
+        key("R_BOX2B_METHOD")
+    );
+}
+
+fn rrb(box_4: i64, box_5: i64, box_6: i64, recipient: RailroadRecipient) -> Rrb1099R {
+    Rrb1099R {
+        box_4: box_4 * 100,
+        box_5: box_5 * 100,
+        box_6: box_6 * 100,
+        gross: (box_4 + box_5 + box_6) * 100,
+        box_8: 0,
+        withholding: 200_000,
+        recipient,
+        repayments: vec![],
+    }
+}
+fn save_rrb(d: &FederalDraft, form: Rrb1099R) -> Interview {
+    let mut s = Interview::new(TEST_USER, d.clone());
+    accepted(&send(
+        &mut s,
+        save_topic(d, TaxSection::Retirement, vec![document(0, IncomeDocument::Rrb1099R(form))]),
+    ));
+    s
+}
+fn simplified_recovery() -> RailroadRecovery {
+    RailroadRecovery::SimplifiedMethod { data: simplified_cost(20_000) }
+}
+
+// F9: the RRB-1099-R. Box 4 24,000, box 5 1,200, box 6 2,400, box 7 27,600, box 9 2,000; the
+// employee's own annuity with the Simplified Method: started 2026-01-01, aged 65 (Table 1 after
+// November 18, 1996, 61-65: 260), cost (box 3) 20,000, 12 months. Monthly exclusion 20,000 / 260 =
+// 76.92; 12 x 76.92 = 923.04, no more than box 4. Line 5a 27,600, line 5b 27,600 - 923.04 =
+// 26,676.96; withholding 2,000. (b) a spouse annuity (owner 62): 27,600 taxable. (c) a survivor
+// (died 2025-11-02) stores the death exception and the same arithmetic. (d) box 8 3,500 by year.
+#[test]
+fn f9_rrb_1099_r_own_spouse_and_survivor_annuities() {
+    let d = filer(19600301);
+    let own =
+        rrb(24_000, 1_200, 2_400, RailroadRecipient::Employee { recovery: simplified_recovery() });
+    let own_form = own.clone();
+    let s = save_rrb(&d, own);
+    let FederalIncome::Retirement { data } = &s.draft.income[1].income else {
+        panic!("a retirement record")
+    };
+    assert_eq!(data.kind, RetirementKind::Pension);
+    assert_eq!(data.box7, DistributionCodes::CODE_7.0);
+    assert_eq!(data.ordinary_distribution, RetirementTreatment::Ordinary);
+    assert!(matches!(
+        &data.taxable,
+        RetirementTaxable::Railroad { contributory: 2_400_000, basis: Some(_), .. }
+    ));
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5a"), 2_760_000);
+    assert_eq!(return_line(&r, "5b"), 2_667_700);
+    assert_eq!(cents(&r, "pension_2_income_exclusion"), 92_304);
+    assert_eq!(return_line(&r, "25b"), 200_000);
+    round_trips(&s);
+    // The page reopens as the RRB-1099-R, exactly as entered.
+    let reopened = |s: &Interview| {
+        let mut again = restart(s.draft.clone());
+        let page = open_topic(&mut again, TaxSection::Retirement);
+        page_documents(&page)[0].document.clone()
+    };
+    assert_eq!(reopened(&s), IncomeDocument::Rrb1099R(own_form));
+    // (b) A spouse annuity recovers nothing.
+    let d62 = filer(19640301);
+    let spouse = rrb(24_000, 1_200, 2_400, RailroadRecipient::Spouse);
+    let spouse_form = spouse.clone();
+    let s = save_rrb(&d62, spouse);
+    let r = supported(&s.draft);
+    assert_eq!(return_line(&r, "5b"), 2_760_000);
+    // It reopens as a spouse annuity with boxes 5 and 6 as entered (box 6 nonzero).
+    assert_eq!(reopened(&s), IncomeDocument::Rrb1099R(spouse_form));
+    // (c) A survivor annuity stores the death exception.
+    let survivor = rrb(
+        24_000,
+        1_200,
+        2_400,
+        RailroadRecipient::Survivor { died: 20251102, recovery: simplified_recovery() },
+    );
+    let survivor_form = survivor.clone();
+    let s = save_rrb(&d, survivor);
+    assert_eq!(reopened(&s), IncomeDocument::Rrb1099R(survivor_form));
+    let FederalIncome::Retirement { data } = &s.draft.income[1].income else {
+        panic!("a retirement record")
+    };
+    assert_eq!(
+        data.ordinary_distribution,
+        RetirementTreatment::Exception {
+            second: None,
+            distributed: 20261231,
+            facts: RetirementException::Death { died: 20251102 },
+            early_simple: false
+        }
+    );
+    assert_eq!(return_line(&supported(&s.draft), "5b"), 2_667_700);
+    round_trips(&s);
+    // (d) Box 8 by the year the benefits were paid reaches the repayment comparison.
+    let mut own =
+        rrb(24_000, 1_200, 2_400, RailroadRecipient::Employee { recovery: RailroadRecovery::None });
+    own.box_8 = 350_000;
+    own.repayments =
+        vec![RailroadRepayment { received_year: 2024, amount: 350_000, contributory: true }];
+    let s = save_rrb(&d, own);
+    assert_eq!(crate::claim_repayment::recorded_repayments(&s.draft), 350_000);
+    assert!(crate::claim_repayment::repayment_offered(&s.draft));
+    round_trips(&s);
+}
+
+#[test]
+fn rrb_1099_r_rules_reject_on_the_server_and_import_reads_boxes_4_to_9() {
+    let d = filer(19600301);
+    let reject = |mut f: Rrb1099R, k: &str| {
+        let mut s = Interview::new(TEST_USER, d.clone());
+        let reply = send(
+            &mut s,
+            save_topic(
+                &d,
+                TaxSection::Retirement,
+                vec![document(
+                    0,
+                    IncomeDocument::Rrb1099R({
+                        f.withholding = f.withholding.min(f.gross);
+                        f
+                    }),
+                )],
+            ),
+        );
+        let Reply::Response(P::Problem { message, .. }) = reply else {
+            panic!("expected a problem for {k}")
+        };
+        assert_eq!(message, key(k));
+    };
+    let employee = RailroadRecipient::Employee { recovery: RailroadRecovery::None };
+    let mut sum = rrb(24_000, 1_200, 2_400, employee.clone());
+    sum.gross += 100;
+    reject(sum, "RRB_BOX7_NOT_SUM");
+    let mut with_rows = rrb(24_000, 1_200, 2_400, employee.clone());
+    with_rows.repayments =
+        vec![RailroadRepayment { received_year: 2024, amount: 100, contributory: true }];
+    reject(with_rows, "RRB_REPAYMENTS_WITHOUT_BOX_8");
+    let mut unsplit = rrb(24_000, 1_200, 2_400, employee.clone());
+    unsplit.box_8 = 100;
+    reject(unsplit, "RRB_BOX_8_NOT_SPLIT");
+    let mut mismatch = rrb(24_000, 1_200, 2_400, employee);
+    mismatch.box_8 = 300;
+    mismatch.repayments =
+        vec![RailroadRepayment { received_year: 2024, amount: 200, contributory: true }];
+    reject(mismatch, "RRB_REPAYMENTS_NOT_BOX_8");
+    // Import: boxes 4-9 are document-sourced, whose annuity it is and the years are not, and
+    // boxes 10 and 11 are an error.
+    let model = include_str!("../../federal/federal_model.rs");
+    let page = &model[model.find("pub struct Rrb1099R {").unwrap()..];
+    let page = &page[..page.find("\n}").unwrap()];
+    for field in
+        ["pub box_4", "pub box_5", "pub box_6", "pub gross", "pub box_8", "pub withholding"]
+    {
+        let at = page.find(field).unwrap();
+        let attrs = &page[..at];
+        assert!(
+            attrs[attrs.rfind("///").unwrap()..].contains("#[libertas_llm_doc_field"),
+            "{field}"
+        );
+    }
+    for field in ["pub recipient", "pub repayments"] {
+        let at = page.find(field).unwrap();
+        let attrs = &page[..at];
+        assert!(
+            !attrs[attrs.rfind("///").unwrap()..].contains("libertas_llm_doc_field"),
+            "{field}"
+        );
+    }
+    assert!(
+        model.contains("Report an entry in box 10 (rate of tax) or box 11 (country) as an error")
+    );
+}
+
+// ---- Form 1099-R box 7c: Trump accounts (section 530A(d)(6) and (d)(4)) ----
+
+fn trump_row(printed: &str, gross: i64, taxable: i64, code: DistributionCode) -> R1099 {
+    let mut r = form(printed, false, gross, taxable, code, M::BoxTwoA);
+    r.trump = true;
+    r.allowed_treatments = DistributionCodes::treatments(r.box7, false, true);
+    r.allowed_methods = DistributionCodes::methods(r.box7, false, true);
+    r
+}
+
+// The account's value at the child's death less its basis is the acquirer's income: code 4 with
+// box 7c, box 1 1,500 (value), box 2a 500 (value 1,500 - basis 1,000), 10 withheld.
+#[test]
+fn trump_account_death_is_the_acquirers_income() {
+    let d = filer(19600301);
+    let before = supported(&d);
+    let mut row = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: false });
+    row.withholding = 1_000;
+    let s = save(&d, vec![row.clone()]);
+    let FederalIncome::TrumpDeath { data } = &s.draft.income[1].income else {
+        panic!("a Trump account death")
+    };
+    assert_eq!(
+        *data,
+        TrumpDeathAcquisition {
+            beneficiary_estate: false,
+            value: 150_000,
+            basis: 100_000,
+            withholding: 1_000,
+        }
+    );
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "trump_death_taxable_income"), 500);
+    // Schedule 1 line 8z shows it (and line 9 totals it) so line 10 adds up.
+    assert_eq!(schedule_1_line(&r, "8z"), 500);
+    assert_eq!(schedule_1_line(&r, "9"), 500);
+    assert_eq!(value(&r, "agi"), value(&before, "agi") + 500);
+    assert_eq!(r.payments, Some(before.payments.unwrap() + 1_000));
+    // The page reopens as the 1099-R it was.
+    let mut again = restart(s.draft.clone());
+    let page = open_topic(&mut again, TaxSection::Retirement);
+    assert_eq!(page_documents(&page)[0].document, IncomeDocument::R1099(row));
+    // The estate case is the child's final return: a living adult is refused by name.
+    let estate = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: true });
+    let s = save(&d, vec![estate]);
+    let r = estimate(&s.draft);
+    assert_eq!(r.state, ResultState::Unsupported);
+}
+
+#[test]
+fn trump_account_transfer_to_the_able_account_is_not_income() {
+    let d = filer(20090704);
+    let baseline = supported(&d);
+    let row = trump_row("G", 2_000, 0, DistributionCode::TrumpToAble { transferred: 20260801 });
+    let s = save(&d, vec![row.clone()]);
+    assert!(matches!(
+        &s.draft.income[1].income,
+        FederalIncome::TrumpAbleRollover { data }
+            if data.amount == 200_000 && data.transferred == 20260801
+    ));
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "trump_able_rollover_2_gross"), 2_000);
+    assert_eq!(value(&r, "agi"), value(&baseline, "agi"));
+    let mut again = restart(s.draft.clone());
+    let page = open_topic(&mut again, TaxSection::Retirement);
+    assert_eq!(page_documents(&page)[0].document, IncomeDocument::R1099(row));
+    // Rules: box 2a is zero, the branches need box 7c, box 7c is not box 7b, and a returned
+    // excess (code 8) goes on Other taxes.
+    let taxable = trump_row("G", 2_000, 1, DistributionCode::TrumpToAble { transferred: 20260801 });
+    assert_eq!(refusal(&d, vec![taxable]), key("R_TRUMP_ABLE_TAXABLE"));
+    let mut no_7c = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: false });
+    no_7c.trump = false;
+    assert_eq!(refusal(&d, vec![no_7c]), key("R_BOX7_TREATMENT"));
+    let mut ira = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: false });
+    ira.ira = true;
+    ira.code = DistributionCode::Other;
+    ira.allowed_treatments = DistributionCodes::treatments(ira.box7, true, true);
+    assert_eq!(refusal(&d, vec![ira]), key("R_TRUMP_AND_IRA"));
+    let mut excess = trump_row("4", 1_500, 1_500, DistributionCode::TrumpDeath { estate: false });
+    excess.box7 = box7("8");
+    excess.code = DistributionCode::Other;
+    excess.allowed_treatments = DistributionCodes::treatments(excess.box7, false, true);
+    assert_eq!(refusal(&d, vec![excess]), key("R_TRUMP_EXCESS_ON_OTHER_TAXES"));
+}
+
+// ---- Form 1099-R code 4 with box 7b: the Inherited IRA record ----
+
+fn traditional(decedent: &str, prior: i64, year_end: i64) -> InheritedIraAccount {
+    InheritedIraAccount {
+        decedent: decedent.into(),
+        died: 20251201,
+        kind: InheritedIraKindFacts::Traditional {
+            basis: Some(InheritedIraBasis { prior: prior * 100, year_end: year_end * 100 }),
+            estate_tax: None,
+        },
+    }
+}
+fn roth_record(
+    decedent: &str,
+    first_year: u32,
+    regular: i64,
+    converted: i64,
+) -> InheritedIraAccount {
+    InheritedIraAccount {
+        decedent: decedent.into(),
+        died: 20251201,
+        kind: InheritedIraKindFacts::Roth {
+            first_year,
+            basis: Some(InheritedRothBasis { regular: regular * 100, converted: converted * 100 }),
+        },
+    }
+}
+fn inherited_row(account: Option<i64>, gross: i64) -> R1099 {
+    let mut r = printed_as(r1099(gross * 100, DistributionCode::Inherited { account }, true), "4");
+    r.withholding = 12_300;
+    r
+}
+fn inherited_roth_row(account: Option<i64>, gross: i64) -> R1099 {
+    printed_as(
+        r1099(
+            gross * 100,
+            DistributionCode::RothIra {
+                sequence: None,
+                rolled_over: 0,
+                roth: RothIraCode::ExceptionApplies {
+                    distributed: 20260601,
+                    reason: RothReason::Inherited { account },
+                },
+            },
+            false,
+        ),
+        "T",
+    )
+}
+fn save_items(d: &FederalDraft, items: Vec<IncomeDocumentItem>) -> Interview {
+    let mut s = Interview::new(TEST_USER, d.clone());
+    accepted(&send(&mut s, save_topic(d, TaxSection::Retirement, items)));
+    s
+}
+fn record_item(owner: Owner, id: i64, record: InheritedIraAccount) -> IncomeDocumentItem {
+    unanswered_document(owner, id, IncomeDocument::InheritedIra(record))
+}
+fn row_item(owner: Owner, row: R1099) -> IncomeDocumentItem {
+    unanswered_document(owner, 0, IncomeDocument::R1099(row))
+}
+fn catalog(page: &P) -> &[RecordChoice] {
+    let P::SaveIncomes { inherited_iras, .. } = page else { panic!("the income page") };
+    inherited_iras
+}
+fn roth_catalog(page: &P) -> &[RecordChoice] {
+    let P::SaveIncomes { inherited_roth_iras, .. } = page else { panic!("the income page") };
+    inherited_roth_iras
+}
+
+// One record for the person inherited from and the 1099-R (code 4, box 7b) that chooses it: Pub.
+// 590-B's allocation. Distribution 10,000, allocated basis 5,000, December 31 value 40,000: basis
+// recovered 10,000 x 5,000 / (10,000 + 40,000) = 1,000, remaining 4,000; line 4a 10,000, line 4b
+// 9,000; no 10% tax (section 72(t)(2)(A)(ii)); the 1099-R's box 4 withholding counts.
+#[test]
+fn inherited_ira_record_and_its_1099_r_on_one_page() {
+    let d = filer(19600301);
+    let before = supported(&d);
+    let sent = vec![
+        record_item(Owner::Taxpayer, 0, traditional("Pat Sample", 5_000, 40_000)),
+        row_item(Owner::Taxpayer, inherited_row(None, 10_000)),
+    ];
+    let s = save_items(&d, sent.clone());
+    let FederalIncome::Retirement { data } = &s.draft.income[2].income else {
+        panic!("a retirement record")
+    };
+    assert_eq!(data.taxable, RetirementTaxable::Inherited { account: None, payer: 1_000_000 });
+    assert_eq!(data.kind, RetirementKind::Inherited);
+    assert_eq!(s.draft.income[1].label, "Pat Sample");
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "inherited_ira_2_basis_recovered"), 1_000);
+    assert_eq!(value(&r, "inherited_ira_2_basis_remaining"), 4_000);
+    assert_eq!(return_line(&r, "4a"), 1_000_000);
+    assert_eq!(return_line(&r, "4b"), 900_000);
+    assert_eq!(value(&r, "early_distribution_tax"), 0);
+    assert_eq!(r.payments.unwrap() - before.payments.unwrap(), 12_300);
+    round_trips(&s);
+    // The page reopens as it was entered, with the record in its catalog.
+    let mut again = restart(s.draft.clone());
+    let page = open_topic(&mut again, TaxSection::Retirement);
+    let shown: Vec<_> = page_documents(&page).iter().map(|i| i.document.clone()).collect();
+    let want: Vec<_> = sent.iter().map(|i| i.document.clone()).collect();
+    assert_eq!(shown, want);
+    let choices = catalog(&page);
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].id, 2);
+    let label = status_text(&choices[0].label);
+    assert!(label.contains("Pat Sample") && label.contains("traditional IRA"), "{label}");
+    assert!(label.contains("You"), "{label}");
+}
+
+// The catalog round trip: a 1099-R, an inherited Roth withdrawal and a QCD gift choose their
+// record by its identity, keep the choice across a reopen, and each group uses its own basis.
+//   Pat: basis 5,000, value 40,000, distributions 10,000 -> basis recovered 1,000 (4b 9,000).
+//   Lee: basis 10,000, value 0, distributions 2,000 -> all 2,000 recovered (nothing taxable).
+//   Kim's Roth (first year 2022): 4,000 with regular basis 1,000 and conversions 2,500 -> 500.
+#[test]
+fn inherited_choices_round_trip_through_the_catalog_and_use_their_own_basis() {
+    let mut d = filer(19500101);
+    let first = save_items(
+        &d,
+        vec![
+            record_item(Owner::Taxpayer, 0, traditional("Pat Sample", 5_000, 40_000)),
+            record_item(Owner::Taxpayer, 0, traditional("Lee Sample", 10_000, 0)),
+            record_item(Owner::Taxpayer, 0, roth_record("Kim Sample", 2022, 1_000, 2_500)),
+        ],
+    );
+    d = first.draft.clone();
+    let mut s = Interview::new(TEST_USER, d.clone());
+    let page = open_topic(&mut s, TaxSection::Retirement);
+    // Each field is offered only the records of its own kind (F3, 2026-10-09):
+    // the traditional ones for a code 4 payment or a QCD gift, the Roth one for
+    // an inherited Roth withdrawal.
+    let ids: Vec<i64> = catalog(&page).iter().map(|c| c.id).collect();
+    assert_eq!(ids, vec![2, 3]);
+    let roth_ids: Vec<i64> = roth_catalog(&page).iter().map(|c| c.id).collect();
+    assert_eq!(roth_ids, vec![4]);
+    let roth_label = status_text(&roth_catalog(&page)[0].label);
+    assert!(roth_label.contains("Roth IRA"), "{roth_label}");
+    let items = vec![
+        record_item(Owner::Taxpayer, 2, traditional("Pat Sample", 5_000, 40_000)),
+        record_item(Owner::Taxpayer, 3, traditional("Lee Sample", 10_000, 0)),
+        record_item(Owner::Taxpayer, 4, roth_record("Kim Sample", 2022, 1_000, 2_500)),
+        row_item(Owner::Taxpayer, inherited_row(Some(2), 10_000)),
+        row_item(Owner::Taxpayer, inherited_row(Some(3), 2_000)),
+        row_item(Owner::Taxpayer, inherited_roth_row(Some(4), 4_000)),
+        unanswered_document(
+            Owner::Taxpayer,
+            0,
+            IncomeDocument::Qcd(QcdGift {
+                split_interest: false,
+                date: 20260601,
+                amount: 500_000,
+                inherited: Some(2),
+            }),
+        ),
+    ];
+    let s = save_items(&d, items.clone());
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "inherited_ira_3_basis_remaining"), 8_000);
+    assert_eq!(value(&r, "inherited_roth_4_regular_recovered"), 1_000);
+    assert_eq!(value(&r, "inherited_roth_4_conversion_recovered"), 2_500);
+    assert_eq!(value(&r, "qcd_exclusion"), 5_000);
+    assert_eq!(
+        s.draft.adjustments.as_ref().unwrap().qualified_charity[0].payments[0].inherited,
+        Some(2)
+    );
+    let mut again = restart(s.draft.clone());
+    let page = open_topic(&mut again, TaxSection::Retirement);
+    let mut shown: Vec<_> = page_documents(&page).iter().map(|i| i.document.clone()).collect();
+    let mut want: Vec<_> = items.iter().map(|i| i.document.clone()).collect();
+    let order = |d: &IncomeDocument| alloc::format!("{d:?}");
+    shown.sort_by_key(order);
+    want.sort_by_key(order);
+    assert_eq!(shown, want);
+}
+
+#[test]
+fn an_inherited_payment_without_a_record_is_taxed_in_full_with_a_note() {
+    let d = filer(19600301);
+    let s = save_items(&d, vec![row_item(Owner::Taxpayer, inherited_row(None, 10_000))]);
+    let r = supported(&s.draft);
+    assert!(noted(&r, "WARN_INHERITED_IRA_RECORD_MISSING"));
+    assert_eq!(return_line(&r, "4a"), 1_000_000);
+    assert_eq!(return_line(&r, "4b"), 1_000_000);
+    // Two records and none chosen: the same.
+    let s = save_items(
+        &d,
+        vec![
+            record_item(Owner::Taxpayer, 0, traditional("Pat Sample", 5_000, 40_000)),
+            record_item(Owner::Taxpayer, 0, traditional("Lee Sample", 10_000, 0)),
+            row_item(Owner::Taxpayer, inherited_row(None, 10_000)),
+        ],
+    );
+    assert!(noted(&supported(&s.draft), "WARN_INHERITED_IRA_RECORD_MISSING"));
+}
+
+#[test]
+fn an_inherited_payment_naming_another_filers_or_the_other_kinds_record_is_refused() {
+    let mut d = complete(FederalStatus::Joint);
+    d.people.as_mut().unwrap().taxpayer.birth_date = 19600301;
+    let first = save_items(
+        &d,
+        vec![
+            record_item(Owner::Spouse, 0, traditional("Pat Sample", 5_000, 40_000)),
+            record_item(Owner::Taxpayer, 0, roth_record("Kim Sample", 2022, 1_000, 2_500)),
+        ],
+    );
+    let d = first.draft;
+    let items = |row: R1099| {
+        vec![
+            record_item(Owner::Spouse, 2, traditional("Pat Sample", 5_000, 40_000)),
+            record_item(Owner::Taxpayer, 3, roth_record("Kim Sample", 2022, 1_000, 2_500)),
+            row_item(Owner::Taxpayer, row),
+        ]
+    };
+    let issue = |row: R1099, k: &str| {
+        let s = save_items(&d, items(row));
+        let r = estimate(&s.draft);
+        assert_eq!(r.state, ResultState::Unsupported, "{k}");
+        assert!(r.issues.iter().any(|i| i.display.key == k), "{k}: {:?}", r.issues);
+    };
+    // The taxpayer's payment names the spouse's record.
+    issue(inherited_row(Some(2), 10_000), "ISSUE_INHERITED_IRA_OTHER_OWNER");
+    // A traditional payment names the Roth record, and a Roth withdrawal the traditional one.
+    issue(inherited_row(Some(3), 10_000), "ISSUE_INHERITED_IRA_KIND_MISMATCH");
+    issue(inherited_roth_row(Some(2), 4_000), "ISSUE_INHERITED_IRA_OTHER_OWNER");
+}
+
+#[test]
+fn an_inherited_roth_without_basis_taxes_earnings_unless_the_owners_five_years_are_over() {
+    let d = filer(19600301);
+    let record = |first_year: u32| {
+        let mut r = roth_record("Kim Sample", first_year, 0, 0);
+        if let InheritedIraKindFacts::Roth { basis, .. } = &mut r.kind {
+            *basis = None;
+        }
+        r
+    };
+    let page = |first_year| {
+        vec![
+            record_item(Owner::Taxpayer, 0, record(first_year)),
+            row_item(Owner::Taxpayer, inherited_roth_row(None, 4_000)),
+        ]
+    };
+    let r = supported(&save_items(&d, page(2022)).draft);
+    assert!(noted(&r, "WARN_INHERITED_ROTH_BASIS_ASSUMED_NONE"));
+    assert_eq!(return_line(&r, "4a"), 400_000);
+    assert_eq!(return_line(&r, "4b"), 400_000);
+    let r = supported(&save_items(&d, page(2021)).draft);
+    assert!(!noted(&r, "WARN_INHERITED_ROTH_BASIS_ASSUMED_NONE"));
+    assert_eq!(return_line(&r, "4b"), 0);
+}
+
+// A Roth account's first year is not after the year of death: the page rule, repeated on save with
+// its own key. The year of death itself is allowed (died 2025-12-01).
+#[test]
+fn an_inherited_roth_first_year_after_the_year_of_death_is_refused_with_its_key() {
+    let d = filer(19600301);
+    for (first_year, allowed) in [(2025, true), (2026, false)] {
+        let mut s = Interview::new(TEST_USER, d.clone());
+        let page = save_topic(
+            &d,
+            TaxSection::Retirement,
+            vec![record_item(Owner::Taxpayer, 0, roth_record("Kim Sample", first_year, 0, 0))],
+        );
+        let reply = send(&mut s, page);
+        if allowed {
+            accepted(&reply);
+        } else {
+            let Reply::Response(P::Problem { message, .. }) = reply else {
+                panic!("expected a refused save")
+            };
+            assert_eq!(message, key("INHERITED_ROTH_FIRST_YEAR_AFTER_DEATH"));
+            assert_eq!(s.draft, d);
+        }
+    }
+}
+
+// The filer's own Form 8606 switches the filer's own IRA distributions to the basis worksheet and
+// never an inherited one: the inherited 1099-R keeps its choice and its record's basis.
+#[test]
+fn a_form_8606_does_not_take_over_an_inherited_ira_payment() {
+    let d = filer(19600301);
+    let s = save_items(
+        &d,
+        vec![
+            record_item(Owner::Taxpayer, 0, traditional("Pat Sample", 5_000, 40_000)),
+            row_item(Owner::Taxpayer, inherited_row(None, 10_000)),
+            unanswered_document(
+                Owner::Taxpayer,
+                0,
+                IncomeDocument::Form8606(Form8606 {
+                    adjustment: 0,
+                    reservist_repayments: vec![],
+                    basis: 500_000,
+                    year_end: 900_000,
+                }),
+            ),
+        ],
+    );
+    let FederalIncome::Retirement { data } = &s.draft.income[2].income else {
+        panic!("a retirement record")
+    };
+    assert_eq!(data.taxable, RetirementTaxable::Inherited { account: None, payer: 1_000_000 });
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "inherited_ira_2_basis_recovered"), 1_000);
+    assert_eq!(return_line(&r, "4b"), 900_000);
+}

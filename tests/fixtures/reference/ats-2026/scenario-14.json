@@ -1,0 +1,233 @@
+{
+ "source": {
+  "title": "IRS MeF ATS Test Scenario 14, TY2026 Form 1040 (John Rosen: 1040, W-2, Sch. 3-A, Sch. EIC, Sch. 8812)",
+  "edition": "TREASURY/IRS DRAFT Version A, Cycle 4 (forms created 2026-04/06)",
+  "scenario": 14,
+  "url": "https://www.irs.gov/pub/irs-efile/ty26-1040-ats-scenario-14.pdf",
+  "fetched": "2026-10-19",
+  "sha256": "56b3ee3429ee3c6adfa295514cec2134b106ff274171cbc5dd955ecb95167fd1"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "taxpayer birth date 1990-06-15",
+   "reason": "the scenario gives no birth date; any age 19-64 changes nothing here"
+  },
+  {
+   "fact": "children born 2016-06-15 and 2017-06-15",
+   "reason": "Schedule EIC line 3 gives only the birth years 2016 and 2017"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19900615,
+ "pages": [
+  {
+   "page": "children",
+   "children": [
+    [
+     "GEORGE",
+     "ROSEN",
+     20160615
+    ],
+    [
+     "ABIGAIL",
+     "ROSEN",
+     20170615
+    ]
+   ]
+  },
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 35000,
+     "withholding": 2000,
+     "social_wages": 35000,
+     "social_tax": 2170,
+     "medicare_wages": 35000,
+     "medicare_tax": 508
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "1a",
+   "amount": 35000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "9",
+   "amount": 35000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "11a / 11b",
+   "amount": 35000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "12e",
+   "amount": 16100,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "14",
+   "amount": 16100,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "15",
+   "amount": 18900,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "16",
+   "amount": 2023,
+   "provenance": "corrected",
+   "source_printed": 2020,
+   "triage": "E-1"
+  },
+  {
+   "form": "1040",
+   "line": "18",
+   "amount": 2023,
+   "provenance": "corrected",
+   "source_printed": 2020,
+   "triage": "E-1"
+  },
+  {
+   "form": "1040",
+   "line": "19",
+   "amount": 2023,
+   "provenance": "corrected",
+   "source_printed": 2020,
+   "triage": "E-1"
+  },
+  {
+   "form": "1040",
+   "line": "21",
+   "amount": 2023,
+   "provenance": "corrected",
+   "source_printed": 2020,
+   "triage": "E-1"
+  },
+  {
+   "form": "1040",
+   "line": "22",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "24a",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "25a",
+   "amount": 2000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "25d",
+   "amount": 2000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "27a",
+   "amount": 4971,
+   "provenance": "corrected",
+   "source_printed": 4693,
+   "triage": "C-2"
+  },
+  {
+   "form": "1040",
+   "line": "28",
+   "amount": 2377,
+   "provenance": "corrected",
+   "source_printed": 2380,
+   "triage": "E-1"
+  },
+  {
+   "form": "1040",
+   "line": "32a",
+   "amount": 7348,
+   "provenance": "corrected",
+   "source_printed": 7073,
+   "triage": "C-2"
+  },
+  {
+   "form": "1040",
+   "line": "32c",
+   "amount": 7348,
+   "provenance": "corrected",
+   "source_printed": 7073,
+   "triage": "C-2"
+  },
+  {
+   "form": "1040",
+   "line": "33",
+   "amount": 9348,
+   "provenance": "corrected",
+   "source_printed": 9073,
+   "triage": "E-2"
+  },
+  {
+   "form": "1040",
+   "line": "34",
+   "amount": 9348,
+   "provenance": "corrected",
+   "source_printed": 9073,
+   "triage": "E-2"
+  },
+  {
+   "form": "1040",
+   "line": "35a",
+   "amount": 9348,
+   "provenance": "corrected",
+   "source_printed": 9073,
+   "triage": "E-2"
+  },
+  {
+   "form": "8812",
+   "line": "14",
+   "amount": 2023,
+   "provenance": "corrected",
+   "source_printed": 2020,
+   "triage": "E-1"
+  },
+  {
+   "form": "8812",
+   "line": "27",
+   "amount": 2377,
+   "provenance": "corrected",
+   "source_printed": 2380,
+   "triage": "E-1"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope",
+ "expected_notes": [
+  "NOTE_REVIEW_REQUIRED_BEFORE_FILING_THIS_REFUND_INCLUDES_REFUNDABLE_CR_33EE1376"
+ ],
+ "known_gaps": [
+  {
+   "form": "3-A",
+   "lines": "1a-8, 1040 line 32b",
+   "ledger": "1040-G21",
+   "note": "App does not apply Schedule 3-A (line 32c = 32a); citizen, so printed 32b is 0. Printed 3-A line 1a (5,141) differs from 1040 line 32a (7,073): triage C-1"
+  }
+ ],
+ "expected_note": "provenance corrected: the ATS printed figure is a source error (triage E-1, C-2) or follows from one; the amount is the figure the law gives (dispatcher decision 2026-10-19). 33/34/35a also follow from the E-2 fix (Form 8959 line 22 = 0, so 25c is blank and 25d = 2,000; D-2026-10-19-12)."
+}

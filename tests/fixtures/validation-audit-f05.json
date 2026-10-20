@@ -1,0 +1,449 @@
+{
+  "cases": [
+    {
+      "name": "F05 name ASCII 0 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 name ASCII 1 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "A",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name ASCII 79 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name ASCII 80 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name ASCII 81 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 name accent 0 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 name accent 1 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "é",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name accent 79 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name accent 80 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name accent 81 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 name supplementary 0 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 name supplementary 1 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "x",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name supplementary 79 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀x",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name supplementary 80 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 name supplementary 81 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀x",
+        "address": "1 Example Way",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 address ASCII 0 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 address ASCII 1 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "A",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address ASCII 159 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address ASCII 160 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address ASCII 161 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 address accent 0 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 address accent 1 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "é",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address accent 159 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address accent 160 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address accent 161 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 address supplementary 0 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    },
+    {
+      "name": "F05 address supplementary 1 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "x",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address supplementary 159 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀x",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address supplementary 160 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F05 address supplementary 161 UTF-16 units",
+      "type": "CareProvider",
+      "value": {
+        "id": 0,
+        "name": "Synthetic daycare",
+        "address": "𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀𐐀x",
+        "identification": 1,
+        "household_employee": false,
+        "paid": 0,
+        "relationship": 0
+      },
+      "expectedErrors": [
+        "UTF-16"
+      ]
+    }
+  ],
+  "finding": "F05"
+}

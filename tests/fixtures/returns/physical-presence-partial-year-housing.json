@@ -1,0 +1,51 @@
+{
+  "name": "physical-presence-partial-year-housing",
+  "filing_status": "Single",
+  "birth_dates": { "taxpayer": "1990-08-20" },
+  "w2": [
+    {
+      "employer": "Example Corp",
+      "box1_wages": 20000.00,
+      "box2_withheld": 2500.00,
+      "box3": 20000.00,
+      "box4": 1240.00,
+      "box5": 20000.00,
+      "box6": 290.00
+    }
+  ],
+  "foreign_pay": [
+    { "employer": "Example Pte Ltd", "wages": 110000.00 }
+  ],
+  "form2555": [
+    {
+      "qualification": "Presence",
+      "starts_on": "2026-03-02",
+      "foreign_days": 340,
+      "tax_home": "Yes",
+      "exclusion": true,
+      "housing": {
+        "stays": [
+          { "location": "SingaporeSingapore", "starts_on": "2026-03-02", "ends_on": "2026-12-31" }
+        ],
+        "expenses": 42000.00
+      }
+    }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 20000.00,
+      "1h": 110000.00,
+      "1z": 130000.00,
+      "8": -110000.00,
+      "9": 20000.00,
+      "11a / 11b": 20000.00,
+      "15": 3900.00,
+      "16": 936.00,
+      "25a": 2500.00,
+      "34": 1564.00
+    }
+  },
+  "computation": "Single filer born 1990-08-20 who worked in the United States in January and February (W-2 from Example Corp, box 1 $20,000, box 2 $2,500, boxes 3 and 5 $20,000, box 4 $1,240, box 6 $290; none of it pay for work abroad) and then in Singapore from 2026-03-02 for Example Pte Ltd, paid $110,000 with no W-2. Form 2555 Part III: the 12-month period starts 2026-03-02 (through 2027-03-01, 365 days) with 340 full days abroad, at least 330; the tax home is abroad; the exclusion is chosen; one housing stay in Singapore from 2026-03-02 to 2026-12-31 with $42,000 of qualified expenses. Line 31 qualifying days in 2026 = March 2 through December 31 = 305. Line 29b = 305 x $237.53 (Notice 2026-25, Singapore $86,700 a year) = $72,446.65, rounded $72,447; line 30 = min($42,000, $72,447) = $42,000; line 32 = 305 x $58.26 = $17,769.30, rounded $17,769; line 33 = $42,000 - $17,769 = $24,231. Line 34 = line 19 = $110,000 = line 27, so line 35 = 1.000 and line 36 = $24,231 (all the housing amount is employer-provided). Line 40 = $132,900 x 305/365 = $111,053; line 41 = $110,000 - $24,231 = $85,769; line 42 = min($111,053, $85,769) = $85,769; line 43 = line 45 = $24,231 + $85,769 = $110,000: all the foreign pay is excluded. Form 1040: line 1a $20,000; line 1h $110,000; line 1z $130,000; Schedule 1 line 8d = -$110,000; line 9 = line 11 = $20,000; line 12e $16,100; line 15 = $3,900. Foreign Earned Income Tax Worksheet: line 1 = $3,900; line 2a = $110,000; line 3 = $113,900; line 4 = $17,966 + 24% x $8,200 = $19,934; line 5 = tax on $110,000 = $17,966 + 24% x $4,300 = $18,998; line 6 = $19,934 - $18,998 = $936. Line 16 = $936; line 25a = $2,500; line 34 = $1,564."
+}

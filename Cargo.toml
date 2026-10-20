@@ -1,0 +1,22 @@
+[package]
+name = "libertas-tax"
+version = "0.1.0"
+edition = "2024"
+description = "U.S. federal tax year 2026 tax return prototype"
+repository = "https://github.com/LibertasIoT/libertas-tax.git"
+
+[dependencies]
+libertas = { git = "https://github.com/LibertasIoT/libertas-rs", rev = "16cc57fd8b4488a81ebb191222b8a1b782905db7", package = "libertas" }
+libertas_macros = { git = "https://github.com/LibertasIoT/libertas-rs", rev = "16cc57fd8b4488a81ebb191222b8a1b782905db7", package = "libertas_macros" }
+lru = { version = "0.18.5", default-features = false, features = ["hashbrown"] }
+num-rational = { version = "0.4.2", default-features = false, features = ["num-bigint"] }
+
+[dev-dependencies]
+zstd = "0.13.3"
+sha2 = "0.10.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "libertas_tax"
+crate-type = ["rlib"]

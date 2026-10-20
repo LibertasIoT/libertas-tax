@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "name": "F06 zero total rejects",
+      "type": "FamilySplit",
+      "value": {
+        "Agreed": {
+          "you": 0,
+          "spouse": 0
+        }
+      },
+      "expectedErrors": [
+        "HSA_FAMILY_PARTS_ZERO"
+      ]
+    },
+    {
+      "name": "F06 zero taxpayer share remains valid",
+      "type": "FamilySplit",
+      "value": {
+        "Agreed": {
+          "you": 0,
+          "spouse": 1
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F06 zero spouse share remains valid",
+      "type": "FamilySplit",
+      "value": {
+        "Agreed": {
+          "you": 1,
+          "spouse": 0
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F06 positive shares remain valid",
+      "type": "FamilySplit",
+      "value": {
+        "Agreed": {
+          "you": 1,
+          "spouse": 1
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F06 equal split remains valid",
+      "type": "FamilySplit",
+      "value": {
+        "Equal": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F06 not applicable remains valid",
+      "type": "FamilySplit",
+      "value": {
+        "NotApplicable": null
+      },
+      "expectedErrors": []
+    }
+  ],
+  "finding": "F06"
+}

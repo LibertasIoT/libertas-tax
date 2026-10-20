@@ -1,0 +1,212 @@
+{
+  "finding": "F04",
+  "cases": [
+    {
+      "name": "fresh half-percent actual-expense vehicle",
+      "type": "VehicleMethod",
+      "value": {
+        "Actual": {
+          "cost": "3000000",
+          "credit_reduction": "0",
+          "placed": "20260315",
+          "total_miles": "20000",
+          "business_miles": "100",
+          "operating_costs": "400000",
+          "loan_interest": "0",
+          "passenger_automobile": true,
+          "earlier_business_percent": null,
+          "history": {
+            "New": {
+              "first_year": "Bonus"
+            }
+          },
+          "disposal": "No"
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "fractional one-third-percent actual-expense vehicle",
+      "type": "VehicleMethod",
+      "value": {
+        "Actual": {
+          "cost": "3000000",
+          "credit_reduction": "0",
+          "placed": "20260315",
+          "total_miles": "20000",
+          "business_miles": "67",
+          "operating_costs": "400000",
+          "loan_interest": "0",
+          "passenger_automobile": true,
+          "earlier_business_percent": null,
+          "history": {
+            "New": {
+              "first_year": "Bonus"
+            }
+          },
+          "disposal": "No"
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "whole-percent actual-expense vehicle",
+      "type": "VehicleMethod",
+      "value": {
+        "Actual": {
+          "cost": "3000000",
+          "credit_reduction": "0",
+          "placed": "20260315",
+          "total_miles": "20000",
+          "business_miles": "200",
+          "operating_costs": "400000",
+          "loan_interest": "0",
+          "passenger_automobile": true,
+          "earlier_business_percent": null,
+          "history": {
+            "New": {
+              "first_year": "Bonus"
+            }
+          },
+          "disposal": "No"
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "zero business miles rejected",
+      "type": "VehicleMethod",
+      "value": {
+        "Actual": {
+          "cost": "3000000",
+          "credit_reduction": "0",
+          "placed": "20260315",
+          "total_miles": "20000",
+          "business_miles": "0",
+          "operating_costs": "400000",
+          "loan_interest": "0",
+          "passenger_automobile": true,
+          "earlier_business_percent": null,
+          "history": {
+            "New": {
+              "first_year": "Bonus"
+            }
+          },
+          "disposal": "No"
+        }
+      },
+      "expectedErrors": [
+        "cannot be less than 1."
+      ]
+    },
+    {
+      "name": "zero total miles rejected",
+      "type": "VehicleMethod",
+      "value": {
+        "Actual": {
+          "cost": "3000000",
+          "credit_reduction": "0",
+          "placed": "20260315",
+          "total_miles": "0",
+          "business_miles": "1",
+          "operating_costs": "400000",
+          "loan_interest": "0",
+          "passenger_automobile": true,
+          "earlier_business_percent": null,
+          "history": {
+            "New": {
+              "first_year": "Bonus"
+            }
+          },
+          "disposal": "No"
+        }
+      },
+      "expectedErrors": [
+        "cannot be less than 1.",
+        "Business miles cannot exceed all miles driven."
+      ]
+    },
+    {
+      "name": "business miles above total rejected",
+      "type": "VehicleMethod",
+      "value": {
+        "Actual": {
+          "cost": "3000000",
+          "credit_reduction": "0",
+          "placed": "20260315",
+          "total_miles": "20000",
+          "business_miles": "20001",
+          "operating_costs": "400000",
+          "loan_interest": "0",
+          "passenger_automobile": true,
+          "earlier_business_percent": null,
+          "history": {
+            "New": {
+              "first_year": "Bonus"
+            }
+          },
+          "disposal": "No"
+        }
+      },
+      "expectedErrors": [
+        "VEHICLE_BUSINESS_MILES_ABOVE_TOTAL"
+      ]
+    },
+    {
+      "name": "stored vehicle has exact miles without rounded percent",
+      "type": "BusinessAsset",
+      "value": {
+        "description": "",
+        "cost": "3000000",
+        "credit_reduction": "0",
+        "acquired": "20260315",
+        "placed": "20260315",
+        "earlier_business_percent": null,
+        "class": "Five",
+        "history": {
+          "New": {
+            "section179": "Ineligible",
+            "bonus": "ElectOut",
+            "tables": false
+          }
+        },
+        "method": "Regular",
+        "listed": {
+          "Vehicle": {
+            "total_miles": "20000",
+            "business_miles": "100",
+            "operating_costs": "400000",
+            "loan_interest": "0",
+            "passenger_automobile": true
+          }
+        },
+        "disposal": "No",
+        "investment_credit": "No",
+        "partial": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "nonvehicle percentage unchanged",
+      "type": "ListedProperty",
+      "value": {
+        "No": {
+          "business_percent": "50"
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "zero nonvehicle percentage remains invalid",
+      "type": "ListedProperty",
+      "value": {
+        "No": {
+          "business_percent": "0"
+        }
+      },
+      "expectedErrors": [
+        "cannot be less than 1."
+      ]
+    }
+  ]
+}

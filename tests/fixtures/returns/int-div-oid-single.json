@@ -1,0 +1,71 @@
+{
+  "taxable_bond_premium_election": true,
+  "name": "int-div-oid-single",
+  "filing_status": "Single",
+  "birth_dates": { "taxpayer": "1985-03-15" },
+  "w2": [
+    {
+      "employer": "Example Co",
+      "box1_wages": 70000.00,
+      "box2_withheld": 7900.00,
+      "box3": 70000.00,
+      "box4": 4340.00,
+      "box5": 70000.00,
+      "box6": 1015.00
+    }
+  ],
+  "int1099": [
+    {
+      "payer": "Example Bank",
+      "box1_interest": 2400.00,
+      "box2_penalty": 50.00,
+      "box4_withholding": 0.00,
+      "box8_exempt": 600.00,
+      "box9_private_activity": 100.00,
+      "box11_bond_premium": 80.00
+    }
+  ],
+  "div1099": [
+    {
+      "payer": "Example Fund",
+      "ordinary": 3000.00,
+      "qualified": 2200.00,
+      "capital_distributions": 900.00,
+      "withholding": 150.00,
+      "exempt_dividends": 300.00
+    }
+  ],
+  "oid1099": [
+    {
+      "payer": "Example Trust",
+      "box1_oid": 500.00,
+      "box6_acquisition_premium": 40.00
+    }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 70000.00,
+      "2a": 900.00,
+      "2b": 2780.00,
+      "3a": 2200.00,
+      "3b": 3000.00,
+      "7a": 900.00,
+      "9": 76680.00,
+      "10": 50.00,
+      "11a / 11b": 76630.00,
+      "12e": 16100.00,
+      "15": 60530.00,
+      "16": 7811.00,
+      "24a": 7811.00,
+      "25a": 7900.00,
+      "25b": 150.00,
+      "25d": 8050.00,
+      "33": 8050.00,
+      "34": 239.00,
+      "37": 0.00
+    }
+  },
+  "computation": "Single filer, born 1985-03-15 (age 41 in 2026, not a senior, not blind, not a dependent). One W-2: box1 wages $70,000.00, box2 federal withholding $7,900.00, box3 Social Security wages $70,000.00, box4 Social Security tax withheld $4,340.00 (6.2% of $70,000), box5 Medicare wages $70,000.00, box6 Medicare tax withheld $1,015.00 (1.45% of $70,000); far under every FICA wage-base/Additional-Medicare threshold, so no excess-Social-Security or Additional Medicare Tax reconciliation applies (i1040gi). One 1099-INT (i1099int): box1 interest $2,400.00, box2 early withdrawal penalty $50.00, box4 federal withholding $0.00, box8 tax-exempt interest $600.00, box9 specified private-activity bond interest $100.00 (a subset of box 8; $100 <= $600), box11 bond premium $80.00. federal_model.rs FederalInterest/federal_rules.rs: box11 bond premium reduces this payer's own box1 interest, not below zero: $2,400.00 - $80.00 = $2,320.00 taxable; box8 net of box13 (not present here) stays $600.00 tax-exempt; box9 is included within box8 and also enters the Form 6251 AMT preference (not reached by this return); box2 is a Schedule 1 line 18 deduction, not netted against interest. One 1099-DIV (i1099div): box1a ordinary dividends $3,000.00, box1b qualified dividends $2,200.00 (a subset of box1a; $2,200 <= $3,000), box2a total capital gain distributions $900.00 (no box2b/2d subset), box4 federal withholding $150.00, box12 exempt-interest dividends $300.00 (no box13 private-activity subset). One 1099-OID (unit C4a, FederalOid): box1 original issue discount $500.00, box6 acquisition premium $40.00; taxable OID = box1 + box2(0) - box6 - box10(0), floored at zero per payer = $500.00 - $40.00 = $460.00, joining taxable interest the same way 1099-INT interest does; box5 market discount ($0) would also join taxable interest but is $0 here. No adjustments other than the interest penalty, no itemized deductions, no credits, no other taxes, no dependents, no estimated payments. Form 1040 line 1a W-2 wages = $70,000.00 (the single W-2 box1; no other wage documents). Line 2a tax-exempt interest = $600.00 (1099-INT box8, net of its own box13) + $300.00 (1099-DIV box12) = $900.00. Line 2b taxable interest = $2,320.00 (1099-INT, net of box11) + $460.00 (1099-OID, net of box6) = $2,780.00. Line 3a qualified dividends = $2,200.00 (1099-DIV box1b). Line 3b ordinary dividends = $3,000.00 (1099-DIV box1a). Schedule B (f1040sb): total taxable interest $2,780.00 and total ordinary dividends $3,000.00 both exceed the $1,500 Part I/Part II filing threshold, so Schedule B line 4 (taxable interest, $2,780.00) and line 6 (ordinary dividends, $3,000.00) are both required and carry to Form 1040 lines 2b and 3b respectively. Line 7a capital gain or loss: only a 1099-DIV box2a capital gain distribution is present, with no 8949/Schedule D sales, so Schedule D is not required and the $900.00 box2a amount is entered directly on line 7a (i1040sd 'Capital Gain Distributions' instructions). Line 8 additional income = $0.00 (no other income categories). Line 9 total income = $70,000.00 + $2,780.00 + $3,000.00 + $900.00 = $76,680.00 (tax-exempt interest on line 2a is excluded). Line 10 adjustments to income (Schedule 1 line 18, early withdrawal penalty) = $50.00 (the 1099-INT box2 amount; the App does not net it against interest income, only deducts it). Line 11a/11b AGI = $76,680.00 - $50.00 = $76,630.00. Line 12e standard deduction: Rev. Proc. 2025-32 Table 8 2026 single/MFS base amount is $16,100 (standard_base() in src/federal_rules.rs); the filer is not claimable as a dependent, not 65 or older and not blind, so no additional amount is added: $16,100.00. Line 13a/13b additional/QBI deductions = $0.00. Line 14 total deductions = $16,100.00. Line 15 taxable income = $76,630.00 - $16,100.00 = $60,530.00. Line 16 tax, Qualified Dividends and Capital Gain Tax Worksheet (i1040gi): line1 taxable income $60,530.00; line2 qualified dividends $2,200.00; line3 (not filing Schedule D, so the Form 1040 line 7a amount) $900.00; line4 = $2,200.00 + $900.00 = $3,100.00 (no investment-interest election to subtract); line5 (ordinary-rate income) = $60,530.00 - $3,100.00 = $57,430.00; the 2026 single 0% breakpoint is $49,450 and the 15% breakpoint is $545,500 (income_tax.rs Rates::with_method 2026 Single capital tuple), and $57,430.00 already exceeds the 0% breakpoint, so none of the $3,100.00 is taxed at 0% and all of it falls in the 15% band (well under the 15% breakpoint). Tax on the $57,430.00 ordinary-rate amount, from the fetched 2026 draft Tax Table (tests/fixtures/irs-tax-table-2026.csv) at its $50-wide-row midpoint $57,425 (row '57400,57450,7346,6395,7346,6537', Single column index2) = $7,346.00. Tax on the $3,100.00 preferential amount at 15% = $465.00. Worksheet subtotal = $7,346.00 + $465.00 = $7,811.00. Tax on the full $60,530.00 taxable income as if entirely ordinary, from the same table at its row midpoint $60,525 (row '60500,60550,8028,6767,8028,6909', Single column index2) = $8,028.00. The worksheet takes the smaller of the two: min($7,811.00, $8,028.00) = $7,811.00. Line 17 AMT/repayments = $0.00 (the $100.00 AMT preference from 1099-INT box9 is far too small, together with the $76,630.00 AGI, to exceed the 2026 single AMT exemption phase-out math; no Form 6251 liability results). Line 18 income tax before credits = $7,811.00. Lines 19-21 credits = $0.00 (none claimed). Line 22 income tax after credits = $7,811.00. Line 23 additional taxes = $0.00 (no self-employment tax; wages $70,000.00 and AGI $76,630.00 are far below the $200,000 Additional Medicare Tax and Net Investment Income Tax thresholds for a single filer). Line 24a total tax = $7,811.00 + $0.00 = $7,811.00 (no Form 1062 election, so this is also the return's total tax). Line 25a W-2 federal income tax withheld = $7,900.00 (box2). Line 25b 1099 federal income tax withheld = $0.00 (1099-INT box4) + $150.00 (1099-DIV box4) + $0.00 (1099-OID box4) = $150.00. Line 25d total federal tax withheld = $7,900.00 + $150.00 = $8,050.00. Line 26 estimated payments = $0.00. Lines 27a-31 = $0.00 (AGI $76,630.00 is far above the no-children 2026 draft EIC phase-out threshold; no dependents, no education, no adoption, no other payment credits apply). Line 33 total payments and refundable credits = $8,050.00 + $0.00 + $0.00 = $8,050.00. Line 34 overpayment = max($8,050.00 - $7,811.00, 0) = $239.00. Line 37 balance due = max($7,811.00 - $8,050.00, 0) = $0.00 (a refund, not a balance due)."
+}

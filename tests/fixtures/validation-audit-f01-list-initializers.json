@@ -1,0 +1,736 @@
+[
+  {
+    "root": "AdoptionBenefits",
+    "indices": [
+      2,
+      0
+    ],
+    "path": "AdoptionBenefits.JointEmployees.payments"
+  },
+  {
+    "root": "AdoptionBenefitsPage",
+    "indices": [
+      2,
+      0
+    ],
+    "path": "AdoptionBenefitsPage.JointEmployees.payments"
+  },
+  {
+    "root": "AtnolHistory",
+    "indices": [
+      1,
+      0
+    ],
+    "path": "AtnolHistory.Records.years"
+  },
+  {
+    "root": "AveragingForeign",
+    "indices": [
+      0
+    ],
+    "path": "AveragingForeign.forms"
+  },
+  {
+    "root": "CareBenefitFunding",
+    "indices": [
+      3,
+      0
+    ],
+    "path": "CareBenefitFunding.Group.years"
+  },
+  {
+    "root": "ChildAnnuity",
+    "indices": [
+      6
+    ],
+    "path": "ChildAnnuity.payments"
+  },
+  {
+    "root": "ConservationAssessment",
+    "indices": [
+      5
+    ],
+    "path": "ConservationAssessment.payments"
+  },
+  {
+    "root": "ConservationAssessmentInput",
+    "indices": [
+      5
+    ],
+    "path": "ConservationAssessmentInput.payments"
+  },
+  {
+    "root": "Div1099",
+    "indices": [
+      0
+    ],
+    "path": "Div1099.capital_returns"
+  },
+  {
+    "root": "EmployeeExpenses",
+    "indices": [
+      0
+    ],
+    "path": "EmployeeExpenses.forms"
+  },
+  {
+    "root": "ExceptionRepayment",
+    "indices": [
+      0
+    ],
+    "path": "ExceptionRepayment.payments"
+  },
+  {
+    "root": "FarmAveraging",
+    "indices": [
+      1
+    ],
+    "path": "FarmAveraging.years"
+  },
+  {
+    "root": "FarmSupplyException",
+    "indices": [
+      1,
+      1
+    ],
+    "path": "FarmSupplyException.History.years"
+  },
+  {
+    "root": "FederalCasualtyLivingInsurance",
+    "indices": [
+      4
+    ],
+    "path": "FederalCasualtyLivingInsurance.payments"
+  },
+  {
+    "root": "FederalDividend",
+    "indices": [
+      3
+    ],
+    "path": "FederalDividend.capital_returns"
+  },
+  {
+    "root": "FederalDraft",
+    "indices": [
+      6
+    ],
+    "path": "FederalDraft.dependents"
+  },
+  {
+    "root": "FederalHsa",
+    "indices": [
+      12
+    ],
+    "path": "FederalHsa.uses"
+  },
+  {
+    "root": "FederalRental",
+    "indices": [
+      0
+    ],
+    "path": "FederalRental.mortgage_loans"
+  },
+  {
+    "root": "FinalEstateTrustNol",
+    "indices": [
+      1
+    ],
+    "path": "FinalEstateTrustNol.years"
+  },
+  {
+    "root": "ForeignStateTaxes",
+    "indices": [
+      1,
+      0
+    ],
+    "path": "ForeignStateTaxes.Records.payments"
+  },
+  {
+    "root": "HealthMarketplace",
+    "indices": [
+      1
+    ],
+    "path": "HealthMarketplace.policies"
+  },
+  {
+    "root": "HealthMarketplace",
+    "indices": [
+      2
+    ],
+    "path": "HealthMarketplace.benchmarks"
+  },
+  {
+    "root": "HouseholdSickFunding",
+    "indices": [
+      0,
+      0
+    ],
+    "path": "HouseholdSickFunding.Fund.years"
+  },
+  {
+    "root": "HouseholdSickFunding",
+    "indices": [
+      4,
+      0
+    ],
+    "path": "HouseholdSickFunding.Group.years"
+  },
+  {
+    "root": "HouseholdState",
+    "indices": [
+      3
+    ],
+    "path": "HouseholdState.payments"
+  },
+  {
+    "root": "HsaAccount",
+    "indices": [
+      11
+    ],
+    "path": "HsaAccount.uses"
+  },
+  {
+    "root": "IraMore",
+    "indices": [
+      4
+    ],
+    "path": "IraMore.returned_in_following_year"
+  },
+  {
+    "root": "IraRepayment",
+    "indices": [
+      1
+    ],
+    "path": "IraRepayment.payments"
+  },
+  {
+    "root": "LumpSumElection",
+    "indices": [
+      0
+    ],
+    "path": "LumpSumElection.years"
+  },
+  {
+    "root": "MarketplaceAllocationKind",
+    "indices": [
+      0,
+      2
+    ],
+    "path": "MarketplaceAllocationKind.FormerSpouses.third_families"
+  },
+  {
+    "root": "MarketplaceAllocationKind",
+    "indices": [
+      1,
+      3
+    ],
+    "path": "MarketplaceAllocationKind.MarriedSeparate.third_families"
+  },
+  {
+    "root": "MarketplaceAllocationKindPage",
+    "indices": [
+      0,
+      2
+    ],
+    "path": "MarketplaceAllocationKindPage.FormerSpouses.third_families"
+  },
+  {
+    "root": "MarketplaceAllocationKindPage",
+    "indices": [
+      1,
+      3
+    ],
+    "path": "MarketplaceAllocationKindPage.MarriedSeparate.third_families"
+  },
+  {
+    "root": "MarketplaceBenchmarkMonth",
+    "indices": [
+      1
+    ],
+    "path": "MarketplaceBenchmarkMonth.groups"
+  },
+  {
+    "root": "MarketplaceBenchmarkMonth",
+    "indices": [
+      2
+    ],
+    "path": "MarketplaceBenchmarkMonth.allocated"
+  },
+  {
+    "root": "MarketplaceBenchmarkMonthPage",
+    "indices": [
+      1
+    ],
+    "path": "MarketplaceBenchmarkMonthPage.groups"
+  },
+  {
+    "root": "MarketplaceBenchmarkMonthPage",
+    "indices": [
+      2
+    ],
+    "path": "MarketplaceBenchmarkMonthPage.allocated"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      2
+    ],
+    "path": "MarketplaceFacts.forms"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      3
+    ],
+    "path": "MarketplaceFacts.other_families"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      4
+    ],
+    "path": "MarketplaceFacts.covered"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      5
+    ],
+    "path": "MarketplaceFacts.memberships"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      6
+    ],
+    "path": "MarketplaceFacts.attestations"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      7
+    ],
+    "path": "MarketplaceFacts.eligibility"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      8
+    ],
+    "path": "MarketplaceFacts.benchmarks"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      9
+    ],
+    "path": "MarketplaceFacts.qsehra"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      10
+    ],
+    "path": "MarketplaceFacts.dependent_qsehra_employees"
+  },
+  {
+    "root": "MarketplaceFacts",
+    "indices": [
+      13
+    ],
+    "path": "MarketplaceFacts.dependents"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      2
+    ],
+    "path": "MarketplaceFactsPage.forms"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      3
+    ],
+    "path": "MarketplaceFactsPage.other_families"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      4
+    ],
+    "path": "MarketplaceFactsPage.covered"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      5
+    ],
+    "path": "MarketplaceFactsPage.memberships"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      6
+    ],
+    "path": "MarketplaceFactsPage.attestations"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      7
+    ],
+    "path": "MarketplaceFactsPage.eligibility"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      8
+    ],
+    "path": "MarketplaceFactsPage.benchmarks"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      9
+    ],
+    "path": "MarketplaceFactsPage.qsehra"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      10
+    ],
+    "path": "MarketplaceFactsPage.dependent_qsehra_employees"
+  },
+  {
+    "root": "MarketplaceFactsPage",
+    "indices": [
+      13
+    ],
+    "path": "MarketplaceFactsPage.dependents"
+  },
+  {
+    "root": "MarketplaceMarriageFamily",
+    "indices": [
+      0
+    ],
+    "path": "MarketplaceMarriageFamily.dependents"
+  },
+  {
+    "root": "MarketplaceMarriageFamily",
+    "indices": [
+      1
+    ],
+    "path": "MarketplaceMarriageFamily.premarriage_policies"
+  },
+  {
+    "root": "MarketplaceMarriageFamily",
+    "indices": [
+      2
+    ],
+    "path": "MarketplaceMarriageFamily.benchmarks"
+  },
+  {
+    "root": "MarketplaceMarriageFamilyPage",
+    "indices": [
+      0
+    ],
+    "path": "MarketplaceMarriageFamilyPage.dependents"
+  },
+  {
+    "root": "MarketplaceMarriageFamilyPage",
+    "indices": [
+      1
+    ],
+    "path": "MarketplaceMarriageFamilyPage.premarriage_policies"
+  },
+  {
+    "root": "MarketplaceMarriageFamilyPage",
+    "indices": [
+      2
+    ],
+    "path": "MarketplaceMarriageFamilyPage.benchmarks"
+  },
+  {
+    "root": "MarketplacePolicyCoverage",
+    "indices": [
+      2
+    ],
+    "path": "MarketplacePolicyCoverage.entry"
+  },
+  {
+    "root": "MarketplacePolicyCoveragePage",
+    "indices": [
+      2
+    ],
+    "path": "MarketplacePolicyCoveragePage.entry"
+  },
+  {
+    "root": "MarketplacePolicyRecord",
+    "indices": [
+      4
+    ],
+    "path": "MarketplacePolicyRecord.lawful_premiums"
+  },
+  {
+    "root": "MarketplacePolicyRecord",
+    "indices": [
+      8
+    ],
+    "path": "MarketplacePolicyRecord.allocation"
+  },
+  {
+    "root": "MarketplacePolicyRecord",
+    "indices": [
+      9
+    ],
+    "path": "MarketplacePolicyRecord.payments"
+  },
+  {
+    "root": "MarketplacePolicyRecord",
+    "indices": [
+      10
+    ],
+    "path": "MarketplacePolicyRecord.medical_costs"
+  },
+  {
+    "root": "MarketplacePolicyRecordPage",
+    "indices": [
+      4
+    ],
+    "path": "MarketplacePolicyRecordPage.lawful_premiums"
+  },
+  {
+    "root": "MarketplacePolicyRecordPage",
+    "indices": [
+      8
+    ],
+    "path": "MarketplacePolicyRecordPage.allocation"
+  },
+  {
+    "root": "MarketplacePolicyRecordPage",
+    "indices": [
+      9
+    ],
+    "path": "MarketplacePolicyRecordPage.payments"
+  },
+  {
+    "root": "MarketplacePolicyRecordPage",
+    "indices": [
+      10
+    ],
+    "path": "MarketplacePolicyRecordPage.medical_costs"
+  },
+  {
+    "root": "MarketplaceQsehra",
+    "indices": [
+      4
+    ],
+    "path": "MarketplaceQsehra.determinations"
+  },
+  {
+    "root": "MarketplaceQsehraMonth",
+    "indices": [
+      4
+    ],
+    "path": "MarketplaceQsehraMonth.covered"
+  },
+  {
+    "root": "MarketplaceQsehraMonthPage",
+    "indices": [
+      4
+    ],
+    "path": "MarketplaceQsehraMonthPage.covered"
+  },
+  {
+    "root": "MarketplaceQsehraPage",
+    "indices": [
+      4
+    ],
+    "path": "MarketplaceQsehraPage.determinations"
+  },
+  {
+    "root": "MedicalBeneficiary",
+    "indices": [
+      0,
+      0
+    ],
+    "path": "MedicalBeneficiary.Nonspouse.payments"
+  },
+  {
+    "root": "MedicalSaPayment",
+    "indices": [
+      0,
+      0
+    ],
+    "path": "MedicalSaPayment.Own.nonmedical"
+  },
+  {
+    "root": "NavigationAvailability",
+    "indices": [
+      0
+    ],
+    "path": "NavigationAvailability.groups"
+  },
+  {
+    "root": "NavigationAvailability",
+    "indices": [
+      7
+    ],
+    "path": "NavigationAvailability.payments"
+  },
+  {
+    "root": "NolHistory",
+    "indices": [
+      1,
+      0
+    ],
+    "path": "NolHistory.Records.years"
+  },
+  {
+    "root": "QualifiedCharity",
+    "indices": [
+      1
+    ],
+    "path": "QualifiedCharity.payments"
+  },
+  {
+    "root": "Rental",
+    "indices": [
+      3
+    ],
+    "path": "Rental.mortgage_loans"
+  },
+  {
+    "root": "RepaymentClaim",
+    "indices": [
+      1,
+      1
+    ],
+    "path": "RepaymentClaim.Claim.years"
+  },
+  {
+    "root": "ReservistRepayment",
+    "indices": [
+      6
+    ],
+    "path": "ReservistRepayment.payments"
+  },
+  {
+    "root": "ScorpNoteHolding",
+    "indices": [
+      2,
+      1
+    ],
+    "path": "ScorpNoteHolding.Dated.payments"
+  },
+  {
+    "root": "SelfEmployedBenefits",
+    "indices": [
+      4
+    ],
+    "path": "SelfEmployedBenefits.policies"
+  },
+  {
+    "root": "SelfEmployedBenefits",
+    "indices": [
+      5
+    ],
+    "path": "SelfEmployedBenefits.benchmarks"
+  },
+  {
+    "root": "SocialElection",
+    "indices": [
+      1,
+      0
+    ],
+    "path": "SocialElection.Compare.years"
+  },
+  {
+    "root": "StudentLoanClaim",
+    "indices": [
+      1
+    ],
+    "path": "StudentLoanClaim.forms"
+  },
+  {
+    "root": "StudentLoanInterest",
+    "indices": [
+      0
+    ],
+    "path": "StudentLoanInterest.forms"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      12,
+      23
+    ],
+    "path": "TaxInterviewProtocol.SaveIncomes.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      23,
+      10
+    ],
+    "path": "TaxInterviewProtocol.SaveMortgages.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      28,
+      13
+    ],
+    "path": "TaxInterviewProtocol.SaveMoreCredits.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      47,
+      6
+    ],
+    "path": "TaxInterviewProtocol.DocumentPropertyOptions.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      49,
+      13
+    ],
+    "path": "TaxInterviewProtocol.PreviewDocument.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      54,
+      15
+    ],
+    "path": "TaxInterviewProtocol.EstimateDocuments.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      67,
+      1
+    ],
+    "path": "TaxInterviewProtocol.EstimateMortgages.mortgage_loans"
+  },
+  {
+    "root": "TaxInterviewProtocol",
+    "indices": [
+      73,
+      5
+    ],
+    "path": "TaxInterviewProtocol.EstimateMoreCredits.mortgage_loans"
+  },
+  {
+    "root": "TaxRefundHistory",
+    "indices": [
+      4,
+      0
+    ],
+    "path": "TaxRefundHistory.IncomeTaxMultiplePriorYears.years"
+  }
+]

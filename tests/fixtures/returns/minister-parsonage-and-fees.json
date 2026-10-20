@@ -1,0 +1,54 @@
+{
+  "name": "minister-parsonage-and-fees",
+  "filing_status": "Single",
+  "birth_dates": {
+    "taxpayer": "1980-05-02"
+  },
+  "w2": [
+    {
+      "employer": "Example Community Church",
+      "box1_wages": 59500,
+      "box2_withheld": 6000,
+      "box3": 0,
+      "box4": 0,
+      "box5": 0,
+      "box6": 0,
+      "coverage": "Ministerial"
+    }
+  ],
+  "business": [
+    {
+      "label": "Weddings and baptisms",
+      "receipts": 2000,
+      "expenses": 400,
+      "ministerial": true
+    }
+  ],
+  "clergy": [
+    {
+      "fair_rental_value": 24000,
+      "utility_allowance": 7500,
+      "utilities_paid": 7000,
+      "form_4361": false,
+      "employee_expenses": 0
+    }
+  ],
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 59500,
+      "1h": 500,
+      "1z": 60000,
+      "8": 1733,
+      "9": 61733,
+      "11a / 11b": 55191,
+      "12e": 16100,
+      "15": 38691,
+      "16": 4393,
+      "24a": 17477,
+      "25a": 6000,
+      "37": 11477
+    }
+  },
+  "computation": "Pub517 Worksheets1-3: excluded24000+min(7500,7000)=31000; taxable excess500. Tax-free ratio31000/(59500+2000+31000+500)=1/3; nondeductible400/3=133 at the form line; ScheduleC profit1733. SE profit59500+31500+1600=92600, net85516, tax13084, half6542. AGI60000+1733-6542=55191. Active QBI1733-113=1620 qualifies for the2026 minimum400 (i8995), replacing the map ordinary20percent324. Taxable55191-16100-400=38691;2026 single tax-table38650-38700 gives4393. Total4393+13084=17477, balance11477. Approved fixture correction; actual taxpayer facts unchanged."
+}

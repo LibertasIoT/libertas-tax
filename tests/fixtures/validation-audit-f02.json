@@ -1,0 +1,104 @@
+{
+  "provenance": "Synthetic W-2 amounts in cents. The audited tipped regression has boxes 1/5 $10,100, box 3 $100, box 7 $10,000, box 4 $626.20 and box 6 $146.45. The shared Studio acceptance harness completes unrelated omitted fields with legal synthetic answers.",
+  "cases": [
+    {
+      "name": "F02 audited tipped W-2",
+      "type": "W2",
+      "value": {
+        "wages": 1010000,
+        "withholding": 0,
+        "social_wages": 10000,
+        "social_tax": 62620,
+        "medicare_wages": 1010000,
+        "medicare_tax": 14645,
+        "more": {
+          "social_tips": 1000000
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F02 tax equals combined boxes 3 and 7",
+      "type": "W2",
+      "value": {
+        "wages": 1010000,
+        "withholding": 0,
+        "social_wages": 10000,
+        "social_tax": 1010000,
+        "medicare_wages": 1010000,
+        "medicare_tax": 14645,
+        "more": {
+          "social_tips": 1000000
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F02 tax above combined boxes 3 and 7",
+      "type": "W2",
+      "value": {
+        "wages": 1010000,
+        "withholding": 0,
+        "social_wages": 10000,
+        "social_tax": 1010001,
+        "medicare_wages": 1010000,
+        "medicare_tax": 14645,
+        "more": {
+          "social_tips": 1000000
+        }
+      },
+      "expectedErrors": [
+        "W2_SOCIAL_TAX_ABOVE_WAGES"
+      ]
+    },
+    {
+      "name": "F02 tips with no box 3 wages",
+      "type": "W2",
+      "value": {
+        "wages": 1000000,
+        "withholding": 0,
+        "social_wages": 0,
+        "social_tax": 62000,
+        "medicare_wages": 1000000,
+        "medicare_tax": 14500,
+        "more": {
+          "social_tips": 1000000
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F02 ordinary wages without tips",
+      "type": "W2",
+      "value": {
+        "wages": 200000,
+        "withholding": 0,
+        "social_wages": 200000,
+        "social_tax": 12400,
+        "medicare_wages": 200000,
+        "medicare_tax": 2900,
+        "more": {
+          "social_tips": 0
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F02 zero wage and tip boxes",
+      "type": "W2",
+      "value": {
+        "wages": 0,
+        "withholding": 0,
+        "social_wages": 0,
+        "social_tax": 0,
+        "medicare_wages": 0,
+        "medicare_tax": 0,
+        "more": {
+          "social_tips": 0
+        }
+      },
+      "expectedErrors": []
+    }
+  ],
+  "finding": "F02"
+}

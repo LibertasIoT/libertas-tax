@@ -1,0 +1,56 @@
+{
+  "name": "bonus-across-years-and-prior-year-room",
+  "filing_status": "Single",
+  "birth_dates": {
+    "taxpayer": "1987-11-30"
+  },
+  "w2": [
+    {
+      "employer": "Example Systems",
+      "box1_wages": 150000,
+      "box2_withheld": 9000,
+      "box3": 150000,
+      "box4": 9300,
+      "box5": 150000,
+      "box6": 2175,
+      "abroad": 150000
+    }
+  ],
+  "form2555": [
+    {
+      "qualification": "Residence",
+      "began": "2025-06-01",
+      "tax_home": "Yes",
+      "exclusion": true,
+      "prior_year_pay": 0,
+      "prior_year_history": {
+        "prior_year_days": 214,
+        "prior_year_excluded": 70000
+      },
+      "multi_year_pay": [
+        {
+          "description": "Bonus March2024-February2026",
+          "amount": 30000,
+          "months_total": 24,
+          "months_in_return_year": 2,
+          "months_in_prior_year": 7
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 150000,
+      "8": -128719,
+      "9": 21281,
+      "11a / 11b": 21281,
+      "12e": 16100,
+      "15": 5181,
+      "16": 1243,
+      "25a": 9000,
+      "34": 7757
+    }
+  },
+  "computation": "Reg1.911-3(e): salary120000 plus award30000. Award2026part30000*2/24=2500;2025part30000*7/24=8750; older/USpart18750 not excludable. Current PartIV122500. Direct prior pay0 excludes awards under the approved input reconciliation; retained2025facts214days and70000line42. Prior limit130000*214/365=76219 at form dollar boundary, room6219; prior exclusionmin(8750,6219)=6219. Line45=122500+6219=128719. AGI21281,taxable5181. Stacked tax on13390024734 minus tax on12871923491=1243; refund9000-1243=7757. Original monetary oracles retained."
+}

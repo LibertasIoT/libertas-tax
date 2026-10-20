@@ -1,0 +1,39 @@
+{
+  "name": "m1-single-w2",
+  "filing_status": "Single",
+  "birth_dates": { "taxpayer": "1985-03-15" },
+  "w2": [
+    {
+      "employer": "Example Co",
+      "box1_wages": 60000.00,
+      "box2_withheld": 5200.00,
+      "box3": 60000.00,
+      "box4": 3720.00,
+      "box5": 60000.00,
+      "box6": 870.00
+    }
+  ],
+  "int1099": [
+    { "payer": "Example Bank", "box1_interest": 300.00 }
+  ],
+  "div1099": [],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 60000.00,
+      "2b": 300.00,
+      "9": 60300.00,
+      "11a / 11b": 60300.00,
+      "12e": 16100.00,
+      "15": 44200.00,
+      "16": 5059.00,
+      "24a": 5059.00,
+      "25a": 5200.00,
+      "33": 5200.00,
+      "34": 141.00,
+      "37": 0.00
+    }
+  },
+  "computation": "Single filer, born 1985-03-15 (age 41 in 2026, not a senior, not blind, not a dependent). One W-2: box1 wages $60,000.00, box2 federal withholding $5,200.00, box3 Social Security wages $60,000.00, box4 Social Security tax withheld $3,720.00 (6.2% of $60,000), box5 Medicare wages $60,000.00, box6 Medicare tax withheld $870.00 (1.45% of $60,000). One 1099-INT: box1 interest $300.00. No dividends, no adjustments, no itemized deductions, no credits, no other taxes, no estimated payments. Form 1040 line 1a W-2 wages = $60,000.00 (the single W-2 box 1). Line 2b taxable interest = $300.00 (the single 1099-INT box 1; no tax-exempt interest). Line 9 total income = $60,000.00 + $300.00 = $60,300.00 (no other income categories entered). Line 10 adjustments to income = $0.00 (adjustments section is all 'nothing applies'). Line 11a/11b AGI = $60,300.00 - $0.00 = $60,300.00. Line 12e standard deduction: Rev. Proc. 2025-32 Table 8 2026 single/MFS base amount is $16,100 (see standard_base() in src/federal_rules.rs); the filer is not claimable as a dependent (so the dependent cap does not apply), is not 65 or older, and is not blind, so no additional amount is added: $16,100.00. Line 13a/13b additional/QBI deductions = $0.00 (no Schedule 1-A items, no qualified business income). Line 14 total deductions = $16,100.00. Line 15 taxable income = $60,300.00 - $16,100.00 = $44,200.00. Line 16 tax: the 2026 draft Tax Table (tests/fixtures/irs-tax-table-2026.csv) row '44200,44250,5059,4811,5059,4953' covers taxable income at least $44,200 but less than $44,250; the Single column (index 2) gives $5,059.00. Line 17 AMT/repayments = $0.00. Line 18 income tax before credits = $5,059.00. Lines 19-21 credits = $0.00 (none claimed). Line 22 income tax after credits = $5,059.00 - $0.00 = $5,059.00. Line 23 additional taxes = $0.00 (no self-employment, NIIT, additional Medicare, or other Schedule 2 Part II tax; AGI is far below every additional-tax threshold). Line 24a total tax before the first farmland installment = $5,059.00 + $0.00 = $5,059.00 (no Form 1062 election, so this is also the return's total tax). Line 25a W-2 federal income tax withheld = $5,200.00 (the W-2 box 2 amount; box 25b/25c are $0.00, there is no 1099 or other-form withholding). Line 26 estimated payments = $0.00. Lines 27a-31 refundable credits and other payments = $0.00 (AGI $60,300 is far above the no-children 2026 draft EIC phase-out threshold of $19,104 (Pub 1040 2026 draft, p.16), so the earned income credit is $0; no child credit, no education, no adoption, no other payment credits apply). Line 33 total payments and refundable credits = $5,200.00 + $0.00 + $0.00 = $5,200.00. Line 34 overpayment = max($5,200.00 - $5,059.00, 0) = $141.00. Line 37 balance due = max($5,059.00 - $5,200.00, 0) = $0.00 (payments exceed tax, so there is a refund, not a balance due)."
+}

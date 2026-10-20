@@ -1,0 +1,20 @@
+use super::*;
+
+pub(in crate::tests) mod change_audit;
+pub(in crate::tests) mod fix_f14;
+pub(in crate::tests) mod fix_f15;
+pub(in crate::tests) mod fix_f17;
+pub(in crate::tests) mod fix_f18;
+pub(in crate::tests) mod fix_f3;
+pub(in crate::tests) mod fix_f9;
+pub(in crate::tests) mod interview;
+pub(in crate::tests) mod irs_examples;
+pub(in crate::tests) mod line_audit_c_se;
+pub(in crate::tests) mod line_audit_e_8582;
+pub(in crate::tests) mod line_audit_f10;
+pub(in crate::tests) mod line_audit_f13;
+pub(in crate::tests) mod line_audit_family_credits;
+pub(in crate::tests) mod line_audit_qbi_f;
+pub(crate) mod oracle;
+pub(in crate::tests) mod reference;
+pub(in crate::tests) mod returns;

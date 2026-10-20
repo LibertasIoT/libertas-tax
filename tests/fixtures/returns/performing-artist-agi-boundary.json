@@ -1,0 +1,64 @@
+{
+  "name": "performing-artist-agi-boundary",
+  "filing_status": "Single",
+  "birth_dates": {
+    "taxpayer": "1998-11-20"
+  },
+  "w2": [
+    {
+      "employer": "Example Theater",
+      "box1_wages": 9000.0,
+      "box2_withheld": 300.0,
+      "box3": 9000.0,
+      "box4": 558.0,
+      "box5": 9000.0,
+      "box6": 130.5,
+      "box12_l": 300.0
+    },
+    {
+      "employer": "Example Opera",
+      "box1_wages": 6500.0,
+      "box2_withheld": 200.0,
+      "box3": 6500.0,
+      "box4": 403.0,
+      "box5": 6500.0,
+      "box6": 94.25
+    }
+  ],
+  "int1099": [
+    {
+      "payer": "Example Bank",
+      "box1_interest": 500.0
+    }
+  ],
+  "div1099": [],
+  "form2106": [
+    {
+      "occupation": "Stage actor",
+      "capacity": "PerformingArtist",
+      "employers": [
+        "Example Theater",
+        "Example Opera"
+      ],
+      "travel": 600.0,
+      "other": 1400.0,
+      "meals": 200.0
+    }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 15500.0,
+      "2b": 500.0,
+      "9": 16000.0,
+      "11a / 11b": 14186.0,
+      "12e": 16100.0,
+      "15": 0.0,
+      "16": 0.0,
+      "24a": 0.0,
+      "25a": 500.0
+    }
+  },
+  "computation": "Single filer, born 1998-11-20. W-2 Example Theater box 1 $9,000.00 (box 2 $300.00) with box 12 code L $300.00, W-2 Example Opera box 1 $6,500.00 (box 2 $200.00), and a 1099-INT of $500.00. AGI before Schedule 1 line 12 = 9,000 + 6,500 + 500 = $16,000.00, exactly the section 62(b)(1)(C) limit ('does not exceed $16,000' passes). Form 2106, Stage actor, capacity PerformingArtist, employers both W-2s: travel $600.00, other $1,400.00 (agent fees, voice lessons), meals $200.00, no reimbursements, no vehicles. Line 6 column A = 0 + 0 + 600 + 1,400 = $2,000.00; column B = $200.00. Line 7 = code L $300.00 + $0.00 = $300.00. Reimbursement Allocation Worksheet ratio = 200 / 2,200 = 0.0909 = 0.091 to three decimals; 7B = 300 x 0.091 = $27.30; 7A = $272.70. Line 8A = 2,000.00 - 272.70 = $1,727.30; 8B = 200.00 - 27.30 = $172.70. Line 9 column A = $1,727.30; column B = 50% x 172.70 = $86.35. Line 10 = 1,727.30 + 86.35 = $1,813.65, rounded to $1,814 on Schedule 1 line 12. Tests: two employers each paying $200 or more (9,000 and 6,500); expenses $1,813.65 exceed 10% x $15,500 = $1,550; AGI $16,000 is at most $16,000; unmarried. Form 1040 line 1a = $15,500.00; line 2b = $500.00; line 9 = $16,000.00; line 11a/11b = 16,000 - 1,814 = $14,186.00; line 12e = $16,100.00, so line 15 = $0.00 and line 16 tax = $0.00 (the 2026 draft Tax Table would read 1,453 for a taxable income of 14,186, which is below the standard deduction). Line 25a = $300.00 + $200.00 = $500.00."
+}

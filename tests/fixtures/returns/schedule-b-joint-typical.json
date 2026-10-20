@@ -1,0 +1,47 @@
+{
+  "taxable_bond_premium_election": true,
+  "name": "schedule-b-joint-typical",
+  "filing_status": "Joint",
+  "birth_dates": { "taxpayer": "1979-04-12", "spouse": "1981-09-03" },
+  "w2": [
+    {
+      "employer": "Example Employer",
+      "box1_wages": 95000.00,
+      "box2_withheld": 9500.00,
+      "box3": 95000.00,
+      "box4": 5890.00,
+      "box5": 95000.00,
+      "box6": 1377.50
+    }
+  ],
+  "int1099": [
+    { "payer": "Alpha Bank", "box1_interest": 1100.00 },
+    { "payer": "Beta Credit Union", "box1_interest": 650.00 },
+    { "payer": "Gamma Trust", "box1_interest": 420.00, "box11_bond_premium": 20.00 }
+  ],
+  "div1099": [
+    { "payer": "Delta Fund", "ordinary": 1300.00, "qualified": 1000.00 },
+    { "payer": "Epsilon Fund", "ordinary": 900.00, "qualified": 600.00 }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 95000.00,
+      "2a": 0.00,
+      "2b": 2150.00,
+      "3a": 1600.00,
+      "3b": 2200.00,
+      "9": 99350.00,
+      "11a / 11b": 99350.00,
+      "12e": 32200.00,
+      "15": 67150.00,
+      "16": 7373.00,
+      "24a": 7373.00,
+      "25a": 9500.00,
+      "33": 9500.00,
+      "34": 2127.00
+    }
+  },
+  "computation": "Married filing jointly. Taxpayer born 1979-04-12 (age 47 in 2026), spouse born 1981-09-03 (age 45 in 2026): neither is 65 by the end of 2026 (i1040gi 'age 65' test is born before January 2, 1962), neither is blind, and there are no dependents, so the additional standard-deduction amounts and Schedule 8812 do not apply. One W-2 (i1040gi): box1 wages $95,000.00, box2 federal withholding $9,500.00, box3 Social Security wages $95,000.00 (under the $184,500 2026 wage base, so no excess-Social-Security credit), box4 Social Security tax withheld $5,890.00 (exactly 6.2% of $95,000.00), box5 Medicare wages $95,000.00, box6 Medicare tax withheld $1,377.50 (exactly 1.45% of $95,000.00; far under the $250,000 MFJ Additional Medicare Tax threshold, so no Form 8959 reconciliation). Three 1099-INT payers (i1099int): Alpha Bank box1 $1,100.00; Beta Credit Union box1 $650.00; Gamma Trust box1 $420.00 with box11 bond premium $20.00 (box11 reduces only Gamma Trust's own box1 interest, not below zero, and never another payer's statement: $420.00 - $20.00 = $400.00). Two 1099-DIV payers: Delta Fund box1a $1,300.00 with box1b (qualified, a subset of box1a; $1,000.00 <= $1,300.00) $1,000.00; Epsilon Fund box1a $900.00 with box1b (a subset; $600.00 <= $900.00) $600.00. No 1099-OID, no tax-exempt interest or dividends, no capital gain distributions, no other income, adjustments, itemized deductions, credits, other taxes or estimated payments. Schedule B Part I (f1040sb): line 1 lists each interest payer — Alpha Bank $1,100.00, Beta Credit Union $650.00, Gamma Trust $420.00 — total $2,170.00; the box 11 ABP adjustment subtracts Gamma Trust's own $20.00 bond premium; line 2 (subtotal) = $2,170.00 - $20.00 = $2,150.00; line 3 (Form 8815 excludable savings-bond interest) is not entered (out of scope); line 4 (taxable interest) = $2,150.00, which is over the $1,500 threshold so Part I is required, and carries to Form 1040 line 2b. Schedule B Part II: line 5 lists each dividend payer — Delta Fund $1,300.00, Epsilon Fund $900.00 — total $2,200.00; no nominee subtraction; line 6 (ordinary dividends) = $2,200.00, which is over the $1,500 threshold so Part II is also required, and carries to Form 1040 line 3b. Both Parts I and II are required independently, each on its own over-$1,500 test. Form 1040 line 1a W-2 wages = $95,000.00. Line 2a tax-exempt interest = $0.00 (none entered). Line 2b taxable interest = $2,150.00 (Schedule B line 4). Line 3a qualified dividends = $1,000.00 + $600.00 = $1,600.00. Line 3b ordinary dividends = $2,200.00 (Schedule B line 6). Line 8 additional income = $0.00. Line 9 total income = $95,000.00 + $2,150.00 + $2,200.00 = $99,350.00 (tax-exempt interest on line 2a is excluded). Line 10 adjustments to income = $0.00 (no early-withdrawal penalty or other Schedule 1 adjustments). Line 11 AGI = $99,350.00 - $0.00 = $99,350.00. Line 12e standard deduction: Rev. Proc. 2025-32 Table 8 2026 MFJ base amount is $32,200.00 (standard_base() in src/federal_rules.rs); neither filer is claimable as a dependent, 65 or older, or blind, so no additional amount is added: $32,200.00. Line 13a/13b additional/QBI deductions = $0.00. Line 14 total deductions = $32,200.00. Line 15 taxable income = $99,350.00 - $32,200.00 = $67,150.00. Line 16 tax, Qualified Dividends and Capital Gain Tax Worksheet (i1040gi): line1 taxable income $67,150.00; line2 qualified dividends $1,600.00; line3 (not filing Schedule D, no capital gain distributions, so the Form 1040 line 7 amount) $0.00; line4 = $1,600.00 + $0.00 = $1,600.00; line5 (ordinary-rate income) = $67,150.00 - $1,600.00 = $65,550.00. The 2026 MFJ 0% breakpoint is $98,900.00 and the 15% breakpoint is $613,700.00 (income_tax.rs Rates::with_method 2026 Joint capital tuple). Since line5 ($65,550.00) is already below the $98,900.00 0% breakpoint, the entire $1,600.00 room remaining to the breakpoint ($98,900.00 - $65,550.00 = $33,350.00, which exceeds the $1,600.00 preferential amount) is taxed at 0%, so none of the qualified dividends generate tax. Tax on the $65,550.00 ordinary-rate amount, from the fetched 2026 draft Tax Table (tests/fixtures/irs-tax-table-2026.csv) at its row '65550,65600,9139,7373,9139,7515' (Married-filing-jointly column, index 3) = $7,373.00. Worksheet subtotal = $7,373.00 + $0.00 (0% band) = $7,373.00. Tax on the full $67,150.00 taxable income as if entirely ordinary, from the same table at row '67150,67200,9491,7565,9491,7707' (MFJ column) = $7,565.00. The worksheet takes the smaller of the two: min($7,373.00, $7,565.00) = $7,373.00. Line 17 AMT/repayments = $0.00 (no AMT preference items; no private-activity interest or dividends). Line 18 income tax before credits = $7,373.00. Lines 19-21 credits = $0.00 (no dependents, no other credits claimed). Line 22 income tax after credits = $7,373.00. Line 23 additional taxes = $0.00 (no self-employment tax; wages $95,000.00 and AGI $99,350.00 are far below the $250,000 MFJ Additional Medicare Tax and Net Investment Income Tax thresholds). Line 24a total tax = $7,373.00. Line 25a W-2 federal income tax withheld = $9,500.00 (box2). Line 25b 1099 federal income tax withheld = $0.00 (no 1099 withholding boxes entered). Line 25d total federal tax withheld = $9,500.00. Line 26 estimated payments = $0.00. Lines 27a-31 = $0.00 (AGI is far above the no-children 2026 draft EIC phase-out threshold; no dependents, no education, no adoption, no other payment credits apply). Line 33 total payments and refundable credits = $9,500.00. Line 34 overpayment = max($9,500.00 - $7,373.00, 0) = $2,127.00. Line 37 balance due = max($7,373.00 - $9,500.00, 0) = $0.00 (a refund, not a balance due)."
+}

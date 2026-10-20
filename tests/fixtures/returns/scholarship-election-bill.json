@@ -1,0 +1,39 @@
+{
+  "name": "scholarship-election-bill",
+  "filing_status": "Single",
+  "birth_dates": { "taxpayer": "1998-03-01" },
+  "w2": [
+    {
+      "employer": "Example Co",
+      "box1_wages": 39250.00,
+      "box2_withheld": 3000.00,
+      "box3": 39250.00,
+      "box4": 2433.50,
+      "box5": 39250.00,
+      "box6": 569.13
+    }
+  ],
+  "education": [
+    { "student": "Taxpayer", "box1_tuition": 5600.00, "box5_scholarships": 5600.00, "living_costs": 4400.00 }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 39250.00,
+      "8": 4000.00,
+      "9": 43250.00,
+      "11a / 11b": 43250.00,
+      "12e": 16100.00,
+      "15": 27150.00,
+      "16": 3013.00,
+      "24a": 1513.00,
+      "25a": 3000.00,
+      "29": 1000.00,
+      "33": 4000.00,
+      "34": 2487.00,
+      "37": 0.00
+    }
+  },
+  "computation": "Pub. 970 chapter 2 Example 3 (Bill) with 2026 amounts. Single filer, born 1998-03-01 (age 28), the American opportunity credit student: Form 1098-T box 1 $5,600.00 and box 5 $5,600.00 (a grant that may pay room and board), living costs paid $4,400.00, the part of the grant included in income chosen by the App. One W-2: box 1 $39,250.00, box 2 $3,000.00. Parts tried (adjusted qualified expenses = $5,600 - ($5,600 - X)): X = $0 gives taxable income $23,150 (row midpoint $23,175: $1,240 + 12% x $10,775 = $2,533) and no credit, net $2,533; X = $2,000 gives $25,150 ($2,773) less a $2,000 credit = $773; X = $4,000 gives $27,150 (row midpoint $27,175: $1,240 + 12% x $14,775 = $3,013) less a $2,500 credit ($2,000 + 25% x $2,000) = $513; X = $4,400 gives $27,550 ($3,061) less the same $2,500 = $561. The App keeps $4,000. Schedule 1 line 8r $4,000.00 -> Form 1040 line 8 $4,000.00; line 9 = $39,250.00 + $4,000.00 = $43,250.00; line 11 AGI $43,250.00; line 12e $16,100.00; line 15 = $27,150.00; line 16 = $3,013.00. The credit is $2,500: 40% = $1,000 refundable (line 29; the filer is 28), $1,500 nonrefundable (Schedule 3 line 3). Line 24 total tax = $3,013.00 - $1,500.00 = $1,513.00. Line 25a $3,000.00; line 33 = $3,000 + $1,000 = $4,000.00; line 34 = $4,000.00 - $1,513.00 = $2,487.00."
+}

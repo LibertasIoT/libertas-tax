@@ -1,0 +1,555 @@
+{
+  "finding": "F10",
+  "cases": [
+    {
+      "name": "K1Scorp unknown history",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          28
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Scorp": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "Continuing": {
+                        "opening": 0,
+                        "risk_history": {
+                          "Unknown": null
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": [],
+      "expectedChoices": {
+        "$.documents.documents[0].document.basis.start.risk_history": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "K1Scorp detailed history",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          28
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Scorp": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "Continuing": {
+                        "opening": 50000,
+                        "risk_history": {
+                          "Detailed": {
+                            "capacity": 50000,
+                            "profit": 0,
+                            "loss": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": [],
+      "expectedChoices": {
+        "$.documents.documents[0].document.basis.start.risk_history": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "K1Scorp new ownership remains available",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          28
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Scorp": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "New": null
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "K1Scorp continuing ownership cannot use New",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          28
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Scorp": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "Continuing": {
+                        "opening": 0,
+                        "risk_history": {
+                          "New": null
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": [
+        "Selected choice is not permitted."
+      ],
+      "expectedChoices": {
+        "$.documents.documents[0].document.basis.start.risk_history": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "K1Partnership unknown history",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          29
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Partnership": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "Continuing": {
+                        "opening": 0,
+                        "risk_history": {
+                          "Unknown": null
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": [],
+      "expectedChoices": {
+        "$.documents.documents[0].document.basis.start.risk_history": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "K1Partnership detailed history",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          29
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Partnership": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "Continuing": {
+                        "opening": 50000,
+                        "risk_history": {
+                          "Detailed": {
+                            "capacity": 50000,
+                            "profit": 0,
+                            "loss": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": [],
+      "expectedChoices": {
+        "$.documents.documents[0].document.basis.start.risk_history": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "K1Partnership new ownership remains available",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          29
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Partnership": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "New": null
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "K1Partnership continuing ownership cannot use New",
+      "type": "SaveIncomes",
+      "value": {
+        "user": 7,
+        "cookie": "synthetic",
+        "revision": 1,
+        "page": 1,
+        "previous": 1,
+        "review": false,
+        "allowed_continuing_risk": [
+          1,
+          2
+        ],
+        "allowed_documents": [
+          29
+        ],
+        "allowed_owners": [
+          0
+        ],
+        "allowed_community": [
+          0
+        ],
+        "allowed_refund_management": [
+          0
+        ],
+        "allowed_partner_source": [
+          0
+        ],
+        "documents": {
+          "documents": [
+            {
+              "id": 0,
+              "owner": 0,
+              "document": {
+                "K1Partnership": {
+                  "name": "Synthetic entity",
+                  "basis": {
+                    "start": {
+                      "Continuing": {
+                        "opening": 0,
+                        "risk_history": {
+                          "New": null
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "community": {
+                "NotNeeded": null
+              },
+              "allowed_community": [
+                0
+              ],
+              "preview": null,
+              "refund_management": null,
+              "refund_management_needed": false
+            }
+          ]
+        }
+      },
+      "expectedErrors": [
+        "Selected choice is not permitted."
+      ],
+      "expectedChoices": {
+        "$.documents.documents[0].document.basis.start.risk_history": [
+          1,
+          2
+        ]
+      }
+    }
+  ]
+}

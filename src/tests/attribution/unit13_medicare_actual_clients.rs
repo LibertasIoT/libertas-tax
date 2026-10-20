@@ -1,0 +1,43 @@
+use super::*;
+use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::support::assert::injured_income::medicare_actual_clients::checked;
+use crate::tests::support::builders::additional_medicare::{Source, fixture};
+use crate::tests::support::builders::injured_income::medicare_actual_clients::is_primary;
+use crate::tests::support::client::{draft_from_native_records, native_draft_records};
+// Native Form8959 contributor controls: the source operands must follow the
+// actual settled Parts I/II/SE, not raw ScheduleC profit or only W2 wages.
+
+#[test]
+fn medicare_actual_intermediate_source_save_has_independent_native_money() {
+    for source in [Source::PartnerSe, Source::SmallBusiness] {
+        for injured in [Owner::Taxpayer, Owner::Spouse] {
+            for reverse in [false, true] {
+                let d = fixture(source, Owner::Taxpayer, injured, reverse);
+                checked(&d, source, Owner::Taxpayer, Owner::Spouse, injured);
+                let mut s = restart(d);
+                let mut p = open_topic(&mut s, source.topic());
+                let P::SaveIncomes { documents, .. } = &mut p else { panic!() };
+                let id = s.draft.income.iter().find(|e| is_primary(source, e)).unwrap().id;
+                documents.documents.iter_mut().find(|r| r.id == id).unwrap().owner = Owner::Spouse;
+                accepted(&send(&mut s, p));
+                checked(&s.draft, source, Owner::Spouse, Owner::Spouse, injured);
+                let tax_year = s.draft.tax_year;
+                let bytes = native_draft_records(&s.draft);
+                let draft = draft_from_native_records(tax_year, &bytes);
+                assert_eq!(native_draft_records(&draft), bytes);
+                let mut s = restart(draft);
+                checked(&s.draft, source, Owner::Spouse, Owner::Spouse, injured);
+                let mut p = open_topic(&mut s, TaxSection::Wages);
+                let P::SaveIncomes { documents, .. } = &mut p else { panic!() };
+                for old in &s.draft.income {
+                    if let FederalIncome::Wage { data } = &old.income {
+                        documents.documents.iter_mut().find(|r| r.id == old.id).unwrap().owner =
+                            if data.wages > 0 { Owner::Taxpayer } else { Owner::Spouse };
+                    }
+                }
+                accepted(&send(&mut s, p));
+                checked(&s.draft, source, Owner::Spouse, Owner::Taxpayer, injured);
+            }
+        }
+    }
+}

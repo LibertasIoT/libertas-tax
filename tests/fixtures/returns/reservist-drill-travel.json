@@ -1,0 +1,67 @@
+{
+  "name": "reservist-drill-travel",
+  "filing_status": "Single",
+  "birth_dates": {
+    "taxpayer": "1990-05-02"
+  },
+  "w2": [
+    {
+      "employer": "Example Logistics",
+      "box1_wages": 58000.0,
+      "box2_withheld": 6000.0,
+      "box3": 58000.0,
+      "box4": 3596.0,
+      "box5": 58000.0,
+      "box6": 841.0
+    },
+    {
+      "employer": "State Guard Pay",
+      "box1_wages": 4200.0,
+      "box2_withheld": 300.0,
+      "box3": 4200.0,
+      "box4": 260.4,
+      "box5": 4200.0,
+      "box6": 60.9
+    }
+  ],
+  "int1099": [],
+  "div1099": [],
+  "form2106": [
+    {
+      "occupation": "Army Reserve sergeant",
+      "capacity": "Reservist",
+      "employers": [
+        "State Guard Pay"
+      ],
+      "travel": 900.0,
+      "meals": 300.0,
+      "standard_mileage": [
+        {
+          "first_half": 1200,
+          "second_half": 800,
+          "total": 9000,
+          "commuting": 0,
+          "parking_tolls": 40.0
+        }
+      ]
+    }
+  ],
+  "estimated_payments": 0,
+  "expected": {
+    "state": "EstimatedForSupportedScope",
+    "lines": {
+      "1a": 62200.0,
+      "9": 62200.0,
+      "11a / 11b": 59632.0,
+      "12e": 16100.0,
+      "15": 43532.0,
+      "16": 4975.0,
+      "24a": 4975.0,
+      "25a": 6300.0,
+      "33": 6300.0,
+      "34": 1325.0,
+      "37": 0.0
+    }
+  },
+  "computation": "Single filer, born 1990-05-02 (age 36, not a senior, not blind, not a dependent). Two W-2s: Example Logistics box 1 $58,000.00 (box 2 $6,000.00) and State Guard Pay box 1 $4,200.00 (box 2 $300.00, the reserve pay), each with box 3/5 equal to box 1, box 4 6.2% and box 6 1.45%; neither has box 12 code L. Form 2106 for the Army Reserve sergeant, capacity Reservist, employer State Guard Pay: three overnight drill weekends 140 miles from home, travel $900.00 (lodging $880.00 within the locality's federal lodging rate plus a $20.00 ferry), meals $300.00 (the federal M&IE rate $75 x 4 days), no other expenses, no reimbursements. One owned standard-mileage vehicle: 1,200 business miles January-June, 800 July-December, 9,000 miles in all, no commuting, parking and tolls $40.00. Line 22 = 1,200 x 72.5 cents + 800 x 76 cents = $870.00 + $608.00 = $1,478.00, so line 1 = $1,478.00 (Notice 2026-10; Announcement 2026-11). Line 2 = $0.00 local transportation + $40.00 parking and tolls = $40.00. Line 3 = $900.00. Line 4 = $0.00. Line 5 = $300.00. Line 6 column A = 1,478.00 + 40.00 + 900.00 + 0.00 = $2,418.00; column B = $300.00. Line 7 = $0.00 (no code L, no other reimbursement), so line 8A = $2,418.00 and 8B = $300.00. Line 9 column A = $2,418.00; column B = 50% x $300.00 = $150.00 (section 274(n)(1)). Line 10 = $2,568.00 to Schedule 1 line 12 (section 62(a)(2)(E)), so Schedule 1 line 10 adjustments = $2,568.00. Form 1040 line 1a = $58,000.00 + $4,200.00 = $62,200.00; line 9 = $62,200.00; line 11a/11b AGI = $62,200.00 - $2,568.00 = $59,632.00. Line 12e standard deduction (single, Rev. Proc. 2025-32 Table 8) = $16,100.00. Line 15 = $59,632.00 - $16,100.00 = $43,532.00. Line 16: the 2026 draft Tax Table row 43500-43550, Single column = $4,975.00 (10% of $12,400 = $1,240.00 plus 12% of ($43,525 midpoint - $12,400) = $3,735.00). Line 24a = $4,975.00 (no other tax). Line 25a = $6,000.00 + $300.00 = $6,300.00; line 33 = $6,300.00 (AGI is far above the childless EIC limit). Line 34 = $6,300.00 - $4,975.00 = $1,325.00. The mileage basis reduction (2,000 miles x 35 cents = $700.00) is recorded for a later sale and has no 2026 effect."
+}

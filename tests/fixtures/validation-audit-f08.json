@@ -1,0 +1,324 @@
+{
+  "finding": "F08",
+  "cases": [
+    {
+      "name": "cash rollover below gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "RolledOver": {
+                "amount": 9999,
+                "into": {
+                  "Ira": null
+                }
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "cash rollover equals gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "RolledOver": {
+                "amount": 10000,
+                "into": {
+                  "Ira": null
+                }
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "cash rollover above gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "RolledOver": {
+                "amount": 10001,
+                "into": {
+                  "Ira": null
+                }
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": [
+        "The amount rolled over cannot be more than box 1."
+      ]
+    },
+    {
+      "name": "conversion equals gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "Converted": {
+                "amount": 10000
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "conversion above gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "Converted": {
+                "amount": 10001
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": [
+        "The amount converted cannot be more than box 1."
+      ]
+    },
+    {
+      "name": "SIMPLE rollover above gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 33554432,
+        "allowed_treatments": [
+          5
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "EarlySimple": {
+            "what_happened": {
+              "RolledOver": {
+                "amount": 10001
+              }
+            }
+          }
+        },
+        "ira": true,
+        "after_death": null
+      },
+      "expectedErrors": [
+        "The amount rolled over cannot be more than box 1."
+      ]
+    },
+    {
+      "name": "early rollover above gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 1,
+        "allowed_treatments": [
+          1
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Early": {
+            "what_happened": {
+              "RolledOver": {
+                "amount": 10001,
+                "into": {
+                  "Ira": null
+                }
+              }
+            },
+            "exception": {
+              "None": null
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": [
+        "The amount rolled over cannot be more than box 1."
+      ]
+    },
+    {
+      "name": "lump sum conversion above gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 576,
+        "allowed_treatments": [
+          9
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "NormalLumpSum": {
+            "tax": {
+              "WithOtherIncome": {
+                "what_happened": {
+                  "Converted": {
+                    "amount": 10001
+                  }
+                }
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": [
+        "The amount converted cannot be more than box 1."
+      ]
+    },
+    {
+      "name": "property proceeds may exceed gross",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "SoldAndRolledOver": {
+                "data": {
+                  "distributed": 20260904,
+                  "sold": 20260924,
+                  "proceeds": 20000,
+                  "confirmed": true
+                },
+                "amount": 20000,
+                "into": {
+                  "Ira": null
+                }
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "property rollover above proceeds",
+      "type": "R1099",
+      "value": {
+        "gross": 10000,
+        "taxable": 10000,
+        "box7": 64,
+        "allowed_treatments": [
+          0
+        ],
+        "allowed_methods": [
+          0
+        ],
+        "code": {
+          "Normal": {
+            "what_happened": {
+              "SoldAndRolledOver": {
+                "data": {
+                  "distributed": 20260904,
+                  "sold": 20260924,
+                  "proceeds": 20000,
+                  "confirmed": true
+                },
+                "amount": 20001,
+                "into": {
+                  "Ira": null
+                }
+              }
+            }
+          }
+        },
+        "ira": false,
+        "after_death": null
+      },
+      "expectedErrors": [
+        "The amount you deposited is more than the sale proceeds."
+      ]
+    }
+  ]
+}

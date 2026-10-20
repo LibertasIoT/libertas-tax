@@ -1,0 +1,164 @@
+{
+  "provenance": "Synthetic directly purchased original-issue lots; cents and DateOnly values. Date boundaries preserve the existing native Section 1202 supported scope. The client must shift calendar months rather than perform arithmetic on yyyyMMdd encodings.",
+  "cases": [
+    {
+      "name": "F11 earliest supported issue",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 19930811,
+        "sold": 20260101,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F11 five years plus one calendar day",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20201231,
+        "sold": 20260101,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F11 anniversary plus one day",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20210101,
+        "sold": 20260102,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F11 leap-day issue",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20200229,
+        "sold": 20260228,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F11 last day of sale year",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20150302,
+        "sold": 20261231,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": []
+    },
+    {
+      "name": "F11 issue before supported start",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 19930810,
+        "sold": 20260501,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    },
+    {
+      "name": "F11 upper issue boundary still held under five years",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20250704,
+        "sold": 20260501,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    },
+    {
+      "name": "F11 issue after supported end",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20250705,
+        "sold": 20260501,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    },
+    {
+      "name": "F11 sale before 2026",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20150302,
+        "sold": 20251231,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    },
+    {
+      "name": "F11 sale after 2026",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20150302,
+        "sold": 20270101,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    },
+    {
+      "name": "F11 exactly five years",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20210501,
+        "sold": 20260501,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    },
+    {
+      "name": "F11 less than five years",
+      "type": "QsbStockLot",
+      "value": {
+        "issued": 20210502,
+        "sold": 20260501,
+        "basis": 100000,
+        "proceeds": 200000,
+        "zone_gain_through_2018": null
+      },
+      "expectedErrors": [
+        "QSBS_LOT_OUTSIDE_SECTION_1202_DATES"
+      ]
+    }
+  ],
+  "finding": "F11"
+}

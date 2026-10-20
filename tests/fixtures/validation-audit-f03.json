@@ -1,0 +1,12 @@
+{
+  "finding": "F03",
+  "cases": [
+    { "name": "fresh mixed-use invoice deducts only the business share", "type": "DeMinimisElection", "value": { "purchases": "100000", "largest_item": "200000", "financial_statement": false, "eligible": true }, "expectedErrors": [] },
+    { "name": "multiple qualifying invoices may exceed one item limit in total", "type": "DeMinimisElection", "value": { "purchases": "600000", "largest_item": "200000", "financial_statement": false, "eligible": true }, "expectedErrors": [] },
+    { "name": "non-AFS full-cost ceiling is inclusive", "type": "DeMinimisElection", "value": { "purchases": "100000", "largest_item": "250000", "financial_statement": false, "eligible": true }, "expectedErrors": [] },
+    { "name": "AFS full-cost ceiling is inclusive", "type": "DeMinimisElection", "value": { "purchases": "100000", "largest_item": "500000", "financial_statement": true, "eligible": true }, "expectedErrors": [] },
+    { "name": "small business share cannot rescue over-limit non-AFS invoice", "type": "DeMinimisElection", "value": { "purchases": "100000", "largest_item": "250001", "financial_statement": false, "eligible": true }, "expectedErrors": ["DE_MINIMIS_ITEM_ABOVE_LIMIT"] },
+    { "name": "small business share cannot rescue over-limit AFS invoice", "type": "DeMinimisElection", "value": { "purchases": "100000", "largest_item": "500001", "financial_statement": true, "eligible": true }, "expectedErrors": ["DE_MINIMIS_ITEM_ABOVE_LIMIT"] },
+    { "name": "zero business purchase amount remains invalid", "type": "DeMinimisElection", "value": { "purchases": "0", "largest_item": "200000", "financial_statement": false, "eligible": true }, "expectedErrors": ["must contain a valid amount within its exact bounds."] }
+  ]
+}
