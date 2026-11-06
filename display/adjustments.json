@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 204000, "rule": {"select": "^<SaveMoreAdjustments>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 564000, "rule": {"select": "^<MoreAdjustment>", "flatten": true}},
+    {"order": 771000, "rule": {"select": "^<MoreAdjustments>.adjustments", "promote": true}},
+    {"order": 840000, "rule": {"select": "^<SaveMoreAdjustments.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 890000, "rule": {"select": "^<AlimonyItem>.owner", "when_single_choice": "hide"}},
+    {"order": 891000, "rule": {"select": "^<MovingItem>.owner", "when_single_choice": "hide"}}
+  ]
+}

@@ -40,11 +40,14 @@ fn saver_follows_education_care_and_precedes_child_credit() {
     assert_eq!(value(&r, "child_credit"), 983);
     assert_eq!(value(&r, "additional_child_credit"), 1217);
     let sid0_1802 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(native_education(
-        sid0_1802,
-        education_expenses(500_000),
-        education_choice(EducationMethod::LifetimeLearning, Answer::No),
-    ));
+    add_education(
+        d.credits.as_mut().unwrap(),
+        native_education(
+            sid0_1802,
+            education_expenses(500_000),
+            education_choice(EducationMethod::LifetimeLearning, Answer::No),
+        ),
+    );
     d.dependents[0].set_care_expenses(100_000);
     let r = {
         document_care(&mut d);
@@ -109,7 +112,7 @@ fn nondeductible_allocation_uses_independent_amt_capacity() {
     amt.risk.start = ScorpRiskStart::Detailed { capacity: 1_200_000, profit: 0, loss: 0 };
     source.amt = Some(amt);
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&d);
     amt_k1_note(&r, -11_100, -9_250);
     assert_eq!(value(&r, "qbi_loss_carryforward"), 9_250);

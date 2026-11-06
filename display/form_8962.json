@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 201000, "rule": {"select": "^<SaveMarketplace>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 560000, "rule": {"select": "^<DependentReturn>", "flatten": true}},
+    {"order": 766000, "rule": {"select": "^<DependentReturn>.person", "promote": true}},
+    {"order": 837000, "rule": {"select": "^<SaveMarketplace.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

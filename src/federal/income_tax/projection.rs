@@ -1,7 +1,8 @@
 // Form6251's actual preferential-rate computation. The tax owner supplies all
 // components, including unrounded rate cents and its once-rounded final tax.
 use super::AmtTaxResult;
-use crate::kernel::lines::{LineValue, form_value};
+use crate::kernel::lines::LineValue;
+use crate::line_emission::form_value;
 use crate::{FederalResult, FormLine, TaxForm};
 
 pub(crate) fn emit(result: &mut FederalResult, computation: &AmtTaxResult, required: bool) {

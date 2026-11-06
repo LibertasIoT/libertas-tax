@@ -220,11 +220,16 @@ fn value_of(r: &FederalResult, id: &str) -> i64 {
 fn d6_catalog_selection_rejects_forged_sources_and_follows_real_source_deletion() {
     use crate::farm_specials::{FarmExternalSourceInput, FarmSourceCharacter};
     let mut s = Interview::new(TEST_USER, crate::tests::cross::interview::farm_only_return());
-    let mut page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents
-        .documents
-        .push(document(0, IncomeDocument::W2(crate::tests::cross::interview::w2(2_000_000))));
+    let mut rows = crate::tests::support::client::income_pages::all_documents(&mut s);
+    rows.push(document(
+        0,
+        IncomeSource::Wage {
+            value: crate::WageDocument::W2(wage_document(crate::tests::cross::interview::w2(
+                2_000_000,
+            ))),
+        },
+    ));
+    let page = crate::tests::support::client::income_pages::save_documents(&mut s, rows);
     accepted(&send(&mut s, page));
     let source =
         s.draft.income.iter().find(|e| matches!(e.income, FederalIncome::Wage { .. })).unwrap().id;
@@ -271,7 +276,13 @@ fn d6_catalog_selection_rejects_forged_sources_and_follows_real_source_deletion(
         missing.shareholder_employee = true;
         missing.regularly_used = true;
         farm.more.specials.external_sources.push(missing);
-        documents.documents.push(document(0, IncomeDocument::Farm(farm)));
+        documents.documents.push(
+            crate::IncomeRecordItem::from_income(document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) },
+            ))
+            .expect("record fixture"),
+        );
         let before = s.draft.clone();
         crate::tests::cross::interview::rejected_with(
             current_income_refusal(
@@ -289,7 +300,13 @@ fn d6_catalog_selection_rejects_forged_sources_and_follows_real_source_deletion(
     let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
     let mut farm = crate::tests::cross::interview::cash_farm(20_000_000, 0);
     farm.more.specials.external_sources.push(input(source, FarmSourceCharacter::FishingCrewWages));
-    documents.documents.push(document(0, IncomeDocument::Farm(farm)));
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) },
+        ))
+        .expect("record fixture"),
+    );
     accepted(&send(&mut s, page));
     assert_eq!(
         crate::tests::cross::interview::stored_farm(&s.draft).1.specials.external_sources[0].source,
@@ -303,9 +320,9 @@ fn d6_catalog_selection_rejects_forged_sources_and_follows_real_source_deletion(
         data.specials.external_sources[0].source = 99;
     }
     assert!(!forged.valid_stored());
-    let mut page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.retain(|item| item.id != source);
+    let mut page = crate::tests::cross::interview::open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+    documents.common.wages.documents.retain(|item| item.id != source);
     accepted(&send(&mut s, page));
     assert!(
         crate::tests::cross::interview::stored_farm(&s.draft)
@@ -321,7 +338,7 @@ fn d6_catalog_selection_rejects_forged_sources_and_follows_real_source_deletion(
     let page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Farming);
     let P::SaveIncomes { documents, farm_sources, .. } = page else { panic!() };
     assert!(farm_sources.iter().all(|choice| choice.id != source));
-    let IncomeDocument::Farm(farm) = &documents.documents[0].document else { panic!() };
+    let crate::IncomeRecord::Farm(farm) = &documents.documents[0].document else { panic!() };
     assert!(farm.more.specials.external_sources.is_empty());
 }
 
@@ -372,11 +389,16 @@ fn d1_rental_property_restores_only_losses_that_reduced_the_allowed_net() {
 fn d6_valid_farm_share_agreement_survives_cold_read_and_follows_source_deletion() {
     use crate::farm_specials::{FarmExternalSourceInput, FarmShareAgreement, FarmSourceCharacter};
     let mut s = Interview::new(TEST_USER, crate::tests::cross::interview::farm_only_return());
-    let mut page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents
-        .documents
-        .push(document(0, IncomeDocument::W2(crate::tests::cross::interview::w2(2_000_000))));
+    let mut rows = crate::tests::support::client::income_pages::all_documents(&mut s);
+    rows.push(document(
+        0,
+        IncomeSource::Wage {
+            value: crate::WageDocument::W2(wage_document(crate::tests::cross::interview::w2(
+                2_000_000,
+            ))),
+        },
+    ));
+    let page = crate::tests::support::client::income_pages::save_documents(&mut s, rows);
     accepted(&send(&mut s, page));
     let source = s
         .draft
@@ -406,7 +428,13 @@ fn d6_valid_farm_share_agreement_survives_cold_read_and_follows_source_deletion(
         regularly_used: false,
         ceased: None,
     });
-    documents.documents.push(document(0, IncomeDocument::Farm(farm)));
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) },
+        ))
+        .expect("record fixture"),
+    );
     accepted(&send(&mut s, page));
     assert_eq!(
         crate::tests::cross::interview::stored_farm(&s.draft).1.specials.external_sources[0]
@@ -414,9 +442,9 @@ fn d6_valid_farm_share_agreement_survives_cold_read_and_follows_source_deletion(
         Some(agreement)
     );
     crate::tests::core_tests::storage::f18_cold(&s.draft);
-    let mut page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.retain(|item| item.id != source);
+    let mut page = crate::tests::cross::interview::open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+    documents.common.wages.documents.retain(|item| item.id != source);
     accepted(&send(&mut s, page));
     assert!(
         crate::tests::cross::interview::stored_farm(&s.draft)
@@ -432,6 +460,6 @@ fn d6_valid_farm_share_agreement_survives_cold_read_and_follows_source_deletion(
     let page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Farming);
     let P::SaveIncomes { documents, farm_sources, .. } = page else { panic!() };
     assert!(farm_sources.iter().all(|choice| choice.id != source));
-    let IncomeDocument::Farm(farm) = &documents.documents[0].document else { panic!() };
+    let crate::IncomeRecord::Farm(farm) = &documents.documents[0].document else { panic!() };
     assert!(farm.more.specials.external_sources.is_empty());
 }

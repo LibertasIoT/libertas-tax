@@ -6,7 +6,7 @@ fn unit19_pool_operands_preserve_original_items_and_classes_across_selected_comm
     partner.regular.passive_loss = 600_000;
     partner.regular.section1231 =
         Some(K1Section1231 { passive_loss: 1_400_000, ..k1_section1231(2_000, 0) });
-    partner.income = vec![PartnerIncome {
+    partner.income = vec![PartnerIncomeTotal {
         code: PartnerIncomeCode::SpeciallyAllocatedOrdinary,
         amount: 100_000,
     }];
@@ -31,7 +31,7 @@ fn unit19_pool_operands_preserve_original_items_and_classes_across_selected_comm
             complete(FederalStatus::Single)
         };
         add(&mut draft, income(FederalIncome::Partnership { data: partner.clone() }));
-        add(&mut draft, income(FederalIncome::Scorp { data: scorp.clone() }));
+        add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(scorp.clone()) }));
         let before = draft.clone();
         for original in &draft.income[draft.income.len() - 2..] {
             let entry = crate::community::entry(&draft, original);
@@ -51,6 +51,7 @@ fn unit19_pool_operands_preserve_original_items_and_classes_across_selected_comm
                         )
                     }
                     FederalIncome::Scorp { data } => {
+                        let data = &ScorpK1::from(data);
                         let source = if amt {
                             data.amt.as_ref().unwrap().source(data).unwrap()
                         } else {

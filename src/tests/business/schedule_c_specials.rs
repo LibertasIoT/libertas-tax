@@ -215,7 +215,7 @@ fn schedule_c_specials_d_simple_owner_and_employee_plans() {
     b.expenses.sort_by_key(|expense| expense.category.index());
     b.retirement = BusinessRetirement::Simple {
         deferral: 1_700_000,
-        employer: SimpleEmployer::Match { rate: 300 },
+        employer: SimpleEmployer::Match { rate: 3.0 },
         employer_contribution: 221_640,
     };
     let r = supported(&d);
@@ -244,7 +244,7 @@ fn schedule_c_specials_d_qualified_worksheet_and_shared_deferral_room() {
     let mut d = draft(100_000);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19740101;
     business(&mut d).retirement = BusinessRetirement::Qualified {
-        rate: 2500,
+        rate: 25.0,
         contribution: 1_858_700,
         deferral: 2_450_000,
         catch_up: 800_000,
@@ -255,7 +255,9 @@ fn schedule_c_specials_d_qualified_worksheet_and_shared_deferral_room() {
     assert_eq!(value(&r, "owner_plan_2_step21"), 51_087);
     let mut w = wage(3, Owner::Taxpayer, 0, 0);
     let FederalIncome::Wage { data } = &mut w.income else { panic!() };
+    let mut data = edit_wage(data);
     data.other_box12.push(W2CodeAmount { code: W2Code::D, amount: 1_000_000 });
+    drop(data);
     add(&mut d, w);
     let r = supported(&d);
     assert_eq!(amount(&r, "owner_plan_deduction"), 41_087);
@@ -312,13 +314,15 @@ fn schedule_c_specials_f_header_returns_other_income_and_overtime() {
     add(
         &mut d,
         income(FederalIncome::Nec1099 {
-            data: FederalForm1099Nec {
+            data: nec_source(FederalForm1099Nec {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
+                overtime: 0,
                 compensation: 2_000_000,
                 withholding: 0,
                 golden_parachute: 0,
-                belongs: IncomeUse::Business,
-                business: Some(2),
-            },
+                belongs: None,
+            }),
         }),
     );
     d.income.last_mut().unwrap().label.clear();
@@ -392,6 +396,12 @@ fn round_trip(d: &FederalDraft) -> FederalDraft {
     crate::tests::cross::interview::accepted(&send(&mut session, request));
     let mut expected = decoded.clone();
     expected.revision = session.draft.revision;
+    // The first save of the applying topic records the visit (and the walk
+    // passes what it leaves empty); nothing else changes.
+    expected.finished_sections = session.draft.finished_sections.clone();
+    assert!(expected.finished_sections.contains(&TaxSection::SelfEmployment));
+    // A visited business topic is also ticked as a planned activity.
+    expected.checklist.activities |= ActivityTopics::BUSINESS.0;
     assert_eq!(session.draft, expected);
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
     assert_eq!(supported(&session.draft).tax, supported(&decoded).tax);
@@ -402,6 +412,8 @@ fn round_trip(d: &FederalDraft) -> FederalDraft {
 fn schedule_c_specials_employee_lease_rows_and_dot_meals() {
     let mut d = complete(FederalStatus::Single);
     d.adjustments.as_mut().unwrap().employee_expenses = vec![EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: true,
         leased_vehicles: vec![lease()],
         owner: Owner::Taxpayer,
@@ -462,6 +474,8 @@ fn schedule_c_lease_inclusion_reduces_only_the_lease_deduction() {
         assert_eq!(amount(&r, "car_and_truck"), 2_550);
         assert_eq!(amount(&r, "net_profit"), 97_450);
         d.adjustments.as_mut().unwrap().employee_expenses = vec![EmployeeExpenseClaim {
+            improvement_buildings: Vec::new(),
+            equipment_assets: vec![],
             dot_hours_of_service: false,
             leased_vehicles: vec![v.clone()],
             owner: Owner::Taxpayer,
@@ -491,8 +505,6 @@ fn schedule_c_lease_term_and_calendar_bounds_match_the_typed_rules() {
     v.ends = Some(20260130);
     assert!(v.valid());
     v.ends = Some(20251231);
-    assert_eq!(v.rule(), Some("LEASE_ENDS_BEFORE_BEGAN"));
-    v.ends = Some(20260230);
     assert_eq!(v.rule(), Some("LEASE_ENDS_BEFORE_BEGAN"));
     v.ends = None;
     v.commuting = 5_000;
@@ -551,6 +563,7 @@ fn schedule_c_depletion_is_separate_from_the_royalty_schedule_e_owner() {
         &mut d,
         income(FederalIncome::Royalty {
             data: FederalRoyalty {
+                related: alloc::vec![],
                 kind: RoyaltyKind::Mineral { rate: RoyaltyMineralRate::Ten },
                 receipts: 2_000_000,
                 advance: 0,

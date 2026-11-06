@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 219500, "rule": {"select": "^<RecordChoice>.label", "promote": true}}
+  ]
+}

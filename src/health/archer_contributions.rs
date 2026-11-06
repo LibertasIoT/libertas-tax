@@ -1,10 +1,15 @@
+pub use crate::archer_source::{
+    ArcherContributions, ArcherContributor, ArcherCorrection, ArcherCorrectionPayer,
+    ArcherCoverage, ArcherEligibility, ArcherExcessAccounting, ArcherPriorEmployerExcessDeposit,
+    ArcherPriorExcess, ArcherSharing,
+};
 use crate::validation::ValidationIssue;
 // Coverage: Form5329 PRINT PartVI (2026-10-13): existing accepted excess
 //   sources project lines34–41 per filer, including full room/distribution
 //   subtotal37 and total40. Source cents, carry and rounded taxes are unchanged.
 //   Evidence: tests/health/health_accounts.rs and corpus footings; IRS2026 draft f5329.
-// Coverage: Form 8853 Part I (Archer MSA contributions) — Supported (unit B6a, 2026-10-09 added its
-//   page; the calculation was audited 2026-09-24).
+// Coverage: Form 8853 Part I (Archer MSA contributions) — Supported.
+//   The calculation was audited 2026-09-24.
 //   Lines: 1-5 the monthly limits of Rev. Proc. 2025-32 section 4.28 (65% of the self-only and 75%
 //   of the family deductible, shared by spouses in the agreed shares), the compensation cap, line 3
 //   the employer-funded deposits, Schedule 1 line 23 the deduction; the personal and employer
@@ -21,7 +26,7 @@ use crate::validation::ValidationIssue;
 //   ARCHER_INCOME_TWICE) and the ranges Archer valid() repeats stay server-only
 //   (ARCHER_RECORD_INVALID). Not calculated: a Medicare Advantage MSA's contributions (none are
 //   allowed) and the distributions side (medical_account.rs).
-//   Fix unit F3 (2026-10-10): the records, correction, prior employer excess and excess
+//   The records, correction, prior employer excess and excess
 //   accounting confirmations are gone; the printed dates and amounts decide.
 //   Retained excess also follows Form 5329 line 35 when current employer deposits
 //   exist: unused capacity subtracts both current personal and employer deposits.
@@ -31,132 +36,17 @@ use crate::validation::ValidationIssue;
 //   tests/health/retirement.rs archer_*. Sources: https://www.irs.gov/pub/irs-dft/f8853--dft.pdf and
 //   i8853--dft.pdf (2026 drafts), https://www.irs.gov/pub/irs-dft/f5329--dft.pdf, Rev. Proc. 2025-32.
 // Form 8853 Part I; 2026 plan limits: Rev. Proc. 2025-32 section 4.28.
-use crate::federal_rules::valid_date;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{line, line_cents};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{self, Exact, whole};
 use crate::kernel::ratio::positive;
-use crate::medical_account::{explanation_output, required_output};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{line, line_cents};
+use crate::medical_account::required_output;
+use crate::medical_account_return::explanation_output;
 use crate::{FederalDraft, FederalIncome, FederalResult, FederalStatus, Owner};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
-
-/// Archer MSA contribution records
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ArcherContributions {
-    /// No regular Archer MSA contributions or retained excess for either spouse
-    None,
-    /// Personal or employer contributions for 2026
-    Records {
-        /// Owners and coverage
-        /// Include the spouse's coverage and contributions even if that spouse has no funded MSA or files separately. Use a zero-amount row for coverage-only information.
-        // Tax structure: one contribution owner for each of the two spouses.
-        #[libertas_size(min = 1, max = 2)]
-        owners: Vec<ArcherContributor>,
-        /// Family-limit allocation
-        sharing: ArcherSharing,
-    },
-}
-
-/// Annual Archer MSA owner
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ArcherContributor {
-    /// Owner
-    pub owner: Owner,
-    /// Personal contributions
-    /// Enter other original2026-designated principal before timely corrections. Exclude failed indirect-rollover deposits entered on Other income; the App adds those linked ordinary cash deposits once. Corrected principal is removed once.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub personal: i64,
-    /// Employer contributions, W-2 box 12 code R
-    /// Enter original 2026-designated principal before the timely corrections listed below. Excluded amounts are not deducted again; taxable excess and corrected principal need W-2 reconciliation.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub employer: i64,
-    /// Employer principal designated for 2026 outside entered W-2 sources
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub employer_outside: i64,
-    /// Timely returned excess contributions
-    /// Record custodian-completed corrective distributions here, not as ordinary Archer MSA withdrawals. The 2026 contribution totals above include original principal designated for 2026, which the App removes once. A 2025-designated principal belongs on the retained 2025 Form 8853 instead.
-    pub corrections: Vec<ArcherCorrection>,
-    /// Uncorrected 2025-designated employer excess actually deposited in 2026
-    /// Keep it out of the 2026 personal/employer contribution totals above. Its retained 2025 Form 8853 establishes the excess; actual 2026 W-2 wage reporting determines whether it enters 2026 other income.
-    pub prior_employer_excess: Vec<ArcherPriorEmployerExcessDeposit>,
-    /// Current uncorrected contribution excess for this owner
-    /// Leave absent when net deposits after timely corrections fit the rules and no retained prior excess remains. This worksheet computes the deductible amount, taxable employer excess and Form 5329 tax.
-    pub excess_accounting: Option<ArcherExcessAccounting>,
-    /// Eligibility and coverage on each month's first day
-    pub coverage: ArcherEligibility,
-    /// Income record IDs for the employers or businesses maintaining the HDHP
-    /// Link this owner's W-2 or Form 8919 earned compensation or Schedule C or Schedule F businesses; no pension, deferred compensation or unrelated employer. The selected W-2 box 1 amounts must equal qualifying earned compensation. Business net income and its share of deductible SE tax are calculated by the App. Leave empty only for a coverage-only row or a spouse filing outside this return.
-    pub income: Vec<i64>,
-}
-
-/// Retained 2025 Form 5329 Archer MSA excess
-/// Use the actual prior return after any amendment. The 2026 form imports its excess only when the prior tax was positive.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ArcherPriorExcess {
-    /// Retained 2025 Form 5329 line 40 excess contributions
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub line_40: i64,
-    /// Retained 2025 Form 5329 line 41 tax
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub line_41: i64,
-}
-impl ArcherPriorExcess {
-    fn valid(&self) -> bool {
-        self.line_40 >= 1 && self.line_41 >= 1
-    }
-}
-
-/// Timely Archer MSA excess-contribution return
-/// Use the custodian's completed corrective distribution (Form 1099-SA code 2), not an ordinary withdrawal, and enter it once. Current contribution totals include 2026-designated original principal; 2025-designated principal belongs only on the retained prior return.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct ArcherCorrection {
-    /// Actual returned-excess statement, if entered on Other income
-    /// Link the actual accepted source to avoid counting its earnings again. Leave empty for a correction whose statement is not entered separately.
-    #[libertas_default($null)]
-    #[libertas_number(min = 1)]
-    pub document: Option<i64>,
-    /// Original failed indirect-rollover deposit, if this return corrects one
-    /// Choose the original Other-income statement, separately from the returned-excess statement above. The contribution date and year must match its actual failed cash deposit. Leave empty only for other manually reported contributions.
-    #[libertas_default($null)]
-    #[libertas_number(min = 1)]
-    pub failed_deposit: Option<i64>,
-    /// Tax year for which the original contribution was designated
-    // Tax structure: these corrections concern the prior or current return year (2025 or 2026).
-    #[libertas_number(min = 2025, max = 2026)]
-    pub year: u32,
-    /// Date the original principal was actually deposited
-    #[libertas_date_only]
-    // Tax structure: a 2025 or 2026 designated contribution may be deposited in the following calendar year.
-    #[libertas_number(min = 20250101, max = 20271231)]
-    pub contributed_on: u32,
-    /// Original excess principal returned
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub principal: i64,
-    /// Attributable net income returned
-    /// A negative amount is a loss reducing cash returned, not the principal removed from contributions. Positive earnings enter income in the withdrawal year.
-    #[libertas_money("USD", 2)]
-    pub earnings: i64,
-    /// Date the principal and all attributable net income were returned
-    #[libertas_date_only]
-    #[libertas_number(min = 20250101)]
-    pub returned: u32,
-    /// Applicable return or IRS-relief correction deadline
-    /// Use the documented due date including a valid extension or relief, with any timely-filing/amendment conditions already satisfied.
-    #[libertas_date_only]
-    #[libertas_number(min = 20250101)]
-    pub deadline: u32,
-    /// Source of the corrected contribution
-    pub payer: ArcherCorrectionPayer,
-}
 
 /// Timely Archer MSA excess-contribution return
 /// Use the custodian's completed corrective distribution (Form 1099-SA code 2), not an ordinary withdrawal, and enter it once. Current contribution totals include 2026-designated original principal; 2025-designated principal belongs only on the retained prior return.
@@ -191,11 +81,14 @@ pub struct ArcherCorrectionPage {
     pub contributed_on: u32,
     /// Original excess principal returned
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub principal: i64,
     /// Attributable net income returned
     /// A negative amount is a loss reducing cash returned, not the principal removed from contributions. Positive earnings enter income in the withdrawal year.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub earnings: i64,
     /// Date the principal and all attributable net income were returned
     #[libertas_date_only]
@@ -237,69 +130,7 @@ impl ArcherCorrection {
         self.into()
     }
 }
-/// Source of a corrected Archer MSA deposit
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ArcherCorrectionPayer {
-    /// Personal or other after-tax contribution
-    Personal,
-    /// Employer or payroll-excluded contribution
-    Employer {
-        /// Corrected principal already included in deposit-year W-2 wages
-        /// Yes requires those wages in Income. No adds principal to other income in the actual deposit year; a 2027 deposit does not add 2026 income. Check the deposit-year W-2 and employer payroll statement.
-        in_wages: bool,
-    },
-}
 impl ArcherCorrection {
-    // The rules the page checks, checked again on save with the same keys.
-
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        if self.failed_deposit.is_some() && !matches!(self.payer, ArcherCorrectionPayer::Personal) {
-            Some(
-                crate::validation::ValidationIssue::new("HEALTH_FAILED_DEPOSIT_PERSONAL_REQUIRED")
-                    .at_field("payer"),
-            )
-        } else if self.returned < self.contributed_on {
-            Some(
-                crate::validation::ValidationIssue::new(
-                    "ARCHER_CORRECTION_RETURNED_BEFORE_DEPOSIT",
-                )
-                .at_field("returned"),
-            )
-        } else if self.deadline < self.contributed_on {
-            Some(
-                crate::validation::ValidationIssue::new(
-                    "ARCHER_CORRECTION_DEADLINE_BEFORE_DEPOSIT",
-                )
-                .at_field("deadline"),
-            )
-        } else if whole(self.earnings) + whole(self.principal) < whole(0) {
-            Some(
-                crate::validation::ValidationIssue::new("ARCHER_CORRECTION_LOSS_ABOVE_PRINCIPAL")
-                    .at_field("earnings"),
-            )
-        } else {
-            None
-        }
-    }
-    fn valid(&self) -> bool {
-        self.document.is_none_or(|id| id > 0)
-            && self
-                .failed_deposit
-                .is_none_or(|id| id > 0 && matches!(self.payer, ArcherCorrectionPayer::Personal))
-            && (2025..=2026).contains(&self.year)
-            && valid_date(self.contributed_on)
-            && (self.year..=self.year + 1).contains(&(self.contributed_on / 10000))
-            && self.principal >= 1
-            && self.earnings >= -self.principal
-            && valid_date(self.returned)
-            && valid_date(self.deadline)
-            && self.contributed_on <= self.returned
-            && self.contributed_on <= self.deadline
-            && (self.year..=2028).contains(&(self.returned / 10000))
-    }
-    fn eligible(&self) -> bool {
-        self.returned <= self.deadline
-    }
     fn current_earnings_income(&self) -> i64 {
         if self.returned / 10000 == 2026 { positive(self.earnings) } else { 0 }
     }
@@ -314,215 +145,6 @@ impl ArcherCorrection {
     }
 }
 
-/// Uncorrected prior-year Archer employer excess deposited in 2026
-/// This deposit was designated for 2025 and belongs on that year's Form 8853, not the current contribution worksheet. Its taxable principal follows the actual deposit year's W-2 or other income. The employer and custodian designated it for 2025 and the retained Form 8853 shows it above the allowable limit; if the retained 2025 Form 5329 line 41 tax was positive, enter its line 40 excess separately.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct ArcherPriorEmployerExcessDeposit {
-    /// Actual 2026 Archer MSA deposit date
-    #[libertas_date_only]
-    // Tax structure: this event or eligibility period must fall by the end of the return year.
-    #[libertas_number(min = 20260101, max = 20261231)]
-    pub contributed_on: u32,
-    /// Last permitted date for a 2025-designated contribution
-    /// Use April 15, 2026 or a documented later deadline under applicable relief; an ordinary filing extension alone does not extend the contribution deadline.
-    #[libertas_date_only]
-    // Tax structure: this event or eligibility period must fall by the end of the return year.
-    #[libertas_number(min = 20260101, max = 20261231)]
-    pub deadline: u32,
-    /// Principal established as uncorrected employer excess on retained 2025 Form 8853
-    /// This is the taxable excess part, not the entire code R contribution. Do not also enter it as a 2026-designated contribution or timely correction.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// Taxable principal already included in 2026 W-2 box 1 wages
-    /// Yes requires those wages in Income. No sends principal to Schedule 1 other income. Check the deposit-year W-2 and employer payroll statement.
-    pub in_wages: bool,
-}
-impl ArcherPriorEmployerExcessDeposit {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.contributed_on > self.deadline).then_some(
-            crate::validation::ValidationIssue::new("ARCHER_PRIOR_EXCESS_DEPOSIT_AFTER_DEADLINE")
-                .at_field("deadline"),
-        )
-    }
-    fn valid(&self) -> bool {
-        valid_date(self.contributed_on)
-            && self.contributed_on / 10000 == 2026
-            && valid_date(self.deadline)
-            && self.deadline / 10000 == 2026
-            && self.contributed_on <= self.deadline
-            && self.amount >= 1
-    }
-}
-
-/// Owner-specific Archer MSA excess-accounting facts
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct ArcherExcessAccounting {
-    /// 2025 excess and tax on the retained Form 5329, if any
-    /// [NullText]
-    /// No 2025 Archer MSA excess carries into 2026
-    /// [SetText]
-    /// The retained 2025 excess and tax are
-    pub prior_year: Option<ArcherPriorExcess>,
-    /// Fair market value of all the owner's Archer MSAs on December 31, 2026
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub year_end_value: i64,
-    /// Further deposits made in 2027 and designated for 2026
-    /// Exclude source-linked failed indirect-rollover deposits here; the App adds them once. Include other deposits in the personal contribution total above. Form 5329 adds them to year-end value when limiting the 6% tax.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub later_return_year_deposits: i64,
-    /// Employer deposits in 2027 designated for 2026
-    /// This is part of later deposits and the employer total above. Taxable excess from these deposits belongs to the 2027 return, although it affects the 2026 Form 5329 limit and account value.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub later_employer_deposits: i64,
-    /// Current-year employer excess already included in 2026 W-2 wages
-    /// Supply only taxable excess from employer deposits actually made in 2026. The rest enters 2026 Schedule 1 other income; later deposits belong to 2027.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub employer_excess_in_wages: i64,
-}
-impl ArcherExcessAccounting {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.later_employer_deposits > self.later_return_year_deposits).then_some(
-            crate::validation::ValidationIssue::new("ARCHER_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER")
-                .at_field("later_employer_deposits"),
-        )
-    }
-    fn valid(&self) -> bool {
-        self.year_end_value >= 0
-            && self.later_return_year_deposits >= 0
-            && self.later_employer_deposits >= 0
-            && self.employer_excess_in_wages >= 0
-            && self.prior_year.as_ref().is_none_or(ArcherPriorExcess::valid)
-    }
-}
-
-/// Archer MSA monthly eligibility
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ArcherEligibility {
-    /// Same eligibility and plan all year
-    FullYear { coverage: ArcherCoverage },
-    /// Eligibility or plan changes during the year
-    Monthly {
-        /// January through December, exactly twelve entries
-        // Tax structure: at most one eligibility or coverage entry per calendar month.
-        #[libertas_size(min = 12, max = 12)]
-        months: Vec<ArcherCoverage>,
-    },
-}
-/// Archer MSA eligible coverage
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum ArcherCoverage {
-    /// Not eligible this month
-    /// Includes Medicare, disqualifying coverage, dependent status or no eligible HDHP.
-    None,
-    /// Eligible self-only HDHP
-    SelfOnly {
-        /// Annual deductible
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        deductible: i64,
-        /// Annual out-of-pocket maximum excluding premiums
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        out_of_pocket: i64,
-    },
-    /// Eligible family HDHP
-    Family {
-        /// Annual deductible
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        deductible: i64,
-        /// Annual out-of-pocket maximum excluding premiums
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        out_of_pocket: i64,
-    },
-}
-/// Shared family limit
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum ArcherSharing {
-    /// Equal shares when both spouses are eligible
-    Equal,
-    /// Spouses agree to a different division
-    Agreed {
-        /// Your share in hundredths of one percent
-        /// 6000 means 60%; the spouse receives the remainder. Applies to each month with two eligible spouses and family coverage. Separate filers must agree on complementary shares.
-        // Tax structure: the taxpayer share is between zero and 100%, in hundredths of a percent.
-        #[libertas_number(min = 0, max = 10000)]
-        taxpayer: u32,
-    },
-}
-impl ArcherEligibility {
-    pub(crate) fn month(&self, index: usize) -> ArcherCoverage {
-        match self {
-            Self::FullYear { coverage } => *coverage,
-            Self::Monthly { months } => months.get(index).copied().unwrap_or(ArcherCoverage::None),
-        }
-    }
-    fn valid(&self) -> bool {
-        (match self {
-            Self::FullYear { .. } => true,
-            Self::Monthly { months } => months.len() == 12,
-        }) && (0..12).all(|m| match self.month(m) {
-            ArcherCoverage::None => true,
-            ArcherCoverage::SelfOnly { deductible, out_of_pocket }
-            | ArcherCoverage::Family { deductible, out_of_pocket } => {
-                [deductible, out_of_pocket].iter().all(|v| *v >= 0)
-            }
-        })
-    }
-}
-impl ArcherCorrection {
-    // The principal returned for 2026 by one payer: the sum the page rules
-    // ARCHER_CORRECTED_*_ABOVE_CONTRIBUTED and ARCHER_LATER_*_ABOVE_NET take.
-    fn returned_for_return_year(corrections: &[ArcherCorrection], employer: bool) -> Exact {
-        corrections
-            .iter()
-            .filter(|v| {
-                v.year == 2026
-                    && matches!(v.payer, ArcherCorrectionPayer::Employer { .. }) == employer
-            })
-            .map(|v| whole(v.principal))
-            .sum()
-    }
-}
-impl ArcherCorrection {
-    fn manual_returned_for_return_year(corrections: &[ArcherCorrection], employer: bool) -> Exact {
-        corrections
-            .iter()
-            .filter(|c| {
-                c.failed_deposit.is_none()
-                    && c.year == 2026
-                    && matches!(c.payer, ArcherCorrectionPayer::Employer { .. }) == employer
-            })
-            .map(|c| whole(c.principal))
-            .sum()
-    }
-}
-impl ArcherContributor {
-    fn corrected(&self, employer: bool) -> Exact {
-        ArcherCorrection::returned_for_return_year(&self.corrections, employer)
-    }
-    fn net_personal(&self) -> Exact {
-        whole(self.personal) - self.corrected(false)
-    }
-    fn net_employer(&self) -> Exact {
-        whole(self.employer) - self.corrected(true)
-    }
-}
 impl ArcherContributorRow {
     // The sums across the owner's records, each with the key of its page rule.
     fn cross_record_issue(&self) -> Option<ValidationIssue> {
@@ -561,92 +183,6 @@ impl ArcherContributorRow {
             })
     }
 }
-impl ArcherCoverage {
-    fn family(self) -> Option<i64> {
-        match self {
-            Self::Family { deductible, .. } => Some(deductible),
-            _ => None,
-        }
-    }
-    fn qualified(self) -> bool {
-        match self {
-            Self::None => true,
-            Self::SelfOnly { deductible, out_of_pocket } => {
-                (crate::year_constants::ARCHER_SELF_ONLY_DEDUCTIBLE_MINIMUM_CENTS
-                    ..=crate::year_constants::ARCHER_SELF_ONLY_DEDUCTIBLE_MAXIMUM_CENTS)
-                    .contains(&deductible)
-                    && (deductible
-                        ..=crate::year_constants::ARCHER_SELF_ONLY_OUT_OF_POCKET_MAXIMUM_CENTS)
-                        .contains(&out_of_pocket)
-            }
-            Self::Family { deductible, out_of_pocket } => {
-                (crate::year_constants::ARCHER_FAMILY_DEDUCTIBLE_MINIMUM_CENTS
-                    ..=crate::year_constants::ARCHER_FAMILY_DEDUCTIBLE_MAXIMUM_CENTS)
-                    .contains(&deductible)
-                    && (deductible
-                        ..=crate::year_constants::ARCHER_FAMILY_OUT_OF_POCKET_MAXIMUM_CENTS)
-                        .contains(&out_of_pocket)
-            }
-        }
-    }
-}
-impl ArcherContributions {
-    pub(crate) fn valid(&self) -> bool {
-        match self {
-            Self::None => true,
-            Self::Records { owners, sharing, .. } => {
-                !owners.is_empty()
-                    // Tax structure: at most the taxpayer and spouse.
-                    && owners.len() <= 2
-                    && !matches!(sharing, ArcherSharing::Agreed { taxpayer } if *taxpayer > 10000)
-                    && owners.iter().all(|v| {
-                        v.personal >= 0
-                            && v.employer >= 0
-                            && v.employer_outside >= 0
-                            && v.corrections.iter().all(ArcherCorrection::valid)
-                            && ArcherCorrection::manual_returned_for_return_year(&v.corrections, false)
-                                <= whole(v.personal)
-                            && ArcherCorrection::manual_returned_for_return_year(&v.corrections, true)
-                                <= whole(v.employer)
-                            && v.prior_employer_excess
-                                .iter()
-                                .all(ArcherPriorEmployerExcessDeposit::valid)
-                            && v.excess_accounting.as_ref().is_none_or(|e| {
-                                e.valid()
-                                    && whole(e.later_return_year_deposits)
-                                        <= (whole(v.personal)
-                                            - ArcherCorrection::manual_returned_for_return_year(
-                                                &v.corrections,
-                                                false,
-                                            ))
-                                            + v.net_employer()
-                                    && e.later_employer_deposits <= e.later_return_year_deposits
-                                    && whole(e.later_employer_deposits) <= v.net_employer()
-                                    && whole(e.later_return_year_deposits)
-                                        - whole(e.later_employer_deposits)
-                                        <= (whole(v.personal)
-                                            - ArcherCorrection::manual_returned_for_return_year(
-                                                &v.corrections,
-                                                false,
-                                            ))
-                            })
-                            && v.coverage.valid()
-                            && v.income.iter().all(|id| *id > 0)
-                    })
-            }
-        }
-    }
-    pub(crate) fn deposits(&self) -> [Exact; 2] {
-        let mut totals = [whole(0), whole(0)];
-        if let Self::Records { owners, .. } = self {
-            for v in owners {
-                totals[usize::from(v.owner == Owner::Spouse)] +=
-                    v.net_personal() + v.net_employer();
-            }
-        }
-        totals
-    }
-}
 
 /// Archer MSA contributions (Form 8853 Part I)
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -657,11 +193,11 @@ pub enum ArcherContributionsPage {
     Records {
         /// Owners and coverage
         /// Include the spouse's coverage and contributions even if that spouse has no funded MSA or files separately. Use a zero-amount row for coverage-only information.
-        /// ----
-        /// Owner
         // Tax structure: one contribution owner for each of the two spouses.
         #[libertas_size(min = 1, max = 2)]
         #[libertas_unordered]
+        /// ----
+        /// Owner
         owners: Vec<ArcherContributorRow>,
         /// Family-limit allocation
         #[libertas_default(Equal)]
@@ -677,15 +213,17 @@ pub struct ArcherContributorRow {
     #[libertas_default(Taxpayer)]
     pub owner: Owner,
     /// Personal contributions
-    /// Enter other original2026-designated principal before timely corrections. Exclude failed indirect-rollover deposits entered on Other income; the App adds those linked ordinary cash deposits once. Corrected principal is removed once.
+    /// Enter other original2026-designated principal outside the accepted Forms5498-SA before timely corrections. Exclude failed indirect-rollover deposits entered on Other income; the App adds those linked ordinary cash deposits once. Corrected principal is removed once.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub personal: i64,
     /// Other employer contributions designated for 2026
-    /// Only original principal outside the entered W-2 sources above, before timely corrections. Do not add allocated code R again. Actual next-calendar-year deposits designated for this return belong here; prior-year designations do not.
+    /// Only original principal outside both the entered W-2 sources and Forms5498-SA above, before timely corrections. Do not add allocated code R again. Actual next-calendar-year deposits designated for this return belong here; prior-year designations do not.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub employer: i64,
     /// Timely returned excess contributions
@@ -745,6 +283,7 @@ impl ArcherContributionsPage {
                     .map(|v| ArcherContributor {
                         owner: v.owner,
                         personal: v.personal,
+                        personal_outside: v.personal,
                         employer: v.employer,
                         employer_outside: v.employer,
                         corrections: v
@@ -829,6 +368,7 @@ impl From<crate::medical_account::OutputFailure> for CalculationIssue {
 }
 
 // Forward the existing invocation operands and its borrowed home context together.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn calculate_with_section179(
     d: &FederalDraft,
@@ -840,6 +380,33 @@ pub(crate) fn calculate_with_section179(
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
 ) -> Result<Calculation, CalculationIssue> {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_section179_with_claims(
+        d,
+        half,
+        optional_weights,
+        taxable_withdrawals,
+        selected,
+        failed,
+        r,
+        home,
+        &source_claims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn calculate_with_section179_with_claims(
+    d: &FederalDraft,
+    half: [i64; 2],
+    optional_weights: &alloc::collections::BTreeMap<i64, i64>,
+    taxable_withdrawals: [Exact; 2],
+    selected: Option<&crate::Section179PreparedAllocation>,
+    failed: &[crate::medical_rollover::Contribution; 2],
+    r: &mut FederalResult,
+    home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Calculation, CalculationIssue> {
+    let statement_totals = crate::contribution_documents::project(d).unwrap_or_default();
     let corrections = d.adjustments.as_ref().map_or(&ArcherContributions::None, |v| &v.archer);
     if let Some(key) = crate::hsa_correction::archer_source_rule(corrections, &d.income) {
         crate::require_localized!(
@@ -865,14 +432,14 @@ pub(crate) fn calculate_with_section179(
         r,
         owners.iter().all(|v| owners.iter().filter(|o| o.owner == v.owner).count() == 1)
             && (married || accounts[1].is_none()),
-        &crate::IssueContext::Review.manual(),
+        &crate::IssueContext::Section(crate::TaxSection::Hsa),
         "Archer MSA",
         "ISSUE_USE_ONE_ARCHER_CONTRIBUTION_RECORD_PER_OWNER_WITH_A_SPOUSE_ROW_ONLY_89036B4A",
         "Use one Archer contribution record per owner, with a spouse row only when married.",
     );
     let share = match sharing {
         ArcherSharing::Equal => 5000,
-        ArcherSharing::Agreed { taxpayer } => i64::from(*taxpayer),
+        ArcherSharing::Agreed { taxpayer } => crate::kernel::natural::units(*taxpayer, 100),
     };
     let mut numerators = [0_i128; 2];
     let mut shared_family = false;
@@ -881,7 +448,7 @@ pub(crate) fn calculate_with_section179(
         crate::require_localized!(
             r,
             coverage.iter().all(|v| v.qualified()),
-            &crate::IssueContext::Review.manual(),
+            &crate::IssueContext::Section(crate::TaxSection::Hsa),
             "Archer MSA",
             "ISSUE_AN_ELIGIBLE_2026_ARCHER_HDHP_MUST_MEET_THE_IRS_DEDUCTIBLE_AND_OUT_O_8BE1BDA9",
             "An eligible 2026 Archer HDHP must meet the IRS deductible and out-of-pocket limits; otherwise mark the month ineligible.",
@@ -892,7 +459,7 @@ pub(crate) fn calculate_with_section179(
         crate::require_localized!(
             r,
             !married || family.is_none() || accounts.iter().all(|v| v.is_some()),
-            &crate::IssueContext::Review.manual(),
+            &crate::IssueContext::Section(crate::TaxSection::Hsa),
             "Archer MSA",
             "ISSUE_SUPPLY_BOTH_SPOUSES_COVERAGE_RECORDS_INCLUDING_A_ZERO_CONTRIBUTION_B30F0C5A",
             "Supply both spouses' coverage records, including a zero-contribution row, to determine the family limit.",
@@ -911,7 +478,7 @@ pub(crate) fn calculate_with_section179(
                     !p.dependency.claimable()
                         && p.death_date().is_none_or(|date| 20260101 + m as u32 * 100 <= date)
                 }),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA",
                 "ISSUE_ELIGIBLE_ARCHER_MSA_MONTHS_CANNOT_FOLLOW_DEATH_OR_BELONG_TO_A_DEPEN_1C818CF3",
                 "Eligible Archer MSA months cannot follow death or belong to a dependent.",
@@ -962,7 +529,7 @@ pub(crate) fn calculate_with_section179(
             crate::require_localized!(
                 r,
                 prior_designated_total <= whole(prior.line_40),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer prior employer excess",
                 "ISSUE_UNCORRECTED_2025_DESIGNATED_EMPLOYER_EXCESS_DEPOSITED_IN_2026_CANNO_CD748793",
                 "Uncorrected 2025-designated employer excess deposited in 2026 cannot exceed retained 2025 Form 5329 line 40 excess.",
@@ -977,7 +544,7 @@ pub(crate) fn calculate_with_section179(
                     .is_none_or(|p| {
                         p.death_date().is_none_or(|date| deposit.contributed_on <= date)
                     }),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer prior employer excess",
                 "ISSUE_POST_DEATH_EMPLOYER_DEPOSITS_NEED_BENEFICIARY_OR_ESTATE_TREATMENT_559CB33D",
                 "Post-death employer deposits need beneficiary or estate treatment.",
@@ -1002,7 +569,7 @@ pub(crate) fn calculate_with_section179(
             crate::require_localized!(
                 r,
                 correction.eligible(),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA correction",
                 "ISSUE_CONFIRM_A_COMPLETE_TIMELY_ARCHER_MSA_CORRECTION_ITS_CONTRIBUTION_YE_68B7F8FA",
                 "Confirm a complete timely Archer MSA correction, its contribution year, deadline and known employer wage reporting. Late or incomplete corrections need separate treatment.",
@@ -1013,7 +580,7 @@ pub(crate) fn calculate_with_section179(
                     .as_ref()
                     .and_then(|p| if i == 0 { Some(&p.taxpayer) } else { p.spouse.as_ref() })
                     .is_none_or(|p| p.death_date().is_none_or(|date| correction.returned <= date)),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA correction",
                 "ISSUE_POST_DEATH_CORRECTIVE_DISTRIBUTIONS_REQUIRE_THE_BENEFICIARY_S_ACCOU_54757DF0",
                 "Post-death corrective distributions require the beneficiary's account or inheritance treatment.",
@@ -1058,18 +625,25 @@ pub(crate) fn calculate_with_section179(
         // Allocate the actual half-SE deduction by attributable SE earnings,
         // while the MSA compensation base remains actual business profit.
         let mut all_profit = whole(0);
-        for e in d.income.iter().filter(|e| e.owner == v.owner) {
+        for e in d.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(v.owner)) {
             if let FederalIncome::Business { data } = &e.income {
                 all_profit += match optional_weights.get(&e.id) {
                     Some(amount) => whole(*amount) * whole(100),
                     None => phase::floor(
                         whole(data.earned_receipts())
                             - whole(
-                                crate::section179_return::expenses(d, e.id, data, selected, home)
-                                    .map(|expense| {
+                                crate::section179_return::expenses_with_claims(
+                                    d,
+                                    e.id,
+                                    data,
+                                    selected,
+                                    home,
+                                    source_claims,
+                                )
+                                .map(|expense| {
                                     expense
                                         - selected.map_or(0, |allocation| {
-                                            allocation.ordinary_risk_adjustment(e.id)
+                                            allocation.ordinary_limit_adjustment(e.id)
                                         })
                                 })?,
                             ),
@@ -1082,7 +656,7 @@ pub(crate) fn calculate_with_section179(
             crate::require_localized!(
                 r,
                 &net_personal + &net_employer == whole(0) || !v.income.is_empty(),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA",
                 "ISSUE_LINK_THE_EMPLOYER_OR_BUSINESS_MAINTAINING_THE_HDHP_TO_CALCULATE_THE_9968DAAC",
                 "Link the employer or business maintaining the HDHP to calculate the compensation limit.",
@@ -1091,7 +665,7 @@ pub(crate) fn calculate_with_section179(
                 crate::require_localized!(
                     r,
                     !v.income[..n].contains(id),
-                    &crate::IssueContext::Review.manual(),
+                    &crate::IssueContext::Section(crate::TaxSection::Hsa),
                     "Archer MSA",
                     "ISSUE_DO_NOT_COUNT_ONE_COMPENSATION_SOURCE_TWICE_D840887D",
                     "Do not count one compensation source twice.",
@@ -1099,24 +673,26 @@ pub(crate) fn calculate_with_section179(
                 match d
                     .income
                     .iter()
-                    .find(|e| e.id == *id && e.owner == v.owner)
+                    .find(|e| e.id == *id && e.owner == crate::DocumentOwner::from(v.owner))
                     .map(|e| (&e.income, e.id))
                 {
-                    Some((FederalIncome::Wage { data }, _)) => match data.total_income() {
-                        Ok(amount) => compensation += whole(amount),
-                        Err(_message) => {
-                            #[cfg(test)]
-                            let message = _message;
-                            crate::require_localized!(
-                                r,
-                                false,
-                                &crate::IssueContext::Review.manual(),
-                                "Archer MSA compensation",
-                                "ISSUE_EMPLOYEE_TIPS_RECORDS",
-                                message,
-                            )
+                    Some((FederalIncome::Wage { data }, _)) => {
+                        match crate::FederalWage::from(data).total_income() {
+                            Ok(amount) => compensation += whole(amount),
+                            Err(_message) => {
+                                #[cfg(test)]
+                                let message = _message;
+                                crate::require_localized!(
+                                    r,
+                                    false,
+                                    &crate::IssueContext::Section(crate::TaxSection::Hsa),
+                                    "Archer MSA compensation",
+                                    "ISSUE_EMPLOYEE_TIPS_RECORDS",
+                                    message,
+                                )
+                            }
                         }
-                    },
+                    }
                     Some((FederalIncome::EmployeeWages { data }, _)) => match data.income() {
                         Ok(amount) => compensation += whole(amount),
                         Err(_message) => {
@@ -1125,7 +701,7 @@ pub(crate) fn calculate_with_section179(
                             crate::require_localized!(
                                 r,
                                 false,
-                                &crate::IssueContext::Review.manual(),
+                                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                                 "Archer MSA compensation",
                                 "ISSUE_EMPLOYEE_WAGES_RECORDS",
                                 message,
@@ -1136,13 +712,20 @@ pub(crate) fn calculate_with_section179(
                         has_business = true;
                         let profit = whole(data.earned_receipts())
                             - whole(
-                                crate::section179_return::expenses(d, id, data, selected, home)
-                                    .map(|expense| {
-                                        expense
-                                            - selected.map_or(0, |allocation| {
-                                                allocation.ordinary_risk_adjustment(id)
-                                            })
-                                    })?,
+                                crate::section179_return::expenses_with_claims(
+                                    d,
+                                    id,
+                                    data,
+                                    selected,
+                                    home,
+                                    source_claims,
+                                )
+                                .map(|expense| {
+                                    expense
+                                        - selected.map_or(0, |allocation| {
+                                            allocation.ordinary_limit_adjustment(id)
+                                        })
+                                })?,
                             );
                         business += &profit;
                         business_positive += optional_weights.get(&id).map_or_else(
@@ -1154,7 +737,7 @@ pub(crate) fn calculate_with_section179(
                         crate::require_localized!(
                             r,
                             false,
-                            &crate::IssueContext::Review.manual(),
+                            &crate::IssueContext::Section(crate::TaxSection::Hsa),
                             "Archer MSA",
                             "ISSUE_ARCHER_COMPENSATION_MUST_LINK_THIS_OWNER_S_W_2_FORM_8919_WAGES_OR_A_9C3E430C",
                             "Archer compensation must link this owner's W-2, Form 8919 wages or a Schedule C or Schedule F business maintaining the HDHP.",
@@ -1165,7 +748,7 @@ pub(crate) fn calculate_with_section179(
             crate::require_localized!(
                 r,
                 net_employer == whole(0) || !has_business,
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA",
                 "ISSUE_EMPLOYER_DEPOSITS_MUST_BE_SUPPORTED_BY_COMPENSATION_FROM_THE_CONTRI_D2405C7C",
                 "Employer deposits must be supported by compensation from the contributing employer, not by an unrelated self-employed business.",
@@ -1202,7 +785,7 @@ pub(crate) fn calculate_with_section179(
                     })
                     && v.corrected(true)
                         <= phase::floor(whole(v.employer) - &deductible, whole(0))),
-            &crate::IssueContext::Review.manual(),
+            &crate::IssueContext::Section(crate::TaxSection::Hsa),
             "Archer MSA correction",
             "ISSUE_TIMELY_RETURNED_PERSONAL_AND_EMPLOYER_PRINCIPAL_CANNOT_EXCEED_THEIR_5DBC74C3",
             "Timely returned personal and employer principal cannot exceed their respective original excess above the Form 8853 deduction or employer limit.",
@@ -1227,7 +810,10 @@ pub(crate) fn calculate_with_section179(
             );
             prior_remaining -= &prior_deducted;
             let current_employer_excess = phase::floor(
-                &net_employer - whole(excess.later_employer_deposits) - &deductible,
+                &net_employer
+                    - whole(excess.later_employer_deposits)
+                    - whole(statement_totals.archer[i].later_employer)
+                    - &deductible,
                 whole(0),
             );
             crate::require_localized!(
@@ -1235,12 +821,14 @@ pub(crate) fn calculate_with_section179(
                 returned
                     && (&personal_excess + &employer_excess > whole(0) || prior > 0)
                     && whole(excess.employer_excess_in_wages) <= current_employer_excess,
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA excess",
                 "ISSUE_THE_SUPPORTED_OWNER_SPECIFIC_FORM_5329_PART_VI_PATH_REQUIRES_CURREN_2A3F1B47",
                 "The owner-specific Form 5329 Part VI path requires current uncorrected excess or retained positive-tax 2025 excess, reconciled W-2 wages and complete year-end account value.",
             );
             let account_value = whole(excess.year_end_value)
+                + whole(statement_totals.archer[i].value)
+                + whole(statement_totals.archer[i].later)
                 + whole(excess.later_return_year_deposits)
                 + &failed[i].later;
             let capped_excess = phase::cap(
@@ -1423,7 +1011,7 @@ pub(crate) fn calculate_with_section179(
                 (!barred || net_personal == whole(0))
                     && &net_personal + &net_employer <= cap
                     && (!returned || &net_personal + &net_employer <= compensation),
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "Archer MSA",
                 "ISSUE_ARCHER_MSA_CONTRIBUTIONS_EXCEED_COVERAGE_ALLOCATION_OR_LINKED_COMPE_C7A07770",
                 "Archer MSA contributions exceed coverage/allocation or linked compensation limits, or employer deposits bar personal deductions; excess treatment is required.",

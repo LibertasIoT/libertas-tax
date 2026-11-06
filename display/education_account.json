@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 237000, "rule": {"select": "^<EducationAccountStudent>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_EDUCATION_COLLEGE", "fields": ["person", "college", "other_college", "used_elsewhere"]}, {"title": "DISPLAY_EDUCATION_K12", "fields": ["k12", "k12_coverdell", "apprenticeship", "academy_costs"]}, {"title": "DISPLAY_EDUCATION_LOANS", "fields": ["loan_payments", "loan_payments_before"]}]}},
+    {"order": 238000, "rule": {"select": "^<EducationAccountStudent>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_EDUCATION_COLLEGE", "fields": ["person", "college", "other_college", "used_elsewhere"]}, {"title": "DISPLAY_EDUCATION_K12", "fields": ["k12", "k12_coverdell", "apprenticeship", "academy_costs"]}, {"title": "DISPLAY_EDUCATION_LOANS", "fields": ["loan_payments", "loan_payments_before"]}]}}
+  ]
+}

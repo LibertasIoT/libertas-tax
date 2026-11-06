@@ -26,7 +26,7 @@ fn household_records_reconstruct_exact_facts_and_accepted_order_after_wire_round
     people.taxpayer.died = death(20260615);
     people.taxpayer.died.as_mut().unwrap().estate_medical = 13_579;
     original.dependents = vec![child(i64::MAX - 2), child(u32::MAX as i64 + 9)];
-    original.dependents[0].care = DependentCare::Yes { care_expenses: 10_037 };
+    original.dependents[0].care = Some(DependentCare::Yes { care_expenses: 10_037 });
     original.dependents[1].situation =
         DependentSituation::Supported { your_support_over_half: false, gross_income: 14_099 };
     // Equal labels must never establish identity or determine accepted order.

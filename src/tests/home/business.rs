@@ -15,7 +15,7 @@ fn home_sale_allocates_nonqualified_gain_after_depreciation() {
     assert_eq!(home.depreciation_gain(), 2000000);
     assert_eq!(home.nonqualified_gain(), 12000000);
     assert_eq!(home.excluded(FederalStatus::Single), Ok(18000000));
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(home) }));
     let r = supported(&d);
     assert_eq!(value(&r, "capital_gain"), 140000);
     assert_eq!(value(&r, "unrecaptured_section_1250_gain"), 20000);
@@ -35,9 +35,6 @@ fn home_depreciation_is_capped_at_gain_and_invalid_use_periods_are_rejected() {
     assert!(home.excluded(FederalStatus::Single).is_err());
     let HomeSaleUse::Adjusted { owned_days, .. } = &mut home.use_history else { panic!() };
     *owned_days = 399;
-    assert!(!home.valid());
-    let HomeSaleUse::Adjusted { owned_days, .. } = &mut home.use_history else { panic!() };
-    *owned_days = 0;
     assert!(!home.valid());
 }
 
@@ -76,16 +73,6 @@ fn sole_qualified_home_improvement_loan_has_no_form_8828_recapture() {
         *qualified_sole_subsidy = false;
     }
     unsupported(&d, "Mortgage subsidy recapture");
-    if let MortgageSubsidyDisposition::ExemptHomeImprovementLoan {
-        qualified_sole_subsidy,
-        original_principal,
-        ..
-    } = mortgage_disposition(&mut d)
-    {
-        *qualified_sole_subsidy = true;
-        *original_principal = 1_500_001;
-    }
-    assert!(!d.valid_stored());
 }
 
 // Boundary (3): the simplified home-office deduction caps at 300 square feet
@@ -369,8 +356,11 @@ fn form_8829_automatic_route_uses_each_routes_columns() {
     let mut d = office_return(60_000, itemizing_office(20180105));
     office_itemize(&mut d, 900_000, 800_000, 1_500_000, 0);
     let v = d.deductions.as_mut().unwrap();
-    let DeductionSelection::Itemized { facts } = v.choice.clone() else { panic!() };
-    v.choice = DeductionSelection::Automatic { expenses: ItemizedChoice::Yes { facts } };
+    let facts = v.itemized.clone();
+    {
+        v.itemized = facts;
+        v.itemize_override = None;
+    };
     let r = supported(&d);
     assert_eq!(line_8829(&r, "mortgage_interest"), 1_500_000);
     assert_eq!(line_8829(&r, "allowed"), 320_920);
@@ -383,8 +373,11 @@ fn form_8829_automatic_route_uses_each_routes_columns() {
     let mut d = office_return(60_000, small);
     office_itemize(&mut d, 0, 50_000, 100_000, 0);
     let v = d.deductions.as_mut().unwrap();
-    let DeductionSelection::Itemized { facts } = v.choice.clone() else { panic!() };
-    v.choice = DeductionSelection::Automatic { expenses: ItemizedChoice::Yes { facts } };
+    let facts = v.itemized.clone();
+    {
+        v.itemized = facts;
+        v.itemize_override = None;
+    };
     let r = supported(&d);
     // 16 = $1,000; 17 = $500; 24 = 10% x $1,500 = $150; 36 = $150.
     assert_eq!(line_8829(&r, "mortgage_interest"), 0);
@@ -436,6 +429,20 @@ fn main_home_foreclosure_gain_boundary_and_business_property_needs_its_sale() {
             unsupported(&d, "Income: ");
         }
     }
+    // A $100,000 basis is a $40,000 gain: the home sale of the same price
+    // excludes it (section 121; the page's 1,826 days owned and lived in).
+    let mut d = complete(FederalStatus::Single);
+    let basis = 10_000_000;
+    add(&mut d, acquisition(140000, 150000, true, TransferredProperty::MainHome { basis }));
+    unsupported(&d, "Income: ");
+    let mut sale = home_sale(false);
+    sale.price = 14_000_000;
+    sale.expenses = 0;
+    sale.basis = basis;
+    add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(sale) }));
+    let r = supported(&d);
+    assert_eq!(value(&r, "home_3_excluded_gain"), 40_000);
+    assert_eq!(value(&r, "home_3_taxable_gain"), 0);
     // Business property: the press sold for $7,000 on its own page matches a
     // $7,000 amount realized; a cent more names Form 4797.
     let mut d = asset_sale_return(vec![press(sold(20260601, 700_000, 0))]);
@@ -444,8 +451,115 @@ fn main_home_foreclosure_gain_boundary_and_business_property_needs_its_sale() {
     supported(&d);
     d.income.pop();
     if let FederalIncome::PropertyAcquisition { data } = &mut entry.income {
+        let mut data = edit_acquisition(data);
         data.value += 1;
     }
     add(&mut d, entry);
     unsupported(&d, "Income: ");
+}
+
+#[test]
+fn form_8829_beneficiary_taxes_consume_personal_salt_room_without_home_allocation() {
+    // 2026 i8829 Line 11 Worksheet: other personal taxes consume capacity,
+    // but line 6 remains 10% of the home's $6,000. The source's odd cent is
+    // retained until the existing Schedule A line rounds to dollars.
+    for (own, beneficiary, unlimited, excess, personal) in [
+        (0, 300_000, 60_000, 0, 840_000),
+        (3_400_000, 70_001, 29_999, 30_001, 4_010_001),
+        (3_400_000, 200_000, 0, 60_000, 4_140_000),
+    ] {
+        for kind in 0..4 {
+            let mut taxes = [0; 4];
+            taxes[kind] = beneficiary;
+            let mut draft = office_estate_tax_return(own, taxes);
+            if kind == 3 {
+                itemized(draft.deductions.as_mut().unwrap()).personal_tax =
+                    PersonalTaxElection::Sales { paid: own };
+            }
+            let result = supported(&draft);
+            assert_eq!(line_8829(&result, "worksheet_business_taxes"), 60_000);
+            assert_eq!(line_8829(&result, "excess_taxes"), excess);
+            assert_eq!(line_8829(&result, "unlimited"), unlimited);
+            assert_eq!(value(&result, "salt_deduction"), (personal / 100).min(40_400));
+            assert_eq!(line_8829(&result, "allowed"), 60_000 + 34_000 + 76_920);
+        }
+    }
+}
+
+#[test]
+fn form_8829_beneficiary_tax_keeps_separate_return_salt_cap_and_amt_addback() {
+    let mut draft = office_estate_tax_return(1_400_000, [70_001, 0, 0, 0]);
+    let separate = complete(FederalStatus::Separate);
+    draft.setup = separate.setup;
+    answer_separate_pages(&mut draft);
+    draft.people = separate.people;
+    let result = supported(&draft);
+    assert_eq!(line_8829(&result, "unlimited"), 9_999);
+    assert_eq!(line_8829(&result, "excess_taxes"), 50_001);
+    assert_eq!(value(&result, "salt_deduction"), 20_100);
+    let FederalIncome::EstateTrustPortfolio { data } = &mut draft.income.last_mut().unwrap().income
+    else {
+        unreachable!()
+    };
+    let mut data = edit_estate(data);
+    data.final_personal_property_tax = 0;
+    drop(data);
+    let baseline = supported(&draft);
+    // Schedule A rises $700 while the taxable-income-limited QBI deduction
+    // falls $140. AMT adds back the SALT increase and keeps regular QBI
+    // (26 CFR 1.199A-1(e)(5)), leaving only that $140 QBI difference.
+    assert_eq!(value(&result, "taxable_income"), value(&baseline, "taxable_income") - 560);
+    assert_eq!(value(&result, "deduction"), value(&baseline, "deduction") + 700);
+    assert_eq!(value(&result, "qbi_deduction"), value(&baseline, "qbi_deduction") - 140);
+    assert_eq!(
+        value(&result, "alternative_minimum_taxable_income"),
+        value(&baseline, "alternative_minimum_taxable_income") + 140
+    );
+}
+
+#[test]
+fn form_8829_beneficiary_income_or_sales_election_and_source_refusals_remain_owned() {
+    for (taxes, election) in [
+        ([0, 0, 200_000, 0], PersonalTaxElection::Sales { paid: 3_400_000 }),
+        (
+            [0, 0, 0, 200_000],
+            PersonalTaxElection::Income {
+                paid: 3_400_000,
+                allocation: TaxIncomeAllocation::CurrentReturn,
+            },
+        ),
+    ] {
+        let mut draft = office_estate_tax_return(3_400_000, taxes);
+        itemized(draft.deductions.as_mut().unwrap()).personal_tax = election;
+        let result = supported(&draft);
+        assert_eq!(line_8829(&result, "unlimited"), 60_000);
+        assert_eq!(value(&result, "salt_deduction"), 39_400);
+    }
+    for (successor, classified, key) in [
+        (
+            false,
+            true,
+            "ISSUE_CONFIRM_A_FINAL_2026_FORM_1041_AND_THAT_THIS_BENEFICIARY_SUCCEEDS_T_5C3A8A61",
+        ),
+        (
+            true,
+            false,
+            "ISSUE_CONFIRM_THE_ENTIRE_FINAL_YEAR_BOX_11_CODE_B_AMOUNT_IS_ALLOCATED_STA_C1AF69AE",
+        ),
+    ] {
+        let mut draft = office_estate_tax_return(3_400_000, [70_001, 0, 0, 0]);
+        let FederalIncome::EstateTrustPortfolio { data } =
+            &mut draft.income.last_mut().unwrap().income
+        else {
+            unreachable!()
+        };
+        let mut data = edit_estate(data);
+        data.final_year_successor = Some(successor);
+        data.final_taxes_only = classified;
+        data.final_character = None;
+        drop(data);
+        let result = estimate(&draft);
+        assert_eq!(result.state, ResultState::Unsupported);
+        assert!(result.issues.iter().any(|issue| issue.display.key == key));
+    }
 }

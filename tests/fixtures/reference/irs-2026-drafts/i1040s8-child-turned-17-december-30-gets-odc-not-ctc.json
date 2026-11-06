@@ -1,0 +1,72 @@
+{
+ "source": {
+  "title": "Instructions for Schedule 8 (Form 1040), Schedule 8812 (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 3",
+  "example": "Qualifying child for the CTC, Example 1",
+  "url": "https://www.irs.gov/pub/irs-dft/i1040s8--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "d1b1893ee232e2cd909a94ac2ef3ba9f2bb2a9591f8f238a6c61b75db3bf4335"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "filer born 1980-06-15, single, W-2 wages $60,000 with $6,000 withholding",
+   "reason": "the example gives no income; wages below the credit phaseout keep the credit unreduced"
+  },
+  {
+   "fact": "the child was born 2009-12-30, lives with the filer all year, has an SSN and is a U.S. citizen",
+   "reason": "the example: turned 17 on December 30, 2026, a U.S. citizen claimed as a dependent"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19800615,
+ "pages": [
+  {
+   "page": "children",
+   "children": [
+    [
+     "ALEX",
+     "SAMPLE",
+     20091230
+    ]
+   ]
+  },
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 60000,
+     "withholding": 6000,
+     "social_wages": 60000,
+     "social_tax": 3720,
+     "medicare_wages": 60000,
+     "medicare_tax": 870
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "8812",
+   "line": "4",
+   "amount": 0,
+   "provenance": "stated"
+  },
+  {
+   "form": "8812",
+   "line": "6",
+   "amount": 1,
+   "provenance": "stated"
+  },
+  {
+   "form": "8812",
+   "line": "7",
+   "amount": 500,
+   "provenance": "derived",
+   "derivation": "$500 per other dependent (Schedule 8812 line 7)"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

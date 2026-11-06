@@ -6,25 +6,31 @@ pub(in crate::tests) fn able_distribution(
     expenses: i64,
 ) -> FederalIncome {
     FederalIncome::Able {
-        data: AbleDistribution {
+        data: able_source(AbleDistribution {
             gross: gross * 100,
             earnings: earnings * 100,
-            treatment: AbleTreatment::Annual {
+            program_to_program_transfer: false,
+            account_terminated: false,
+            recipient_not_designated_beneficiary: false,
+            treatment: Some(AbleTreatment::Annual {
                 rollover: AbleRollover::None,
                 following_expenses: 0,
                 expenses: expenses * 100,
-            },
-        },
+            }),
+        }),
     }
 }
 
 pub(in crate::tests) fn able_correction(year: u32, earnings: i64) -> FederalIncome {
     FederalIncome::Able {
-        data: AbleDistribution {
+        data: able_source(AbleDistribution {
             gross: (2000 + earnings) * 100,
             earnings: earnings * 100,
-            treatment: AbleTreatment::Corrective { year },
-        },
+            program_to_program_transfer: false,
+            account_terminated: false,
+            recipient_not_designated_beneficiary: true,
+            treatment: Some(AbleTreatment::Corrective { year }),
+        }),
     }
 }
 
@@ -46,7 +52,7 @@ pub(in crate::tests) fn mixed_able(
 ) -> FederalIncome {
     let mut value = able_distribution(10000, 3000, expenses);
     if let FederalIncome::Able { data } = &mut value
-        && let AbleTreatment::Annual { rollover, .. } = &mut data.treatment
+        && let Some(AbleTreatment::Annual { rollover, .. }) = &mut data.treatment
     {
         *rollover =
             AbleRollover::Qualified { amount: rolled * 100, earnings: rolled_earnings * 100 };

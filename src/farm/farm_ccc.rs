@@ -1,5 +1,5 @@
 use crate::FederalResult;
-use crate::kernel::lines::line_cents;
+use crate::line_emission::line_cents;
 use crate::validation::ValidationIssue;
 use alloc::vec::Vec;
 use libertas_macros::*;
@@ -17,7 +17,8 @@ pub struct FarmCcc {
     /// Federal income tax withheld in 2026
     /// Actual current-year withholding from payment statements, even when loan principal is not income. Exclude amounts already entered elsewhere.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub withholding: i64,
     /// Producer, retained production cost and original section 77 history
@@ -48,7 +49,8 @@ pub struct CccLot {
     /// Original principal attributable to this lot or collateral portion
     /// Use the loan/release record amount before redemption payments, not the current unpaid balance. Do not invent a proportional allocation when the source records do not establish it.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub principal: i64,
     /// Redemption, forfeiture or outstanding collateral
     pub disposition: CccDisposition,
@@ -81,13 +83,15 @@ pub enum CccDisposition {
         /// Surplus above the loan recognized from the CCC during 2026
         /// Additional CCC proceeds received this year for cash accounting or recognized this year under the accrual all-events rules, even if forfeiture occurred earlier. Exclude original loan proceeds and amounts recognized in another year. Zero means no current surplus income.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         surplus: i64,
         /// Required loan deficiency actually paid during 2026
         /// Use only the principal shortfall you were legally required to pay and paid this year after CCC disposition, for a loan included in income under section 77. Zero if unpaid or released. Exclude interest, fees, redemption payments, voluntary payments and amounts deducted in another year. Loan-method deficiencies still need their own worksheet.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         deficiency: i64,
     },
@@ -101,7 +105,8 @@ pub enum CccDisposition {
         /// Principal redemption payment
         /// Exclude interest and fees. A purchaser's principal payment on your behalf also counts. Market gain is original principal minus this amount.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         paid: i64,
         /// 2026 sale proceeds recognized for the entire lot
         /// Cash farms enter proceeds received; accrual farms enter recognized sales, including receivables. Leave absent if still held; zero means a completed sale with no proceeds. Include buyer-paid loan settlement in gross proceeds. No prior-year sale belongs here. A partial sale needs a separate source-identified portion and attributable principal/redemption records; this proceeds amount must cover that entire portion.
@@ -110,7 +115,8 @@ pub enum CccDisposition {
         /// [SetText]
         /// Recognized sale proceeds for the entire crop portion are
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         sale: Option<i64>,
     },
 }
@@ -433,7 +439,7 @@ impl FarmCcc {
                 _ => None,
             }
             .map(|line| crate::FormLine::new(form.tax_form(), line));
-            crate::kernel::lines::push_line(
+            crate::line_emission::push_line(
                 r,
                 form_line,
                 &alloc::format!("farm_{id}_ccc_{name}"),

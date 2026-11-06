@@ -24,7 +24,10 @@ fn section1244_investment_loss_reduces_niit_and_can_create_business_nol() {
     assert_eq!(value(&r, "current_net_operating_loss"), 50000);
     assert_eq!(value(&r, "agi"), -50000);
     add(&mut d, wage(0, Owner::Taxpayer, 30000000, 0));
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(10000000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(10000000, 0)) }),
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 350000);
     assert_eq!(value(&r, "net_investment_income_tax"), 1900);
@@ -148,7 +151,7 @@ fn sold_on_installment(
     crate::AssetDisposal::Disposed {
         date,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds,
             selling_expenses,
             payment: crate::SalePayment::Installment {
@@ -439,7 +442,7 @@ fn sold_to(
     crate::AssetDisposal::Disposed {
         date,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds,
             selling_expenses: 0,
             payment,
@@ -520,4 +523,51 @@ fn f9_sales_to_related_buyers_follow_sections_267_and_1239() {
     assert!(has_note(&r, "NOTE_SALE_TO_RELATIVE_LOSS_DISALLOWED"));
     assert!(!has_line(&r, "business_2_asset_0_disposal_section1231"));
     assert_eq!(return_line(&r, "8"), 14_904_000);
+}
+
+#[test]
+fn amortized_installment_reporting_keeps_business_property_destination() {
+    for (acquired, part_two) in [(20260101, true), (20240101, false)] {
+        let crate::AssetDisposal::Disposed { date, how } =
+            sold_on_installment(20260715, 2_000_000, 0, 0, 500_000, crate::NoteInterest::Adequate)
+        else {
+            unreachable!()
+        };
+        let end = crate::AmortizationEnd { date, how };
+        let sale =
+            crate::asset_sale::amortized_property_sale(crate::asset_sale::AmortizedProperty {
+                acquired,
+                end: &end,
+                cost_cents: 1_000_000,
+                recovery_cents: 200_000,
+                section1254: false,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(sale.part_two, part_two);
+        let form = sale.installment.as_ref().unwrap();
+        let mut result = crate::FederalResult::empty(0);
+        crate::asset_sale::report_amortized_sale(
+            &mut result,
+            "business_2_amortization_0_disposal",
+            &sale,
+            "income.business.other_amortization",
+        );
+        let prefix = "business_2_amortization_0_disposal_form6252";
+        assert_eq!(value(&result, &alloc::format!("{prefix}_gain")), form.gain);
+        assert_eq!(
+            printed_line(&result, &alloc::format!("{prefix}_gain")),
+            (TaxForm::Form6252, "26".into())
+        );
+        // Both holding periods report shared Form 6252 lines without a home exclusion.
+        // Form 6252 instructions, lines 14–19: https://www.irs.gov/instructions/i6252
+        assert_eq!(value(&result, &alloc::format!("{prefix}_profit")), 10_000);
+        crate::tests::support::assert::assert_displayed_line_ratio(
+            &result,
+            &alloc::format!("{prefix}_percentage"),
+            5_000,
+            "0.5000",
+        );
+        assert!(!has_line(&result, &alloc::format!("{prefix}_excluded")));
+    }
 }

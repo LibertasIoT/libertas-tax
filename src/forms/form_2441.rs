@@ -3,13 +3,14 @@
 //   own-business deduction are entered on Child and dependent care. Existing
 //   dependent classification owns qualifying dependent costs and identification.
 //   Sources: IRS 2026 draft Form2441/instructions; Pub503 (2025 final).
-use crate::kernel::lines::{LineValue, emit, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit;
 use crate::{
     FederalCredits, FederalDraft, FederalResult, FederalSetup, FederalStatus, FormLine, TaxForm,
 };
-use crate::{federal_rules::LAW, kernel::lines::form_line};
+use crate::{federal_rules::LAW, line_emission::form_line};
 const SOURCE: &str = "https://www.irs.gov/pub/irs-dft/i2441--dft.pdf";
 // Actual native credit components, also retained when no form rows are needed.
 pub(crate) struct CreditComponents {
@@ -65,6 +66,7 @@ pub(crate) fn benefit_sources(
             let crate::FederalIncome::Wage { data } = &entry.income else {
                 return None;
             };
+            let data = crate::FederalWage::from(data);
             if data.care_benefits <= 0 {
                 return None;
             }
@@ -103,7 +105,7 @@ pub(crate) fn benefit_sources(
     let employee_from_w2 = [crate::Owner::Taxpayer, crate::Owner::Spouse].map(|owner| {
         let amounts = rows
             .iter()
-            .filter(|(source_owner, _, _)| *source_owner == owner)
+            .filter(|(source_owner, _, _)| *source_owner == crate::DocumentOwner::from(owner))
             .map(|(_, net, unused)| net.checked_sub(*unused))
             .collect::<Option<alloc::vec::Vec<_>>>()?;
         checked_sum(amounts)
@@ -154,7 +156,7 @@ pub(crate) fn compute(ctx: &Form2441Context<'_>, r: &mut FederalResult) -> Optio
     );
     let costs = if people > 0 { costs } else { 0 };
     for e in &ctx.draft.income {
-        if matches!(&e.income, crate::FederalIncome::Wage { data } if data.care_benefits > 0)
+        if matches!(&e.income, crate::FederalIncome::Wage { data } if crate::FederalWage::from(data).care_benefits > 0)
             && !c.benefits.iter().any(|answer| answer.wage == e.id)
         {
             crate::federal_rules::note_once_scoped(
@@ -409,7 +411,7 @@ impl Form2441 {
                     ))
                 },
             );
-            crate::kernel::lines::form_value(
+            crate::line_emission::form_value(
                 r,
                 FormLine::new(TaxForm::Form2441, "8"),
                 "care_percent",

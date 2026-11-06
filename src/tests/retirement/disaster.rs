@@ -34,20 +34,31 @@ fn distribution(
     disaster: DisasterDistribution,
 ) -> FederalIncomeEntry {
     income(FederalIncome::Retirement {
-        data: FederalRetirement {
+        data: retirement_source(FederalRetirement {
+            form_boxes: Default::default(),
+            trump: false,
+            box_2a: gross,
+            box_3: 0,
+            box_6: 0,
+            box_8a: 0,
+            box_8b_percent: None,
+            box_9a_percent: None,
+            ira: (kind).ira()
+                && (crate::DistributionCodes::CODE_1.0) & crate::DistributionCodes::CODE_N.0 == 0,
             box_9b: None,
             box_10: 0,
+            box_10_basis: None,
             disability: DisabilityIncome::None,
             disability_wages: crate::DisabilityWages::None,
             kind,
             gross,
-            taxable: RetirementTaxable::Payer { amount: gross },
+            taxable: Some(RetirementTaxable::Payer),
             withholding,
             box7: crate::DistributionCodes::CODE_1.0,
-            ordinary_distribution: RetirementTreatment::Early,
+            ordinary_distribution: Some(RetirementTreatment::Early),
             disaster,
             after_death: None,
-        },
+        }),
     })
 }
 fn carry(
@@ -366,15 +377,15 @@ pub(in crate::tests) fn injured_spouse_disaster_projection_keeps_two_owner_adjus
         0,
         qualified(600_000, 20260401, DisasterSpread::OverThreeYears, 0),
     );
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     let _ = FederalEstimate::from(r.clone());
     assert_eq!(return_line(&r, "5b"), 600_000);
     let mut probe = r.clone();
-    let qcd = crate::retirement::QcdResult::default();
+    let qcd = crate::retirement_return::QcdResult::default();
     let funding = crate::hsa_funding::FundingResult::default();
-    let mut basis = crate::retirement::basis(&d, &mut probe, None, &qcd, &funding)
+    let mut basis = crate::retirement_return::basis(&d, &mut probe, None, &qcd, &funding)
         .unwrap_or_else(|_| panic!("native disaster IRA basis"));
     basis.disaster = crate::disaster::designated(&d, &basis, &qcd);
     let actual = crate::disaster::calculate(&d, &mut probe, &basis, &qcd);
@@ -450,8 +461,8 @@ fn print_form_8915_traditional_roth_basis_and_payer_amounts_are_separate() {
     for (id, amount) in [(a + 1, 600_000), (b + 1, 200_000), (c + 1, 250_000)] {
         let disaster = qualified(amount, 20260501, DisasterSpread::OverThreeYears, 0);
         match &mut d.income.iter_mut().find(|e| e.id == id).unwrap().income {
-            FederalIncome::Retirement { data } => data.disaster = disaster,
-            FederalIncome::Roth { data } => data.disaster = disaster,
+            FederalIncome::Retirement { data } => edit_retirement(data).disaster = disaster,
+            FederalIncome::Roth { data } => edit_roth(data).disaster = disaster,
             _ => unreachable!(),
         }
     }
@@ -505,7 +516,7 @@ fn print_form_8915_prior_year_forms_conserve_available_gross_per_filer() {
         0,
         qualified(300_000, 20260501, DisasterSpread::OverThreeYears, 0),
     );
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     for (year, n, amount) in [
@@ -572,7 +583,7 @@ fn print_form_8915_part_iv_excludes_repayments_already_on_form8606() {
     let mut d = base();
     let mut ira = basis_distribution(Owner::Taxpayer, 10_000, RetirementTreatment::Ordinary);
     if let FederalIncome::Retirement { data } = &mut ira.income {
-        data.disaster = print_home(2026, 600_000);
+        edit_retirement(data).disaster = print_home(2026, 600_000);
     }
     add(&mut d, ira);
     d.adjustments.as_mut().unwrap().ira_basis = vec![prior_ira_basis(Owner::Taxpayer, 2000, 40000)];

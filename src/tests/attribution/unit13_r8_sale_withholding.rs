@@ -32,9 +32,15 @@ fn r8_sale_cash_preserves_native_money_public_save_and_known_property_overlay() 
                 expected.push((owner, injured, reversed, false, Some(50000)));
                 let mut s = restart(d);
                 let mut p = open_topic(&mut s, TaxSection::InvestmentSales);
-                let P::SaveIncomes { documents, .. } = &mut p else { panic!() };
-                documents.documents.iter_mut().find(|r| r.id == id).unwrap().community =
-                    CommunityShare::Separate;
+                let P::SaveIncomes { followups, .. } = &mut p else { panic!() };
+                let row = followups
+                    .iter_mut()
+                    .find(|row| {
+                        row.key.starts_with(&alloc::format!("income/{id}/"))
+                            && matches!(row.answer, crate::DocumentAnswer::Community { .. })
+                    })
+                    .expect("sale property is answered on its topic");
+                row.answer = crate::DocumentAnswer::Community { value: CommunityShare::Separate };
                 accepted(&send(&mut s, p));
                 let d = persist(s.draft, owner);
                 assert_eq!(

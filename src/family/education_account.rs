@@ -18,7 +18,7 @@
 //   returned Coverdell excess. The expenses the exclusion used feed Form 8815 line 3, the excluded
 //   earnings reduce the educator expenses (IRC 62(d)(2)) and the earnings paid to the student's own
 //   loans reduce the student loan interest deduction (IRC 221(e)(1)).
-//   Entry: IncomeDocument::Q1099 (Form 1099-Q, importable) and IncomeDocument::EducationAccountExpenses
+//   Entry: OtherIncomeDocument::Q1099 (Form 1099-Q, importable) and IncomeRecord::EducationAccountExpenses
 //   (one record per return, a row per student) on the Prizes, scholarships, relief payments, account payouts and other income page.
 //   Coverdell contribution excess and carry are owned by coverdell.rs (Form 5329 Part V).
 //   Exclusions: a prohibited transaction (code 6) is refused; the Education credits page figures its own credit; a
@@ -34,49 +34,38 @@
 //   and 70414; constants in year_constants.rs.
 // Native source projection controls: src/tests/attribution/unit13_account_sources.rs (recipient,
 // source cents, penalty character, correction coordination and Save/restart).
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::education_account_source::earnings_in;
+pub use crate::education_account_source::{
+    CollegeCosts, CoverdellAmounts, DistributionReason, EducationAccount,
+    EducationDistributionSource, FederalEducationAccountExpenses, FederalEducationAccountStudent,
+    FederalEducationBeneficiary, FederalEducationDistribution, Q1099, Q1099Transfer,
+};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{fraction, positive};
+use crate::line_emission::emit as emit_lines;
 use crate::year_constants::{QTP_K12_ANNUAL_LIMIT_CENTS, QTP_LOAN_LIFETIME_LIMIT_CENTS};
 use crate::{
     FederalCredits, FederalIncome, FederalIncomeEntry, FederalResult, FederalStatus, Message,
-    MessageArg, Owner, QtpRothRollover, TaxSection,
+    MessageArg, Owner, TaxSection,
 };
-use crate::{federal_rules::note_once_scoped, kernel::lines::line_cents};
+use crate::{federal_rules::note_once_scoped, line_emission::line_cents};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 const SOURCE: &str = "https://www.irs.gov/pub/irs-pdf/p970.pdf";
 
-/// 1099-Q
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_llm_doc_trans(
-    instruction = "Read one Form 1099-Q (Payments From Qualified Education Programs) exactly. Its revision has no tax year printed in the title; check the calendar year box against the supplied year and report a mismatch as an error. Use a corrected form in place of the original. Report an illegible amount, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs; return a box 2 loss shown in parentheses as a negative number. Never infer a value that is not printed. Read box 1 gross distribution; a blank box 1 is an error. For box 5, return Qtp when box 5a (private QTP) or 5b (state QTP) is checked and Coverdell when box 5c is checked; report an error when none or more than one is checked. For Qtp, read box 2 earnings and box 3 basis; a blank box 2 or box 3 is an error. For Coverdell, return Reported with box 2 and box 3 when they are printed, and ValueOnly with the box 7 fair market value when boxes 2 and 3 are blank and box 7 shows an FMV; leave the other ValueOnly amounts to the filer. For box 4, return TrusteeTransfer when box 4a is checked, RothIra when box 4b is checked, and otherwise read the box 7 distribution code: ExcessThisYear for code 2, ExcessLastYear for code 3, ProhibitedTransaction for code 6, and Withdrawal for code 1, 4, 5 or no code, with reason Disability for code 4, Death for code 5 and Withdrawal otherwise. For box 6, return Recipient when it is not checked and Student when it is checked. Do not read the payer or recipient name, address, TIN or account number, and do not choose the student, report what the money paid for, a rollover or redeposit, or any 529-to-Roth history; the filer answers those. The file may hold several copies of this form, such as Copy B and Copy C; copies of the same form are one form.",
-    validation = "$.document_facts",
-    doc_type = "application/pdf,image/*"
-)]
-pub struct Q1099 {
-    /// Box 1 gross distribution
-    /// Enter only a form addressed to you or your spouse. A form in a dependent student's name goes on the student's own return.
-    #[libertas_llm_doc_field(allow_empty = false)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub gross: i64,
-    /// Account (box 5)
-    #[libertas_llm_doc_field]
-    pub account: EducationAccount,
-    /// What happened to the money (box 4 and box 7 code)
-    #[libertas_llm_doc_field]
-    #[libertas_default(Withdrawal)]
-    pub transfer: Q1099Transfer,
-    /// Student (box 6)
-    #[libertas_llm_doc_field]
-    #[libertas_inline_choices]
-    pub beneficiary: Q1099Beneficiary,
-}
-
 /// Student (box 6)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    LibertasAvroEncode,
+    LibertasAvroDecode,
+    LibertasExport,
+    libertas_macros::VariantIndex,
+)]
 pub enum Q1099Beneficiary {
     /// The person this form is addressed to is the student
     /// Box 6 is not checked.
@@ -94,141 +83,23 @@ pub enum Q1099Beneficiary {
         /// The student's qualified education expenses you assign to this distribution
         /// College costs, room and board for a half-time student, and other costs a 529 or Coverdell can pay (see 529 and Coverdell expenses). Assign each expense to one distribution only.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         expenses: i64,
         /// Tax-free scholarships, grants and other tax-free educational assistance toward those expenses
         /// Pell grants, veterans' and employer assistance count; gifts and loans do not.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         assistance: i64,
         /// Those expenses used for anyone's American opportunity or lifetime learning credit
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         credit_expenses: i64,
     },
-}
-
-/// Account (box 5)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum EducationAccount {
-    /// 529 plan (box 5a or 5b)
-    Qtp {
-        /// Box 2 earnings
-        /// A loss in parentheses is shown only for the account's final year; it is not deductible.
-        #[libertas_llm_doc_field(allow_empty = false)]
-        #[libertas_money("USD", 2)]
-        earnings: i64,
-        /// Box 3 basis
-        #[libertas_llm_doc_field(allow_empty = false)]
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        basis: i64,
-    },
-    /// Coverdell ESA (box 5c)
-    Coverdell {
-        /// Earnings and basis
-        #[libertas_llm_doc_field]
-        #[libertas_inline_choices]
-        amounts: CoverdellAmounts,
-    },
-}
-
-/// Earnings and basis
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum CoverdellAmounts {
-    /// Boxes 2 and 3 are filled in
-    Reported {
-        /// Box 2 earnings
-        /// A loss in parentheses is shown only for the account's final year; it is not deductible.
-        #[libertas_llm_doc_field(allow_empty = false)]
-        #[libertas_money("USD", 2)]
-        earnings: i64,
-        /// Box 3 basis
-        #[libertas_llm_doc_field(allow_empty = false)]
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        basis: i64,
-    },
-    /// Only a year-end value in box 7
-    /// The App figures the earnings from the account's basis, as Publication 970 Worksheet 6-3 does.
-    ValueOnly {
-        /// Box 7 fair market value at December 31, 2026
-        /// Add any amount withdrawn in the last 60 days of 2026 and rolled into this account in 2027.
-        #[libertas_llm_doc_field(allow_empty = false)]
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        value: i64,
-        /// This account's basis at December 31, 2025
-        /// Contributions before 2026 minus the tax-free part of earlier withdrawals: line 15 of your 2025 Worksheet 6-3, or your contributions if this is the first withdrawal.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        basis_start: i64,
-        /// Contributions to this account for 2026
-        /// Include contributions for 2026 made through April 15, 2027. Not rollovers or returned excess contributions.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        contributions: i64,
-    },
-}
-
-/// What happened to the money (box 4 and box 7 code)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum Q1099Transfer {
-    /// Paid to you or the school
-    /// Neither box 4a nor box 4b is checked. A Coverdell balance must be paid out by 30 days after the student turns 30 (unless the student has special needs); a balance not paid out, or moved to a new student outside the family or 30 or older, is still a withdrawal: enter it from the trustee's statement.
-    Withdrawal {
-        /// Reason
-        #[libertas_llm_doc_field]
-        #[libertas_default(Withdrawal)]
-        #[libertas_inline_choices]
-        reason: DistributionReason,
-        /// Part put back within 60 days
-        /// 529: rolled into another 529 or an ABLE account for this student or a family member (one same-student 529 rollover in 12 months; ABLE within its yearly limit), or a refund of college costs recontributed to a 529. Coverdell: rolled into another Coverdell for a family member under 30, one rollover in 12 months.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        redeposited: i64,
-    },
-    /// Direct transfer to another 529, Coverdell or ABLE account (box 4a)
-    TrusteeTransfer {
-        /// Part that does not qualify
-        /// A second same-student 529 transfer within 12 months, a transfer for someone outside the student's family (or 30 or older, for a Coverdell), or the part of an ABLE transfer above that account's 2026 contribution limit. Zero when it all qualifies.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        taxable_part: i64,
-    },
-    /// Direct transfer from a 529 to the student's Roth IRA (box 4b)
-    RothIra {
-        /// 529-to-Roth transfer
-        rollover: QtpRothRollover,
-    },
-    /// Return of an excess Coverdell contribution, taxable this year (box 7 code 2)
-    ExcessThisYear,
-    /// Return of an excess Coverdell contribution, taxable last year (box 7 code 3)
-    /// Its earnings belong on your 2025 return, not this one.
-    ExcessLastYear,
-    /// Prohibited transaction (box 7 code 6)
-    /// The account stopped being a Coverdell ESA on January 1: box 1 is its value that day, taxed as a withdrawal with no education expenses applied, plus the 10% additional tax.
-    ProhibitedTransaction,
-}
-
-/// Reason
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum DistributionReason {
-    /// Education or other withdrawal
-    Withdrawal,
-    /// The student died (box 7 code 5)
-    /// Paid to a beneficiary or the estate on or after the student's death.
-    Death,
-    /// The student is disabled (box 7 code 4)
-    /// Unable to do any substantial gainful activity because of a condition expected to last indefinitely or end in death, as a physician determines.
-    Disability,
 }
 
 /// 529 and Coverdell expenses
@@ -236,10 +107,10 @@ pub enum DistributionReason {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EducationAccountExpenses {
     /// Students
-    /// ----
-    /// Student
     #[libertas_size(min = 1)]
     #[libertas_unordered]
+    /// ----
+    /// Student
     pub students: Vec<EducationAccountStudent>,
 }
 
@@ -256,296 +127,88 @@ pub struct EducationAccountStudent {
     /// Room, board, computer and other college costs
     /// Room and board while enrolled at least half time, up to the school's allowance or its own housing charge; a computer, software or internet used mainly by the student while enrolled; special-needs services; recognized credential programs, their tests and required continuing education.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub other_college: i64,
     /// K–12 costs on the 529 list
     /// Tuition, curriculum and instructional materials, books, online materials, outside tutoring by a qualified unrelated tutor, standardized, AP and admission test fees, dual-enrollment fees and educational therapies. A 529 counts at most $20,000 a year; for a Coverdell, therapies count only for a student with special needs.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub k12: i64,
     /// Other K–12 costs only a Coverdell ESA can pay
     /// Room and board, uniforms, transportation and extended-day programs the school requires or provides, other fees, supplies and academic tutoring, and computer equipment the family uses.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub k12_coverdell: i64,
     /// Registered apprenticeship fees, books, supplies and equipment
     /// 529 only.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub apprenticeship: i64,
     /// Payments on this student's own qualified student loans
     /// 529 only: principal and interest. A sibling's loans are not counted here. Interest paid with tax-free 529 earnings can't also be deducted as student loan interest.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub loan_payments: i64,
     /// 529 money used for this student's loans before 2026
     /// The lifetime limit is $10,000 per student.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub loan_payments_before: i64,
     /// U.S. military academy costs of advanced education
     /// For a cadet or midshipman: the academy's figure. It only removes the 10% additional tax.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub academy_costs: i64,
     /// Costs already used elsewhere
     /// Costs counted for a 529 or Coverdell withdrawal reported on someone else's return, such as the student's own, or deducted as a business expense.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub used_elsewhere: i64,
 }
 
-/// College tuition and required books
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum CollegeCosts {
-    /// From this student's education credit entry
-    /// The App uses the tuition, books, refunds and scholarships entered on Education credits, after the expenses that credit used.
-    EducationCredit,
-    /// Entered here
-    /// For a student with no education credit entry on this return.
-    Entered {
-        /// Tuition, fees and required books, supplies and equipment for 2026
-        /// At a college, university, vocational school or other school eligible for federal student aid.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        tuition_books: i64,
-        /// Tax-free scholarships, grants and other tax-free educational assistance
-        /// Pell grants, veterans' and employer assistance count; gifts and loans do not.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        assistance: i64,
-        /// Costs another person's education credit used for this student
-        /// For example, the expenses on which a parent claimed the American opportunity credit.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        credit_elsewhere: i64,
-    },
-}
-
-/// Payment from a 529 plan or Coverdell ESA — Form 1099-Q
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct FederalEducationDistribution {
-    /// Box 1 gross distribution
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub gross: i64,
-    /// Account (box 5)
-    pub account: EducationAccount,
-    /// What happened to the money (box 4 and box 7 code)
-    pub transfer: Q1099Transfer,
-    /// Student (box 6)
-    pub beneficiary: FederalEducationBeneficiary,
-}
-
-/// Student (box 6)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum FederalEducationBeneficiary {
-    /// The person this form is addressed to is the student
-    Recipient,
-    /// Someone else on this return is the student
-    Student {
-        /// Person identity
-        /// −1 you, −2 your spouse, otherwise the dependent's accepted record identity.
-        #[libertas_hidden]
-        person: i64,
-    },
-    /// The student is not on this return
-    OtherStudent {
-        /// The student's qualified education expenses assigned to this distribution
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        expenses: i64,
-        /// Tax-free educational assistance toward those expenses
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        assistance: i64,
-        /// Those expenses used for an education credit
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        credit_expenses: i64,
-    },
-}
-
-/// 529 and Coverdell expenses
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct FederalEducationAccountExpenses {
-    /// Students
-    /// ----
-    /// Student
-    #[libertas_size(min = 1)]
-    pub students: Vec<FederalEducationAccountStudent>,
-}
-
-/// Student
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct FederalEducationAccountStudent {
-    /// Person identity
-    /// −1 you, −2 your spouse, otherwise the dependent's accepted record identity.
-    #[libertas_hidden]
-    pub person: i64,
-    /// College tuition and required books
-    pub college: CollegeCosts,
-    /// Room, board, computer and other college costs
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub other_college: i64,
-    /// K–12 costs on the 529 list
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub k12: i64,
-    /// Other K–12 costs only a Coverdell ESA can pay
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub k12_coverdell: i64,
-    /// Registered apprenticeship costs
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub apprenticeship: i64,
-    /// Payments on this student's own qualified student loans
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub loan_payments: i64,
-    /// 529 money used for this student's loans before 2026
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub loan_payments_before: i64,
-    /// U.S. military academy costs of advanced education
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub academy_costs: i64,
-    /// Costs already used elsewhere
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub used_elsewhere: i64,
-}
-
-fn money(v: i64) -> bool {
-    (0..=100_000_000_000).contains(&v)
-}
-
-impl EducationAccount {
-    // Box 2 and box 3 of the form when it prints them.
-    pub(crate) fn boxes(&self) -> Option<(i64, i64)> {
-        match self {
-            Self::Qtp { earnings, basis }
-            | Self::Coverdell { amounts: CoverdellAmounts::Reported { earnings, basis, .. } } => {
-                Some((*earnings, *basis))
+impl From<&Q1099Beneficiary> for FederalEducationBeneficiary {
+    fn from(value: &Q1099Beneficiary) -> Self {
+        match value {
+            Q1099Beneficiary::Recipient => Self::Recipient,
+            Q1099Beneficiary::Student { person } => Self::Student { person: *person },
+            Q1099Beneficiary::OtherStudent { expenses, assistance, credit_expenses } => {
+                Self::OtherStudent {
+                    expenses: *expenses,
+                    assistance: *assistance,
+                    credit_expenses: *credit_expenses,
+                }
             }
-            Self::Coverdell { .. } => None,
-        }
-    }
-    fn is_qtp(&self) -> bool {
-        matches!(self, Self::Qtp { .. })
-    }
-    fn valid(&self, gross: i64) -> bool {
-        match self {
-            Self::Qtp { .. } | Self::Coverdell { amounts: CoverdellAmounts::Reported { .. } } => {
-                self.boxes().is_some_and(|(earnings, basis)| {
-                    (-100_000_000_000..=100_000_000_000).contains(&earnings)
-                        && money(basis)
-                        && earnings + basis == gross
-                })
-            }
-            Self::Coverdell {
-                amounts: CoverdellAmounts::ValueOnly { value, basis_start, contributions },
-            } => money(*value) && money(*basis_start) && money(*contributions),
         }
     }
 }
-
-impl FederalEducationDistribution {
-    pub(crate) fn valid(&self) -> bool {
-        let gross = self.gross;
-        (1..=100_000_000_000).contains(&gross)
-            && self.account.valid(gross)
-            && match &self.transfer {
-                Q1099Transfer::Withdrawal { redeposited, .. } => (0..=gross).contains(redeposited),
-                Q1099Transfer::TrusteeTransfer { taxable_part } => {
-                    (0..=gross).contains(taxable_part)
+impl From<&FederalEducationBeneficiary> for Q1099Beneficiary {
+    fn from(value: &FederalEducationBeneficiary) -> Self {
+        match value {
+            FederalEducationBeneficiary::Recipient => Self::Recipient,
+            FederalEducationBeneficiary::Student { person } => Self::Student { person: *person },
+            FederalEducationBeneficiary::OtherStudent { expenses, assistance, credit_expenses } => {
+                Self::OtherStudent {
+                    expenses: *expenses,
+                    assistance: *assistance,
+                    credit_expenses: *credit_expenses,
                 }
-                Q1099Transfer::RothIra { rollover } => {
-                    self.account.is_qtp()
-                        && self.beneficiary == FederalEducationBeneficiary::Recipient
-                        && self.account.boxes().is_some_and(|(earnings, _)| earnings >= 0)
-                        && rollover.well_formed()
-                }
-                Q1099Transfer::ExcessThisYear | Q1099Transfer::ExcessLastYear => {
-                    matches!(
-                        self.account,
-                        EducationAccount::Coverdell { amounts: CoverdellAmounts::Reported { .. } }
-                    )
-                }
-                Q1099Transfer::ProhibitedTransaction => !self.account.is_qtp(),
             }
-            && match &self.beneficiary {
-                FederalEducationBeneficiary::OtherStudent {
-                    expenses,
-                    assistance,
-                    credit_expenses,
-                } => money(*expenses) && money(*assistance) && money(*credit_expenses),
-                _ => true,
-            }
-    }
-}
-
-impl FederalEducationAccountExpenses {
-    pub(crate) fn valid(&self) -> bool {
-        (1..=10).contains(&self.students.len())
-            && self.students.iter().enumerate().all(|(i, s)| {
-                s.valid() && !self.students[..i].iter().any(|earlier| earlier.person == s.person)
-            })
-    }
-}
-
-impl FederalEducationAccountStudent {
-    fn valid(&self) -> bool {
-        (match &self.college {
-            CollegeCosts::EducationCredit => true,
-            CollegeCosts::Entered { tuition_books, assistance, credit_elsewhere } => {
-                money(*tuition_books) && money(*assistance) && money(*credit_elsewhere)
-            }
-        }) && [
-            self.other_college,
-            self.k12,
-            self.k12_coverdell,
-            self.apprenticeship,
-            self.loan_payments,
-            self.academy_costs,
-            self.used_elsewhere,
-        ]
-        .iter()
-        .all(|v| money(*v))
-            && (0..=1_000_000).contains(&self.loan_payments_before)
-    }
-}
-
-impl FederalEducationDistribution {
-    // The amount a document preview can state without the return's expenses
-    // and credits: the earnings of a part no expense can cover, a timely
-    // returned excess, and nothing for a transfer to a Roth IRA or a code 3
-    // excess; None where the expense record decides.
-    pub(crate) fn preview(&self) -> Option<i64> {
-        match &self.transfer {
-            Q1099Transfer::Withdrawal { .. } | Q1099Transfer::ProhibitedTransaction => None,
-            Q1099Transfer::TrusteeTransfer { taxable_part } => {
-                Some(positive(earnings_in(&self.account, self.gross, *taxable_part).0))
-            }
-            Q1099Transfer::ExcessThisYear => {
-                Some(positive(self.account.boxes().map_or(0, |(earnings, _)| earnings)))
-            }
-            Q1099Transfer::RothIra { rollover } if !rollover.confirmed => None,
-            Q1099Transfer::RothIra { .. } | Q1099Transfer::ExcessLastYear => Some(0),
         }
     }
 }
@@ -732,26 +395,6 @@ fn taxable(earnings: i64, amount: i64, expenses: i64) -> i64 {
     earnings - fraction(earnings, phase::cap(expenses, [amount]), amount)
 }
 
-// Earnings in a distribution and, for a Coverdell with only a year-end value,
-// the basis left (Pub 970 Worksheet 6-3 lines 3 to 15).
-fn earnings_in(account: &EducationAccount, gross: i64, amount: i64) -> (i64, Option<i64>) {
-    match account {
-        EducationAccount::Coverdell {
-            amounts: CoverdellAmounts::ValueOnly { value, basis_start, contributions },
-        } => {
-            let basis = basis_start + contributions;
-            let after = amount + value;
-            let basis_part =
-                if after > 0 { fraction(amount, phase::cap(basis, [after]), after) } else { 0 };
-            (amount - basis_part, Some(basis - basis_part))
-        }
-        _ => {
-            let earnings = account.boxes().map_or(0, |(earnings, _)| earnings);
-            (if gross > 0 { fraction(earnings, amount, gross) } else { 0 }, None)
-        }
-    }
-}
-
 fn person_of(owner: usize) -> i64 {
     if owner == 0 { -1 } else { -2 }
 }
@@ -805,7 +448,7 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
             };
             match (&student.college, credit_entry) {
                 (CollegeCosts::EducationCredit, Some(index)) => {
-                    let e = &cx.credits.education[index].expenses;
+                    let e = &cx.credits.education_inputs()[index].expenses;
                     pool.college = e.tuition + e.school_materials + e.other_materials;
                     pool.assistance = e.tax_free_assistance() + e.refunds;
                     pool.credit = used[index].used * 100;
@@ -847,11 +490,23 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
         let FederalIncome::EducationDistribution { data } = &entry.income else {
             continue;
         };
-        let owner = usize::from(entry.owner == Owner::Spouse);
+        let data = &FederalEducationDistribution::from(data);
+        let owner = usize::from(entry.owner == crate::DocumentOwner::Spouses);
         let context = crate::interview::income_issue_context(entry);
         let alternatives =
             context.clone().alternatives(&[TaxSection::OtherIncome, TaxSection::People]);
-        let person = match &data.beneficiary {
+        if let Some(issue) = data.answer_issue() {
+            crate::issue_localized!(
+                r,
+                &context,
+                "1099-Q",
+                issue.key,
+                &crate::Message::new(issue.key, alloc::vec![]).english()
+            );
+            continue;
+        }
+        let beneficiary = data.effective_beneficiary().expect("established 1099-Q beneficiary");
+        let person = match beneficiary {
             FederalEducationBeneficiary::Recipient => Some(person_of(owner)),
             FederalEducationBeneficiary::Student { person } => Some(*person),
             FederalEducationBeneficiary::OtherStudent { .. } => None,
@@ -865,7 +520,7 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
                 "ISSUE_THE_SELECTED_STUDENT_MUST_BE_A_FILER_OR_AN_ELIGIBLE_DEPENDENT_ON_TH_879AF16D",
                 "The selected student must be a filer or an eligible dependent on this return.",
             );
-            if matches!(data.beneficiary, FederalEducationBeneficiary::Student { .. }) {
+            if matches!(beneficiary, FederalEducationBeneficiary::Student { .. }) {
                 crate::require_localized!(
                     r,
                     person != person_of(owner),
@@ -878,9 +533,9 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
         }
         let gross = data.gross;
         let (amount, reason) = match &data.transfer {
-            Q1099Transfer::Withdrawal { reason, redeposited } => (gross - redeposited, *reason),
-            Q1099Transfer::TrusteeTransfer { taxable_part } => {
-                (*taxable_part, DistributionReason::Withdrawal)
+            Q1099Transfer::Withdrawal { reason } => (gross - data.redeposited, *reason),
+            Q1099Transfer::TrusteeTransfer => {
+                (data.taxable_transfer_part, DistributionReason::Withdrawal)
             }
             Q1099Transfer::ExcessThisYear => {
                 // Earnings of a timely returned excess contribution are taxed
@@ -890,7 +545,7 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
                 totals.exceptions[owner] += earnings;
                 totals.sources.push(EducationSource {
                     id: entry.id,
-                    owner: entry.owner,
+                    owner: entry.owner.owned(),
                     taxable: earnings,
                     exceptions: earnings,
                 });
@@ -907,7 +562,7 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
             Q1099Transfer::ExcessLastYear => {
                 totals.sources.push(EducationSource {
                     id: entry.id,
-                    owner: entry.owner,
+                    owner: entry.owner.owned(),
                     taxable: 0,
                     exceptions: 0,
                 });
@@ -926,7 +581,9 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
             // A transfer to the beneficiary's Roth IRA is not income (section 529(c)(3)(E)). Its
             // part above the year's room, or all of it when its records are not confirmed, is
             // not a qualified rollover: a distribution from the 529 (R11, R12).
-            Q1099Transfer::RothIra { rollover } => {
+            Q1099Transfer::RothIra => {
+                let rollover =
+                    data.roth_rollover.as_ref().expect("established 529-to-Roth records");
                 let amount = if rollover.confirmed {
                     cx.qtp_excess.get(&entry.id).copied().unwrap_or(0)
                 } else {
@@ -935,7 +592,7 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
                 if amount == 0 {
                     totals.sources.push(EducationSource {
                         id: entry.id,
-                        owner: entry.owner,
+                        owner: entry.owner.owned(),
                         taxable: 0,
                         exceptions: 0,
                     });
@@ -947,17 +604,19 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
         if amount <= 0 {
             totals.sources.push(EducationSource {
                 id: entry.id,
-                owner: entry.owner,
+                owner: entry.owner.owned(),
                 taxable: 0,
                 exceptions: 0,
             });
             continue;
         }
-        let (earnings, remaining) = earnings_in(&data.account, gross, amount);
+        let (earnings, remaining) =
+            earnings_in(data, gross, amount).expect("established Coverdell worksheet inputs");
         let covered = matches!(data.transfer, Q1099Transfer::Withdrawal { .. })
-            || matches!(&data.transfer, Q1099Transfer::RothIra { rollover } if !rollover.confirmed);
+            || (matches!(data.transfer, Q1099Transfer::RothIra)
+                && data.roth_rollover.as_ref().is_some_and(|rollover| !rollover.confirmed));
         // The group: the person's pools, or this form's own.
-        let (key, pool) = match (&data.beneficiary, person) {
+        let (key, pool) = match (beneficiary, person) {
             (_, Some(person)) => {
                 (Some(person), pools.iter().find(|(p, _)| *p == person).map(|(_, p)| p.clone()))
             }
@@ -1052,7 +711,7 @@ pub(crate) fn calculate(cx: &EducationContext, r: &mut FederalResult) -> Educati
             };
             totals.sources.push(EducationSource {
                 id: entry.id,
-                owner: entry.owner,
+                owner: entry.owner.owned(),
                 taxable: taxed,
                 exceptions: exception,
             });

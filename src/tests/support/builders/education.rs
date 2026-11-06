@@ -75,11 +75,53 @@ pub(in crate::tests) fn prize_income(
     }
 }
 
-// Native student identity and expense cents, with the selected typed credit.
+// A retained statement and its student's one annual answer row.
 pub(in crate::tests) fn native_education(
     student: i64,
     expenses: FederalEducationExpenses,
     method: EducationChoice,
-) -> FederalEducation {
-    FederalEducation { student, expenses, method }
+) -> (FederalEducation, EducationStudent) {
+    (
+        FederalEducation {
+            id: 0,
+            half_time: true,
+            graduate: method == EducationChoice::LifetimeLearning,
+            student,
+            tuition: expenses.tuition,
+            scholarships: expenses.assistance,
+            prior_tuition_adjustment: crate::SourceCents::NotReported,
+            prior_scholarship_adjustment: crate::SourceCents::NotReported,
+        },
+        EducationStudent {
+            student,
+            method: Some(method),
+            more: StudentMore {
+                books_from_school: expenses.school_materials,
+                other_books: expenses.other_materials,
+                refunds: expenses.refunds,
+                insurance_refund_current_expenses: crate::SourceCents::NotReported,
+                tax_free_529: expenses.other_benefits,
+                scholarship_in_income: expenses.scholarship_in_income,
+                american_opportunity_used_up: Some(false),
+            },
+        },
+    )
+}
+
+pub(in crate::tests) fn add_education(
+    credits: &mut FederalCredits,
+    (source, student): (FederalEducation, EducationStudent),
+) {
+    credits.education.push(education_source(source));
+    credits.students.push(student);
+}
+
+pub(in crate::tests) fn set_education(
+    credits: &mut FederalCredits,
+    pairs: Vec<(FederalEducation, EducationStudent)>,
+) {
+    let (sources, students) =
+        pairs.into_iter().map(|(source, student)| (education_source(source), student)).unzip();
+    credits.education = sources;
+    credits.students = students;
 }

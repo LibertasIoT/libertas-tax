@@ -86,9 +86,9 @@ use crate::validation::ValidationIssue;
 // Tests: src/tests/attribution/injured_spouse.rs; injured_spouse_* interview regressions;
 // runtime retirement/disaster/QCD owner projection regressions.
 use crate::PersonChoice;
-use crate::kernel::lines::{form_line, line_cents};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::{form_line, line_cents};
 use crate::{
     FederalDraft, FederalIncome, FederalResult, FederalStatus, FormLine, Message, MessageArg,
     Owner, TaxForm,
@@ -96,6 +96,11 @@ use crate::{
 use alloc::string::String;
 use alloc::{format, vec::Vec};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
+
+pub use crate::injured_spouse_model::{
+    EstimatedSplit, InjuredClaimantFacts, InjuredCommunityFacts, InjuredDebtFacts,
+    InjuredLoanBorrower, InjuredSpouseAllocation, OffsetDebt,
+};
 
 mod accounts;
 mod construction;
@@ -109,7 +114,7 @@ mod refund_funding;
 pub(crate) use accounts::AccountSources;
 pub(crate) use investment::{InvestmentElectionSources, InvestmentSources};
 pub(crate) mod owners;
-pub(crate) use capital::{CapitalOwners, CapitalSources};
+pub(crate) use capital::{CapitalOwners, CapitalSources, niit_difference_owners};
 pub(crate) use owners::separate_taxes;
 use owners::{AllocationProblem, SourceSelections};
 
@@ -221,20 +226,6 @@ pub struct InjuredSpouse {
     pub explanation: Vec<u8>,
 }
 
-/// Legal borrowers of the claimed student loans
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-#[libertas_inline_choices]
-pub enum InjuredLoanBorrower {
-    /// Taxpayer alone
-    Taxpayer,
-    /// Spouse alone
-    Spouse,
-    /// Both spouses, on the same or different claimed loans
-    Both,
-}
-
 /// Injured State Choice
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 
@@ -268,40 +259,7 @@ pub struct InjuredComponentChoice {
     pub label: Vec<u8>,
 }
 
-/// Injured Amount Page
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct InjuredAmountPage {
-    /// Accepted component
-    #[libertas_enum_source("$.value.components")]
-    #[libertas_unique]
-    #[libertas_hidden]
-    #[libertas_read_only]
-    #[libertas_size(min = 1)]
-    pub component: String,
-    /// Shared item
-    #[libertas_formatted_text]
-    #[libertas_read_only]
-    #[libertas_output_only]
-    pub label: Vec<u8>,
-    /// Amount on the joint return
-    #[libertas_read_only]
-    #[libertas_money("USD", 2)]
-    pub joint: i64,
-    /// Minimum injured-spouse part
-    #[libertas_hidden]
-    #[libertas_read_only]
-    #[libertas_money("USD", 2)]
-    pub minimum: i64,
-    /// Maximum injured-spouse part
-    #[libertas_hidden]
-    #[libertas_read_only]
-    #[libertas_money("USD", 2)]
-    pub maximum: i64,
-    /// Injured spouse's part
-    #[libertas_money("USD", 2)]
-    pub injured: i64,
-}
+pub use crate::return_carriers::InjuredAmountPage;
 
 /// Injured Claimant
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -318,27 +276,7 @@ pub struct InjuredClaimant {
     pub claimant: Owner,
 }
 
-/// Injured Printed Row
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct InjuredPrintedRow {
-    /// Row
-    #[libertas_formatted_text]
-    #[libertas_read_only]
-    pub label: Vec<u8>,
-    /// Joint return
-    #[libertas_read_only]
-    #[libertas_money("USD", 2)]
-    pub joint: i64,
-    /// Injured spouse
-    #[libertas_read_only]
-    #[libertas_money("USD", 2)]
-    pub injured: i64,
-    /// Other spouse
-    #[libertas_read_only]
-    #[libertas_money("USD", 2)]
-    pub other: i64,
-}
+pub use crate::return_carriers::InjuredPrintedRow;
 
 /// Injured Community
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -361,136 +299,7 @@ pub enum InjuredCommunity {
     },
 }
 
-/// Injured Debt Facts
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    LibertasAvroEncode,
-    LibertasAvroDecode,
-    LibertasExport,
-    libertas_macros::VariantIndex,
-)]
-#[libertas_inline_choices]
-pub enum InjuredDebtFacts {
-    /// This state's allocation does not need these facts
-    NotApplicable,
-    /// Debt arose before marriage, including the cause of action
-    BeforeMarriage,
-    /// Debt arose during marriage and was not for the family's interest
-    DuringMarriageNotFamily,
-    /// Debt arose during marriage for the family's interest
-    DuringMarriageFamily,
-}
-
-/// Injured Spouse Allocation
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct InjuredSpouseAllocation {
-    /// Injured spouse
-    pub injured: Owner,
-    /// Offset debt
-    pub debt: OffsetDebt,
-    /// Legal obligation on the debt
-    pub obligated: bool,
-    /// Community-property facts
-    pub community: InjuredCommunityFacts,
-    /// Joint estimated payment allocation
-    pub estimated: EstimatedSplit,
-    /// Who is legally obligated on the loans whose interest is deducted
-    /// Leave empty when there is no student-loan deduction. A borrower who is only a dependent student does not make a spouse legally obligated.
-    #[libertas_default($null)]
-    pub student_loan_borrower: Option<InjuredLoanBorrower>,
-    /// Accepted shared-component choices
-    #[libertas_size(min = 0)]
-    pub allocations: Vec<InjuredAmount>,
-    /// Separate-return dependent claimants
-    #[libertas_size(min = 0)]
-    pub claimants: Vec<InjuredClaimantFacts>,
-}
-
-/// Injured Amount
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct InjuredAmount {
-    /// Accepted component key
-    #[libertas_size(min = 1)]
-    pub component: String,
-    /// Injured spouse's allocated amount
-    #[libertas_money("USD", 2)]
-    pub injured: i64,
-}
-
-/// Injured Claimant Facts
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct InjuredClaimantFacts {
-    /// Accepted dependent identity
-    #[libertas_unique]
-    pub person: i64,
-    /// Spouse who would claim this dependent
-    pub claimant: Owner,
-}
-
-/// Injured Community Facts
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum InjuredCommunityFacts {
-    /// No community-property residence
-    No,
-    /// Community-property facts
-    Yes {
-        /// States of domicile
-        // Tax structure: the nine community-property states, each selected at most once.
-        #[libertas_size(min = 1, max = 9)]
-        #[libertas_unordered]
-        states: Vec<u16>,
-        /// Debt timing and family use
-        debt_facts: InjuredDebtFacts,
-    },
-}
-
-/// Debt the refund pays
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum OffsetDebt {
-    /// Federal tax
-    FederalTax,
-    /// State income tax
-    StateIncomeTax,
-    /// State unemployment compensation
-    StateUnemployment,
-    /// Child support
-    ChildSupport,
-    /// Spousal support
-    SpousalSupport,
-    /// Federal nontax debt, such as a student loan
-    FederalNontax,
-    /// None of these, or not a debt of the other spouse alone
-    NoneOfThese,
-}
-
-/// Estimated tax and extension payments
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-#[libertas_inline_choices]
-pub enum EstimatedSplit {
-    /// By the IRS formula
-    /// Each spouse's share of the payments follows their separate tax. Use this when you do not agree on a split.
-    IrsFormula,
-    /// As we agree
-    Agreed {
-        /// Injured spouse's part
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        injured: i64,
-    },
-}
+pub use crate::return_carriers::InjuredAmount;
 
 // The joint estimated tax and extension payments (Form 1040 line 26 and
 // Schedule 3 line 10) the agreed split may not exceed, in cents, from the
@@ -500,10 +309,10 @@ pub(crate) fn joint_estimated(d: &FederalDraft) -> crate::kernel::ratio::exact::
     d.payments.as_ref().map_or_else(
         || whole(0),
         |p| {
-            p.estimated_payments
-                .iter()
-                .filter(|payment| payment.payer == crate::PaymentPayer::Joint)
-                .map(|payment| whole(payment.amount))
+            p.estimated
+                .funding()
+                .filter(|(_, payer, _)| *payer == crate::PaymentPayer::Joint)
+                .map(|(amount, _, _)| whole(amount))
                 .sum::<crate::kernel::ratio::exact::Exact>()
                 + if p.extension_payer == Some(crate::PaymentPayer::Joint) {
                     whole(p.extension)
@@ -541,8 +350,6 @@ pub(crate) fn rule(
 
 // The injured spouse's refund estimate the calculation reports, in cents.
 pub(crate) const ESTIMATE_LINE: &str = "form_8379_injured_refund_estimate";
-#[cfg(test)]
-pub(crate) const SECTION: &str = "Injured spouse allocation (Form 8379)";
 
 // Per-person amounts the calculation already holds, handed over where the
 // Form 1040 lines are complete. Whole dollars unless named cents.
@@ -613,7 +420,7 @@ pub(crate) struct JointFacts<'a> {
     // Actual direct-property Form4255 source owner's final whole-dollar tax.
     // K-1 passed-through recapture remains a separate source family.
     pub(crate) investment_recapture: [i64; 2],
-    // Actual native Form4797 ordinary source dollars after activity limits.
+    // Actual Form4797 ordinary source cents after activity limits.
     // None preserves an unresolved property-character source.
     pub(crate) property_ordinary: Option<[i64; 2]>,
     pub(crate) mortgage_recapture: crate::mortgage_recapture::MortgageRecaptureSources,
@@ -646,7 +453,7 @@ pub(crate) struct JointFacts<'a> {
     // Cents.
     pub(crate) business: [i64; 2],
     pub(crate) regular_nol: Vec<crate::nol::InjuredNolPart>,
-    pub(crate) ltc: &'a [crate::care_benefits::InjuredLtcPart],
+    pub(crate) ltc: &'a [crate::care_benefit_return::InjuredLtcPart],
     // Accepted native LTC source IDs and their interest cents, independently
     // of the taxable care-benefit pool. Missing source membership is unknown.
     pub(crate) nii_ltc_sources: &'a alloc::collections::BTreeMap<i64, i64>,
@@ -727,7 +534,7 @@ struct Weights {
 // fill an unknown source with the other owner's residual.
 struct MedicareWithholdingProjection {
     targets: [i64; 2],
-    owners: Option<[[i64; 2]; 2]>,
+    owners: [Option<[i64; 2]>; 2],
 }
 
 // Project the actual native credit pools; never recompute Form8959 tax.
@@ -745,15 +552,17 @@ fn medicare_withholding_projection(
         }
         let missing = d.income.iter().any(|entry| matches!(
             &entry.income, FederalIncome::Wage { data }
-            if matches!(data.payroll, crate::W2Payroll::Railroad { .. }) || data.uncollected_tax.is_some()
+            if { let data = crate::FederalWage::from(data); matches!(data.payroll, crate::W2Payroll::Railroad { .. }) || data.uncollected_tax.is_some() }
         ));
         return Some(MedicareWithholdingProjection {
             targets: [joint, 0],
             owners: if missing {
-                None
+                [None; 2]
             } else {
-                crate::kernel::ratio::project_rounded_pair(joint, f.medicare_withheld, first)
-                    .map(|owners| [owners, [0; 2]])
+                [
+                    crate::kernel::ratio::project_rounded_pair(joint, f.medicare_withheld, first),
+                    Some([0; 2]),
+                ]
             },
         });
     };
@@ -761,12 +570,32 @@ fn medicare_withholding_projection(
     if targets.iter().any(|value| *value < 0) || targets[0].checked_add(targets[1]).is_none() {
         return None;
     }
-    let owners = (|| {
+    let project = |joint: i64, raw: [i64; 2], printed: Option<i64>| {
+        let net = raw[0].checked_add(raw[1])?;
+        if printed.unwrap_or(dollars(positive(net))) != joint {
+            return None;
+        }
+        if joint == 0 {
+            return Some([0; 2]);
+        }
+        // Signed raw differences stay retained. Only positive native
+        // excess can supply the credit; a sole eligible source owns J.
+        match [raw[0] > 0, raw[1] > 0] {
+            [true, false] => Some([joint, 0]),
+            [false, true] => Some([0, joint]),
+            [true, true] if printed.is_none() => {
+                crate::kernel::ratio::project_rounded_pair(joint, raw, first)
+            }
+            [true, true] => crate::kernel::ratio::project_native_pair(joint, raw, first)
+                .filter(|owners| owners.iter().all(|owner| *owner >= 0)),
+            [false, false] => None,
+        }
+    };
+    let ordinary = (|| {
         if source
             .ordinary_withheld_cents
             .iter()
             .chain(source.ordinary_wages_cents.iter())
-            .chain(source.rrta_withheld_cents.iter())
             .any(|value| *value < 0)
             || source.ordinary_regular_cents < 0
         {
@@ -803,36 +632,18 @@ fn medicare_withholding_projection(
         if positive(ordinary[0].checked_add(ordinary[1])?) != source.ordinary_net_cents {
             return None;
         }
-        // The ordinary credit is the printed Form 8959 line 22, figured from the rounded
-        // lines 19 and 21 (D-2026-10-19-12); it can differ from the rounded exact net by a
-        // dollar. The first owner then rounds its own cents and the other takes the residual.
+        // Form 8959 instructions: line 22 uses rounded lines 19 and 21.
         let lines = crate::forms::form_8959::ordinary_withholding_lines(withheld, wages);
-        let project = |joint: i64, raw: [i64; 2], printed: Option<i64>| {
-            let net = raw[0].checked_add(raw[1])?;
-            if printed.unwrap_or(dollars(positive(net))) != joint {
-                return None;
-            }
-            if joint == 0 {
-                return Some([0; 2]);
-            }
-            // Signed raw differences stay retained. Only positive native
-            // excess can supply the credit; a sole eligible source owns J.
-            match [raw[0] > 0, raw[1] > 0] {
-                [true, false] => Some([joint, 0]),
-                [false, true] => Some([0, joint]),
-                [true, true] if printed.is_none() => {
-                    crate::kernel::ratio::project_rounded_pair(joint, raw, first)
-                }
-                [true, true] => crate::kernel::ratio::project_native_pair(joint, raw, first)
-                    .filter(|owners| owners.iter().all(|owner| *owner >= 0)),
-                [false, false] => None,
-            }
-        };
-        Some([
-            project(targets[0], ordinary, Some(lines.additional))?,
-            project(targets[1], source.rrta_withheld_cents, None)?,
-        ])
+        project(targets[0], ordinary, Some(lines.additional))
     })();
+    let railroad = if source.railroad_unavailable
+        || source.rrta_withheld_cents.iter().any(|value| *value < 0)
+    {
+        None
+    } else {
+        project(targets[1], source.rrta_withheld_cents, None)
+    };
+    let owners = [ordinary, railroad];
     Some(MedicareWithholdingProjection { targets, owners })
 }
 
@@ -905,12 +716,15 @@ pub(crate) fn parts_13b(income: &FederalIncome, _separate: bool) -> Vec<(Part13b
     use FederalIncome as I;
     match income {
         I::Wage { data } => {
+            let data = crate::FederalWage::from(data);
             alloc::vec![(Part13b::Rest, data.total_income().ok().map(|v| v - data.wages))]
         }
-        I::SocialSecurity { data } => alloc::vec![(Part13b::Social, Some(data.benefits))],
+        I::SocialSecurity { data } => {
+            alloc::vec![(Part13b::Social, Some(crate::FederalSocial::from(data).benefits))]
+        }
         I::Dividend { data } => alloc::vec![
-            (Part13b::Dividends, Some(data.ordinary)),
-            (Part13b::Capital, Some(data.capital_distributions)),
+            (Part13b::Dividends, Some(data.form.ordinary.unwrap_or(0))),
+            (Part13b::Capital, Some(data.form.capital_distributions.unwrap_or(0))),
         ],
         I::Business { .. } => alloc::vec![(Part13b::Business, Some(0))],
         // Excluded from income: nothing on the return.
@@ -930,10 +744,15 @@ pub(crate) fn parts_13b(income: &FederalIncome, _separate: bool) -> Vec<(Part13b
         I::DisasterRelief { data } => alloc::vec![(Part13b::Rest, Some(data.on_return()))],
         I::HobbySales { data } => alloc::vec![(Part13b::Rest, Some(data.on_return()))],
         I::Scholarship { data } => alloc::vec![(Part13b::Rest, Some(data.taxable().0))],
-        I::Sale { .. }
+        I::Broker { .. }
+        | I::Sale { .. }
+        | I::InstallmentSale { .. }
         | I::NuaSale { .. }
         | I::EmployeeStockSale { .. }
         | I::EsppSale { .. }
+        | I::EsppSaleSource { .. }
+        | I::IsoSaleSource { .. }
+        | I::NuaSaleSource { .. }
         | I::IsoSale { .. }
         | I::WorthlessSecurity { .. }
         | I::SmallBusinessStock { .. }
@@ -950,22 +769,39 @@ pub(crate) fn parts_13b(income: &FederalIncome, _separate: bool) -> Vec<(Part13b
         I::Retirement { .. } | I::InheritedIra { .. } | I::Roth { .. } => {
             alloc::vec![(Part13b::Rest, Some(0))]
         }
-        I::Interest { data } => alloc::vec![(Part13b::Interest, Some(data.net_taxable()))],
-        I::Oid { data } => alloc::vec![(Part13b::Interest, Some(data.net_taxable()))],
-        I::LtcBenefits { data } => alloc::vec![(Part13b::Interest, Some(data.interest))],
-        I::Unemployment { data } => alloc::vec![(Part13b::Rest, Some(data.amount))],
-        I::EmployeeWages { data } => alloc::vec![(Part13b::Rest, data.income().ok())],
-        I::Able { data } => alloc::vec![(Part13b::Rest, Some(data.taxable()))],
-        I::TrumpDeath { data } => alloc::vec![(Part13b::Rest, Some(data.taxable()))],
-        I::TaxRefund { amount, history, .. } => {
-            alloc::vec![(Part13b::Rest, history.taxable(*amount).ok())]
+        I::Interest { data } => {
+            alloc::vec![(Part13b::Interest, Some(crate::FederalInterest::from(data).net_taxable()))]
         }
-        I::Gambling { data } => alloc::vec![(Part13b::Rest, Some(data.winnings))],
+        I::Oid { data } => {
+            alloc::vec![(Part13b::Interest, Some(crate::FederalOid::from(data).net_taxable()))]
+        }
+        I::LtcBenefits { data } => alloc::vec![(Part13b::Interest, Some(data.record().interest))],
+        I::GovernmentPayment { data } => {
+            let payments = crate::FederalUnemployment::from(data).amount;
+            let refund = if data.form.state_or_local_income_tax_refunds == 0 {
+                Some(0)
+            } else {
+                let crate::FederalTaxRefund { amount, history, .. } = data.into();
+                history.taxable(amount).ok()
+            };
+            alloc::vec![(Part13b::Rest, refund.and_then(|refund| payments.checked_add(refund)))]
+        }
+        I::EmployeeWages { data } => alloc::vec![(Part13b::Rest, data.income().ok())],
+        I::Able { data } => {
+            alloc::vec![(Part13b::Rest, crate::AbleDistribution::from(data).taxable())]
+        }
+        I::TrumpDeath { data } => {
+            alloc::vec![(Part13b::Rest, crate::TrumpDeathAcquisition::from(data).taxable())]
+        }
+        I::Gambling { data } => {
+            alloc::vec![(Part13b::Rest, Some(crate::FederalGambling::from(data).winnings))]
+        }
         I::CasualtyLivingInsurance { data } => {
             alloc::vec![(Part13b::Rest, Some(data.included_in_return_year()))]
         }
         I::JuryDuty { data } => alloc::vec![(Part13b::Jury, Some(data.received))],
         I::Alimony { data } => alloc::vec![(Part13b::Rest, Some(data.amount()))],
+        I::BondRedemption { .. } => alloc::vec![],
         // Final-limit feeds are required for these remaining source kinds.
         I::Partnership { .. }
         | I::Scorp { .. }
@@ -1003,7 +839,6 @@ fn weights_13b(
         if part == Part13b::Rest && accounts.contains(e.id) {
             continue;
         }
-        let i = owner_index(e.owner);
         let parts = if matches!(e.income, FederalIncome::ForeignEmployment { .. }) {
             alloc::vec![(Part13b::Rest, Some(exact::whole(0)))]
         } else if let Some(actual) = other_sources.get(&e.id) {
@@ -1027,9 +862,35 @@ fn weights_13b(
         };
         for (p, amount) in parts {
             if p == part {
-                match amount {
-                    Some(cents) => w.cents[i] += cents,
-                    None => w.unknown[i] = true,
+                if amount.as_ref().is_some_and(|cents| *cents == exact::whole(0)) {
+                    continue;
+                }
+                let Some((weights, denominator)) = e.accepted_assignment().owner_weights() else {
+                    w.unknown = [true; 2];
+                    continue;
+                };
+                if part == Part13b::Rest {
+                    // Rest and its native removals retain the original carrier;
+                    // independently projected categories use actual ownership.
+                    let owner = owner_index(e.owner.owned());
+                    match amount {
+                        Some(cents) => w.cents[owner] += cents,
+                        None => w.unknown[owner] = true,
+                    }
+                } else {
+                    for (owner, weight) in weights.into_iter().enumerate() {
+                        if weight == 0 {
+                            continue;
+                        }
+                        match &amount {
+                            Some(cents) => {
+                                w.cents[owner] += cents
+                                    * exact::ratio(weight, denominator)
+                                        .expect("accepted ownership denominator is positive");
+                            }
+                            None => w.unknown[owner] = true,
+                        }
+                    }
                 }
             }
         }
@@ -1047,7 +908,10 @@ fn sole_class_owner(draft: &FederalDraft, part: Part13b) -> Option<usize> {
                 return None;
             }
             if class == part && amount != Some(0) {
-                present[owner_index(entry.owner)] = true;
+                let (weights, _) = entry.accepted_assignment().owner_weights()?;
+                for (owner, weight) in weights.into_iter().enumerate() {
+                    present[owner] |= weight != 0;
+                }
             }
         }
     }
@@ -1058,12 +922,22 @@ fn sole_class_owner(draft: &FederalDraft, part: Part13b) -> Option<usize> {
     }
 }
 
-fn documents_by_owner(d: &FederalDraft, pick: impl Fn(&FederalIncome) -> i64) -> [i64; 2] {
-    let mut w = [0; 2];
-    for e in &d.income {
-        w[owner_index(e.owner)] += pick(&e.income);
+fn documents_by_owner(
+    d: &FederalDraft,
+    pick: impl Fn(&crate::FederalIncomeEntry) -> i64,
+) -> Option<[Exact; 2]> {
+    let mut cents = core::array::from_fn(|_| exact::whole(0));
+    for entry in &d.income {
+        let amount = pick(entry);
+        if amount == 0 {
+            continue;
+        }
+        let (weights, denominator) = entry.accepted_assignment().owner_weights()?;
+        for (owner, weight) in weights.into_iter().enumerate() {
+            cents[owner] += exact::whole(amount) * exact::ratio(weight, denominator)?;
+        }
     }
-    w
+    Some(cents)
 }
 
 #[derive(Clone, Copy)]
@@ -1109,12 +983,13 @@ fn part_name(part: Part13b) -> &'static str {
 // Calculates Form 8379 Part III and the estimate of the injured spouse's
 // share of the joint refund, or refuses what it cannot allocate by name.
 pub(crate) fn allocate(
-    d: &FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     r: &mut FederalResult,
     a: &InjuredSpouseAllocation,
     f: &JointFacts,
     pre_election_overpayment: i64,
 ) {
+    let d = form_context.draft;
     let refuse = |r: &mut FederalResult, key: &str, #[cfg(test)] message: &str| {
         let context = match key {
             "ISSUE_8379_JOINT_RETURN_REQUIRED" => {
@@ -1180,7 +1055,7 @@ pub(crate) fn allocate(
     }
     let inj = owner_index(a.injured);
     let oth = 1 - inj;
-    let Some(projection) = owners::project_sources(d, r, Some(a), f, None) else {
+    let Some(projection) = owners::project_sources(form_context, r, Some(a), f, None) else {
         if f.accounts.income_joint().is_none() {
             refuse(
                 r,
@@ -1210,7 +1085,7 @@ pub(crate) fn allocate(
     } = projection;
     if let Some(qbi) = supplemental_qbi {
         for (column, amount) in [("a", qbi.joint), ("b", qbi.owners[inj]), ("c", qbi.owners[oth])] {
-            crate::kernel::lines::line(
+            crate::line_emission::line(
                 r,
                 &format!("form_8379_supplemental_qbi_{column}"),
                 amount,
@@ -1281,13 +1156,11 @@ pub(crate) fn allocate(
             Some(MedicareWithholdingProjection { targets, owners })
                 if remaining.is_none_or(|actual| targets.iter().sum::<i64>() == actual) =>
             {
-                match owners {
-                    Some(owners) => {
-                        for (target, owners) in targets.into_iter().zip(owners) {
-                            l19.add(target, owners);
-                        }
+                for (target, owners) in targets.into_iter().zip(owners) {
+                    match owners {
+                        Some(owners) => l19.add(target, owners),
+                        None => l19.unavailable(target),
                     }
-                    None => l19.unavailable(targets.iter().sum()),
                 }
             }
             _ => match remaining {
@@ -1317,14 +1190,11 @@ pub(crate) fn allocate(
         ..Default::default()
     };
     if let Some(pay) = &d.payments {
-        if pay.estimated_payments.is_empty() && pay.estimated != Some(0) {
-            payment_complete = false;
-        }
-        for payment in &pay.estimated_payments {
-            match payment.payer {
-                crate::PaymentPayer::Taxpayer => direct[0][0] += payment_whole(payment.amount),
-                crate::PaymentPayer::Spouse => direct[0][1] += payment_whole(payment.amount),
-                crate::PaymentPayer::Joint => joint_by_category[0] += payment_whole(payment.amount),
+        for (amount, payer, _) in pay.estimated.funding() {
+            match payer {
+                crate::PaymentPayer::Taxpayer => direct[0][0] += payment_whole(amount),
+                crate::PaymentPayer::Spouse => direct[0][1] += payment_whole(amount),
+                crate::PaymentPayer::Joint => joint_by_category[0] += payment_whole(amount),
             }
         }
         match pay.extension_payer {
@@ -1609,7 +1479,7 @@ pub(crate) fn allocate(
 
     let estimate = if community {
         let Some(share) =
-            community_refund(d, r, a, &payment_funding, refund, eic * 100, eic_percent)
+            community_refund(form_context, r, a, &payment_funding, refund, eic * 100, eic_percent)
         else {
             refuse(
                 r,
@@ -1849,15 +1719,8 @@ impl InjuredSpouse {
         self.allocations.iter().chain(&self.new_allocations)
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AllocationPlan {
-    pub(crate) required: Vec<InjuredAmountPage>,
-    // Bounded real answers and separately approved automatic initial values.
-    pub(crate) accepted: Vec<InjuredAmount>,
-    pub(crate) known: Vec<InjuredPrintedRow>,
-    pub(crate) known_child: [i64; 2],
-    pub(crate) child_caps: [i64; 2],
-}
+pub(crate) use crate::return_carriers::AllocationPlan;
+
 fn state_choices() -> Vec<InjuredStateChoice> {
     [
         "ARIZONA",
@@ -2279,7 +2142,7 @@ impl RefundFunds {
     }
 }
 fn community_refund(
-    d: &FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     r: &FederalResult,
     a: &InjuredSpouseAllocation,
     payment_funding: &refund_funding::PaymentFunding,
@@ -2287,6 +2150,7 @@ fn community_refund(
     eic: i64,
     eic_percent: i64,
 ) -> Option<i64> {
+    let d = form_context.draft;
     let InjuredCommunityFacts::Yes { states, debt_facts } = &a.community else {
         return None;
     };
@@ -2303,7 +2167,7 @@ fn community_refund(
     let earned_needed = a.debt == OffsetDebt::FederalTax
         && matches!(*state, 1 | 9)
         && *debt_facts == InjuredDebtFacts::BeforeMarriage;
-    refund_funding::add_withholding(d, r, a.injured, *state, earned_needed, &mut funds)?;
+    refund_funding::add_withholding(form_context, r, a.injured, *state, earned_needed, &mut funds)?;
     refund_funding::add_payments(d, payment_funding, a.injured, *state, &mut funds)?;
     use crate::kernel::ratio::exact::{ratio, rounded, whole};
     let all = &funds.community + &funds.separate[0] + &funds.separate[1];

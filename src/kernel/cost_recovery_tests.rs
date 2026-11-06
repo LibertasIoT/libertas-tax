@@ -20,6 +20,7 @@ fn original_regimes_preserve_initial_stage_and_monthly_clock() {
             tax_year: 2011,
             basis_cents: 5_400_000,
             initial_cents: initial,
+            allowed_before: None,
         };
         assert_eq!(
             schedule.allowable(),
@@ -49,6 +50,7 @@ fn current_allowable_is_difference_of_rounded_cumulative_amounts() {
         tax_year: 2026,
         basis_cents: 100,
         initial_cents: 0,
+        allowed_before: None,
     };
     assert_eq!(
         schedule.allowable(),
@@ -73,6 +75,7 @@ fn later_197_cost_uses_original_remaining_months() {
         tax_year: 2026,
         basis_cents: 114_000,
         initial_cents: 0,
+        allowed_before: None,
     };
     // 66 months elapsed before inclusion, leaving 114; 6 prior and 12 current.
     assert_eq!(
@@ -104,6 +107,7 @@ fn addition_before_start_or_after_original_end_preserves_native_boundaries() {
             tax_year,
             basis_cents: 180,
             initial_cents: 0,
+            allowed_before: None,
         }
         .allowable()
         .unwrap();
@@ -124,6 +128,7 @@ fn real_zero_and_representable_basis_are_distinct_from_invalid_parameters() {
         tax_year: 2026,
         basis_cents: 0,
         initial_cents: 0,
+        allowed_before: None,
     };
     assert_eq!(schedule.allowable().unwrap().cumulative_allowable_cents, 0);
     let maximum = MonthlySchedule { basis_cents: i64::MAX, ..schedule }.allowable().unwrap();
@@ -158,5 +163,49 @@ fn published_macrs_schedules_preserve_complete_positive_percentages() {
     for rates in crate::kernel::cost_recovery::macrs_tables::RATES {
         assert_eq!(rates.iter().sum::<i64>(), 100000);
         assert!(rates.iter().all(|rate| *rate > 0));
+    }
+}
+
+#[test]
+fn exclusive_end_preserves_cumulative_rounding_and_original_addition_clock() {
+    let original = MonthlyClock::Original {
+        regime: AmortizationRegime::Section197,
+        started: Month { year: 2025, month: 1 },
+        period_months: 180,
+    };
+    let addition = MonthlyClock::Section197Addition {
+        original_started: Month { year: 2020, month: 1 },
+        original_period_months: 180,
+        included: Month { year: 2025, month: 7 },
+    };
+    for (clock, basis, prior, current) in [(original, 100, 7, 2), (addition, 114_000, 6_000, 5_000)]
+    {
+        let schedule = MonthlySchedule {
+            clock,
+            tax_year: 2026,
+            basis_cents: basis,
+            initial_cents: 0,
+            allowed_before: Some(Month { year: 2026, month: 6 }),
+        };
+        let amounts = schedule.allowable().unwrap();
+        assert_eq!(amounts.prior_allowable_cents, prior);
+        assert_eq!(amounts.current_allowable_cents, current);
+        assert_eq!(amounts.cumulative_allowable_cents, prior + current);
+        assert_eq!(amounts.statutory_remaining_cents, basis - prior - current);
+        let later = MonthlySchedule { tax_year: 2027, ..schedule }.allowable().unwrap();
+        assert_eq!(later.current_allowable_cents, 0);
+        assert_eq!(later.prior_allowable_cents, prior + current);
+        for month in [Month { year: 2024, month: 12 }, Month { year: 2025, month: 1 }] {
+            let before =
+                MonthlySchedule { allowed_before: Some(month), ..schedule }.allowable().unwrap();
+            assert_eq!(before.cumulative_allowable_cents, 0);
+            assert_eq!(before.statutory_remaining_cents, basis);
+        }
+        for month in [Month { year: 0, month: 1 }, Month { year: 2026, month: 13 }] {
+            assert_eq!(
+                MonthlySchedule { allowed_before: Some(month), ..schedule }.allowable(),
+                Err(InvalidMonthlySchedule)
+            );
+        }
     }
 }

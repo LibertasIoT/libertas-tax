@@ -48,18 +48,35 @@ fn education_credits_return_matches_hand_computation() {
     // index 0 = You, index 1 = Your spouse, index 2 = the dependent.
     let sid0_3621 = -1; // You, the first person of the catalog
     let sid2_3616 = sid(&d, 2);
-    d.credits.as_mut().unwrap().education = vec![
-        FederalEducation {
-            student: sid2_3616,
-            expenses: education_expenses(650_000),
-            method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-        },
-        FederalEducation {
-            student: sid0_3621,
-            expenses: education_expenses(300_000),
-            method: education_choice(EducationMethod::LifetimeLearning, Answer::No),
-        },
-    ];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![
+            {
+                let mut pair = native_education(
+                    sid2_3616,
+                    education_expenses(650_000),
+                    education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = false;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            },
+            {
+                let mut pair = native_education(
+                    sid0_3621,
+                    education_expenses(300_000),
+                    education_choice(EducationMethod::LifetimeLearning, Answer::No),
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = true;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            },
+        ],
+    );
     let r = supported(&d);
 
     // Form 8863 Part III, AOTC student (dependent, $6,500 of expenses):
@@ -141,18 +158,35 @@ fn education_credits_phase_out_at_mid_range_magi() {
     add_child(&mut d);
     let sid0_3708 = -1; // You, the first person of the catalog
     let sid1_3713 = sid(&d, 1);
-    d.credits.as_mut().unwrap().education = vec![
-        FederalEducation {
-            student: sid0_3708,
-            expenses: education_expenses(400_000),
-            method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-        },
-        FederalEducation {
-            student: sid1_3713,
-            expenses: education_expenses(1_200_000),
-            method: education_choice(EducationMethod::LifetimeLearning, Answer::No),
-        },
-    ];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![
+            {
+                let mut pair = native_education(
+                    sid0_3708,
+                    education_expenses(400_000),
+                    education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = false;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            },
+            {
+                let mut pair = native_education(
+                    sid1_3713,
+                    education_expenses(1_200_000),
+                    education_choice(EducationMethod::LifetimeLearning, Answer::No),
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = true;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            },
+        ],
+    );
     let r = supported(&d);
     // MAGI = AGI = $85,000 (single wages only, no adjustments).
     // Line 4 = $90,000 - $85,000 = $5,000; line 6 ratio = 5,000/10,000 = 0.500.
@@ -173,10 +207,17 @@ fn education_credits_phase_out_at_mid_range_magi() {
 fn lifetime_learning_expenses_cap_at_10000() {
     let mut d = complete(FederalStatus::Single);
     let sid0_3742 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(FederalEducation {
-        student: sid0_3742,
-        expenses: education_expenses(1_400_000),
-        method: education_choice(EducationMethod::LifetimeLearning, Answer::No),
+    add_education(d.credits.as_mut().unwrap(), {
+        let mut pair = native_education(
+            sid0_3742,
+            education_expenses(1_400_000),
+            education_choice(EducationMethod::LifetimeLearning, Answer::No),
+        );
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = true;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     });
     let r = supported(&d);
     // MAGI = AGI = $60,000 (single default wage), below the $80,000
@@ -197,10 +238,17 @@ fn refundable_aotc_is_denied_under_the_kiddie_conditions() {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 5_000_000, 0);
     let sid0_3769 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(FederalEducation {
-        student: sid0_3769,
-        expenses: education_expenses(400_000),
-        method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+    add_education(d.credits.as_mut().unwrap(), {
+        let mut pair = native_education(
+            sid0_3769,
+            education_expenses(400_000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        );
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = false;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     });
     let baseline = supported(&d);
     // MAGI $50,000 is below the $80,000 phase-out floor: AOTC = 100%*$2,000
@@ -238,17 +286,27 @@ fn education_expenses_used_follows_the_credit_caps_in_list_order() {
     }
     let mut students = crate::federal_rules::people_students(&d);
     let ids: Vec<i64> = students.iter().map(|s| s.id).collect();
-    let entry = |student: usize, tuition: i64, method: EducationMethod| FederalEducation {
-        student: ids[student],
-        expenses: education_expenses(tuition * 100),
-        method: education_choice(method, Answer::Yes),
+    let entry = |student: usize, tuition: i64, method: EducationMethod| {
+        let mut pair = native_education(
+            ids[student],
+            education_expenses(tuition * 100),
+            education_choice(method, Answer::Yes),
+        );
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = method == EducationMethod::LifetimeLearning;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     };
     let credits = d.credits.as_mut().unwrap();
-    credits.education = vec![
-        entry(1, 8_000, EducationMethod::LifetimeLearning),
-        entry(2, 6_000, EducationMethod::LifetimeLearning),
-        entry(3, 11_000, EducationMethod::AmericanOpportunity),
-    ];
+    set_education(
+        credits,
+        vec![
+            entry(1, 8_000, EducationMethod::LifetimeLearning),
+            entry(2, 6_000, EducationMethod::LifetimeLearning),
+            entry(3, 11_000, EducationMethod::AmericanOpportunity),
+        ],
+    );
     let used = |credits: &FederalCredits,
                 students: &[crate::PersonChoice],
                 allowed: bool|
@@ -273,11 +331,11 @@ fn education_expenses_used_follows_the_credit_caps_in_list_order() {
     assert_eq!(used(credits, &students, true), vec![(8_000, 0), (6_000, 6_000), (11_000, 4_000)]);
     // Scholarships and 529 allocations reduce the credit's own expenses first.
     students[1].valid_ssn = true;
-    credits.education[2].expenses.assistance = 800_000;
+    credits.education[2].form.box_5 = 800_000;
     assert_eq!(used(credits, &students, true)[2], (3_000, 3_000));
     // Form 8863 uses the same amounts: the AOTC entry's credit is figured on
     // its 4,000: 2,000 + 25% of 2,000, and the lifetime entries on 10,000.
-    d.credits.as_mut().unwrap().education[2].expenses.assistance = 0;
+    d.credits.as_mut().unwrap().education[2].form.box_5 = 0;
     let r = supported(&d);
     // Lifetime: 20% of 10,000 = 2,000; AOTC: 2,000 + 500 = 2,500.
     assert_eq!(value(&r, "education_credit") + value(&r, "refundable_education_credit"), 4_500);

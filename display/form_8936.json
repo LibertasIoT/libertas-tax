@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 382000, "rule": {"select": "^<FederalCleanVehicleDetails>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["vin", "buyer", "acquired", "placed_in_service", "dealer_transfer"]}, {"ratio": 1, "fields": ["accepted_seller_report", "qualified_vehicle", "owned_for_use", "disposition"]}]}},
+    {"order": 571000, "rule": {"select": "^<FederalCleanVehicle>", "flatten": true}},
+    {"order": 960000, "rule": {"select": "^<FederalCleanVehicleDetails>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_CLEAN_VEHICLE_IDENTITY", "fields": ["vin", "buyer", "acquired", "placed_in_service"]}, {"title": "DISPLAY_CLEAN_VEHICLE_ELIGIBILITY", "fields": ["accepted_seller_report", "qualified_vehicle", "owned_for_use", "disposition", "dealer_transfer"]}]}},
+    {"order": 961000, "rule": {"select": "^<FederalCleanVehicleDetails>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_CLEAN_VEHICLE_IDENTITY", "fields": ["vin", "buyer", "acquired", "placed_in_service"]}, {"title": "DISPLAY_CLEAN_VEHICLE_ELIGIBILITY", "fields": ["accepted_seller_report", "qualified_vehicle", "owned_for_use", "disposition", "dealer_transfer"]}]}}
+  ]
+}

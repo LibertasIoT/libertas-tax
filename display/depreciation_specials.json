@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 22000, "rule": {"select": "^<MacrsAssetPage>.farm_rental_use", "when_single_choice": "hide"}}
+  ]
+}

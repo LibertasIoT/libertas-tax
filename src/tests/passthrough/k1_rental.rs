@@ -12,7 +12,7 @@ use alloc::format;
 // of $50,000, so the basis and at-risk limits allow these rental losses.
 fn partner(real_estate: i64, other: i64, participation: K1RentalParticipation) -> PartnerK1 {
     let mut data = ordinary_partner_source(0, false);
-    data.regular.basis.opening = 5_000_000;
+    data.regular.basis.opening = Some(5_000_000);
     data.regular.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
     data.regular.rentals = K1RentalAmounts {
         real_estate_property: Default::default(),
@@ -21,7 +21,7 @@ fn partner(real_estate: i64, other: i64, participation: K1RentalParticipation) -
         other: other * 100,
         ..Default::default()
     };
-    data.rental_facts.participation = participation;
+    data.rental_facts.participation = Some(participation);
     data.alternative = Some(data.regular.clone());
     data
 }
@@ -53,12 +53,12 @@ fn refused_with(r: &FederalResult, key: &str) -> bool {
 // handoff, independently of the passive-pool implementation.
 pub(in crate::tests) fn rental_property_sale(full: bool, scorp: bool) -> (FederalDraft, i64) {
     let mut source = partner(-2_000, 0, K1RentalParticipation::NotActive);
-    source.participation = PartnerParticipation::Limited {
+    source.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
+    });
     source.regular.rentals.real_estate_carryover = 900_000;
     source.regular.rentals.real_estate_property =
         K1RentalProperty { net: 600_000, unrecaptured: 400_000, passive_loss: 0 };
@@ -72,7 +72,7 @@ pub(in crate::tests) fn rental_property_sale(full: bool, scorp: bool) -> (Federa
         return (d, id);
     }
     let mut shareholder = complete_ordinary_scorp(0, false);
-    shareholder.opening = 5_000_000;
+    shareholder.opening = Some(5_000_000);
     shareholder.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
     shareholder.rentals = source.regular.rentals;
     shareholder.rental_facts = source.rental_facts;
@@ -80,7 +80,12 @@ pub(in crate::tests) fn rental_property_sale(full: bool, scorp: bool) -> (Federa
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 7_000_000, 650_000);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: shareholder }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp {
+            data: crate::tests::support::builders::scorp_source(shareholder),
+        }),
+    );
     d.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));
     (d, id)
 }
@@ -158,6 +163,9 @@ fn amend_rental_sale(
             data.alternative = Some(data.regular.clone());
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             change(&mut data.rentals, &mut data.rental_facts);
             data.amt = Some(amt_records(data));
         }
@@ -175,6 +183,9 @@ fn k1_rental_property_f4c_special_disposition_remains_a_named_refusal() {
                 "ISSUE_PARTNER_K1_RENTAL_DISPOSITION"
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.unentered.push(ScorpK1Item::RentalDisposition);
                 "ISSUE_SCORP_K1_RENTAL_DISPOSITION"
             }
@@ -238,7 +249,7 @@ fn k1_rental_property_basis_and_risk_suspensions_require_activity_history() {
             match &mut d.income.last_mut().unwrap().income {
                 FederalIncome::Partnership { data } => {
                     if basis_limit {
-                        data.regular.basis.opening = 0;
+                        data.regular.basis.opening = Some(0);
                     } else {
                         data.regular.risk.start =
                             ScorpRiskStart::Detailed { capacity: 0, profit: 0, loss: 0 };
@@ -246,8 +257,11 @@ fn k1_rental_property_basis_and_risk_suspensions_require_activity_history() {
                     data.alternative = Some(data.regular.clone());
                 }
                 FederalIncome::Scorp { data } => {
+                    let mut source_edit = edit_scorp(data);
+                    let data = &mut *source_edit;
+
                     if basis_limit {
-                        data.opening = 0;
+                        data.opening = Some(0);
                     } else {
                         data.risk.start =
                             ScorpRiskStart::Detailed { capacity: 0, profit: 0, loss: 0 };
@@ -270,16 +284,21 @@ fn k1_rental_property_duplicate_full_sale_is_invalid_at_both_page_and_record() {
             FederalIncome::Partnership { data } => {
                 assert!(!data.valid());
                 assert_eq!(
-                    crate::K1Partnership::from_record("Synthetic partnership", data)
+                    crate::k1_page::K1Partnership::from_record("Synthetic partnership", data)
                         .unwrap()
                         .rule(),
                     Some("K1_RENTAL_DISPOSED_TWICE")
                 );
             }
             FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+
                 assert!(!data.valid());
                 assert_eq!(
-                    crate::K1Scorp::from_record("Synthetic corporation", data).unwrap().rule(),
+                    crate::k1_page::K1Scorp::from_record("Synthetic corporation", data)
+                        .unwrap()
+                        .rule(),
                     Some("K1_RENTAL_DISPOSED_TWICE")
                 );
             }
@@ -297,7 +316,7 @@ fn k1_rental_property_full_sale_gain_offsets_other_pal_but_former_passive_gain_d
                 amounts.real_estate_carryover = 100_000;
                 amounts.other = -800_000;
                 if professional {
-                    facts.participation = K1RentalParticipation::Professional;
+                    facts.participation = Some(K1RentalParticipation::Professional);
                 }
             });
             if professional {
@@ -367,7 +386,7 @@ fn k1_rental_property_professional_niit_exclusion_requires_the_recorded_safe_har
             amend_rental_sale(&mut d, |amounts, facts| {
                 amounts.real_estate = 500_000;
                 amounts.real_estate_carryover = 0;
-                facts.participation = K1RentalParticipation::Professional;
+                facts.participation = Some(K1RentalParticipation::Professional);
             });
             make_professional(&mut d, Owner::Taxpayer, safe_harbor);
             let r = supported(&d);
@@ -390,7 +409,7 @@ fn k1_rental_property_professional_full_sale_keeps_469g_prior_losses_in_niit() {
                     let (mut d, _) = rental_property_sale(true, scorp);
                     d.income[0] = wage(1, Owner::Taxpayer, 25_000_000, 650_000);
                     amend_rental_sale(&mut d, |amounts, facts| {
-                        facts.participation = K1RentalParticipation::Professional;
+                        facts.participation = Some(K1RentalParticipation::Professional);
                         if property_history {
                             amounts.real_estate_carryover = 0;
                             amounts.real_estate_property.passive_loss = 900_000;
@@ -471,6 +490,9 @@ fn k1_rental_property_business_and_rental_use_one_source_with_distinct_qbi_class
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section1231 = Some(k1_section1231(10_000, 10_000));
                 data.amt = Some(amt_records(data));
             }
@@ -499,12 +521,17 @@ fn k1_rental_property_business_and_rental_use_one_source_with_distinct_qbi_class
         high.income[0] = wage(1, Owner::Taxpayer, 25_000_000, 650_000);
         match &mut high.income.last_mut().unwrap().income {
             FederalIncome::Partnership { data } => {
-                let PartnerParticipation::Limited { minutes, .. } = &mut data.participation else {
+                let Some(PartnerParticipation::Limited { minutes, .. }) = &mut data.participation
+                else {
                     unreachable!()
                 };
                 *minutes = 30_001;
             }
-            FederalIncome::Scorp { data } => data.participation.as_mut().unwrap().minutes = 30_001,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.participation.as_mut().unwrap().minutes = 30_001
+            }
             _ => unreachable!(),
         }
         assert_eq!(value(&supported(&high), "net_investment_income_tax"), 418);
@@ -519,6 +546,9 @@ fn k1_rental_property_business_and_rental_use_one_source_with_distinct_qbi_class
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section1231.as_mut().unwrap().unrecaptured = 500_000;
                 data.rentals.real_estate_property.unrecaptured = 300_000;
                 data.amt = Some(amt_records(data));
@@ -551,6 +581,9 @@ fn k1_rental_property_business_and_rental_losses_share_limits_but_keep_passive_p
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section1231 = Some(k1_section1231(-4_000, 0));
                 data.amt = Some(amt_records(data));
             }
@@ -579,17 +612,20 @@ fn k1_rental_property_business_and_rental_losses_share_limits_but_keep_passive_p
 fn k1_rental_property_amt_uses_its_independent_property_amounts() {
     for scorp in [false, true] {
         let (mut d, _) = rental_property_sale(true, scorp);
-        let property = match &mut d.income.last_mut().unwrap().income {
+        let change = |property: &mut K1RentalProperty| {
+            property.net = 700_000;
+            property.unrecaptured = 300_000;
+        };
+        match &mut d.income.last_mut().unwrap().income {
             FederalIncome::Partnership { data } => {
-                &mut data.alternative.as_mut().unwrap().rentals.real_estate_property
+                change(&mut data.alternative.as_mut().unwrap().rentals.real_estate_property);
             }
             FederalIncome::Scorp { data } => {
-                &mut data.amt.as_mut().unwrap().rentals.real_estate_property
+                let mut source_edit = edit_scorp(data);
+                change(&mut source_edit.amt.as_mut().unwrap().rentals.real_estate_property);
             }
             _ => unreachable!(),
-        };
-        property.net = 700_000;
-        property.unrecaptured = 300_000;
+        }
         let _ = supported(&d);
         for amt in [false, true] {
             let mut scratch = estimate(&complete(FederalStatus::Single));
@@ -614,12 +650,21 @@ fn k1_rental_property_histories_round_trip_separately_on_both_pages() {
         });
         match &d.income.last().unwrap().income {
             FederalIncome::Partnership { data } => {
-                let page = K1Partnership::from_record("Synthetic rental history", data).unwrap();
+                let page =
+                    K1PartnershipPaper::from_record("Synthetic rental history", data).unwrap();
                 assert_eq!(page.record(), *data);
             }
             FederalIncome::Scorp { data } => {
-                let page = K1Scorp::from_record("Synthetic rental history", data).unwrap();
-                assert_eq!(page.record(), *data);
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+
+                let page = K1ScorpPaper::from_record("Synthetic rental history", data).unwrap();
+                // The page writes the calculation record, not the stored answers about it.
+                let mut calculation = data.clone();
+                calculation.amt_record_choice = None;
+                calculation.research_credit_line = None;
+                calculation.health_insurance = crate::BusinessHealthInsurance::None;
+                assert_eq!(page.record(), calculation);
             }
             _ => unreachable!(),
         }
@@ -636,20 +681,26 @@ fn k1_rental_property_unconfirmed_and_death_history_projections_preserve_accepte
     let FederalIncome::Scorp { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
-    assert!(data.suspended_history());
-    let mut without = data.clone();
-    without.drop_suspended_history();
-    assert!(!without.rentals.passive_history());
-    assert!(!without.amt.as_ref().unwrap().rentals.passive_history());
-    assert_eq!(without.rentals.real_estate_property.net, 600_000);
-    assert_eq!(without.rentals.real_estate_property.unrecaptured, 400_000);
-    data.passive.complete = false;
+    {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
+        assert!(data.suspended_history());
+        let mut without = data.clone();
+        without.drop_suspended_history();
+        assert!(!without.rentals.passive_history());
+        assert!(!without.amt.as_ref().unwrap().rentals.passive_history());
+        assert_eq!(without.rentals.real_estate_property.net, 600_000);
+        assert_eq!(without.rentals.real_estate_property.unrecaptured, 400_000);
+        data.passive.complete = false;
+    }
     let accepted = d.clone();
     let mut notes = Vec::new();
     let working = crate::unknowns::supported(&d, &mut notes).unwrap();
     let FederalIncome::Scorp { data } = &working.income.last().unwrap().income else {
         unreachable!()
     };
+    let source_view = ScorpK1::from(data);
+    let data = &source_view;
     assert!(!data.rentals.passive_history());
     assert_eq!(d, accepted);
 }
@@ -666,9 +717,13 @@ fn k1_rental_property_mixed_ebl_retains_the_named_unresolved_allocation() {
     let FederalIncome::Scorp { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
-    data.opening = 100_000_000;
-    data.risk.start = ScorpRiskStart::Detailed { capacity: 100_000_000, profit: 0, loss: 0 };
-    data.amt = Some(amt_records(data));
+    {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
+        data.opening = Some(100_000_000);
+        data.risk.start = ScorpRiskStart::Detailed { capacity: 100_000_000, profit: 0, loss: 0 };
+        data.amt = Some(amt_records(data));
+    }
     assert!(refused_with(
         &estimate(&d),
         "ISSUE_SECTION1231_PROPERTY_EXCESS_BUSINESS_LOSS_REQUIRES_RESOLVED_975FCF28"
@@ -719,18 +774,18 @@ fn fixture_a2_the_allowance_phases_out_with_magi() {
 #[test]
 fn fixture_b_limited_partner_box_2_loss_is_fully_suspended() {
     let mut data = partner(-30_000, 0, K1RentalParticipation::NotActive);
-    data.participation = PartnerParticipation::Limited {
+    data.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
+    });
     let (d, id) = with_partner(60_000, data.clone());
     let r = supported(&d);
     assert_eq!(rental_line(&r, "partnership", id, "rental_real_estate", "net"), 0);
     assert_eq!(rental_line(&r, "partnership", id, "rental_real_estate", "suspended"), 30_000);
     assert_eq!(return_line(&r, "11a / 11b"), 6_000_000);
-    data.rental_facts.participation = K1RentalParticipation::Active;
+    data.rental_facts.participation = Some(K1RentalParticipation::Active);
     assert!(!data.valid());
 }
 
@@ -791,14 +846,19 @@ fn professional_carryover_offsets_its_own_activity_income_first() {
 #[test]
 fn fixture_e_shareholder_box_2_loss_within_the_allowance() {
     let mut source = complete_ordinary_scorp(0, false);
-    source.opening = 5_000_000;
+    source.opening = Some(5_000_000);
     source.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
     source.rentals.real_estate = -2_000_000;
-    source.rental_facts.participation = K1RentalParticipation::Active;
+    source.rental_facts.participation = Some(K1RentalParticipation::Active);
     source.amt = Some(amt_records(&source));
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp {
+            data: crate::tests::support::builders::scorp_source(source),
+        }),
+    );
     let r = supported(&d);
     assert_eq!(rental_line(&r, "scorp", id, "rental_real_estate", "net"), -20_000);
     assert_eq!(rental_line(&r, "scorp", id, "rental_real_estate", "suspended"), 0);
@@ -815,13 +875,13 @@ fn fixture_e_shareholder_box_2_loss_within_the_allowance() {
 #[test]
 fn fixture_f_rental_loss_limited_by_basis_carries_then_meets_the_passive_rules() {
     let mut data = partner(-20_000, 0, K1RentalParticipation::NotActive);
-    data.participation = PartnerParticipation::Limited {
+    data.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
-    data.regular.basis.opening = 500_000;
+    });
+    data.regular.basis.opening = Some(500_000);
     data.regular.risk.start = ScorpRiskStart::Detailed { capacity: 500_000, profit: 0, loss: 0 };
     data.alternative = Some(data.regular.clone());
     let ledger = data.ledger(&data.regular).unwrap();
@@ -844,6 +904,7 @@ fn fixture_f_rental_loss_limited_by_basis_carries_then_meets_the_passive_rules()
     )));
     let mut source = complete_ordinary_scorp(0, false);
     source.rentals.real_estate = -3_000_000;
+    source.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     source.risk.start = ScorpRiskStart::Detailed { capacity: 1_300_000, profit: 0, loss: 0 };
     source.risk.deducted = 0;
     source.amt = Some(amt_records(&source));
@@ -851,7 +912,12 @@ fn fixture_f_rental_loss_limited_by_basis_carries_then_meets_the_passive_rules()
     assert_eq!(crate::kernel::ratio::dollars(ledger.basis_allowed[rental].get()), 13_000);
     assert_eq!(crate::kernel::ratio::dollars(ledger.basis_suspended[rental].get()), 17_000);
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp {
+            data: crate::tests::support::builders::scorp_source(source),
+        }),
+    );
     let r = supported(&d);
     assert!(r.review_notes.iter().any(|v| v.contains(
         "rental real estate loss carried to 2027 — $17000 because of your basis, $0 because of the at-risk limits"
@@ -869,13 +935,13 @@ fn fixture_f_rental_loss_limited_by_basis_carries_then_meets_the_passive_rules()
 #[test]
 fn fixture_3b_a_released_basis_carry_is_a_passive_deduction_of_the_release_year() {
     let mut data = partner(8_000, 0, K1RentalParticipation::NotActive);
-    data.participation = PartnerParticipation::Limited {
+    data.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
-    data.regular.basis.opening = 0;
+    });
+    data.regular.basis.opening = Some(0);
     data.regular.basis.contributions = 600_000;
     data.regular.carried.real_estate.basis = 1_500_000;
     data.regular.rentals.real_estate_carryover = 500_000;
@@ -924,10 +990,10 @@ fn fixture_g_listed_rental_activity_is_qbi_after_its_carryover() {
     assert_eq!(return_line(&r, "13b"), 120_000);
 }
 
-// A rental disposition and the rentals of a publicly traded partnership
-// stay refused by name.
+// An unsupported rental disposition keeps its named boundary. A kept PTP
+// rental uses its own passive pool.
 #[test]
-fn rental_disposition_and_ptp_rentals_are_refused_by_name() {
+fn rental_disposition_boundary_and_kept_ptp_rental_are_distinct() {
     let mut data = partner(-30_000, 0, K1RentalParticipation::Active);
     data.unentered = vec![PartnerK1Item::RentalDisposition];
     let (d, _) = with_partner(60_000, data);
@@ -937,9 +1003,10 @@ fn rental_disposition_and_ptp_rentals_are_refused_by_name() {
     let mut data = partner(5_000, 0, K1RentalParticipation::NotActive);
     data.publicly_traded = true;
     let (d, _) = with_partner(60_000, data);
-    let r = estimate(&d);
-    assert_eq!(r.state, ResultState::Unsupported);
-    assert!(refused_with(&r, "ISSUE_K1_RENTAL_PTP"));
+    // 2026-10-20: i8582 Special Instructions for PTPs admits this kept
+    // passive income through the separate same-PTP owner.
+    let r = supported(&d);
+    assert_eq!(value(&r, "agi"), 65_000);
 }
 
 // Fixture A3 (F3, 2026-10-09). i8582 Part IV column (c) and section
@@ -984,7 +1051,7 @@ fn unit21_k1_rental_professional_status_belongs_to_the_current_filer() {
     let mut entry = income(FederalIncome::Partnership {
         data: partner(-30_000, 0, K1RentalParticipation::Professional),
     });
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     entry.community = CommunityShare::Community;
     add(&mut d, entry);
     let id = d.income.last().unwrap().id;
@@ -1016,12 +1083,17 @@ fn unit4_former_passive_professional_remainder_requires_both_active_years() {
             let id = d.next_id;
             let kind = if scorp {
                 let mut s = complete_ordinary_scorp(0, false);
-                s.opening = 5_000_000;
+                s.opening = Some(5_000_000);
                 s.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
                 s.rentals = source.regular.rentals.clone();
                 s.rental_facts = source.rental_facts.clone();
                 s.amt = Some(amt_records(&s));
-                add(&mut d, income(FederalIncome::Scorp { data: s }));
+                add(
+                    &mut d,
+                    income(FederalIncome::Scorp {
+                        data: crate::tests::support::builders::scorp_source(s),
+                    }),
+                );
                 "scorp"
             } else {
                 add(&mut d, income(FederalIncome::Partnership { data: source }));
@@ -1054,14 +1126,14 @@ fn unit4_former_passive_professional_remainder_requires_both_active_years() {
 #[test]
 fn unit4_limited_partner_cannot_choose_professional_active_eligibility() {
     let mut source = partner(4_000, 0, K1RentalParticipation::ProfessionalActive);
-    source.participation = PartnerParticipation::Limited {
+    source.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
+    });
     assert!(!source.valid());
-    source.rental_facts.participation = K1RentalParticipation::Professional;
+    source.rental_facts.participation = Some(K1RentalParticipation::Professional);
     assert!(source.valid());
 }
 
@@ -1077,12 +1149,17 @@ fn unit4_professional_election_keeps_k1_loss_until_all_rental_members_are_dispos
             let id = d.next_id;
             let kind = if scorp {
                 let mut s = complete_ordinary_scorp(0, false);
-                s.opening = 5_000_000;
+                s.opening = Some(5_000_000);
                 s.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
                 s.rentals = source.regular.rentals.clone();
                 s.rental_facts = source.rental_facts.clone();
                 s.amt = Some(amt_records(&s));
-                add(&mut d, income(FederalIncome::Scorp { data: s }));
+                add(
+                    &mut d,
+                    income(FederalIncome::Scorp {
+                        data: crate::tests::support::builders::scorp_source(s),
+                    }),
+                );
                 "scorp"
             } else {
                 add(&mut d, income(FederalIncome::Partnership { data: source }));
@@ -1106,7 +1183,8 @@ fn unit4_professional_election_keeps_k1_loss_until_all_rental_members_are_dispos
                 let other = complete(FederalStatus::Joint);
                 d.setup = other.setup;
                 d.people.as_mut().unwrap().spouse = other.people.unwrap().spouse;
-                d.income.iter_mut().find(|entry| entry.id == id).unwrap().owner = Owner::Spouse;
+                d.income.iter_mut().find(|entry| entry.id == id).unwrap().owner =
+                    crate::DocumentOwner::Spouses;
             }
             let r = supported(&d);
             assert_eq!(rental_line(&r, kind, id, "rental_real_estate", "suspended"), 6_000);
@@ -1134,44 +1212,50 @@ fn unit4_elected_former_passive_combines_direct_and_each_k1_owner() {
             data.alternative.as_mut().unwrap().rentals.real_estate_carryover = 600_000;
             let source = if scorp {
                 let mut shareholder = complete_ordinary_scorp(0, false);
-                shareholder.opening = 5_000_000;
+                shareholder.opening = Some(5_000_000);
                 shareholder.risk.start =
                     ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
                 shareholder.rentals = data.regular.rentals.clone();
                 shareholder.rental_facts = data.rental_facts.clone();
                 shareholder.amt = Some(amt_records(&shareholder));
                 shareholder.amt.as_mut().unwrap().rentals.real_estate_carryover = 600_000;
-                FederalIncome::Scorp { data: shareholder }
+                FederalIncome::Scorp {
+                    data: crate::tests::support::builders::scorp_source(shareholder),
+                }
             } else {
                 FederalIncome::Partnership { data }
             };
-            d.income.iter_mut().find(|entry| entry.id == v).unwrap().income = source;
+            let entry = d.income.iter_mut().find(|entry| entry.id == v).unwrap();
+            entry.income = source;
+            crate::tests::support::builders::prepare_income_fixture(entry, None);
             if filing == 1 {
                 let other = complete(FederalStatus::Joint);
                 d.setup = other.setup;
                 d.people.as_mut().unwrap().spouse = other.people.unwrap().spouse;
-                d.income.iter_mut().find(|entry| entry.id == v).unwrap().owner = Owner::Spouse;
+                d.income.iter_mut().find(|entry| entry.id == v).unwrap().owner =
+                    crate::DocumentOwner::Spouses;
             }
             if filing >= 2 {
                 let other = complete(FederalStatus::Separate);
                 d.setup = other.setup;
+                answer_separate_pages(&mut d);
                 d.people.as_mut().unwrap().spouse = other.people.unwrap().spouse;
                 d.setup.as_mut().unwrap().community_property = CommunityProperty::Yes {
                     state: CommunityState::Arizona,
                     rule: CommunityRule::Halves,
                 };
-                d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+                d.deductions.as_mut().unwrap().itemize_override = None;
                 for entry in &mut d.income {
                     entry.community = CommunityShare::Community;
                     if entry.id == v {
-                        entry.owner = Owner::Spouse;
+                        entry.owner = crate::DocumentOwner::Spouses;
                     }
                 }
             }
             if filing >= 2 {
                 let mut excluded = d.income.iter().find(|entry| entry.id == u).unwrap().clone();
                 excluded.id = 0;
-                excluded.owner = Owner::Spouse;
+                excluded.owner = crate::DocumentOwner::Spouses;
                 excluded.community = CommunityShare::Separate;
                 let FederalIncome::Rental { data } = &mut excluded.income else { unreachable!() };
                 data.participation = RentalParticipation::NotActive;
@@ -1222,13 +1306,15 @@ fn unit4_elected_former_passive_preserves_k1_property_character_and_line43_footi
         source.alternative = Some(source.regular.clone());
         let source = if scorp {
             let mut shareholder = complete_ordinary_scorp(0, false);
-            shareholder.opening = 5_000_000;
+            shareholder.opening = Some(5_000_000);
             shareholder.risk.start =
                 ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
             shareholder.rentals = source.regular.rentals;
             shareholder.rental_facts = source.rental_facts;
             shareholder.amt = Some(amt_records(&shareholder));
-            FederalIncome::Scorp { data: shareholder }
+            FederalIncome::Scorp {
+                data: crate::tests::support::builders::scorp_source(shareholder),
+            }
         } else {
             FederalIncome::Partnership { data: source }
         };

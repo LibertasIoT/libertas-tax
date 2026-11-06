@@ -22,16 +22,17 @@ fn base(withholding: i64, prior_tax: i64, prior_agi: i64) -> FederalDraft {
     d
 }
 fn dated(d: &mut FederalDraft, payments: &[(u32, i64)]) {
-    d.payments.as_mut().unwrap().estimated_payments = payments
-        .iter()
-        .map(|&(date, amount)| DatedPayment {
-            payer: crate::PaymentPayer::Joint,
-            refund_property: None,
-            date,
-            amount,
-        })
-        .collect();
-    d.payments.as_mut().unwrap().refresh_estimated_projection();
+    d.payments.as_mut().unwrap().estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: payments
+            .iter()
+            .map(|&(date, amount)| DatedPayment {
+                payer: crate::PaymentPayer::Joint,
+                refund_property: None,
+                date,
+                amount,
+            })
+            .collect(),
+    };
 }
 fn labeled(r: &FederalResult, label: &str) -> Option<i64> {
     r.return_lines
@@ -176,17 +177,10 @@ fn estimated_payments_apply_by_date_to_the_periods() {
     assert_eq!(return_line(&r, "37"), 103_900);
     assert_eq!(r.balance, Some(103_900));
 
-    // 2026-10-16, Derived carrier: the optional stored projection matches
-    // the exact dated sources; a contradictory projection is invalid. An
-    // annual source without dates retains the existing Form2210 boundary.
-    let mut matching = d.clone();
-    matching.payments.as_mut().unwrap().estimated = Some(400_000);
-    assert_eq!(supported(&matching).balance, Some(103_900));
-    let mut different = d.clone();
-    different.payments.as_mut().unwrap().estimated = Some(300_000);
-    unsupported(&different, "Estimated payments");
+    // Annual funding without a timing method cannot establish a precise penalty.
     let mut undated = base(400_000, 800_000, 10_000_000);
-    undated.payments.as_mut().unwrap().estimated = Some(150_000);
+    undated.payments.as_mut().unwrap().estimated =
+        unknown_estimated(150_000, PaymentPayer::Taxpayer);
     unsupported(&undated, "Form 2210");
     // Box D needs the four period amounts adding up to line 6.
     let mut by_date = d.clone();
@@ -824,7 +818,7 @@ fn prior_year_agi_over_150000_uses_110_percent() {
     assert_eq!(cents(&r, "form_2210_line_9"), 1_540_000);
     // Each period again receives $3,000 ((a)-(c)) or $1,500 ((d)) against a
     // bigger $3,850 installment, so the shortfall grows by $350 each
-    // period: (a) $850, (b) $1,700, (c) $2,550, (d) $3,850 (the carried
+    // period: (a) $850, b $1,700, c $2,550, d $3,850 (the carried
     // $2,550 plus the unmet $1,300 balance of its own installment).
     for (column, short) in [("a", 85_000), ("b", 170_000), ("c", 255_000), ("d", 385_000)] {
         assert_eq!(cents(&r, &alloc::format!("form_2210_line_17_{column}")), short);
@@ -855,13 +849,12 @@ fn january_15_payment_clears_the_fourth_period_only() {
     // Periods (a)-(c) are unaffected: $4.77 + $17.05 + $35.11 = $56.93.
     let mut d = joint_business_return(14_000_000);
     let pay = d.payments.as_mut().unwrap();
-    pay.estimated_payments.push(DatedPayment {
+    crate::tests::support::builders::dated_payments_mut(pay).push(DatedPayment {
         payer: crate::PaymentPayer::Joint,
         refund_property: None,
         date: 20270115,
         amount: 350_000,
     });
-    pay.refresh_estimated_projection();
     let r = supported(&d);
     for (column, short) in [("a", 50_000), ("b", 100_000), ("c", 150_000), ("d", 0)] {
         assert_eq!(cents(&r, &alloc::format!("form_2210_line_17_{column}")), short);
@@ -1590,7 +1583,7 @@ fn fishing_income_on_a_joint_return_figures_form_2210_f() {
         d.income = vec![wage(1, Owner::Taxpayer, 9_000_000, 200_000)];
         d.next_id = 2;
         let mut business = income(break_even_fishing(200_000, fishing));
-        business.owner = Owner::Spouse;
+        business.owner = crate::DocumentOwner::Spouses;
         add(&mut d, business);
         let pay = d.payments.as_mut().unwrap();
         pay.prior_year = Some(PriorYearTax {
@@ -1894,6 +1887,7 @@ fn planned_credit_rolls_through_estimated_installments_without_becoming_a_paymen
         400_000,
         NextYearEstimate::SameAsThisReturn { farmer_fisherman_next_year: FarmerNextYear::No },
     );
+    name_accepted_income_documents(&mut d);
     let pay = d.payments.as_mut().unwrap();
     pay.extension = 1_000_000;
     pay.extension_payer = Some(PaymentPayer::Taxpayer);
@@ -1927,6 +1921,7 @@ fn planned_credit_rolls_through_estimated_installments_without_becoming_a_paymen
         4
     );
     // A spouse-account intent does not reduce a separate taxpayer forecast.
+    answer_separate_pages(&mut d);
     d.setup.as_mut().unwrap().status = filing_choice(FederalStatus::Separate);
     d.setup.as_mut().unwrap().marital_state =
         MaritalState::Married { living: SpouseLiving::Together };
@@ -1934,4 +1929,591 @@ fn planned_credit_rolls_through_estimated_installments_without_becoming_a_paymen
     d.payments.as_mut().unwrap().credit_recipient = Some(OverpaymentRecipient::SpouseAccount);
     let separate = supported(&d);
     assert!(!separate.lines.iter().any(|l| l.id.starts_with("form_1040_es_planned_cash_")));
+}
+
+// Recognized livestock income joins the retained positive source gains.
+#[test]
+fn farmer_gross_original_h_adds_recognized_farm_property_once() {
+    for farm_rental in [false, true] {
+        for livestock in [crate::Livestock::No, crate::Livestock::CattleOrHorse] {
+            let mut draft = farmer_gross_return(60_000, 30_000);
+            if farm_rental {
+                let mut data = farm_rental_data(60_000, 0);
+                data.expenses
+                    .push(ordinary_business_expense(BusinessExpenseCategory::Repairs, 6_000_000));
+                draft.income[1].income = FederalIncome::FarmRental { data };
+            }
+            add(&mut draft, income(ordinary_investment_sale(30_000, 10_000, GainTerm::Long)));
+            add(&mut draft, income(ordinary_investment_sale(5_000, 20_000, GainTerm::Long)));
+            let before = supported(&draft);
+            assert_eq!(cents(&before, "farming_fishing_gross_income_return_year"), 6_000_000);
+            assert_eq!(cents(&before, "gross_income_return_year"), 11_000_000);
+            let assets = match &mut draft.income[1].income {
+                FederalIncome::Business { data } => &mut data.assets,
+                FederalIncome::FarmRental { data } => &mut data.assets,
+                _ => unreachable!(),
+            };
+            assets.push(farmer_gross_asset(40_000, livestock));
+            let after = supported(&draft);
+            assert_eq!(cents(&after, "farming_fishing_gross_income_return_year"), 10_000_000);
+            assert_eq!(cents(&after, "gross_income_return_year"), 15_000_000);
+            let gross = crate::underpayment::two_thirds_return_year(
+                &draft,
+                &after,
+                Some(9_000_000),
+                &Default::default(),
+            )
+            .unwrap()
+            .unwrap();
+            assert!(gross.qualifies());
+            assert_eq!(estimate(&restart(draft.clone()).draft), after);
+        }
+    }
+}
+
+#[test]
+fn farmer_gross_original_a_b_fund_gain_survives_carry_or_current_loss() {
+    for carry in [true, false] {
+        let mut draft = farmer_gross_return(80_000, 0);
+        add(
+            &mut draft,
+            income(FederalIncome::Dividend {
+                data: dividend_source(native_dividend(0, 0, 10_000_000)),
+            }),
+        );
+        if carry {
+            let mut history = capital_history();
+            history.agi = 20_000_000;
+            history.deductions = 0;
+            history.short = 0;
+            history.long = -10_300_000;
+            history.investment_parts = None;
+            draft.screening.as_mut().unwrap().capital_history = vec![history];
+        } else {
+            add(&mut draft, income(ordinary_investment_sale(0, 100_000, GainTerm::Long)));
+        }
+        let result = supported(&draft);
+        assert_eq!(cents(&result, "farming_fishing_gross_income_return_year"), 8_000_000);
+        assert_eq!(cents(&result, "gross_income_return_year"), 18_000_000);
+    }
+}
+
+#[test]
+fn farmer_gross_original_c_retains_mixed_capital_sources() {
+    let mut draft = farmer_gross_return(60_000, 0);
+    add(&mut draft, income(ordinary_investment_sale(30_000, 10_000, GainTerm::Long)));
+    add(&mut draft, income(ordinary_investment_sale(10_000, 40_000, GainTerm::Long)));
+    add(
+        &mut draft,
+        income(FederalIncome::Dividend { data: dividend_source(native_dividend(0, 0, 1_000_000)) }),
+    );
+    let result = supported(&draft);
+    assert_eq!(cents(&result, "gross_income_return_year"), 9_000_000);
+    assert_eq!(value(&result, "capital_gain"), 0);
+}
+
+#[test]
+fn farmer_gross_original_e_keeps_property_gain_before_other_property_loss() {
+    let mut draft = farmer_gross_return(60_000, 30_000);
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets = vec![
+        farmer_gross_asset(20_000, crate::Livestock::No),
+        farmer_gross_asset(-30_000, crate::Livestock::No),
+    ];
+    let result = supported(&draft);
+    assert_eq!(cents(&result, "gross_income_return_year"), 11_000_000);
+    assert_eq!(cents(&result, "farming_fishing_gross_income_return_year"), 8_000_000);
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets[0].class = EquipmentClass::Twenty;
+    data.assets[0].placed = 19980101;
+    assert_eq!(
+        crate::asset_sale::farming_property_gross(&draft).unwrap(),
+        Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")
+    );
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets = vec![cooperative_partial_building()];
+    assert_eq!(crate::asset_sale::farming_property_gross(&draft).unwrap(), Ok(0));
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets[0].partial.as_mut().unwrap().proceeds = 4_000_000;
+    assert_eq!(
+        crate::asset_sale::farming_property_gross(&draft).unwrap(),
+        Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")
+    );
+}
+
+#[test]
+fn farmer_gross_original_d_excludes_actual_fund_tax_exclusion() {
+    let mut draft = farmer_gross_return(80_000, 0);
+    let mut dividend = native_dividend(0, 0, 10_000_000);
+    dividend.section_1202_gain = 10_000_000;
+    dividend.section_1202_exclusion = Some(crate::FundQsbsExclusion::Hundred);
+    add(&mut draft, income(FederalIncome::Dividend { data: dividend_source(dividend) }));
+    let result = supported(&draft);
+    assert_eq!(cents(&result, "gross_income_return_year"), 8_000_000);
+    assert_eq!(value(&result, "capital_gain"), 0);
+}
+
+#[test]
+fn farmer_gross_missing_k1_statement_preserves_ordinary_and_prior_year_paths() {
+    let mut draft = farmer_gross_return(60_000, 150_000);
+    add(&mut draft, income(FederalIncome::Partnership { data: ordinary_partner_source(0, true) }));
+    let ordinary = supported(&draft);
+    assert_eq!(
+        crate::underpayment::two_thirds_return_year(
+            &draft,
+            &ordinary,
+            Some(15_000_000),
+            &Default::default()
+        )
+        .unwrap(),
+        Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")
+    );
+    let pay = draft.payments.as_mut().unwrap();
+    pay.prior_year = Some(PriorYearTax {
+        full_year: true,
+        tax: 1_550_000,
+        agi: Some(16_000_000),
+        spouse_tax: 0,
+    });
+    let missing = estimate(&draft);
+    assert_eq!(missing.state, ResultState::Unsupported);
+    assert!(
+        missing
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("complete source-owner gross statements"))
+    );
+    draft.payments.as_mut().unwrap().farmer_fisherman_prior_year = true;
+    let prior = supported(&draft);
+    assert!(prior.lines.iter().any(|line| line.id == "form_2210_f_line_7"));
+    draft.payments.as_mut().unwrap().farmer_fisherman_prior_year = false;
+    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
+    edit_wage(data).withholding = 15_000_000;
+    let covered = supported(&draft);
+    assert_eq!(cents(&covered, "form_2210_line_19"), 0);
+}
+
+#[test]
+fn farmer_property_gross_keeps_the_property_community_share_once() {
+    for livestock in [crate::Livestock::No, crate::Livestock::CattleOrHorse] {
+        let mut draft = farmer_gross_return(60_000, 30_000);
+        draft.setup = complete(FederalStatus::Separate).setup;
+        draft.setup.as_mut().unwrap().community_property = community_arizona();
+        draft.income[1].community = CommunityShare::Community;
+        let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+        data.assets.push(farmer_gross_asset(40_000, livestock));
+        assert_eq!(crate::asset_sale::farming_property_gross(&draft).unwrap(), Ok(2_000_000));
+        let pool = crate::extended_rules::RentalResult::default();
+        assert_eq!(crate::section1231::gross_property(&draft, &pool, false).unwrap(), 40_000);
+        assert_eq!(crate::section1231::farmer_gross_property(&draft, &pool).unwrap(), Some(20_000));
+    }
+}
+
+#[test]
+fn farmer_property_gross_uses_current_installment_gain_with_recapture_once() {
+    for livestock in [crate::Livestock::No, crate::Livestock::CattleOrHorse] {
+        let mut draft = farmer_gross_return(60_000, 30_000);
+        let mut asset = farmer_gross_asset(40_000, livestock);
+        let crate::AssetDisposal::Disposed {
+            how: crate::DisposalKind::Sold { payment, .. }, ..
+        } = &mut asset.disposal
+        else {
+            unreachable!()
+        };
+        *payment = crate::SalePayment::Installment {
+            assumed_debt: 0,
+            payments: 2_000_000,
+            interest: crate::NoteInterest::Adequate,
+            special: false,
+        };
+        let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+        data.assets.push(asset);
+        // 1000 immediate recapture + (40000 - 1000) * 20000 / 40000.
+        assert_eq!(crate::asset_sale::farming_property_gross(&draft).unwrap(), Ok(2_050_000));
+    }
+}
+
+#[test]
+fn farmer_gross_earlier_business_property_does_not_invent_livestock_character() {
+    let mut draft = farmer_gross_return(60_000, 30_000);
+    draft.screening.as_mut().unwrap().installment_payments = vec![farmer_gross_earlier_property()];
+    let result = supported(&draft);
+    assert_eq!(
+        crate::underpayment::two_thirds_return_year(
+            &draft,
+            &result,
+            Some(3_300_000),
+            &Default::default()
+        )
+        .unwrap(),
+        Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")
+    );
+}
+
+#[test]
+fn farmer_gross_keeps_rent_and_royalty_receipts_before_expense_losses() {
+    // Gross60000farm+20000wages+30000realrent+30000royalty+10000personalrent
+    // =150000. Expenses/PAL do not turn those actual receipts into gross90000
+    // and a false two-thirds farmer qualification.
+    let draft = farmer_gross_rental_royalty_return();
+    let result = supported(&draft);
+    assert_eq!(cents(&result, "farming_fishing_gross_income_return_year"), 6_000_000);
+    assert_eq!(cents(&result, "gross_income_return_year"), 15_000_000);
+    assert!(result.lines.iter().any(|line| line.id == "form_2210_line_5"));
+    assert!(!result.lines.iter().any(|line| line.id == "form_2210_f_line_7"));
+}
+
+#[test]
+fn farmer_gross_projection_capacity_stays_unavailable_without_wraparound() {
+    let draft = farmer_gross_return(60_000, 30_000);
+    let result = supported(&draft);
+    // A transient owner projection at its carrier boundary, without fabricating
+    // billions of source rows. Adding this accepted farm cannot wrap to a gain.
+    assert_eq!(
+        crate::underpayment::two_thirds_return_year(
+            &draft,
+            &result,
+            Some(i64::MAX),
+            &Default::default()
+        )
+        .unwrap(),
+        Err("ISSUE_FARMER_GROSS_AMOUNT_UNAVAILABLE")
+    );
+}
+
+#[test]
+fn farmer_retained_livestock_uses_the_recognized_owner_and_exact_two_thirds() {
+    // 60000 farming + 3002 recognized livestock = 63002 of 94503 total.
+    // Both livestock classes include sport for section6654 (Pub505,2026).
+    for livestock in [crate::Livestock::CattleOrHorse, crate::Livestock::Other] {
+        let mut draft = farmer_gross_penalty_return(60_000, 31_501);
+        let mut sale = farmer_gross_earlier_property();
+        sale.sale.livestock = Some(livestock);
+        // 2026-10-18: preserve payment_year's existing Form6252 line stages:
+        // payment5002.50 ->5003, then60% =3001.80 ->3002 recognized gain.
+        sale.sale.payments = 500_250;
+        draft.screening.as_mut().unwrap().installment_payments = vec![sale];
+        let result = supported(&draft);
+        assert_eq!(cents(&result, "farming_fishing_gross_income_return_year"), 6_300_200);
+        assert_eq!(cents(&result, "gross_income_return_year"), 9_450_300);
+        assert_eq!(value(&result, "installment_1_gain"), 3002);
+        assert!(result.lines.iter().any(|line| line.id == "form_2210_f_line_7"));
+        assert_eq!(estimate(&restart(draft).draft), result);
+    }
+}
+
+#[test]
+fn farmer_retained_nonlivestock_without_farm_origin_stays_unknown() {
+    // 2026-10-21: Pub. 225, chapter 15, Percentage From Farming, Example 1
+    // includes machinery gain. Not livestock cannot establish nonfarm origin.
+    let mut draft = farmer_gross_penalty_return(60_000, 30_000);
+    let mut source = farmer_gross_earlier_property();
+    source.sale.livestock = Some(crate::Livestock::No);
+    draft.screening.as_mut().unwrap().installment_payments = vec![source];
+    let prior = draft.payments.as_mut().unwrap().prior_year.take();
+    let ordinary = supported(&draft);
+    assert_eq!(value(&ordinary, "agi"), 33_000);
+    assert_eq!(value(&ordinary, "capital_gain"), 3000);
+    assert_eq!(
+        crate::section1231::earlier_farmer_gross(&draft),
+        Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")
+    );
+    draft.payments.as_mut().unwrap().prior_year = prior;
+    let needed = estimate(&draft);
+    assert_eq!(needed.state, ResultState::Unsupported);
+    assert!(
+        needed
+            .issues
+            .iter()
+            .any(|issue| { issue.display.key == "ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE" })
+    );
+    draft.payments.as_mut().unwrap().farmer_fisherman_prior_year = true;
+    let independent = supported(&draft);
+    assert_eq!(value(&independent, "agi"), 33_000);
+    assert_eq!(value(&independent, "capital_gain"), 3000);
+}
+
+#[test]
+fn farmer_retained_zero_gain_needs_no_livestock_fact() {
+    let mut draft = farmer_gross_return(60_000, 30_000);
+    let mut source = farmer_gross_earlier_property();
+    source.sale.payments = 0;
+    draft.screening.as_mut().unwrap().installment_payments = vec![source];
+    let result = supported(&draft);
+    assert_eq!(cents(&result, "farming_fishing_gross_income_return_year"), 6_000_000);
+    assert_eq!(cents(&result, "gross_income_return_year"), 9_000_000);
+}
+
+#[test]
+fn farmer_retained_related_real_property_has_known_nonlivestock_character() {
+    let mut draft = farmer_gross_return(60_000, 30_000);
+    draft.screening.as_mut().unwrap().related_exchanges = vec![farmer_gross_earlier_exchange()];
+    let result = supported(&draft);
+    assert_eq!(cents(&result, "farming_fishing_gross_income_return_year"), 6_000_000);
+    assert_eq!(cents(&result, "gross_income_return_year"), 9_300_000);
+}
+
+#[test]
+fn farmer_retained_qof_original_property_character_stays_unknown() {
+    let mut draft = farmer_gross_penalty_return(60_000, 30_000);
+    add(&mut draft, income(farmer_gross_qof_source()));
+    let result = estimate(&draft);
+    assert_eq!(result.state, ResultState::Unsupported);
+    assert_eq!(
+        crate::section1231::earlier_farmer_gross(&draft),
+        Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")
+    );
+    draft.payments.as_mut().unwrap().farmer_fisherman_prior_year = true;
+    let prior = supported(&draft);
+    // Final lines become available on the independent qualifying prior-year path.
+    // The recognized capital gain remains3000; no farm guess changes it.
+    assert_eq!(value(&prior, "capital_gain"), 3000);
+    assert!(prior.lines.iter().any(|line| line.id == "form_2210_f_line_7"));
+}
+
+#[test]
+fn farmland_annual_relief_reduces_required_payments_without_changing_gross_tax() {
+    use crate::kernel::source_fact::SourceFact;
+    let draft = base(0, 2_000_000, 10_000_000);
+    let inputs = farmland_underpayment_inputs(SourceFact::Reported(600_000));
+    let mut result = FederalResult::empty(0);
+    assert!(
+        crate::underpayment::calculate(draft.payments.as_ref().unwrap(), &inputs, &mut result)
+            .is_some()
+    );
+    // Notice 2026-3 section 4: $6,000 applicable tax excludes $4,500.
+    // Add the independently supplied $125 refundable credit exactly once.
+    assert_eq!(cents(&result, "form_2210_line_1"), 1_000_000);
+    assert_eq!(cents(&result, "form_2210_line_3"), 462_500);
+    assert_eq!(cents(&result, "form_2210_line_4"), 537_500);
+    assert_eq!(cents(&result, "form_2210_line_9"), 483_750);
+}
+
+#[test]
+fn farmland_farmer_relief_ignores_dormant_annualized_answers() {
+    use crate::kernel::source_fact::SourceFact;
+    let mut draft = base(0, 2_000_000, 10_000_000);
+    let pay = draft.payments.as_mut().unwrap();
+    pay.annualized = true; // Form 2210-F has no Schedule AI.
+    let mut inputs = farmland_underpayment_inputs(SourceFact::Reported(600_000));
+    inputs.farming_return_year = Ok(true);
+    let mut result = FederalResult::empty(0);
+    assert!(crate::underpayment::calculate(pay, &inputs, &mut result).is_some());
+    assert_eq!(cents(&result, "form_2210_f_line_3"), 1_000_000);
+    assert_eq!(cents(&result, "form_2210_f_line_4"), 462_500);
+    assert_eq!(cents(&result, "form_2210_f_line_6"), 537_500);
+    assert_eq!(cents(&result, "form_2210_f_line_7"), 358_333);
+    assert!(result.issues.is_empty());
+}
+
+#[test]
+fn farmland_missing_liability_is_located_and_never_a_zero_election() {
+    use crate::kernel::source_fact::SourceFact;
+    let draft = base(0, 2_000_000, 10_000_000);
+    for fact in [SourceFact::NotReported, SourceFact::Reported(0), SourceFact::Unavailable] {
+        let missing = matches!(fact, SourceFact::Unavailable);
+        let inputs = farmland_underpayment_inputs(fact);
+        let mut result = FederalResult::empty(0);
+        let penalty =
+            crate::underpayment::calculate(draft.payments.as_ref().unwrap(), &inputs, &mut result);
+        if missing {
+            assert!(penalty.is_none());
+            let issue = result
+                .issues
+                .iter()
+                .find(|i| i.display.key == "ISSUE_2210_FARMLAND_ELECTION")
+                .unwrap();
+            assert_eq!(issue.context, IssueContext::Section(TaxSection::Farming));
+            assert!(!result.lines.iter().any(|line| line.id == "form_2210_line_3"));
+        } else {
+            assert!(penalty.is_some());
+            assert_eq!(cents(&result, "form_2210_line_3"), 12_500);
+        }
+    }
+}
+
+#[test]
+fn farmland_relief_rounds_exact_three_quarters_once_at_the_credit_line() {
+    use crate::kernel::source_fact::SourceFact;
+    let draft = base(0, 2_000_000, 10_000_000);
+    // $1.99 times 75% is $1.4925, not a prematurely rounded $1.50.
+    // $2 times 75% is $1.50 -> $2; subtracting a rounded quarter gives $1.
+    for (applicable, relief) in [(199, 100), (200, 200), (201, 200), (600, 500)] {
+        let inputs = farmland_underpayment_inputs(SourceFact::Reported(applicable));
+        let mut result = FederalResult::empty(0);
+        assert!(
+            crate::underpayment::calculate(draft.payments.as_ref().unwrap(), &inputs, &mut result)
+                .is_some()
+        );
+        assert_eq!(cents(&result, "form_2210_line_3"), 12_500 + relief);
+    }
+}
+
+#[test]
+fn farmland_ordinary_annualization_requires_actual_period_tax_attribution() {
+    use crate::kernel::source_fact::SourceFact;
+    let draft = annualized([1_000_000, 2_500_000, 4_000_000, 10_000_000]);
+    let inputs = farmland_underpayment_inputs(SourceFact::Reported(600_000));
+    let mut result = FederalResult::empty(0);
+    assert!(
+        crate::underpayment::calculate(draft.payments.as_ref().unwrap(), &inputs, &mut result)
+            .is_none()
+    );
+    let issue =
+        result.issues.iter().find(|i| i.display.key == "ISSUE_2210_AI_FARMLAND_PERIODS").unwrap();
+    assert_eq!(issue.context, IssueContext::Section(TaxSection::IncomeByPeriod));
+    assert!(!result.lines.iter().any(|line| line.id.starts_with("form_2210_ai_")));
+}
+
+#[test]
+fn farmland_omitted_selected_sales_cannot_certify_absence_or_partial_liability() {
+    for retain_other in [false, true] {
+        let draft = farmland_omitted_penalty_return(retain_other);
+        let result = estimate(&draft);
+        assert!(noted(&result, "WARN_BUSINESS_LEFT_OUT"));
+        assert!(
+            result.issues.iter().any(|issue| issue.display.key == "ISSUE_2210_FARMLAND_ELECTION")
+        );
+        assert!(result.tax.is_none());
+        assert!(!result.lines.iter().any(|line| line.id == "form_2210_line_3"));
+    }
+}
+
+#[test]
+fn explicit_equal_timely_uses_the_existing_ordinary_and_farmer_payment_streams() {
+    let mut actual = base(400_000, 800_000, 10_000_000);
+    dated(
+        &mut actual,
+        &[(20260415, 100_000), (20260615, 100_000), (20260915, 100_000), (20270115, 100_000)],
+    );
+    let dated_result = supported(&actual);
+    let mut equal = actual.clone();
+    // Funding parts need not each divide by four; the actual cash total must.
+    equal.payments.as_mut().unwrap().estimated = EstimatedPaymentEntryRecord::EqualTimely {
+        payments: vec![
+            AnnualEstimatedAmountRecord {
+                amount: 100_001,
+                payer: PaymentPayer::Taxpayer,
+                refund_property: None,
+            },
+            AnnualEstimatedAmountRecord {
+                amount: 299_999,
+                payer: PaymentPayer::Joint,
+                refund_property: None,
+            },
+        ],
+    };
+    let equal_result = supported(&equal);
+    assert_eq!(equal_result, dated_result);
+    assert_eq!(return_line(&equal_result, "26"), 400_000);
+    assert_eq!(cents(&equal_result, "form_2210_line_19"), 0);
+
+    let mut farmer = farm_2210_f(300_000, 10_000);
+    dated(&mut farmer, &[(20270115, 200_001)]);
+    let farmer_actual = supported(&farmer);
+    farmer.payments.as_mut().unwrap().estimated = EstimatedPaymentEntryRecord::EqualTimely {
+        payments: vec![AnnualEstimatedAmountRecord {
+            amount: 200_001,
+            payer: PaymentPayer::Taxpayer,
+            refund_property: None,
+        }],
+    };
+    let farmer_equal = supported(&farmer);
+    assert_eq!(farmer_equal, farmer_actual);
+    assert_eq!(cents(&farmer_equal, "form_2210_f_line_12"), 1_200_001);
+    assert_eq!(cents(&farmer_equal, "form_2210_f_line_16"), 6_041);
+}
+
+#[test]
+fn unknown_timing_retains_annual_credit_without_zero_penalty_or_a_method_switch() {
+    for by_date in [false, true] {
+        let mut draft = base(400_000, 800_000, 10_000_000);
+        let pay = draft.payments.as_mut().unwrap();
+        pay.estimated = unknown_estimated(400_000, PaymentPayer::Taxpayer);
+        pay.withholding_by_date = by_date;
+        if by_date {
+            pay.withholding_periods = Some(PeriodWithholding {
+                first: 100_000,
+                second: 100_000,
+                third: 100_000,
+                fourth: 100_000,
+            });
+        }
+        let result = estimate(&draft);
+        assert_eq!(return_line(&result, "26"), 400_000);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.display.key == "ISSUE_2210_ESTIMATED_PAYMENT_DATES")
+        );
+        assert!(!result.lines.iter().any(|line| line.id == "form_2210_line_19"));
+        assert!(result.credit_capacity.is_none());
+        assert_eq!((result.tax, result.refund, result.balance), (None, None, None));
+        assert!(draft.payments.as_ref().unwrap().prior_year.is_some());
+    }
+    // Another missing required source cannot acquire the timing-only exception.
+    let mut missing_withholding = base(400_000, 800_000, 10_000_000);
+    let pay = missing_withholding.payments.as_mut().unwrap();
+    pay.estimated = unknown_estimated(400_000, PaymentPayer::Taxpayer);
+    pay.withholding_by_date = true;
+    pay.withholding_periods = None;
+    let result = estimate(&missing_withholding);
+    assert!(
+        result.issues.iter().any(|issue| issue.display.key == "ISSUE_2210_WITHHOLDING_PERIODS")
+    );
+    assert!(result.return_lines.is_empty());
+    assert_eq!(
+        (result.tax, result.payments, result.refund, result.balance),
+        (None, None, None, None)
+    );
+
+    let mut draft = base(400_000, 800_000, 10_000_000);
+    draft.payments.as_mut().unwrap().estimated = unknown_estimated(400_000, PaymentPayer::Taxpayer);
+    draft.payments.as_mut().unwrap().prior_year = None;
+    let irs = supported(&draft);
+    assert_eq!(return_line(&irs, "26"), 400_000);
+    assert!(!irs.return_lines.iter().any(|line| {
+        line.form_line
+            .as_ref()
+            .is_some_and(|line| line.form == TaxForm::Form1040 && line.line == "38")
+    }));
+
+    // No physical cash payment can supply a quarter of one cent.
+    draft.payments.as_mut().unwrap().prior_year =
+        Some(PriorYearTax { full_year: true, tax: 800_000, agi: Some(10_000_000), spouse_tax: 0 });
+    draft.payments.as_mut().unwrap().estimated = EstimatedPaymentEntryRecord::EqualTimely {
+        payments: vec![AnnualEstimatedAmountRecord {
+            amount: 400_001,
+            payer: PaymentPayer::Taxpayer,
+            refund_property: None,
+        }],
+    };
+    let result = estimate(&draft);
+    assert_eq!(return_line(&result, "26"), 400_000);
+    assert!(
+        result.issues.iter().any(|issue| issue.display.key == "ISSUE_2210_ESTIMATED_PAYMENT_DATES")
+    );
+    assert!(!result.lines.iter().any(|line| line.id == "form_2210_line_19"));
+}
+
+#[test]
+fn farmer_property_gross_projects_the_positive_source_once_before_annual_rounding() {
+    let mut draft = farmer_gross_return(0, 30_000);
+    draft.setup = complete(FederalStatus::Separate).setup;
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[1].community = CommunityShare::Partly { percent: 1 };
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets = vec![
+        farmer_gross_asset(1, crate::Livestock::No),
+        farmer_gross_asset(101, crate::Livestock::No),
+    ];
+    let pool = crate::extended_rules::RentalResult::default();
+    assert_eq!(crate::section1231::gross_property(&draft, &pool, false).unwrap(), 102);
+    // $102 x99.5% = $101.49. The other return has51c. Independently
+    // rounding the two component shares would instead create $101.50.
+    assert_eq!(crate::section1231::farmer_gross_property(&draft, &pool).unwrap(), Some(101));
+    draft.income[1].owner = crate::DocumentOwner::Spouses;
+    assert_eq!(crate::section1231::gross_property(&draft, &pool, false).unwrap(), 102);
+    assert_eq!(crate::section1231::farmer_gross_property(&draft, &pool).unwrap(), Some(1));
 }

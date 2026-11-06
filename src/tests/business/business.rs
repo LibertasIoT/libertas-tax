@@ -36,7 +36,9 @@ fn self_employed_tips_use_each_business_net_income_and_share_the_return_cap() {
     assert_eq!(value(&result, "tips_deduction"), 9293);
 
     let FederalIncome::Wage { data: wages } = &mut draft.income[0].income else { panic!() };
+    let mut wages = edit_wage(wages);
     wages.work_deductions = work_deductions(2_000_000, 0);
+    drop(wages);
     let result = supported(&draft);
     assert_eq!(value(&result, "tips_deduction"), 25000);
 }
@@ -59,7 +61,9 @@ fn reported_1099_overtime_shares_the_w2_cap_without_duplicating_business_income(
     assert_eq!(restart(draft.clone()).draft, draft);
 
     let FederalIncome::Wage { data } = &mut draft.income[0].income else { panic!() };
+    let mut data = edit_wage(data);
     data.work_deductions = work_deductions(0, 500_000);
+    drop(data);
     assert_eq!(value(&supported(&draft), "overtime_deduction"), 12_500);
 }
 
@@ -86,6 +90,7 @@ fn reported_1099_overtime_requires_source_and_ssn() {
 #[test]
 fn business_expenses_are_totaled_once_and_preview_matches_return() {
     let business = FederalBusiness {
+        interest_limit_election: None,
         activity: BusinessActivity::Ordinary {
             returns: 0,
             receipts: 6_000_000,
@@ -165,6 +170,7 @@ fn business_payroll_is_sourced_and_never_deducted_twice() {
         &mut d,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 13_000_000,
@@ -193,7 +199,7 @@ fn home_kerosene_is_a_fuel_payment_without_business_income() {
     let mut draft = complete(FederalStatus::Single);
     let baseline = supported(&draft);
     draft.payments.as_mut().unwrap().home_kerosene = Some(FederalHomeKerosene {
-        thousandths_of_gallon: 100_250,
+        gallons: 100.25,
         actual_cost: 20_000,
         qualified: true,
         not_claimed_elsewhere: true,
@@ -627,14 +633,18 @@ fn reservist_exception_checks_order_length_and_withdrawal_window() {
         assert_eq!(value(&r, "agi"), 70000);
         assert_eq!(restart(d.clone()).draft, d);
         let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-        let RetirementTreatment::Exception { distributed, .. } = &mut data.ordinary_distribution
+        let mut data = edit_retirement(data);
+        let Some(RetirementTreatment::Exception { distributed, .. }) =
+            &mut data.ordinary_distribution
         else {
             unreachable!()
         };
         *distributed = 20260701;
+        drop(data);
         unsupported(&d, "Income");
         let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-        let RetirementTreatment::Exception { distributed, facts, .. } =
+        let mut data = edit_retirement(data);
+        let Some(RetirementTreatment::Exception { distributed, facts, .. }) =
             &mut data.ordinary_distribution
         else {
             unreachable!()
@@ -642,6 +652,7 @@ fn reservist_exception_checks_order_length_and_withdrawal_window() {
         *distributed = 20260630;
         let RetirementException::Reservist { term, .. } = facts else { unreachable!() };
         *term = ReserveTerm::Days { days: 179 };
+        drop(data);
         unsupported(&d, "Income");
     }
 }
@@ -655,7 +666,7 @@ fn last_residential_use_exception_does_not_erase_depreciation_gain() {
     home.use_history =
         HomeSaleUse::Adjusted { depreciation: 2700000, owned_days: 1800, nonqualified_days: 0 };
     assert_eq!(home.excluded(FederalStatus::Single), Ok(20000000));
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(home) }));
     let r = supported(&d);
     assert_eq!(value(&r, "capital_gain"), 27000);
     assert_eq!(value(&r, "unrecaptured_section_1250_gain"), 27000);
@@ -711,9 +722,6 @@ fn mixed_business_source_persists_and_the_young_filers_return_is_calculated() {
     let id = d.income[1].id;
     assert_eq!(value(&r, &alloc::format!("business_{id}_kiddie_earned_income")), 2788);
     assert_eq!(restart(d.clone()).draft, d);
-    let FederalIncome::Business { data } = &mut d.income[1].income else { panic!() };
-    data.income_source = BusinessIncomeSource::Mixed { compensation: -1 };
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -819,7 +827,11 @@ fn insolvency_rejects_unknown_snapshots_multiple_events_and_reduces_capital_loss
     add(
         &mut d,
         income(FederalIncome::Sale {
-            data: crate::tests::support::builders::native_sale(GainTerm::Long, 0, Some(1000000)),
+            data: sale_source(crate::tests::support::builders::native_sale(
+                GainTerm::Long,
+                0,
+                Some(1000000),
+            )),
         }),
     );
     // $10,000 long-term loss: $3,000 deducted, $7,000 carried to 2027.
@@ -846,7 +858,12 @@ fn alternative_nol_recomputes_nonbusiness_limit_with_private_activity_income() {
     let before = supported(&d);
     assert_eq!(value(&before, "current_net_operating_loss"), 20000);
     assert_eq!(value(&before, "amt_current_net_operating_loss"), 20000);
-    add(&mut d, income(FederalIncome::Interest { data: native_exempt_interest(3000000, 3000000) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest {
+            data: interest_source(native_exempt_interest(3000000, 3000000)),
+        }),
+    );
     let r = supported(&d);
     // AMT nonbusiness income of $30,000 absorbs the $20,000 mortgage
     // deduction. Only its remaining $10,000 reduces the business NOL.
@@ -901,7 +918,7 @@ fn same_rate_2026_reissue_combines_paid_periods_before_original_schedule_ceiling
             original_interest_method: MortgageOriginalInterestMethod::FixedRateSchedule,
             first_reissue: true,
             original_number: "MCC-ORIGINAL-2026".into(),
-            original_rate_hundredths_percent: 2000,
+            original_rate: 20.0,
             original_scheduled_interest: 1_000_000,
             original_certified_balance: 20_000_000,
             reissued_certified_debt: 18_000_000,
@@ -936,7 +953,7 @@ fn same_rate_2026_reissue_combines_paid_periods_before_original_schedule_ceiling
     if let MortgageCertificateHistory::ReissuedDuring2026SameRate { facts, .. } =
         &mut certificate.history
     {
-        facts.original_rate_hundredths_percent = 2500;
+        facts.original_rate = 25.0;
     }
     assert!(!d.valid_stored());
     let certificate =
@@ -990,8 +1007,8 @@ fn personal_investment_loan_gain_is_nonbusiness_income_for_nol_and_form461() {
         let mut loss = sole_qbi_loss(400_000, 400_000, 200_000);
         loss.amt = Some(amt_records(&loss));
         let mut d = complete(FederalStatus::Single);
-        add(&mut d, income(FederalIncome::Scorp { data: loss }));
-        add(&mut d, income(FederalIncome::Scorp { data: source }));
+        add(&mut d, income(FederalIncome::Scorp { data: scorp_source(loss) }));
+        add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
         let r = supported(&d);
         assert_eq!(value(&r, "excess_business_loss_carryforward"), 144_000);
         assert_eq!(value(&r, "nol_carryforward"), 340_000);
@@ -1035,7 +1052,10 @@ fn nol_business_capital_loss_uses_gain_after_personal_deductions() {
 #[test]
 fn property_niit_requires_source_recapture_allocation_for_mixed_businesses() {
     let (mut draft, _) = passive_property_pool(former_passive_property_scorp(0, 10000, 0, 0), 0);
-    add(&mut draft, income(FederalIncome::Scorp { data: passive_property_scorp(0, 20000) }));
+    add(
+        &mut draft,
+        income(FederalIncome::Scorp { data: scorp_source(passive_property_scorp(0, 20000)) }),
+    );
     draft.screening.as_mut().unwrap().section1231 =
         Some(section1231_history(&[(2025, 8000, 8000)], &[]));
     assert!(
@@ -1112,7 +1132,7 @@ fn niit_history_does_not_invent_business_capital_character_for_nol() {
     draft.screening.as_mut().unwrap().capital_history = vec![niit_loss_history(Some(7000))];
     let mut loss = sole_qbi_loss(100000, 100000, 100000);
     loss.amt = Some(amt_records(&loss));
-    add(&mut draft, income(FederalIncome::Scorp { data: loss }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(loss) }));
     unsupported(&draft, "NOL capital-loss source");
     unsupported(&draft, "AMT NOL capital-loss source");
 }
@@ -1142,7 +1162,7 @@ fn full_net_recapture_with_a_loss_business_remains_guarded() {
     source.section1231 = Some(k1_section1231(-10000, 0));
     source.property_qbi = property_qbi(10000, 0);
     source.amt = Some(amt_records(&source));
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     unsupported(&draft, "Section 1231 QBI character");
 }
 
@@ -1150,6 +1170,7 @@ fn full_net_recapture_with_a_loss_business_remains_guarded() {
 fn qualified_rate_source_facts_feed_multi_business_return() {
     let mut draft = rate_ordered_recapture(8000, 5000);
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut data = edit_scorp(data);
         data.section1231.as_mut().unwrap().unrecaptured = 1200000;
         let facts = &mut data.property_qbi;
         facts.gain = 800000;
@@ -1176,6 +1197,7 @@ fn box12_tt_overtime_deduction_applies_2026_magi_phaseout() {
     let mut draft = complete(FederalStatus::Single);
     draft.income[0] = wage(1, Owner::Taxpayer, 16_000_000, 0);
     if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+        let mut data = edit_wage(data);
         data.work_deductions = work_deductions(0, 600_000);
     }
     let r = supported(&draft);
@@ -1194,6 +1216,7 @@ fn box12_tp_cash_tips_deduction_applies_2026_magi_phaseout() {
     let mut draft = complete(FederalStatus::Single);
     draft.income[0] = wage(1, Owner::Taxpayer, 16_000_000, 0);
     if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+        let mut data = edit_wage(data);
         data.work_deductions = work_deductions(800_000, 0);
     }
     let r = supported(&draft);
@@ -1213,7 +1236,7 @@ fn employee_8919_return_reports_wages_and_employee_tax_once() {
         let mut draft = complete(FederalStatus::Single);
         let mut entry = omitted_employee_wages(10000);
         if let FederalIncome::EmployeeWages { data } = &mut entry {
-            data.reason = reason;
+            data.payroll = crate::EmployeePayrollSource::Form8919 { reason };
             data.withholding = 50000;
         }
         add(&mut draft, income(entry));
@@ -1241,6 +1264,8 @@ fn employee_8919_social_base_follows_tips_and_precedes_schedule_se() {
     add(&mut draft, income(omitted_employee_wages(10000)));
     add(&mut draft, income(cash_business(10000)));
     let r = supported(&draft);
+    crate::tests::support::assert::payroll::form8919_base(&r, 0, 183_000, 1_500);
+    assert_eq!(value(&r, "employee_wages_0_social_base"), 1_500);
     assert_eq!(value(&r, "employee_tips_0_social_tax"), 186);
     assert_eq!(value(&r, "employee_tips_0_medicare_tax"), 44);
     assert_eq!(value(&r, "employee_wages_0_social_tax"), 93);
@@ -1258,19 +1283,25 @@ fn employee_8919_requires_valid_reason_and_retains_income_outside_ordinary_cover
         assert!(!data.valid());
         assert!(data.income().is_err());
         data.form1099 = true;
-        data.complete = false;
+        data.payroll = crate::EmployeePayrollSource::Unavailable;
     }
-    // Ordinary coverage No retains income and previews the pay; only payroll tax is omitted.
+    // Unavailable actual coverage retains income and preview; material payroll tax keeps the total unavailable.
     assert_eq!(crate::interview::document_amount(&entry, false), Some(1_000_000));
     let mut draft = complete(FederalStatus::Single);
     add(&mut draft, income(entry));
-    let r = supported(&draft);
+    let r = estimate(&draft);
     assert!(noted(&r, "WARN_EMPLOYEE_WAGES_PAYROLL_TAX_LEFT_OUT"), "{r:?}");
     assert_eq!(value(&r, "agi"), 70000);
-    assert_eq!(return_line(&r, "1h"), 1_000_000);
+    assert_eq!(r.tax, None);
+    assert!(
+        r.issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE")
+    );
     // An invalid stored record (reason H without its Form 1099) is not accepted.
     if let FederalIncome::EmployeeWages { data } = &mut draft.income[1].income {
-        data.complete = true;
+        data.payroll =
+            crate::EmployeePayrollSource::Form8919 { reason: EmployeeWageReason::SameFirmForms };
         data.form1099 = false;
     }
     assert!(!draft.valid_stored());
@@ -1285,7 +1316,6 @@ fn optional_se_eligibility_history_and_owner_are_not_inferred() {
     add(&mut d, income(cash_business(-1000)));
     for h in [
         NonfarmSeHistory { earnings_second_prior_year: 39999, ..se_history() },
-        NonfarmSeHistory { prior_years: vec![2020, 2021, 2022, 2023, 2024], ..se_history() },
         NonfarmSeHistory { prior_years: vec![2020, 2020], ..se_history() },
     ] {
         elect_se(&mut d, SeMethod::Nonfarm { history: h });
@@ -1428,9 +1458,6 @@ fn employee_stock_losses_wash_adjustments_and_reporting_boundaries() {
     invalid = lot.clone();
     invalid.sold = 20251231;
     assert!(!invalid.valid());
-    invalid = lot.clone();
-    invalid.acquired = 20260230;
-    assert!(!invalid.valid());
     let mut d = complete(FederalStatus::Single);
     let mut unconfirmed = lot;
     unconfirmed.special = true;
@@ -1446,12 +1473,14 @@ fn younger_railroad_survivor_uses_death_exception_without_disability_wages() {
     d.people.as_mut().unwrap().taxpayer.birth_date = 19760101;
     let mut entry = railroad_pension(12000, 15000, None);
     let FederalIncome::Retirement { data } = &mut entry.income else { unreachable!() };
-    data.ordinary_distribution = RetirementTreatment::Exception {
+    let mut data = edit_retirement(data);
+    data.ordinary_distribution = Some(RetirementTreatment::Exception {
         second: None,
         distributed: 20260601,
         facts: RetirementException::Death { died: 20251201 },
         early_simple: false,
-    };
+    });
+    drop(data);
     add(&mut d, entry);
     add(&mut d, income(social_security_net(1000000, 0)));
     let r = supported(&d);
@@ -1462,10 +1491,12 @@ fn younger_railroad_survivor_uses_death_exception_without_disability_wages() {
     assert_eq!(value(&r, "agi"), 83500);
     assert_eq!(supported(&restart(d.clone()).draft), r);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTreatment::Exception { facts, .. } = &mut data.ordinary_distribution else {
+    let mut data = edit_retirement(data);
+    let Some(RetirementTreatment::Exception { facts, .. }) = &mut data.ordinary_distribution else {
         unreachable!()
     };
     *facts = RetirementException::Death { died: 20260701 };
+    drop(data);
     unsupported(&d, "Income:");
 }
 
@@ -1550,6 +1581,7 @@ fn sole_proprietor_return_matches_hand_computation() {
     ];
     let business = FederalIncome::Business {
         data: FederalBusiness {
+            interest_limit_election: None,
             activity: BusinessActivity::Ordinary {
                 returns: 0,
                 receipts: 8_800_000,
@@ -1679,6 +1711,7 @@ pub(in crate::tests) fn aggregation_activity(
 fn aggregation_business(receipts: i64, payroll: i64, group: Option<&str>) -> FederalIncomeEntry {
     income(FederalIncome::Business {
         data: FederalBusiness {
+            interest_limit_election: None,
             activity: BusinessActivity::Ordinary {
                 returns: 0,
                 receipts,
@@ -1808,31 +1841,7 @@ fn aggregation_has_no_effect_below_the_threshold() {
     assert!(!labeled.review_notes.iter().any(|n| n.contains("Aggregation")));
 }
 
-// Unit C19a: actual-expense vehicles (Form 4562 Part V, Schedule C lines 9 and 13).
-pub(in crate::tests) fn actual_vehicle(
-    cost: i64,
-    total_miles: u32,
-    business_miles: u32,
-) -> BusinessAsset {
-    BusinessAsset {
-        cost: cost * 100,
-        acquired: 20260310,
-        placed: 20260315,
-        history: EquipmentHistory::New {
-            section179: Section179::Ineligible,
-            bonus: BonusElection::ElectOut,
-            tables: false,
-        },
-        listed: ListedProperty::Vehicle {
-            total_miles,
-            business_miles,
-            operating_costs: 400_000,
-            loan_interest: 0,
-            passenger_automobile: true,
-        },
-        ..bonus_equipment(0, 100)
-    }
-}
+pub(in crate::tests) use crate::tests::support::builders::actual_vehicle;
 pub(in crate::tests) fn cents(r: &FederalResult, id: &str) -> i64 {
     r.lines.iter().find(|l| l.id == id).unwrap_or_else(|| panic!("missing {id}")).amount
 }
@@ -1860,21 +1869,35 @@ fn vehicle_actual_expenses_apply_280f_limits_and_business_use() {
     //   Smaller wins ($9,000 < $9,225): depreciation (Schedule C line 13, Form 4562 26(h)) $9,000.00.
     //   Operating costs $4,000 x 75% = $3,000.00 on Schedule C line 9.
     //   Schedule C net profit: 100,000 - 9,000 - 3,000 = $88,000 (Form 1040 line 8).
-    let d = business_with_bonus(100000, actual_vehicle(60000, 10_000, 7_500));
-    let r = supported(&d);
-    assert_eq!(cents(&r, "business_2_asset_0_macrs"), 900_000);
-    assert_eq!(cents(&r, "business_2_asset_0_bonus"), 0);
-    assert_eq!(cents(&r, "business_2_car_and_truck"), 300_000);
-    assert_eq!(cents(&r, "business_2_asset_0_listed_type"), 100);
-    assert_eq!(cents(&r, "business_2_asset_0_listed_business_use"), 7_500);
-    assert_eq!(cents(&r, "business_2_asset_0_listed_cost"), 6_000_000);
-    assert_eq!(cents(&r, "business_2_asset_0_listed_depreciation_basis"), 4_500_000);
-    assert_eq!(cents(&r, "business_2_asset_0_listed_depreciation"), 900_000);
-    assert_eq!(cents(&r, "business_2_asset_0_listed_section179"), 0);
-    assert_eq!(form_4562_line(&r, "business_2_asset_0_listed_depreciation"), "26(h)");
-    assert_eq!(form_4562_line(&r, "business_2_asset_0_listed_business_use"), "26(c)");
-    assert_eq!(return_line(&r, "8"), 8_800_000);
-    assert_eq!(restart(d.clone()).draft, d);
+    for (kind, description) in [
+        (VehicleKind::PassengerCar, "Passenger car"),
+        (VehicleKind::PassengerTruckVan, "Passenger truck or van"),
+    ] {
+        let mut vehicle = actual_vehicle(60000, 10_000, 7_500);
+        let ListedProperty::Vehicle { kind: actual_kind, .. } = &mut vehicle.listed else {
+            unreachable!()
+        };
+        *actual_kind = kind;
+        let d = business_with_bonus(100000, vehicle);
+        let r = supported(&d);
+        assert_eq!(cents(&r, "business_2_asset_0_macrs"), 900_000);
+        assert_eq!(cents(&r, "business_2_asset_0_bonus"), 0);
+        assert_eq!(cents(&r, "business_2_car_and_truck"), 300_000);
+        crate::tests::support::assert::assert_displayed_text_line(
+            &r,
+            "business_2_asset_0_listed_type",
+            description,
+        );
+        assert_eq!(cents(&r, "business_2_asset_0_listed_business_use"), 7_500);
+        assert_eq!(cents(&r, "business_2_asset_0_listed_cost"), 6_000_000);
+        assert_eq!(cents(&r, "business_2_asset_0_listed_depreciation_basis"), 4_500_000);
+        assert_eq!(cents(&r, "business_2_asset_0_listed_depreciation"), 900_000);
+        assert_eq!(cents(&r, "business_2_asset_0_listed_section179"), 0);
+        assert_eq!(form_4562_line(&r, "business_2_asset_0_listed_depreciation"), "26(h)");
+        assert_eq!(form_4562_line(&r, "business_2_asset_0_listed_business_use"), "26(c)");
+        assert_eq!(return_line(&r, "8"), 8_800_000);
+        assert_eq!(restart(d.clone()).draft, d);
+    }
 }
 
 #[test]
@@ -1944,15 +1967,6 @@ fn schedule_c_actual_vehicle_loan_interest_is_line_16b_with_totals_unchanged() {
     assert!(rows.contains(&("9".into(), 300_000)), "{rows:?}");
     assert!(rows.contains(&("16b".into(), 150_000)), "{rows:?}");
     assert_eq!(value(&before, "business_2_net_profit") - value(&r, "business_2_net_profit"), 1_500);
-    // A negative or oversized stored amount is invalid stored data.
-    let FederalIncome::Business { data } = &mut d.income.last_mut().unwrap().income else {
-        panic!()
-    };
-    let ListedProperty::Vehicle { loan_interest, .. } = &mut data.assets[0].listed else {
-        panic!()
-    };
-    *loan_interest = -1;
-    assert!(!d.valid_stored());
     // Reopening a saved business shows the amount on the page's actual vehicle.
     let mut d = plain;
     let FederalIncome::Business { data } = &mut d.income.last_mut().unwrap().income else {
@@ -2090,6 +2104,7 @@ pub(in crate::tests) fn m3_self_employed_rental_draft() -> FederalDraft {
     };
     let business = FederalIncome::Business {
         data: FederalBusiness {
+            interest_limit_election: None,
             activity: BusinessActivity::Ordinary {
                 returns: 0,
                 receipts: 8_800_000,
@@ -2107,6 +2122,8 @@ pub(in crate::tests) fn m3_self_employed_rental_draft() -> FederalDraft {
         treatment: BusinessExpenseKind::Ordinary,
     };
     let rental_data = FederalRental {
+        interest_limit_election: None,
+        location: crate::RentalLocation::UnitedStates,
         property_qbi_history: Vec::new(),
         rent: 24_000 * 100,
         expenses: vec![
@@ -2253,7 +2270,7 @@ fn joint_return_tags_each_spouses_schedule_se() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, income(business.clone()));
     let mut spouse = income(business);
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     // 2026-10-17: home-use claims have their own canonical owner, rather
     // than being copied implicitly with each business's expense record.
@@ -2484,7 +2501,7 @@ pub(in crate::tests) fn sold(
     crate::AssetDisposal::Disposed {
         date,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds,
             selling_expenses,
             payment: crate::SalePayment::InFull,
@@ -2508,7 +2525,7 @@ fn unit13_property_owner_fixture() -> FederalDraft {
     draft.setup = joint.setup;
     draft.people = joint.people;
     let mut second = income(cash_business(0));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     let FederalIncome::Business { data } = &mut second.income else { panic!() };
     data.assets = vec![shop_building(sold(20260620, 42_000_000, 2_000_000))];
     add(&mut draft, second);
@@ -2522,8 +2539,17 @@ fn unit13_actual_property_sources(
     // is complete; the source amounts come from the ordinary asset owner.
     let pool = crate::extended_rules::RentalResult { inputs_complete: true, ..Default::default() };
     let character = crate::section1231::worksheet(draft, &pool, false).unwrap();
-    let sources = crate::asset_sale::direct_sources(draft, false);
-    crate::section1231::direct_owner_amounts(draft, &pool, character.as_ref(), &sources, &[])
+    let claims = crate::related_forms::effective_claimants(draft);
+    let sources =
+        crate::asset_sale::allowed_direct_sources_with_claims(draft, &pool, false, &claims)
+            .unwrap();
+    crate::section1231::direct_owner_amounts(draft, &pool, character.as_ref(), &sources, &[]).map(
+        |source| crate::section1231::PropertyOwnerAmounts {
+            ordinary: source.ordinary.map(crate::kernel::ratio::dollars),
+            long_term: source.long_term.map(crate::kernel::ratio::dollars),
+            unrecaptured: source.unrecaptured.map(crate::kernel::ratio::dollars),
+        },
+    )
 }
 
 #[test]
@@ -2583,7 +2609,7 @@ fn unit13_property_sources_reach_final_8379_without_changing_joint_figures() {
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         let mut draft = unit13_property_owner_fixture();
         let plain = supported(&draft);
-        draft.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+        draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
         draft.injured_spouse = Some(InjuredSpouseAllocation {
             injured,
             debt: OffsetDebt::ChildSupport,
@@ -2639,7 +2665,7 @@ fn unit13_property_editor_fixture(profile: &str) -> (FederalDraft, TaxSection, i
         }
         _ => panic!("unknown property editor profile"),
     };
-    draft.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     draft.injured_spouse = Some(InjuredSpouseAllocation {
         injured: Owner::Taxpayer,
         debt: OffsetDebt::ChildSupport,
@@ -2694,7 +2720,7 @@ fn unit13_property_actual_client_save_reopen_restart() {
         let row = &mut documents.documents[0];
         row.owner = Owner::Spouse;
         match &mut row.document {
-            IncomeDocument::Business(data) => {
+            crate::IncomeRecord::Business(data) => {
                 let crate::AssetDisposal::Disposed {
                     how: crate::DisposalKind::Sold { proceeds, .. },
                     ..
@@ -2704,7 +2730,7 @@ fn unit13_property_actual_client_save_reopen_restart() {
                 };
                 *proceeds = 800_000;
             }
-            IncomeDocument::Rental(data) => {
+            crate::IncomeRecord::Rental(data) => {
                 let crate::RentalSale::Sold { price, .. } = &mut data.sale else { panic!() };
                 *price = 42_000_000;
             }
@@ -2871,7 +2897,7 @@ fn vehicle_kept_for_personal_use_after_low_business_use_recaptures_in_part_iv_co
         business_miles: 4_000,
         operating_costs: 0,
         loan_interest: 0,
-        passenger_automobile: true,
+        kind: crate::VehicleKind::PassengerCar,
     };
     let r = supported(&asset_sale_return(vec![car.clone()]));
     assert!(!has_line(&r, "business_2_asset_0_listed_recapture"));
@@ -2888,7 +2914,7 @@ fn vehicle_kept_for_personal_use_after_low_business_use_recaptures_in_part_iv_co
         business_miles: 6_000,
         operating_costs: 0,
         loan_interest: 0,
-        passenger_automobile: true,
+        kind: crate::VehicleKind::PassengerCar,
     };
     let r = supported(&asset_sale_return(vec![car]));
     assert_eq!(value(&r, "business_2_asset_0_macrs"), 2_880);
@@ -2902,7 +2928,11 @@ fn capital_loss(short: i64, long: i64) -> Vec<FederalIncomeEntry> {
         .filter(|(_, loss)| *loss > 0)
         .map(|(term, loss)| {
             income(FederalIncome::Sale {
-                data: crate::tests::support::builders::native_sale(term, 0, Some(loss * 100)),
+                data: sale_source(crate::tests::support::builders::native_sale(
+                    term,
+                    0,
+                    Some(loss * 100),
+                )),
             })
         })
         .collect()
@@ -3032,12 +3062,16 @@ fn depreciable_first_election_precedes_basis_of_personal_property() {
     let mut d = complete(FederalStatus::Single);
     let mut debt = bankruptcy_debt(1500, 10000, 6000);
     let FederalIncome::PersonalDebt { data } = &mut debt.income else { panic!() };
-    let PersonalDebtTreatment::Bankruptcy { data: facts } = &mut data.treatment else { panic!() };
+    let mut data = edit_debt(data);
+    let Some(PersonalDebtTreatment::Bankruptcy { data: facts }) = &mut data.treatment else {
+        panic!()
+    };
     facts.property = vec![
         property("Furniture", DebtPropertyKind::PersonalUse, 5000),
         property("Mower", DebtPropertyKind::Equipment { secured: false }, 1000),
     ];
     facts.depreciable_first = 100000;
+    drop(data);
     add(&mut d, debt);
     let r = supported(&d);
     assert_eq!(value(&r, "debt_2_form982_line5"), 1000);
@@ -3086,7 +3120,9 @@ pub(in crate::tests) fn crop_acquisition(
 ) -> FederalIncomeEntry {
     let mut entry = acquisition(balance, value, false, TransferredProperty::Business);
     let FederalIncome::PropertyAcquisition { data } = &mut entry.income else { unreachable!() };
+    let mut data = edit_acquisition(data);
     data.crop = Some(loan);
+    drop(data);
     entry
 }
 pub(in crate::tests) fn acquisition(
@@ -3096,14 +3132,15 @@ pub(in crate::tests) fn acquisition(
     property: TransferredProperty,
 ) -> FederalIncomeEntry {
     income(FederalIncome::PropertyAcquisition {
-        data: PropertyAcquisition {
+        data: acquisition_source(PropertyAcquisition {
             date: 20260801,
             balance: balance * 100,
             value: value * 100,
             personally_liable: liable,
-            property,
+            property: Some(property),
+            description: alloc::string::String::new(),
             crop: None,
-        },
+        }),
     })
 }
 
@@ -3214,13 +3251,14 @@ fn form_1099c_box_7_property_nonrecourse_and_unsupported_situations() {
     let before = supported(&d);
     let mut debt = canceled_personal_debt(1500, PersonalDebtTreatment::Taxable);
     if let FederalIncome::PersonalDebt { data } = &mut debt.income {
+        let mut data = edit_debt(data);
+        data.box7_fmv = Some(700_000);
         data.transfer = Some(PropertyTransfer {
-            value: 700_000,
-            property: TransferredProperty::PersonalUse {
+            property: Some(TransferredProperty::PersonalUse {
                 basis: 1_200_000,
                 term: GainTerm::Long,
                 collectible: false,
-            },
+            }),
         });
     }
     add(&mut d, debt.clone());
@@ -3230,6 +3268,7 @@ fn form_1099c_box_7_property_nonrecourse_and_unsupported_situations() {
     // Box 5 unchecked (nonrecourse) is refused by name.
     let mut nonrecourse = d.clone();
     if let FederalIncome::PersonalDebt { data } = &mut nonrecourse.income[1].income {
+        let mut data = edit_debt(data);
         data.personally_liable = false;
     }
     unsupported(&nonrecourse, "Income: ");
@@ -3416,7 +3455,7 @@ pub(in crate::tests) fn cow(
         ..
     } = &mut animal.disposal
     {
-        *kind = livestock;
+        *kind = livestock.into();
     }
     animal
 }

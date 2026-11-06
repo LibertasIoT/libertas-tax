@@ -1,13 +1,14 @@
-use crate::kernel::lines::{LineValue, emit, row};
-use crate::kernel::lines::{line, line_cents};
+use crate::kernel::lines::{LineValue, row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, positive};
-use crate::{FederalDraft, FederalIncome, FederalResult, Owner};
+use crate::line_emission::emit;
+use crate::line_emission::{line, line_cents};
+use crate::{FederalDraft, FederalIncome, FederalResult};
 use alloc::{collections::BTreeMap, format};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 /// Owner retirement contribution
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum BusinessRetirement {
     /// None
     None,
@@ -17,13 +18,15 @@ pub enum BusinessRetirement {
         /// Employer contribution for your own SEP IRA for 2026
         /// Include timely contributions paid by the return deadline including extensions. Exclude regular personal IRA contributions, Roth SEP contributions, employee contributions and prior-year amounts. Do not list this as a business expense.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         contribution: i64,
-        /// Plan contribution rate in hundredths of one percent
-        /// Enter the employer rate stated in your plan, before the self-employed adjustment: 1000 means 10%, 1050 means 10.50%, and 2500 means 25%. The App calculates the reduced owner rate; do not enter 20% for a 25% plan.
-        // Pub. 560: the SEP/qualified-plan employer rate cannot exceed 25%, in hundredths.
-        #[libertas_number(min = 0, max = 2500)]
-        rate: u32,
+        /// Plan contribution rate
+        /// Enter the employer rate stated in your plan, before the self-employed adjustment: The App calculates the reduced owner rate; do not enter 20% for a 25% plan.
+        // Pub. 560: the SEP/qualified-plan employer rate cannot exceed 25%.
+        #[libertas_number(min = 0, max = 25, step = 0.01)]
+        #[libertas_physical_unit("percent")]
+        rate: f64,
     },
     /// SIMPLE IRA
     /// Your compensation is this business's net earnings from self-employment (Schedule SE line 4) before your SIMPLE contributions. Employees' matching or nonelective contributions go on Schedule C line 19.
@@ -31,45 +34,52 @@ pub enum BusinessRetirement {
         /// Your salary reduction contributions for 2026
         /// At most $17,000, plus a catch-up of $4,000 from age 50 ($5,250 at ages 60 to 63), and not more than your compensation; the App applies your age from your birth date. Your elective deferrals under a 401(k) or other plan of an employer count toward the same yearly limit.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         deferral: i64,
         /// Employer part of the plan
         employer: SimpleEmployer,
         /// Your employer contribution for yourself for 2026
         /// The match or nonelective amount you deposited for your own account by the return due date including extensions. The App deducts no more than the plan formula allows.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         employer_contribution: i64,
     },
     /// 401(k), profit-sharing, money purchase or other defined-contribution plan
     /// One plan of this business; the App figures the Pub. 560 Deduction Worksheet for Self-Employed. Employees' contributions go on Schedule C line 19.
     Qualified {
-        /// Plan contribution rate in hundredths of one percent
+        /// Plan contribution rate
         /// The employer rate stated in your plan, before the self-employed adjustment: 2500 means 25%. Zero for a plan with elective deferrals only.
-        // Pub. 560: the SEP/qualified-plan employer rate cannot exceed 25%, in hundredths.
-        #[libertas_number(min = 0, max = 2500)]
-        rate: u32,
+        // Pub. 560: the SEP/qualified-plan employer rate cannot exceed 25%.
+        #[libertas_number(min = 0, max = 25, step = 0.01)]
+        #[libertas_physical_unit("percent")]
+        rate: f64,
         /// Employer contribution for yourself for 2026
         /// The profit-sharing or money-purchase amount you deposited for your own account by the return due date including extensions, without the deferrals below.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         contribution: i64,
         /// Your elective deferrals for 2026
         /// At most $24,500 across this plan and any employer plan you deferred into (W-2 box 12 codes D, E, F, S, AA, BB). Catch-up contributions go below.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         deferral: i64,
         /// Your catch-up contributions for 2026
         /// Only from age 50: at most $8,000, or $11,250 at ages 60 to 63; the App applies your age from your birth date.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         catch_up: i64,
         /// Designated Roth part of the deferrals and catch-up
         /// Not deductible; the rest of the deferrals is.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         roth: i64,
     },
@@ -78,28 +88,37 @@ pub enum BusinessRetirement {
     DefinedBenefit {
         /// Deductible contribution for 2026 from the actuary's report
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         contribution: i64,
     },
 }
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for BusinessRetirement {}
 
 /// Employer part of a SIMPLE IRA
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_inline_choices]
 pub enum SimpleEmployer {
     /// Matching contribution
     Match {
-        /// Match rate in hundredths of one percent
-        /// 300 means the usual dollar-for-dollar match up to 3% of compensation; at least 100 (1%) and only in 2 of 5 years below 300.
-        // Pub. 560: the SIMPLE employer matching rate cannot exceed 3%, in hundredths.
-        #[libertas_number(min = 100, max = 300)]
-        rate: u32,
+        /// Match rate
+        /// 3% is the usual dollar-for-dollar match up to 3% of compensation; at least 1% and only in 2 of 5 years below 3%.
+        // Pub. 560: the SIMPLE employer matching rate cannot exceed 3%.
+        #[libertas_number(min = 1, max = 3, step = 0.01)]
+        #[libertas_physical_unit("percent")]
+        rate: f64,
     },
     /// 2% nonelective contribution
     /// 2% of compensation up to $360,000 for every eligible employee and yourself, whether or not they defer.
     Nonelective,
+}
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for SimpleEmployer {}
+
+// A plan rate on the two-decimal percent grid, with its bounds in exact hundredths of a percent.
+fn rate_valid(rate: f64, min: i64, max: i64) -> bool {
+    crate::kernel::natural::exact(rate, 100).is_some_and(|rate| (min..=max).contains(&rate))
 }
 
 impl BusinessRetirement {
@@ -124,7 +143,7 @@ impl BusinessRetirement {
             Self::Sep { contribution, rate } => {
                 if !amount_valid(*contribution) {
                     Some(invalid("contribution"))
-                } else if *rate > 2500 {
+                } else if !rate_valid(*rate, 0, 2500) {
                     Some(invalid("rate"))
                 } else {
                     None
@@ -140,7 +159,7 @@ impl BusinessRetirement {
                     Some(deferral_limit("deferral"))
                 } else if !amount_valid(*employer_contribution) {
                     Some(invalid("employer_contribution"))
-                } else if matches!(employer, SimpleEmployer::Match { rate } if !(100..=300).contains(rate))
+                } else if matches!(employer, SimpleEmployer::Match { rate } if !rate_valid(*rate, 100, 300))
                 {
                     Some(invalid("rate").in_field("employer"))
                 } else {
@@ -158,7 +177,7 @@ impl BusinessRetirement {
                         return Some(invalid(field));
                     }
                 }
-                if *rate > 2500 {
+                if !rate_valid(*rate, 0, 2500) {
                     Some(invalid("rate"))
                 } else if *deferral > crate::year_constants::ELECTIVE_DEFERRAL_LIMIT_2026_CENTS {
                     Some(deferral_limit("deferral"))
@@ -179,18 +198,19 @@ impl BusinessRetirement {
 }
 /// Partnership retirement plan contribution
 /// From your K-1 box 13 code R and the partnership's plan statement. A partner cannot establish a separate SEP for this partnership's income.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum PartnerRetirement {
     /// No plan contribution
     None,
     /// Partnership-established traditional SEP
     /// The contribution is K-1 box 13 code R. The partnership timely established and funded this plan; all eligible employees and partners receive the required contributions; employee costs are already reflected in the K-1. This is your only self-employed retirement plan, with no related-employer aggregation, special allocation, excess carryover or correction.
     Sep {
-        /// Partnership plan contribution rate in hundredths of one percent
-        /// Use the stated employer rate before the self-employed reduction: 2500 means 25%, not the reduced 20% owner rate.
-        // Pub. 560: the SEP/qualified-plan employer rate cannot exceed 25%, in hundredths.
-        #[libertas_number(min = 0, max = 2500)]
-        rate: u32,
+        /// Partnership plan contribution rate
+        /// Use the stated employer rate before the self-employed reduction, not the reduced 20% owner rate.
+        // Pub. 560: the SEP/qualified-plan employer rate cannot exceed 25%.
+        #[libertas_number(min = 0, max = 25, step = 0.01)]
+        #[libertas_physical_unit("percent")]
+        rate: f64,
     },
     /// IRA payment or another SEP
     /// This plan's deduction is not calculated yet; the return stops with a message naming it.
@@ -199,11 +219,13 @@ pub enum PartnerRetirement {
     /// Only Simple, Qualified and DefinedBenefit, with the same amounts and limits as the business plan of the same kind; the contributions are those you made for yourself.
     Plan(BusinessRetirement),
 }
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for PartnerRetirement {}
 impl PartnerRetirement {
     pub(crate) fn valid(&self) -> bool {
         match self {
             Self::None | Self::Other => true,
-            Self::Sep { rate, .. } => *rate <= 2500,
+            Self::Sep { rate, .. } => rate_valid(*rate, 0, 2500),
             Self::Plan(plan) => {
                 matches!(
                     plan,
@@ -217,12 +239,12 @@ impl PartnerRetirement {
 }
 
 // Source cents in; deduction whole dollars out, matching the return line.
-pub(crate) fn amounts(contribution: i64, rate: u32, profit: i64, half_se: i64) -> (i64, i64) {
+pub(crate) fn amounts(contribution: i64, rate: f64, profit: i64, half_se: i64) -> (i64, i64) {
     let earnings = positive(profit - half_se * 100);
     // Pub. 560: r / (1 + r). Keep the rational rate until the cents
     // boundary; never round a permissible deposit upward. The compensation
     // ceiling is multiplied by the original plan rate, not the reduced rate.
-    let rate = i64::from(rate);
+    let rate = crate::kernel::natural::units(rate, 100);
     let limit = phase::cap(
         phase::cap(
             crate::kernel::ratio::trunc_i64(earnings * rate, 10000 + rate),
@@ -250,14 +272,35 @@ pub(crate) fn calculate(
     partners: &[(i64, crate::partnership::PartnerSeResult)],
     r: &mut FederalResult,
 ) -> SepResult {
-    match calculate_with_section179(d, half, half_by_activity, partners, None, r, None) {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_claims(d, half, half_by_activity, partners, r, &source_claims)
+}
+
+#[cfg(test)]
+pub(crate) fn calculate_with_claims(
+    d: &FederalDraft,
+    half: [i64; 2],
+    half_by_activity: Option<&BTreeMap<i64, i64>>,
+    partners: &[(i64, crate::partnership::PartnerSeResult)],
+    r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> SepResult {
+    match calculate_with_section179_with_claims(
+        crate::related_forms::RelatedFormContext::original(d, source_claims),
+        half,
+        half_by_activity,
+        partners,
+        None,
+        r,
+        None,
+    ) {
         Ok(result) => result,
         Err(_) => unreachable!("legacy retirement calculation has no selected allocation"),
     }
 }
 
-pub(crate) fn calculate_with_section179(
-    d: &FederalDraft,
+pub(crate) fn calculate_with_section179_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     half: [i64; 2],
     half_by_activity: Option<&BTreeMap<i64, i64>>,
     partners: &[(i64, crate::partnership::PartnerSeResult)],
@@ -265,15 +308,56 @@ pub(crate) fn calculate_with_section179(
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
 ) -> Result<SepResult, crate::Section179PreparedIssue> {
-    calculate_with_income(d, half, half_by_activity, partners, None, selected, r, home)
+    let crate::related_forms::RelatedFormContext { draft: d, claims: source_claims, .. } =
+        form_context;
+    calculate_with_income_with_claims(
+        d,
+        half,
+        half_by_activity,
+        partners,
+        None,
+        true,
+        selected,
+        r,
+        home,
+        source_claims,
+    )
+}
+
+// Pub.946's two-income-limit ordering needs the existing native plan
+// allowance after hypothetical179, without qualifying the actual deposit
+// against hypothetical income. The actual regular pass still checks it.
+// https://www.irs.gov/publications/p946
+pub(crate) fn calculate_hypothetical_with_section179_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    half: [i64; 2],
+    half_by_activity: Option<&BTreeMap<i64, i64>>,
+    partners: &[(i64, crate::partnership::PartnerSeResult)],
+    selected: &crate::Section179PreparedAllocation,
+    r: &mut FederalResult,
+    home: Option<&crate::home_office::HomeContext>,
+) -> Result<SepResult, crate::Section179PreparedIssue> {
+    calculate_with_income_with_claims(
+        form_context.draft,
+        half,
+        half_by_activity,
+        partners,
+        None,
+        false,
+        Some(selected),
+        r,
+        home,
+        form_context.claims,
+    )
 }
 
 // AMT changes the chapter 1 deduction limit, not the actual deposit or
 // its regular-tax excess-contribution test. Income overrides are source
 // cents already computed by the owning business/AMT collector.
 // Forward the existing invocation operands and its borrowed home context together.
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn calculate_amt_with_section179(
+pub(crate) fn calculate_amt_with_section179_with_claims(
     d: &FederalDraft,
     half: [i64; 2],
     half_by_activity: Option<&BTreeMap<i64, i64>>,
@@ -282,32 +366,47 @@ pub(crate) fn calculate_amt_with_section179(
     selected: Option<&crate::Section179PreparedAllocation>,
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<SepResult, crate::Section179PreparedIssue> {
-    calculate_with_income(d, half, half_by_activity, partners, Some(income), selected, r, home)
+    calculate_with_income_with_claims(
+        d,
+        half,
+        half_by_activity,
+        partners,
+        Some(income),
+        false,
+        selected,
+        r,
+        home,
+        source_claims,
+    )
 }
 
 // Forward the existing invocation operands and its borrowed home context together.
+
 #[allow(clippy::too_many_arguments)]
-fn calculate_with_income(
+fn calculate_with_income_with_claims(
     d: &FederalDraft,
     half: [i64; 2],
     half_by_activity: Option<&BTreeMap<i64, i64>>,
     partners: &[(i64, crate::partnership::PartnerSeResult)],
     income: Option<&BTreeMap<i64, i64>>,
+    validate_deposit: bool,
     selected: Option<&crate::Section179PreparedAllocation>,
     r: &mut FederalResult,
 
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<SepResult, crate::Section179PreparedIssue> {
     let mut result = SepResult::default();
     for e in &d.income {
         if d.setup.as_ref().is_some_and(crate::community::applies)
-            && e.owner == Owner::Spouse
+            && e.owner == crate::DocumentOwner::Spouses
             && matches!(e.income, FederalIncome::Partnership { .. })
         {
             continue;
         }
-        let owner = usize::from(e.owner == Owner::Spouse);
+        let owner = usize::from(e.owner == crate::DocumentOwner::Spouses);
         let (contribution, rate, profit) = match &e.income {
             FederalIncome::Business { data: b } => {
                 if !matches!(
@@ -348,14 +447,20 @@ fn calculate_with_income(
                     let profit = match income.and_then(|v| v.get(&e.id)).copied() {
                         Some(profit) => profit,
                         None => {
-                            let expenses =
-                                crate::section179_return::expenses(d, e.id, b, selected, home)
-                                    .map(|expense| {
-                                        expense
-                                            - selected.map_or(0, |allocation| {
-                                                allocation.ordinary_risk_adjustment(e.id)
-                                            })
-                                    })?;
+                            let expenses = crate::section179_return::expenses_with_claims(
+                                d,
+                                e.id,
+                                b,
+                                selected,
+                                home,
+                                source_claims,
+                            )
+                            .map(|expense| {
+                                expense
+                                    - selected.map_or(0, |allocation| {
+                                        allocation.ordinary_limit_adjustment(e.id)
+                                    })
+                            })?;
                             b.earned_receipts() - expenses
                         }
                     };
@@ -386,18 +491,30 @@ fn calculate_with_income(
                     "ISSUE_THIS_SEP_WORKSHEET_REQUIRES_ONE_SELF_EMPLOYMENT_BUSINESS_FOR_THIS_O_0FB340F4",
                     "The owner plan worksheet requires one self-employment business and one self-employed plan for this owner.",
                 );
-                let expenses = crate::section179_return::expenses(d, e.id, b, selected, home).map(
-                    |expense| {
-                        expense
-                            - selected
-                                .map_or(0, |allocation| allocation.ordinary_risk_adjustment(e.id))
-                    },
-                )?;
+                let expenses = crate::section179_return::expenses_with_claims(
+                    d,
+                    e.id,
+                    b,
+                    selected,
+                    home,
+                    source_claims,
+                )
+                .map(|expense| {
+                    expense
+                        - selected
+                            .map_or(0, |allocation| allocation.ordinary_limit_adjustment(e.id))
+                })?;
                 (
                     contribution,
                     rate,
                     b.earned_receipts() - expenses
-                        + crate::clergy::nondeductible_with_section179(d, e.id, selected, home)?,
+                        + crate::clergy::nondeductible_with_section179_with_claims(
+                            d,
+                            e.id,
+                            selected,
+                            home,
+                            source_claims,
+                        )?,
                 )
             }
             FederalIncome::Partnership { data } => {
@@ -428,7 +545,7 @@ fn calculate_with_income(
                         continue;
                     }
                     PartnerRetirement::Sep { rate } => rate,
-                    PartnerRetirement::Plan(_) => 0,
+                    PartnerRetirement::Plan(_) => 0.0,
                 };
                 let mut sources = partners.iter().filter(|(id, _)| *id == e.id);
                 let Some((_, source)) = sources.next() else {
@@ -436,7 +553,7 @@ fn calculate_with_income(
                         r,
                         false,
                         &crate::interview::income_issue_context(e)
-                            .corrective(crate::TaxSection::PassThrough),
+                            .corrective(crate::TaxSection::Documents),
                         "Partner retirement",
                         "ISSUE_RESOLVE_ACTUAL_PARTNERSHIP_SE_EARNINGS_BEFORE_CALCULATING_PLAN_COMP_84586D00",
                         "Resolve actual partnership SE earnings before calculating plan compensation.",
@@ -470,7 +587,11 @@ fn calculate_with_income(
                 let gross = phase::floor(reported - data.guaranteed_se(), 0) + data.guaranteed_se();
                 let rounded = dollars(phase::floor(reported - data.guaranteed_se(), 0))
                     + dollars(data.guaranteed_services)
-                    + if !data.limited_for_se { dollars(data.guaranteed_capital) } else { 0 };
+                    + if data.limited_for_se == Some(false) {
+                        dollars(data.guaranteed_capital)
+                    } else {
+                        0
+                    };
                 let profit = gross - (rounded - source.earnings) * 100;
                 if let PartnerRetirement::Plan(plan) = &data.retirement {
                     single_plan(d, e, r);
@@ -501,7 +622,7 @@ fn calculate_with_income(
         );
         crate::require_localized!(
             r,
-            income.is_some() || contribution <= limit,
+            !validate_deposit || contribution <= limit,
             &crate::IssueContext::Section(crate::TaxSection::SelfEmployedBenefits),
             "Business retirement",
             "ISSUE_THE_SEP_CONTRIBUTION_EXCEEDS_THE_2026_INCOME_BASED_PLAN_RATE_COMPEN_A4C70725",
@@ -579,16 +700,17 @@ fn catch_up(age: u32, simple: bool) -> i64 {
 // exact through the reduced employer rate; the output deduction is rounded once.
 pub(crate) fn worksheet(
     earnings: i64,
-    rate: u32,
+    rate: f64,
     deferral: i64,
     catch: i64,
     roth: i64,
 ) -> [i64; 22] {
     use crate::year_constants::*;
+    let rate = crate::kernel::natural::units(rate, 100);
     let mut s = [0; 22];
     s[3] = phase::floor(earnings, 0);
-    s[5] = crate::kernel::ratio::trunc_i64(s[3] * i64::from(rate), 10000 + i64::from(rate));
-    s[6] = crate::kernel::ratio::trunc_i64(SEP_COMPENSATION_LIMIT_CENTS * i64::from(rate), 10000);
+    s[5] = crate::kernel::ratio::trunc_i64(s[3] * rate, 10000 + rate);
+    s[6] = crate::kernel::ratio::trunc_i64(SEP_COMPENSATION_LIMIT_CENTS * rate, 10000);
     s[7] = phase::cap(s[5], [s[6]]);
     s[8] = SEP_ANNUAL_ADDITIONS_LIMIT_CENTS;
     s[9] = phase::floor(phase::cap(deferral, [ELECTIVE_DEFERRAL_LIMIT_2026_CENTS]), 0);
@@ -625,9 +747,13 @@ pub(crate) fn simple(
     );
     let allowed = phase::cap(deferral, [cap, comp]);
     let employer_cap = match employer {
-        SimpleEmployer::Match { rate } => {
-            phase::cap(allowed, [crate::kernel::ratio::trunc_i64(comp * i64::from(rate), 10000)])
-        }
+        SimpleEmployer::Match { rate } => phase::cap(
+            allowed,
+            [crate::kernel::ratio::trunc_i64(
+                comp * crate::kernel::natural::units(rate, 100),
+                10000,
+            )],
+        ),
         SimpleEmployer::Nonelective => crate::kernel::ratio::trunc_i64(
             phase::cap(comp, [SEP_COMPENSATION_LIMIT_CENTS]) * 2,
             100,
@@ -649,7 +775,11 @@ fn owner_plan(
         .people
         .as_ref()
         .and_then(|p| {
-            if entry.owner == Owner::Taxpayer { Some(&p.taxpayer) } else { p.spouse.as_ref() }
+            if entry.owner == crate::DocumentOwner::Yours {
+                Some(&p.taxpayer)
+            } else {
+                p.spouse.as_ref()
+            }
         })
         .map_or(0, |p| crate::federal_model::age_at_year_end(p.birth_date));
     // A partner's K-1 plan rows are labelled as the partnership's, not a business's.
@@ -658,7 +788,7 @@ fn owner_plan(
     } else {
         ("business", "owner_plan")
     };
-    let other = crate::elective_deferrals::total(d, entry.owner);
+    let other = crate::elective_deferrals::total(d, entry.owner.owned());
     let earnings = phase::floor(profit - half * 100, 0);
     let (actual, allowed) = match *plan {
         BusinessRetirement::Simple { deferral, employer, employer_contribution } => {

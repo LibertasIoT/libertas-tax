@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::support::client::income_pages::{open_documents, save_documents};
 use crate::tests::support::client::unit50_interview_native::NativeInterviewCase;
 use crate::tests::support::client::{
     draft_from_native_records, native_draft_records, write_native_draft_records,
@@ -7,35 +8,35 @@ use crate::tests::support::client::{
 fn period(began: u32, ended: u32) -> K1EntityTaxPeriod {
     K1EntityTaxPeriod { began, ended }
 }
-fn page(partner: bool, name: &str, actual: Option<K1EntityTaxPeriod>) -> IncomeDocument {
+fn page(partner: bool, name: &str, actual: Option<K1EntityTaxPeriod>) -> IncomeSource {
     if partner {
         let mut page = k1_1065(name);
         page.reporting_period = actual;
-        IncomeDocument::K1Partnership(page)
+        IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
     } else {
         let mut page = k1_1120s(name);
         page.reporting_period = actual;
-        IncomeDocument::K1Scorp(page)
+        IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
     }
 }
-fn entered(value: &IncomeDocument) -> Option<K1EntityTaxPeriod> {
+fn entered(value: &crate::K1Document) -> Option<K1EntityTaxPeriod> {
     match value {
-        IncomeDocument::K1Partnership(page) => page.reporting_period,
-        IncomeDocument::K1Scorp(page) => page.reporting_period,
+        crate::K1Document::K1Partnership(page) => page.form.reporting_period,
+        crate::K1Document::K1Scorp(page) => page.form.reporting_period,
         _ => unreachable!(),
     }
 }
-fn set_period(value: &mut IncomeDocument, period: Option<K1EntityTaxPeriod>) {
+fn set_period(value: &mut crate::K1Document, period: Option<K1EntityTaxPeriod>) {
     match value {
-        IncomeDocument::K1Partnership(page) => page.reporting_period = period,
-        IncomeDocument::K1Scorp(page) => page.reporting_period = period,
+        crate::K1Document::K1Partnership(page) => page.form.reporting_period = period,
+        crate::K1Document::K1Scorp(page) => page.form.reporting_period = period,
         _ => unreachable!(),
     }
 }
 fn stored(entry: &FederalIncomeEntry) -> Option<K1EntityTaxPeriod> {
     match &entry.income {
         FederalIncome::Partnership { data } => data.reporting_period,
-        FederalIncome::Scorp { data } => data.reporting_period,
+        FederalIncome::Scorp { data } => ScorpK1::from(data).reporting_period,
         _ => unreachable!(),
     }
 }
@@ -47,12 +48,14 @@ fn k1_entity_period_save_checks_actual_dates_without_calendar_inference() {
             None,
             Some(period(20260101, 20261231)),
             Some(period(20250701, 20260630)),
+            Some(period(20251001, 20260930)),
             Some(period(20260301, 20260331)),
         ] {
             let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-            let mut request = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-            documents.documents = vec![document(0, page(partner, "Actual entity", actual))];
+            let request = save_documents(
+                &mut session,
+                vec![document(0, page(partner, "Actual entity", actual))],
+            );
             accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
             assert_eq!(
                 stored(
@@ -69,19 +72,31 @@ fn k1_entity_period_save_checks_actual_dates_without_calendar_inference() {
                 actual
             );
             let saved = session.draft.clone();
-            for invalid in [period(20260630, 20250701), period(20260229, 20260630)] {
-                let mut request = open_topic(&mut session, TaxSection::PassThrough);
-                let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-                set_period(&mut documents.documents[0].document, Some(invalid));
+            let mut cold = restart(saved.clone());
+            let reopened = open_documents(&mut cold);
+            let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
+            assert_eq!(entered(&documents.common.k1.documents[0].document), actual);
+            accepted(&send(&mut cold, reopened));
+            assert_eq!(cold.draft, saved);
+            {
+                let invalid = period(20260630, 20250701);
+                let mut request = open_documents(&mut session);
+                let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+                set_period(&mut documents.common.k1.documents[0].document, Some(invalid));
                 assert_eq!(
-                    match &documents.documents[0].document {
-                        IncomeDocument::K1Partnership(page) => page.rule(),
-                        IncomeDocument::K1Scorp(page) => page.rule(),
+                    match &documents.common.k1.documents[0].document {
+                        crate::K1Document::K1Partnership(page) =>
+                            page.issue_with_mode(false).map(|issue| issue.key),
+                        crate::K1Document::K1Scorp(page) =>
+                            page.issue_with_mode(false).map(|issue| issue.key),
                         _ => unreachable!(),
                     },
                     Some("K1_ENTITY_PERIOD_DATES")
                 );
-                error(send(&mut session, request));
+                error(crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                ));
                 assert_eq!(session.draft, saved);
             }
         }
@@ -94,17 +109,18 @@ fn k1_entity_period_actual_client_save_reopen_restart_and_correction() {
     let partner = std::env::var("TAX_UNIT19_PERIOD_KIND").as_deref() != Ok("scorp");
     let exact_periods = [Some(period(20250701, 20260630)), None];
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let seed = open_topic(&mut session, TaxSection::PassThrough);
+    let seed = open_documents(&mut session);
     let native = NativeInterviewCase("TAX_UNIT19_PERIOD");
     if native.required_calculation(&mut session) {
         return;
     }
-    let mut answers = seed.clone();
-    let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
-    documents.documents = vec![
-        document(0, page(partner, "Known fiscal-period entity", exact_periods[0])),
-        document(0, page(partner, "Unknown-period entity", exact_periods[1])),
-    ];
+    let answers = save_documents(
+        &mut session,
+        vec![
+            document(0, page(partner, "Known fiscal-period entity", exact_periods[0])),
+            document(0, page(partner, "Unknown-period entity", exact_periods[1])),
+        ],
+    );
     let directory = std::env::var("TAX_UNIT19_PERIOD_DIR").ok().map(std::path::PathBuf::from);
     let write = |name: &str, request: &P| {
         if let Some(directory) = &directory {
@@ -118,7 +134,10 @@ fn k1_entity_period_actual_client_save_reopen_restart_and_correction() {
         return;
     }
     let payload = native.input("PAYLOAD").unwrap_or(answers);
-    accepted(&send(&mut session, P::from_avro(&payload.to_avro()).unwrap()));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        P::from_avro(&payload.to_avro()).unwrap(),
+    ));
     let saved = session.draft.clone();
     let sources: Vec<_> = saved
         .income
@@ -134,7 +153,7 @@ fn k1_entity_period_actual_client_save_reopen_restart_and_correction() {
     for entry in &mut no_period.income {
         match &mut entry.income {
             FederalIncome::Partnership { data } => data.reporting_period = None,
-            FederalIncome::Scorp { data } => data.reporting_period = None,
+            FederalIncome::Scorp { data } => edit_scorp(data).reporting_period = None,
             _ => {}
         }
     }
@@ -147,21 +166,24 @@ fn k1_entity_period_actual_client_save_reopen_restart_and_correction() {
         write_native_draft_records(directory.join("saved-draft.avro"), &records);
     }
     let mut session = restart(draft);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &reopened else { unreachable!() };
+    let reopened = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
     assert_eq!(
-        documents.documents.iter().map(|row| entered(&row.document)).collect::<Vec<_>>(),
+        documents.common.k1.documents.iter().map(|row| entered(&row.document)).collect::<Vec<_>>(),
         exact_periods
     );
     write("reopened.avro", &reopened);
     let payload = native.input("REOPEN_PAYLOAD").unwrap_or(reopened);
-    accepted(&send(&mut session, payload));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        payload,
+    ));
     assert_eq!(session.draft, saved);
-    let mut correction = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-    set_period(&mut documents.documents[0].document, Some(period(20260401, 20261231)));
-    set_period(&mut documents.documents[1].document, Some(period(20260101, 20261231)));
-    documents.documents.reverse();
+    let mut correction = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    set_period(&mut documents.common.k1.documents[0].document, Some(period(20260401, 20261231)));
+    set_period(&mut documents.common.k1.documents[1].document, Some(period(20260101, 20261231)));
+    documents.common.k1.documents.reverse();
     accepted(&send(&mut session, correction));
     for entry in session.draft.income.iter().filter(|entry| {
         matches!(entry.income, FederalIncome::Partnership { .. } | FederalIncome::Scorp { .. })

@@ -2,7 +2,7 @@
 use super::support::assert::{accepted, rejected_with};
 use super::*;
 use crate::tests::cross::interview::{
-    PAGE_DEDUCTIONS, PAGE_ITEMIZED, accepted_linked_mortgage, at_the_deductions_page,
+    PAGE_DEDUCTIONS, PAGE_INCOME, PAGE_ITEMIZED, accepted_linked_mortgage, at_the_deductions_page,
     linked_mortgage_editor, linked_mortgage_form, linked_mortgage_rows, save_deductions,
     save_linked_mortgage_rows, send_past_less_common,
 };
@@ -50,8 +50,8 @@ fn simplified_office_months_map_onto_twelve_entries() {
     d.home_sites[0].claims[0] = claim.clone();
     d.home_sites[0].claims[0].activities = vec![OfficeActivity {
         activity: source,
-        gross_share: 10000,
-        expense_period_share: 10000,
+        gross_share: 100.0,
+        expense_period_share: 100.0,
         attribution_reason: alloc::string::String::new(),
         deduction_parts: 1,
     }];
@@ -143,8 +143,12 @@ fn mortgage_links_standard_route_opens_and_saves_without_itemizing() {
     assert_eq!(original.id, before.next_id);
     assert!(original.id > 0);
     assert_eq!(s.draft.next_id, before.next_id + 1);
-    assert_eq!(s.draft.revision, before.revision + 1);
-    assert_eq!(s.draft.deductions.as_ref().unwrap().choice, before.deductions.unwrap().choice);
+    // Accept the printed source, then its nonprinted property answer.
+    assert_eq!(s.draft.revision, before.revision + 2);
+    assert_eq!(
+        s.draft.deductions.as_ref().unwrap().itemize_override,
+        before.deductions.unwrap().itemize_override
+    );
     assert_eq!(original.more.property, "Original loan");
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
 }
@@ -214,6 +218,7 @@ fn mortgage_links_transfer_uses_saved_root_and_rejects_its_removal_or_conversion
     let reply = save_linked_mortgage_rows(&mut s, vec![accepted[0].clone(), accepted[1].clone()]);
     assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     second_root.id = accepted[1].id;
+    second_root.borrower = accepted_document_names(&s.draft, Owner::Taxpayer).recipient;
     assert_eq!(linked_mortgage_rows(&mut s), vec![original, second_root]);
 }
 
@@ -224,8 +229,9 @@ fn mortgage_links_echoed_catalog_cannot_authorize_unsaved_or_foreign_roots() {
     let forged_id = before.next_id + 1000;
     let mut transferred = linked_mortgage_form("Later lender");
     transferred.more.details = MortgageDetails::EarlierLender { loan: forged_id };
-    let mut request = linked_mortgage_editor(&mut s);
-    let P::SaveMortgages { mortgage_loans, rental_mortgage_loans, value, .. } = &mut request else {
+    let mut request = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    let P::SaveDocuments { mortgage_loans, rental_mortgage_loans, documents, .. } = &mut request
+    else {
         unreachable!()
     };
     mortgage_loans.push(RecordChoice {
@@ -233,16 +239,24 @@ fn mortgage_links_echoed_catalog_cannot_authorize_unsaved_or_foreign_roots() {
         label: libertas::libertas_formatted_text("MORTGAGE_PROPERTY_UNNAMED", &[]),
     });
     rental_mortgage_loans.push(forged_id);
-    value.loans = vec![transferred];
-    rejected_with(send(&mut s, request), "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED");
+    documents.common.mortgages.documents = vec![mortgage_document(transferred.clone())];
+    rejected_with(
+        save_linked_mortgage_rows(&mut s, vec![transferred]),
+        "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED",
+    );
     assert_eq!(s.draft, before);
-    let mut request = linked_mortgage_editor(&mut s);
-    let P::SaveMortgages { value, .. } = &mut request else { unreachable!() };
+    let mut request = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
     let root = linked_mortgage_form("Unsaved original");
     let mut transferred = root.clone();
-    transferred.more.details = MortgageDetails::EarlierLender { loan: before.next_id };
-    value.loans = vec![root, transferred];
-    rejected_with(send(&mut s, request), "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED");
+    // Accepting a new paper root cannot authorize an unrelated loan identity.
+    transferred.more.details = MortgageDetails::EarlierLender { loan: forged_id };
+    documents.common.mortgages.documents =
+        vec![mortgage_document(root.clone()), mortgage_document(transferred.clone())];
+    rejected_with(
+        save_linked_mortgage_rows(&mut s, vec![root, transferred]),
+        "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED",
+    );
     assert_eq!(s.draft, before);
 }
 
@@ -252,22 +266,14 @@ fn mortgage_links_switching_deduction_method_preserves_source_records() {
     accepted_linked_mortgage(&mut s);
     let loans = s.draft.deductions.as_ref().unwrap().mortgage.clone();
     let next_id = s.draft.next_id;
-    for route in [
-        DeductionRoute::Compare,
-        DeductionRoute::Itemize,
-        DeductionRoute::Standard,
-        DeductionRoute::Compare,
-    ] {
+    for route in [None, Some(ItemizeOverride::Itemize), None, None] {
         let request = save_deductions(&s.draft, route, 0);
         let reply = send_past_less_common(&mut s, request);
         assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
         assert_eq!(s.draft.deductions.as_ref().unwrap().mortgage, loans);
         assert_eq!(s.draft.next_id, next_id);
         let P::SaveMortgages { page, .. } = linked_mortgage_editor(&mut s) else { unreachable!() };
-        assert_eq!(
-            page,
-            if route == DeductionRoute::Standard { PAGE_DEDUCTIONS } else { PAGE_ITEMIZED }
-        );
+        assert_eq!(page, PAGE_ITEMIZED);
     }
 }
 
@@ -281,13 +287,16 @@ fn mortgage_links_failed_candidate_does_not_consume_identity_and_preview_is_tran
         save_linked_mortgage_rows(&mut s, vec![linked_mortgage_form("New original"), forged]);
     error(reply);
     assert_eq!(s.draft, before);
-    let preview = P::EstimateMortgages {
-        user: TEST_USER,
-        mortgage_loans: vec![],
-        rental_mortgage_loans: vec![],
-        value: Mortgages { loans: vec![linked_mortgage_form("Preview only")] },
-    };
-    assert!(matches!(send(&mut s, preview), Reply::Response(P::RunningEstimate { .. })));
+    let preview = crate::tests::cross::interview::save_mortgages(
+        &mut s,
+        MortgageDocuments {
+            documents: vec![mortgage_document(linked_mortgage_form("Preview only"))],
+        },
+    );
+    assert!(matches!(
+        crate::tests::support::client::income_pages::candidate_save_review(&mut s, preview),
+        Reply::Response(P::Review { .. })
+    ));
     assert_eq!(s.draft, before);
     let original = accepted_linked_mortgage(&mut s);
     assert_eq!(original.id, before.next_id);
@@ -430,4 +439,65 @@ fn schedule_c_and_form_8829_print_whole_dollars_with_plain_owner_and_year_text()
         let text = crate::APP_STRINGS.iter().find(|(k, _)| *k == key).unwrap().1;
         assert!(text.contains(",number,0}"), "{key}");
     }
+}
+
+#[test]
+fn beneficiary_salt_and_home_sources_survive_native_save_reopen_and_restart() {
+    let mut session = restart(office_estate_tax_return(3_400_000, [70_000, 0, 0, 0]));
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    // The fiduciary's statement supplies the beneficiary's personal property tax allocation.
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let document = documents
+        .common
+        .k1
+        .documents
+        .iter_mut()
+        .find_map(|row| match &mut row.document {
+            crate::K1Document::K1EstateTrust(document) => Some(document),
+            _ => None,
+        })
+        .unwrap();
+    let mut estate = crate::tests::support::builders::edit_estate_document(document);
+    let K1FinalYear::Final { personal_property_tax, .. } = &mut estate.more.final_year else {
+        unreachable!()
+    };
+    *personal_property_tax = 70_001;
+    drop(estate);
+    accepted(&send(&mut session, request));
+    let sources = session.draft.income.clone();
+    let homes = session.draft.home_sites.clone();
+    let request = support::client::save_home_offices(&session.draft, homes.clone());
+    accepted(&send(&mut session, request));
+    assert_eq!(session.draft.income, sources);
+    assert_eq!(session.draft.home_sites, homes);
+    let before = session.draft.clone();
+    let request = P::Navigate {
+        user: TEST_USER,
+        cookie: session.draft.cookie.clone(),
+        revision: session.draft.revision,
+        from: PAGE_INCOME,
+        section: TaxSection::HomeOffices.into(),
+        navigation: NavigationAvailability::default(),
+    };
+    let Reply::Edit(request @ P::SaveHomeOffices { .. }) = send(&mut session, request) else {
+        unreachable!()
+    };
+    accepted(&send(&mut session, request));
+    let expected = supported(&session.draft);
+    assert_eq!(session.draft, before);
+    assert_eq!(value(&expected, "salt_deduction"), 40_100);
+    assert_eq!(line_amount(&expected, &office_line_id(&expected, "excess_taxes")), 30_001);
+    let mut cold = restart(session.draft.clone());
+    let request = crate::tests::support::client::income_pages::open_documents(&mut cold);
+    accepted(&send(&mut cold, request));
+    let request =
+        crate::tests::cross::interview::go_to(&cold.draft, PAGE_INCOME, TaxSection::HomeOffices);
+    let Reply::Edit(request @ P::SaveHomeOffices { .. }) = send(&mut cold, request) else {
+        unreachable!()
+    };
+    accepted(&send(&mut cold, request));
+    assert_eq!(cold.draft, before);
+    assert_eq!(supported(&cold.draft), expected);
 }

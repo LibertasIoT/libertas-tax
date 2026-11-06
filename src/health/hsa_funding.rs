@@ -1,3 +1,4 @@
+pub use crate::hsa_source::{HsaFunding, HsaFundingBasis, HsaFundingUseHistory};
 use crate::validation::ValidationIssue;
 // Notice 2008-51: qualified current-year IRA funding and its separate testing period.
 // Actual source identity: accepted Form1099-R payment IDs bound each exclusion;
@@ -24,10 +25,10 @@ use crate::validation::ValidationIssue;
 // Evidence: tests/passthrough inherited_roth_earlier_funding_* and
 // tests/interview inherited_roth_earlier_funding_public_save_reopen_and_source_correction.
 use crate::federal_rules::valid_date;
-use crate::kernel::lines::line_cents;
 use crate::kernel::phase;
 use crate::kernel::ratio::exact;
 use crate::kernel::ratio::positive;
+use crate::line_emission::line_cents;
 use crate::{
     FederalDraft, FederalIncome, FederalResult, HsaCoverage, HsaEligibilityLoss, HsaLossReason,
     Owner, RetirementKind, RetirementTaxable, RetirementTreatment,
@@ -35,91 +36,6 @@ use crate::{
 use alloc::collections::BTreeMap;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// IRA-to-HSA funding before 2025
-/// Enter every actual qualified funding transfer made from 2007 through 2024, including a transfer whose testing period later failed. These facts establish lifetime use, not current contributions or recapture income. Enter 2025 transfers only in the existing 2025 testing-period history; do not repeat them here. Ordinary IRA rollovers, HSA-to-HSA rollovers and trustee transfers between HSAs are not qualified IRA-to-HSA funding.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct HsaFundingUseHistory {
-    /// Actual direct funding date
-    #[libertas_date_only]
-    // Tax structure: earlier funding history excludes the separately retained 2025 testing period.
-    #[libertas_number(min = 20070101, max = $HEALTH_EARLIER_FUNDING_END)]
-    pub funded: u32,
-    /// Eligible coverage at that transfer
-    pub coverage: HsaCoverage,
-    /// Original qualified transfer amount
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-}
-impl HsaFundingUseHistory {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.coverage == HsaCoverage::None).then_some(
-            crate::validation::ValidationIssue::new("HSA_FUNDING_NEEDS_COVERAGE")
-                .at_field("coverage"),
-        )
-    }
-    #[cfg(test)]
-    pub(crate) fn valid(&self) -> bool {
-        self.record_issue().is_none()
-    }
-    pub(crate) fn record_issue(&self) -> Option<ValidationIssue> {
-        let invalid = |field| ValidationIssue::new("HSA_RECORD_INVALID").at_field(field);
-        if !valid_date(self.funded)
-            || !(20070101..=crate::year_constants::HEALTH_EARLIER_FUNDING_END)
-                .contains(&self.funded)
-        {
-            Some(invalid("funded"))
-        } else if self.coverage == HsaCoverage::None {
-            Some(invalid("coverage"))
-        } else if self.amount <= 0 {
-            Some(invalid("amount"))
-        } else {
-            None
-        }
-    }
-    pub(crate) fn same_month(list: &[Self]) -> Option<&'static str> {
-        Self::same_month_issue(list).map(|issue| issue.key)
-    }
-    pub(crate) fn same_month_issue(list: &[Self]) -> Option<ValidationIssue> {
-        list.iter().enumerate().find_map(|(index, value)| {
-            list[..index].iter().any(|previous| previous.funded / 100 == value.funded / 100).then(
-                || {
-                    ValidationIssue::new("HSA_FUNDING_HISTORY_SAME_MONTH")
-                        .at_field("funded")
-                        .in_list("uses", index)
-                },
-            )
-        })
-    }
-}
-
-/// Qualified 2026 IRA-to-HSA transfer
-/// A completed direct transfer from the owner's traditional or Roth IRA to their own HSA. Enter its Form 1099-R once in Income; link that entry below. This transfer is not a personal contribution, deduction or ordinary rollover. Prior-basis funding uses source balances and the owner-level IRA worksheet. Inherited sources use only the linked beneficiary/deceased-owner group. Dated nonqualified Roth withdrawals can be coordinated from the applicable opening history; other earlier basis activity needs further support.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct HsaFunding {
-    /// Actual source Form 1099-R income entry ID
-    #[libertas_number(min = 1)]
-    pub income: i64,
-    /// Was the funding IRA an ongoing SEP or SIMPLE IRA?
-    /// Yes if an employer contribution was made for that account's plan year ending with or within the distribution tax year, including a contribution made later for that plan year. Check the actual funding account, not other IRAs or HSA employer contributions.
-    pub ongoing_sep_simple: bool,
-    /// HSA receipt date in 2026
-    #[libertas_date_only]
-    pub funded: u32,
-    /// Amount actually transferred directly
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// IRA basis treatment
-    pub basis: HsaFundingBasis,
-    /// Eligible HDHP coverage at the time of transfer
-    /// This can differ from coverage on the first day of that month. No disqualifying insurance, Medicare enrollment or dependent status at transfer.
-    pub coverage: HsaCoverage,
-    /// First known loss of eligibility after transfer, if any
-    /// Enter the first loss even if coverage later returned. The testing period ends on the last day of the same month in 2027. Absence means no known loss; retain coverage records until the period ends.
-    pub loss: Option<HsaEligibilityLoss>,
-}
 /// Qualified 2026 IRA-to-HSA transfer
 /// A completed direct transfer from the owner's traditional or Roth IRA to their own HSA, or from an IRA they inherited. Enter its Form 1099-R once in Retirement and choose it here. This transfer is not a personal contribution, deduction or ordinary rollover. Prior-basis funding uses source balances and the owner-level IRA worksheet. Inherited sources use only the linked beneficiary/deceased-owner group. Dated nonqualified Roth withdrawals can be coordinated from the applicable opening history; other earlier basis activity needs further support.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -143,7 +59,8 @@ pub struct HsaFundingRow {
     pub funded: u32,
     /// Amount actually transferred directly
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// IRA basis treatment
     pub basis: HsaFundingBasis,
@@ -213,10 +130,10 @@ impl HsaFunding {
     // date remains on its actual payment; traditional funding owns only its
     // otherwise missing actual date. Never substitute the receipt date.
     pub(crate) fn distribution_date(&self, d: &FederalDraft) -> Option<u32> {
-        let source = crate::retirement::ira_funding_source(d, self.income)?;
+        let source = crate::retirement_return::ira_funding_source(d, self.income)?;
         match &source.entry.income {
             FederalIncome::Roth { data } if matches!(self.basis, HsaFundingBasis::Roth { .. }) => {
-                Some(data.distributed)
+                Some(crate::RothWithdrawal::from(data).distributed)
             }
             FederalIncome::Retirement { .. } => self.basis.traditional_date(),
             _ => None,
@@ -232,56 +149,6 @@ impl HsaFunding {
             basis: self.basis.clone(),
             coverage: self.coverage,
             loss: self.loss.clone(),
-        }
-    }
-}
-/// IRA basis at qualified funding
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum HsaFundingBasis {
-    /// Wholly pretax traditional IRAs
-    /// The applicable personal traditional IRA pool or linked inherited group has no after-tax basis at transfer. Personal income uses the payer amount equal to gross; inherited income confirms no allocated basis. Never combine inherited groups with personal accounts.
-    Pretax {
-        /// Actual IRA distribution date in 2026
-        /// Use the funding IRA's transaction records, not the HSA receipt date or a contribution designation for another year.
-        #[libertas_date_only]
-        distributed: u32,
-    },
-    /// Roth IRA
-    /// Link the Roth withdrawal that funded the transfer and supply its complete opening Roth history. Taxable earnings are used first; any remaining transfer consumes regular and conversion basis in their normal order without early-distribution tax.
-    Roth {
-        /// Combined Roth IRA value for the applicable group immediately before the source distribution
-        /// For personal sources include all this owner's personal Roth IRAs. For inherited sources include only this beneficiary's Roth IRAs from the linked deceased owner. Use contemporaneous source statements; a second transfer uses its own value after the first transfer and intervening market changes.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        value: i64,
-        /// All qualified Roth funding preceded other current-year Roth basis activity
-        /// No regular contribution, conversion, rollover, ordinary withdrawal or other Roth basis adjustment before or between the funding transfers. Later contributions, conversions and withdrawals use their normal entries. Market changes alone are allowed. The transaction dates on the account statements show it. With No, dated nonqualified own-account ordinary withdrawals require confirmed opening history and no current-year incoming basis. Retained regular contributions also qualify when every transfer’s recorded Roth value covers its amount plus all opening basis and annual regular contributions. Current conversions, 529 transfers, corrections and other incoming basis need further support. A nonqualified inherited Roth can also coordinate ordinary withdrawals from the same deceased-owner group using its allocated opening regular and conversion basis. Ordinary inherited payments on the same date are allowed when no funding payment shares it. Personal contributions and other inherited groups stay separate. Enter each actual withdrawal separately. Same-day funding requires a unique actual sequence from1 through100 on every payment in that Roth pool that day, entered with the Form1099-R source. Qualified payments or a source combining ordinary and funding amounts need further support; other earlier-activity cases leave the exclusion out with a notice. A funding-first answer cannot override an entered earlier ordinary withdrawal date in that same Roth group.
-        before_other_activity: bool,
-    },
-    /// Traditional IRA basis at funding
-    /// For personal sources, use the owner-level IRA worksheet and prior filed basis in Adjustments. For inherited sources, use allocated basis in the linked annual income entry. Funding uses taxable money first; basis consumed by the transfer does not carry into the HSA.
-    PriorBasis {
-        /// Actual IRA distribution date in 2026
-        /// Use the funding IRA's transaction records, not the HSA receipt date or a contribution designation for another year.
-        #[libertas_date_only]
-        distributed: u32,
-        /// Combined traditional, SEP and SIMPLE IRA value immediately before the IRA source distribution
-        /// Use actual dated account statements for all this owner's accounts, not just the source account. Exclude Roth and spouse accounts; personal and each inherited deceased-owner group remain separate. For a second transfer use its own contemporaneous value after the first transfer and intervening market changes.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        value: i64,
-        /// All qualified funding preceded other current-year IRA basis activity
-        /// Confirm no regular IRA contribution, reservist repayment, other distribution, QCD, conversion, incoming after-tax rollover or other basis adjustment occurred before or between these funding transfers. Enter later activity normally; market value changes alone are allowed. With No, one separate personal traditional funding payment can still qualify when its actual source-event value covers the transfer plus all opening basis, with no current contributions, incoming basis, corrections, QCD or other basis changes. This proves no funding basis use independently of ordinary withdrawal order. Other earlier activity leaves the exclusion out with a notice; never infer an IRA source date from the HSA receipt date.
-        before_other_activity: bool,
-    },
-}
-impl HsaFundingBasis {
-    fn traditional_date(&self) -> Option<u32> {
-        match self {
-            Self::Pretax { distributed } | Self::PriorBasis { distributed, .. } => {
-                Some(*distributed)
-            }
-            Self::Roth { .. } => None,
         }
     }
 }
@@ -352,63 +219,6 @@ impl FundingResult {
     }
 }
 impl HsaFunding {
-    // Context-free support. The Roth owner also admits a bounded earlier
-    // ordinary-withdrawal path from the existing accepted source facts.
-    pub(crate) fn supported(&self) -> bool {
-        match self.basis {
-            HsaFundingBasis::Pretax { .. } => true,
-            // Notice 2008-51: a QHFD comes first from includible amounts; Form 8606
-            // line 7 excludes it, so other same-year activity cannot change it.
-            HsaFundingBasis::PriorBasis { .. } => true,
-            HsaFundingBasis::Roth { before_other_activity, .. } => before_other_activity,
-        }
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.income > 0
-            && !self.ongoing_sep_simple
-            && valid_date(self.funded)
-            && self.funded / 10000 == 2026
-            // Arithmetic exclusion: calculate still adds both transfers in native
-            // cumulative/excluded/basis pools before reporting its statutory limit.
-            && (1..=100000000000).contains(&self.amount)
-            && self.coverage != HsaCoverage::None
-            && match self.basis {
-                HsaFundingBasis::Pretax { distributed } => {
-                    valid_date(distributed)
-                        && distributed / 10000 == crate::year_constants::TAX_YEAR
-                        && distributed <= self.funded
-                }
-                HsaFundingBasis::PriorBasis { distributed, value, .. } => {
-                    valid_date(distributed)
-                        && distributed / 10000 == crate::year_constants::TAX_YEAR
-                        && distributed <= self.funded
-                        // Receiver exclusion: the retirement owner
-                        // independently admits this same bounded source value. Its owner
-                        // and native Roth/opening-basis consumers must migrate together.
-                        && (0..=100000000000).contains(&value)
-                }
-                // Same retirement-owner native value/opening-basis receiver as PriorBasis.
-                HsaFundingBasis::Roth { value, .. } => (0..=100000000000).contains(&value),
-            }
-            && self.loss.as_ref().is_none_or(|v| {
-                valid_date(v.date) && v.date >= self.funded && v.date / 10000 <= 2027
-            })
-    }
-    fn consistent_loss(
-        &self,
-        start: u32,
-        end_month: u32,
-        loss: Option<&HsaEligibilityLoss>,
-    ) -> bool {
-        let start = start.max(self.funded);
-        if self.loss.as_ref().is_some_and(|v| v.date < start)
-            || loss.is_some_and(|v| v.date < start)
-        {
-            return true;
-        }
-        let end = end_month.min(self.funded / 100 + 100);
-        self.loss.as_ref().filter(|v| v.date / 100 <= end) == loss.filter(|v| v.date / 100 <= end)
-    }
     pub(crate) fn recapture(&self) -> i64 {
         if self
             .loss
@@ -445,8 +255,8 @@ pub(crate) fn transfer_reference_issue(
     owner: Owner,
     transfer: &HsaFunding,
 ) -> Option<ValidationIssue> {
-    let Some(source) = crate::retirement::ira_funding_source(d, transfer.income)
-        .filter(|source| source.entry.owner == owner)
+    let Some(source) = crate::retirement_return::ira_funding_source(d, transfer.income)
+        .filter(|source| source.entry.owner == crate::DocumentOwner::from(owner))
     else {
         return Some(ValidationIssue::new("HSA_FUNDING_SOURCE_NOT_OFFERED").at_field("source"));
     };
@@ -592,7 +402,7 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
         crate::require_localized!(
             r,
             lifetime_rule(d, h).is_none(),
-            &crate::IssueContext::Review.manual(),
+            &crate::IssueContext::Section(crate::TaxSection::Hsa),
             "HSA funding",
             "ISSUE_QUALIFIED_FUNDING_IS_ONCE_PER_LIFETIME_WITH_ONLY_A_SECOND_TRANSFER_ACB9D00B",
             "Qualified funding is once per lifetime, with only a second transfer in a later month of the same year after self-only changes to family coverage.",
@@ -612,7 +422,7 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
             crate::require_localized!(
                 r,
                 consistent,
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "HSA funding",
                 "ISSUE_USE_CONSISTENT_FIRST_LOSS_FACTS_FOR_OVERLAPPING_CURRENT_FUNDING_PRI_3F5AFB4B",
                 "Use consistent first-loss facts for overlapping current funding, prior last-month and current last-month testing periods.",
@@ -627,7 +437,7 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
             .income
             .iter()
             .filter(|e| {
-                e.owner == h.owner
+                e.owner == crate::DocumentOwner::from(h.owner)
                     && matches!(&e.income, FederalIncome::InheritedIra { data } if data.roth())
             })
             .filter_map(|e| {
@@ -643,18 +453,25 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
             // Zero cannot be admitted below; it is not a deemed date for an
             // unresolved or mismatched source.
             let distributed = source_date.unwrap_or(0);
-            let resolved = crate::retirement::ira_funding_source(d, transfer.income)
-                .filter(|source| source.entry.owner == h.owner);
+            let resolved = crate::retirement_return::ira_funding_source(d, transfer.income)
+                .filter(|source| source.entry.owner == crate::DocumentOwner::from(h.owner));
             let source = resolved.as_ref().map(|source| source.entry);
             let inherited = resolved.as_ref().and_then(|source| source.inherited);
             let valid_source = if let Some((group, data)) = inherited {
                 data.died <= distributed
                     && source.is_some_and(|e| match &e.income {
-                        FederalIncome::Retirement { data } => matches!(
-                            data.ordinary_distribution,
-                            RetirementTreatment::Ordinary | RetirementTreatment::Early
-                        ),
-                        FederalIncome::Roth { data } => data.distributed <= transfer.funded,
+                        FederalIncome::Retirement { data: source } => {
+                            let data = &crate::FederalRetirement::from(source);
+                            matches!(
+                                data.ordinary_distribution,
+                                Some(RetirementTreatment::Ordinary)
+                                    | Some(RetirementTreatment::Early)
+                            )
+                        }
+                        FederalIncome::Roth { data: source } => {
+                            let data = &crate::RothWithdrawal::from(source);
+                            data.distributed <= transfer.funded
+                        }
                         _ => false,
                     })
                     && if data.roth() {
@@ -677,14 +494,15 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
                     }
             } else {
                 source.is_some_and(|e| match &e.income {
-                    FederalIncome::Retirement { data: v } => {
+                    FederalIncome::Retirement { data: source } => {
+                        let v = &crate::FederalRetirement::from(source);
                         v.kind == RetirementKind::Ira
                             && match transfer.basis {
                                 HsaFundingBasis::Roth { .. } => false,
                                 HsaFundingBasis::Pretax { .. } => {
                                     basis.is_none()
-                                        && v.taxable
-                                            == (RetirementTaxable::Payer { amount: v.gross })
+                                        && (v.taxable == Some(crate::RetirementTaxable::Payer)
+                                            && v.box_2a == v.gross)
                                 }
                                 HsaFundingBasis::PriorBasis { value, .. } => {
                                     basis.is_some_and(|b| {
@@ -697,28 +515,35 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
                                             .iter()
                                             .flat_map(|p| &p.payments)
                                             .all(|p| p.date >= distributed)
-                                    }) && v.taxable == RetirementTaxable::IraBasis
+                                    }) && v.taxable == Some(RetirementTaxable::IraBasis)
                                         && transfer.amount <= value
                                 }
                             }
                             && matches!(
                                 v.ordinary_distribution,
-                                RetirementTreatment::Ordinary | RetirementTreatment::Early
+                                Some(RetirementTreatment::Ordinary)
+                                    | Some(RetirementTreatment::Early)
                             )
                     }
-                    FederalIncome::Roth { data } => match transfer.basis {
-                        HsaFundingBasis::Roth { value, before_other_activity } => {
-                            data.distributed <= transfer.funded
-                                && transfer.amount <= value
-                                && ((before_other_activity
-                                    && crate::roth::funding_first_consistent(d, transfer.income))
-                                    || ordered_roth
-                                        .as_ref()
-                                        .is_some_and(|ordered| ordered.basis.contains_key(&e.id)))
-                                && roth.is_some_and(|v| v.ordering.is_some())
+                    FederalIncome::Roth { data: source } => {
+                        let data = &crate::RothWithdrawal::from(source);
+                        match transfer.basis {
+                            HsaFundingBasis::Roth { value, before_other_activity } => {
+                                data.distributed <= transfer.funded
+                                    && transfer.amount <= value
+                                    && ((before_other_activity
+                                        && crate::roth::funding_first_consistent(
+                                            d,
+                                            transfer.income,
+                                        ))
+                                        || ordered_roth.as_ref().is_some_and(|ordered| {
+                                            ordered.basis.contains_key(&e.id)
+                                        }))
+                                    && roth.is_some_and(|v| v.ordering.is_some())
+                            }
+                            _ => false,
                         }
-                        _ => false,
-                    },
+                    }
                     _ => false,
                 })
             };
@@ -753,7 +578,7 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
             crate::require_localized!(
                 r,
                 valid,
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "HSA funding",
                 "ISSUE_LINK_A_SAME_OWNER_IRA_DISTRIBUTION_AND_MATCHING_TRADITIONAL_OR_ROTH_2FFBD8E7",
                 "Link a same-owner IRA distribution and matching traditional or Roth basis method. Roth source distributions cannot follow HSA receipt and need complete opening history. Basis funding needs dated aggregate balances. Earlier own nonqualified Roth withdrawals require confirmed opening history and distinct actual payment dates. Current regular contributions are supported only when each recorded Roth value covers its transfer plus all opening basis and retained annual regular contributions; other incoming basis or earlier activity needs further support. Inherited sources need the linked beneficiary/deceased-owner history and must follow the original owner's death. Nonqualified inherited Roth funding also supports dated ordinary withdrawals in that group; its opening regular and conversion basis remains separate from personal accounts and other deceased owners. A funding-first answer cannot override an entered earlier ordinary withdrawal date in that same Roth group.",
@@ -772,7 +597,7 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
             crate::require_localized!(
                 r,
                 cumulative <= maximum,
-                &crate::IssueContext::Review.manual(),
+                &crate::IssueContext::Section(crate::TaxSection::Hsa),
                 "HSA funding",
                 "ISSUE_FUNDING_EXCEEDS_THE_ANNUAL_AMOUNT_FOR_THE_COVERAGE_AT_TRANSFER_AND_C6E212C2",
                 "Funding exceeds the annual amount for the coverage at transfer and the owner's age-55 catch-up; both permitted transfers share the family maximum.",
@@ -837,12 +662,15 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
                             } else {
                                 let exempt = person.is_some_and(|p| {
                                     source.is_some_and(|e| {
-                                        matches!(&e.income, FederalIncome::Roth { data }
-                                if data.distributed >= crate::roth::age_half(p.birth_date))
+                                        e.income.roth().is_some_and(|data| {
+                                            data.distributed
+                                                >= crate::roth_source::age_half(p.birth_date)
+                                        })
                                     })
                                 }) || source.is_some_and(|e| {
-                                    matches!(&e.income,
-                                FederalIncome::Roth { data } if data.disabled_since().is_some())
+                                    e.income
+                                        .roth()
+                                        .is_some_and(|data| data.disabled_since().is_some())
                                 });
                                 let qualified =
                                     exempt && roth.is_some_and(|v| v.first_year <= 2021);
@@ -896,16 +724,18 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
         if let Some(ordered) = ordered_roth
             && ordered.basis.keys().all(|id| {
                 d.income.iter().find(|e| e.id == *id).is_some_and(|e| {
-                    matches!(&e.income, FederalIncome::Roth { data } if result.for_entry(*id) == data.gross)
+                    e.income.roth().is_some_and(|data| result.for_entry(*id) == data.gross)
                 })
             })
         {
             result.roth_ordered_basis[owner] = Some(ordered.consumed);
         }
         for (group, ordered) in ordered_inherited_roth {
-            if ordered.basis.keys().all(|id| d.income.iter().find(|e| e.id == *id).is_some_and(|e| {
-                matches!(&e.income, FederalIncome::Roth { data } if result.for_entry(*id) == data.gross)
-            })) {
+            if ordered.basis.keys().all(|id| {
+                d.income.iter().find(|e| e.id == *id).is_some_and(|e| {
+                    e.income.roth().is_some_and(|data| result.for_entry(*id) == data.gross)
+                })
+            }) {
                 result.inherited_roth_ordered_basis.insert(group, ordered.consumed);
             }
         }
@@ -916,15 +746,21 @@ pub(crate) fn calculate(d: &FederalDraft, r: &mut FederalResult) -> FundingResul
             .iter()
             .find(|v| v.id == *id)
             .and_then(|e| match &e.income {
-                FederalIncome::Retirement { data } => Some(data.gross),
-                FederalIncome::Roth { data } => Some(data.gross),
+                FederalIncome::Retirement { data: source } => {
+                    let data = &crate::FederalRetirement::from(source);
+                    Some(data.gross)
+                }
+                FederalIncome::Roth { data: source } => {
+                    let data = &crate::RothWithdrawal::from(source);
+                    Some(data.gross)
+                }
                 _ => None,
             })
             .unwrap_or(0);
         crate::require_localized!(
             r,
             *amount <= gross,
-            &crate::IssueContext::Review.manual(),
+            &crate::IssueContext::Section(crate::TaxSection::Hsa),
             "HSA funding",
             "ISSUE_QUALIFIED_FUNDING_CANNOT_EXCEED_THE_LINKED_SOURCE_IRA_DISTRIBUTION_FDB93B9C",
             "Qualified funding cannot exceed the linked source IRA distribution. QCDs use only the remaining source dollars.",

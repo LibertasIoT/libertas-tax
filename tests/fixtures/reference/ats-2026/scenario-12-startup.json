@@ -1,0 +1,86 @@
+{
+ "source": {
+  "title": "IRS MeF ATS Test Scenario 12, TY2026 Form 1040 (Sam Gardenia: 1040, Sch. 1, 2, 3, C, SE, Form 3800 + Sch. A, 4562-B, 7205, 7207, 7220, W-2)",
+  "edition": "TREASURY/IRS DRAFT Version A (forms created 2026-03 to 2026-06)",
+  "scenario": 12,
+  "url": "https://www.irs.gov/pub/irs-efile/ty26-1040-ats-scenario-12.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "6d44ae53fe842b804258ca1a49400f0cc5d15a17b6fdb0cc74c016927b54c9bf"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "W-2 box 6 entered as 1,535.23",
+   "reason": "the ATS prints whole dollars (1,535); the exact 1.45% of box 5 (105,878) is 1,535.23 and the App refuses Medicare withholding below it (triage F-1)"
+  },
+  {
+   "fact": "taxpayer birth date 1990-06-15",
+   "reason": "the scenario gives no birth date; any age 19-64 changes nothing here"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19900615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 100836,
+     "withholding": 14444,
+     "social_wages": 105878,
+     "social_tax": 6564,
+     "medicare_wages": 105878,
+     "medicare_tax": 1535.23
+    }
+   ]
+  },
+  {
+   "page": "business",
+   "receipts": 25235,
+   "expenses": {
+    "insurance": 550,
+    "legal_and_professional": 125,
+    "office": 1000,
+    "other_rent": 2500,
+    "supplies": 6532,
+    "taxes_and_licenses": 200
+   },
+   "startup": [
+    10000,
+    20260101
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "4562-B",
+   "line": "1(c)",
+   "amount": 10000,
+   "provenance": "printed"
+  },
+  {
+   "form": "4562-B",
+   "line": "3",
+   "amount": 667,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope",
+ "known_gaps": [],
+ "expect_mismatch": [
+  {
+   "form": "4562-B",
+   "line": "1(c)",
+   "class": "C",
+   "triage": "C-6"
+  },
+  {
+   "form": "4562-B",
+   "line": "3",
+   "class": "C",
+   "triage": "C-6"
+  }
+ ],
+ "expected_note": "Form 4562-B as filed in the source: 10,000 of start-up costs amortized over 15 years from 2026-01-01 with no initial deduction. Section 195(b)(1)(A) deducts the first 5,000 at once and amortizes the rest, so the App prints 5,000 and 333 (C-6)."
+}

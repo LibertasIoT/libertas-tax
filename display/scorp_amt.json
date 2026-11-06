@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 358000, "rule": {"select": "^<ScorpAmt>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["adjustment", "stock", "prior_loss", "prior_nondeductible", "loans", "complete"]}, {"ratio": 1, "min_width": "medium", "fields": ["capital", "section1231", "risk", "passive", "rentals", "carried"]}]}},
+    {"order": 948000, "rule": {"select": "^<ScorpAmt>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SAMT_ADJUSTMENTS", "fields": ["adjustment", "capital", "section1231", "stock"]}, {"title": "DISPLAY_SAMT_LOSSES", "fields": ["prior_loss", "prior_nondeductible", "loans", "risk"]}, {"title": "DISPLAY_SAMT_PASSIVE", "fields": ["passive", "rentals", "carried", "complete"]}]}},
+    {"order": 949000, "rule": {"select": "^<ScorpAmt>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SAMT_ADJUSTMENTS", "fields": ["adjustment", "capital", "section1231", "stock"]}, {"title": "DISPLAY_SAMT_LOSSES", "fields": ["prior_loss", "prior_nondeductible", "loans", "risk"]}, {"title": "DISPLAY_SAMT_PASSIVE", "fields": ["passive", "rentals", "carried", "complete"]}]}}
+  ]
+}

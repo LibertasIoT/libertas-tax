@@ -1,21 +1,23 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::support::assert::{accepted, rejected_with};
 use super::*;
 use crate::interview::estimate_text;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::builders::native_income::document;
 use super::support::client::income_pages::{
-    catalog_preview_document, open_topic, page_documents, save_documents, save_topic,
+    catalog_preview_document, open_document_center, open_topic, page_documents, save_documents,
+    save_each_topic, save_topic,
 };
 use crate::tests::cross::interview::{
-    PAGE_ADJUSTMENTS, PAGE_CHILDREN, PAGE_CREDITS, PAGE_PEOPLE, PAGE_REVIEW, PAGE_SETUP,
-    accept_care_provider, adult, answer, assert_available_sections, at_the_credits_hub, back,
-    continued, credits_hub, dependent_record, education_session, education_value,
-    election_interest, election_page, fill_care_provider, go_on, go_to, household_return, hub_rows,
-    hub_tail, import_unselected, m2_children, more_credits_value, navigate, open_credits_topic,
-    past_payments, plain_withdrawal, q1099_page, reopened_people, row, row_of, save_children,
-    save_education, save_more_credits, save_setup, save_you, saved_setup, send_past_less_common,
-    shown, student, supporting, value_of, with_tail,
+    PAGE_ADJUSTMENTS, PAGE_CHILDREN, PAGE_CREDITS, PAGE_PEOPLE, PAGE_REVIEW, PAGE_SETUP, adult,
+    answer, assert_available_sections, at_the_credits_hub, back, checklist_of, continued,
+    credits_hub, dependent_record, education_session, education_value, election_interest,
+    election_page, fill_care_provider, from_review, go_on, go_to, household_return, hub_rows,
+    hub_tail, import_unselected, m2_children, m2_household, more_credits_value, navigate,
+    open_credits_topic, past_payments, plain_withdrawal, put_care_costs, q1099_page,
+    reopened_people, row, row_of, save_care_costs, save_children, save_education,
+    save_education_answers, save_more_credits, save_setup, save_you, saved_setup,
+    send_past_less_common, shown, student, supporting, tick, value_of, with_tail,
 };
 
 // A household status saved from page 1 with the dependents answer Yes. The
@@ -87,7 +89,7 @@ fn head_of_household_page_reaches_the_draft() {
         assert_eq!(
             s.draft.setup,
             Some(FederalSetup {
-                separate_spouse: SeparateSpouseBoxes::NoneOfThese,
+                separate_spouse: SeparateSpouseBoxes::NotAnswered,
                 label: crate::Message::new(
                     "LABEL_RETURN",
                     alloc::vec![crate::MessageArg::Number(2026)]
@@ -97,7 +99,7 @@ fn head_of_household_page_reaches_the_draft() {
                 status,
                 marital_state,
                 paid_over_half_home: true,
-                community_property: CommunityProperty::No,
+                community_property: CommunityProperty::NotAnswered,
             })
         );
         if head {
@@ -232,7 +234,7 @@ fn empty_children_workflow_supplies_calculation_and_save_inputs() {
         }
         assert!(matches!(
             send(&mut session, calculation),
-            Reply::Response(P::RunningEstimate { .. })
+            Reply::Response(P::DependentsRunningEstimate { .. })
         ));
         assert_eq!(session.draft, draft);
         accepted(&send(&mut session, request));
@@ -317,6 +319,9 @@ fn dependents_page_maps_onto_dependent_records() {
             ..dependent_record(first + 5, "Finn", "Sample", 20260301)
         },
     ];
+    // A new person's care is not asked yet.
+    let expected: Vec<_> =
+        expected.into_iter().map(|record| FederalDependent { care: None, ..record }).collect();
     assert_eq!(s.draft.dependents, expected);
     assert_eq!(s.draft.next_id, first + 6);
     assert_eq!(s.draft.revision, original.revision + 1);
@@ -346,56 +351,128 @@ fn dependents_page_maps_onto_dependent_records() {
             days_alive: 365,
         },
     );
-    assert!(matches!(reply, Reply::Response(P::RunningEstimate { .. })), "{reply:?}");
+    assert!(matches!(reply, Reply::Response(P::DependentsRunningEstimate { .. })), "{reply:?}");
     assert_eq!(s.draft, accepted);
     assert!(!s.dirty);
+}
+
+// The people page shows each person's child tax credit, credit for other
+// dependents and earned income credit, worked out from its answers (IRC
+// sections 24(c), 24(h)(4) and 32(c)(3); 2026 Schedule 8812 lines 5 and 7),
+// while editing and when it reopens; nothing about them is asked or stored.
+#[test]
+fn people_page_shows_each_persons_credits() {
+    use libertas::AvroDecode;
+    let mut s = supporting(FederalStatus::Single);
+    let original = s.draft.clone();
+    let people = vec![
+        row("Ava", "Sample", 20180615),
+        // 17 at the end of 2026: no child tax credit, still an EIC child.
+        row("Ben", "Sample", 20090101),
+        Dependent {
+            relationship: Relationship::Parent,
+            situation: DependentSituation::Supported {
+                your_support_over_half: true,
+                gross_income: 0,
+            },
+            ..row("Pat", "Sample", 19550101)
+        },
+        // An ITIN: the credit for other dependents, no EIC child (Pub. 596 Rule 2).
+        Dependent { identification: Identification::Itin, ..row("Dee", "Sample", 20180615) },
+        Dependent { competing: CompetingClaim::Other, ..row("Cai", "Sample", 20180615) },
+    ];
+    let expected = [
+        ("PERSON_CREDITS_CHILD_EIC", 2),
+        ("PERSON_CREDITS_OTHER_EIC", 2),
+        ("PERSON_CREDITS_OTHER", 2),
+        ("PERSON_CREDITS_OTHER", 2),
+        ("PERSON_CREDITS_NONE", 1),
+    ];
+    let keys = |credits: &[PersonCredits]| {
+        credits
+            .iter()
+            .map(|row| {
+                let (key, args) =
+                    crate::common::FormattedMessage::avro_decode(&row.credits, &mut 0).unwrap();
+                (key, args.len())
+            })
+            .collect::<Vec<_>>()
+    };
+    let shown = |credits: &[PersonCredits]| {
+        keys(credits)
+            .into_iter()
+            .zip(expected)
+            .all(|((key, args), (want, count))| key == want && args == count)
+            && credits.len() == expected.len()
+    };
+    let reply = send(
+        &mut s,
+        P::EstimateDependents {
+            user: TEST_USER,
+            dependents: Dependents { people: people.clone() },
+            allowed_lived: Vec::new(),
+            days_alive: 365,
+        },
+    );
+    let Reply::Response(P::DependentsRunningEstimate { credits, .. }) = reply else {
+        panic!("expected the people page's running estimate, got {reply:?}")
+    };
+    assert!(shown(&credits), "{:?}", keys(&credits));
+    assert_eq!(s.draft, original);
+    accepted(&send(&mut s, save_children(&original, people)));
+    let request = navigate(&s.draft, TaxSection::Children);
+    let reply = send(&mut s, request);
+    let Reply::Edit(P::SaveChildren { credits, .. }) = reply else {
+        panic!("expected the people page, got {reply:?}")
+    };
+    assert!(shown(&credits), "{:?}", keys(&credits));
+    // The estimate counts the same people: Ava at $2,200, and Ben, Pat and
+    // Dee at $500 each, before the income limit.
+    let r = crate::federal_rules::estimate(&s.draft);
+    assert_eq!(super::support::assert::value(&r, "child_credit_children_amount"), 2_200);
+    assert_eq!(super::support::assert::value(&r, "child_credit_other_dependents_amount"), 1_500);
 }
 
 #[test]
 fn care_costs_open_the_household_care_claim() {
     let mut s = supporting(FederalStatus::Single);
     let original = s.draft.clone();
-    let cared = Dependent {
-        care: CareCosts::Yes { expenses: 300_000, incapable_self_care: false },
-        ..row("Ava", "Sample", 20180615)
-    };
-    let other = row("Ben", "Sample", 20200101);
-    let request = P::EstimateDependents {
-        user: TEST_USER,
-        dependents: Dependents { people: vec![cared.clone(), other.clone()] },
-        allowed_lived: Vec::new(),
-        days_alive: 365,
-    };
-    assert!(matches!(send(&mut s, request), Reply::Response(P::RunningEstimate { .. })));
-    send(&mut s, save_children(&original, vec![cared, other]));
+    let people = vec![row("Ava", "Sample", 20180615), row("Ben", "Sample", 20200101)];
+    send(&mut s, save_children(&original, people));
+    // The care page takes each person's costs.
+    let ava = CareCosts::Yes { expenses: 300_000, incapable_self_care: false };
+    save_care_costs(&mut s, &[ava, CareCosts::No]);
     let d = &s.draft;
-    assert_eq!(d.credits.as_ref().unwrap().care, FederalCare::default());
-    assert_eq!(d.dependents()[0].care, DependentCare::Yes { care_expenses: 300_000 });
+    assert_eq!(d.dependents()[0].care, Some(DependentCare::Yes { care_expenses: 300_000 }));
     assert!(!d.dependents()[0].incapable_self_care);
-    assert_eq!(d.dependents()[1].care, DependentCare::No);
+    assert_eq!(d.dependents()[1].care, Some(DependentCare::No));
+    assert_eq!(d.checklist.paid & PaidTopics::CARE.0, PaidTopics::CARE.0);
 
-    // Care for a person 13 or older who cannot care for themselves.
+    // Care for a person 13 or older who cannot care for themselves; the
+    // people page keeps the care answers.
     let accepted = s.draft.clone();
     let mut people = reopened_people(&mut s);
-    assert!(matches!(people[0].care, CareCosts::Yes { expenses: 300_000, .. }));
-    people[1] = Dependent {
-        situation: DependentSituation::Disabled,
-        care: CareCosts::Yes { expenses: 100_000, incapable_self_care: true },
-        ..row("Ben", "Sample", 20050101)
-    };
+    people[1] =
+        Dependent { situation: DependentSituation::Disabled, ..row("Ben", "Sample", 20050101) };
     people[1].id = accepted.dependents()[1].id;
     send(&mut s, save_children(&accepted, people.clone()));
+    assert_eq!(s.draft.dependents[0].care, Some(DependentCare::Yes { care_expenses: 300_000 }));
+    save_care_costs(
+        &mut s,
+        &[ava, CareCosts::Yes { expenses: 100_000, incapable_self_care: true }],
+    );
     assert!(s.draft.dependents[1].incapable_self_care && s.draft.dependents[1].disabled());
     assert_eq!(reopened_people(&mut s)[1], people[1]);
 
-    // No person with care costs closes the claim.
-    let accepted = s.draft.clone();
-    for person in &mut people {
-        person.care = CareCosts::No;
-    }
-    send(&mut s, save_children(&accepted, people));
+    // Unchecking the care box removes the claim.
+    let reply = from_review(&mut s, TaxSection::Checklist);
+    let mut ticks = checklist_of(&reply);
+    ticks.paid &= !PaidTopics::CARE.0;
+    let reply = send(&mut s, tick(reply, ticks));
+    assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     assert_eq!(s.draft.credits.as_ref().unwrap().care, FederalCare::default());
-    assert!(s.draft.dependents().iter().all(|d| d.care == DependentCare::No));
+    // Each person's care is then unasked again.
+    assert!(s.draft.dependents().iter().all(|d| d.care.is_none()));
 }
 
 #[test]
@@ -409,8 +486,6 @@ fn dependent_rules_reject_on_save() {
         "MULTIPLE_SUPPORT_NOT_WITH_CUSTODY_RELEASE",
         "DEPENDENT_AGE_SITUATION",
         "DEPENDENT_OLDER_THAN_YOU",
-        "CARE_NEEDS_UNDER_13_OR_SELF_CARE",
-        "BORN_AND_DIED_NEEDS_2026_BIRTH",
         "ADOPTED_NEEDS_CHILD_ALL_YEAR",
     ] {
         assert!(APP_STRINGS.iter().any(|(k, _)| *k == key), "{key}");
@@ -419,7 +494,6 @@ fn dependent_rules_reject_on_save() {
         your_support_over_half,
         gross_income: 0,
     };
-    let care = CareCosts::Yes { expenses: 100_000, incapable_self_care: false };
     // The filer of `supporting` was born June 15, 1980.
     let cases = [
         (
@@ -436,15 +510,6 @@ fn dependent_rules_reject_on_save() {
         (
             Dependent { situation: DependentSituation::Student, ..row("Ben", "Sample", 20021231) },
             "DEPENDENT_AGE_SITUATION",
-        ),
-        // IRC 21(b)(1)(A): born January 1, 2013 attained 13 on January 1, 2026
-        // (the birthday), so the person was never under 13 in 2026
-        // (federal_rules.rs family(), tested on January 1).
-        (Dependent { care, ..row("Cai", "Sample", 20130101) }, "CARE_NEEDS_UNDER_13_OR_SELF_CARE"),
-        // The born-and-died fact belongs to a child born in 2026.
-        (
-            Dependent { facts: PersonFacts::BORN_AND_DIED.0, ..row("Dov", "Sample", 20250301) },
-            "BORN_AND_DIED_NEEDS_2026_BIRTH",
         ),
         // The adopted-child exception is your own child living with you all year.
         (
@@ -493,9 +558,8 @@ fn dependent_rules_reject_on_save() {
     let accepted = vec![
         row("Ava", "Sample", 20080101),
         Dependent { situation: DependentSituation::Student, ..row("Ben", "Sample", 20030101) },
-        Dependent { care, ..row("Cai", "Sample", 20130102) },
         Dependent {
-            facts: PersonFacts::BORN_AND_DIED.0,
+            identification: Identification::NoneByDueDate,
             death_date: Some(20260401),
             ..row("Dov", "Sample", 20260301)
         },
@@ -506,7 +570,7 @@ fn dependent_rules_reject_on_save() {
         },
     ];
     send(&mut s, save_children(&loaded, accepted));
-    assert_eq!(s.draft.dependents().len(), 6);
+    assert_eq!(s.draft.dependents().len(), 5);
 
     // A child under 19 or a student must be younger than you, or than either
     // spouse on a joint return.
@@ -772,25 +836,15 @@ fn care_costs_are_accepted_for_a_child_turning_13_in_2026() {
     // child who turns 13 during 2026 (born after January 2, 2013: the age is
     // attained the day before the birthday, Pub. 501) still qualifies for
     // the part of the year before that birthday (federal_rules.rs family(),
-    // under_13_in_year). The people page must accept the same child
-    // dependent_rule refuses one day earlier.
+    // under_13_in_year). The care page must accept the same child it
+    // refuses one day earlier.
     let mut s = supporting(FederalStatus::Single);
     let original = s.draft.clone();
-    let cared = Dependent {
-        care: CareCosts::Yes { expenses: 300_000, incapable_self_care: false },
-        ..row("Cai", "Sample", 20130615) // turns 13 on 2026-06-15
-    };
-    let request = P::EstimateDependents {
-        user: TEST_USER,
-        dependents: Dependents { people: vec![cared.clone()] },
-        allowed_lived: Vec::new(),
-        days_alive: 365,
-    };
-    assert!(matches!(send(&mut s, request), Reply::Response(P::RunningEstimate { .. })));
-    send(&mut s, save_children(&original, vec![cared]));
-    let d = &s.draft;
-    assert_eq!(d.dependents()[0].care, DependentCare::Yes { care_expenses: 300_000 });
-    assert_eq!(d.credits.as_ref().unwrap().care, FederalCare::default());
+    // Turns 13 on 2026-06-15.
+    send(&mut s, save_children(&original, vec![row("Cai", "Sample", 20130615)]));
+    let care = CareCosts::Yes { expenses: 300_000, incapable_self_care: false };
+    save_care_costs(&mut s, &[care]);
+    assert_eq!(s.draft.dependents()[0].care, Some(DependentCare::Yes { care_expenses: 300_000 }));
     // The return credits the care: `supporting` (complete()) gives a single
     // filer $60,000 in wages and no other income or adjustments, so AGI =
     // $60,000. Form 2441 line 8 rate (forms/form_2441.rs care_rate): first
@@ -800,45 +854,25 @@ fn care_costs_are_accepted_for_a_child_turning_13_in_2026() {
     // qualifying person (Cai) caps expenses at $3,000, all of which is under
     // the $60,000 earned-income limit, so care_cost = $3,000. Credit (line
     // 11, "care_credit") = $3,000 x 35% = $1,050.
-    accept_care_provider(&mut s);
     let r = supported(&s.draft);
     assert_eq!(value(&r, "care_credit"), 1050);
 }
 
 #[test]
 fn care_costs_are_refused_for_a_child_already_13_on_january_1() {
-    // A child born on or before January 2, 2013 had attained 13 by January 1,
-    // 2026 (the age is attained the day before the birthday), so no part of
-    // the year falls before the 13th birthday (federal_rules.rs family(),
-    // under_13_in_year; January 2 itself is covered in
-    // dependent_rules_reject_on_save). Refused identically on save and in the
-    // running estimate (dependent_rule, interview.rs), one day before the
-    // child in care_costs_are_accepted_for_a_child_turning_13_in_2026 who
-    // qualifies.
+    // IRC 21(b)(1)(A): a child born on or before January 1, 2013 had attained
+    // 13 by January 1, 2026 (on the birthday), so no part of the year falls
+    // before the 13th birthday (federal_rules.rs family(), under_13_in_year);
+    // the care page refuses the costs one day before the child in
+    // care_costs_are_accepted_for_a_child_turning_13_in_2026 who qualifies.
     let mut s = supporting(FederalStatus::Single);
+    let original = s.draft.clone();
+    send(&mut s, save_children(&original, vec![row("Cai", "Sample", 20130101)]));
     let loaded = s.draft.clone();
-    let person = Dependent {
-        care: CareCosts::Yes { expenses: 300_000, incapable_self_care: false },
-        ..row("Cai", "Sample", 20130101) // already 13 on 2026-01-01
-    };
-    let expected = libertas::libertas_formatted_text("CARE_NEEDS_UNDER_13_OR_SELF_CARE", &[]);
-    for request in [
-        save_children(&loaded, vec![person.clone()]),
-        P::EstimateDependents {
-            user: TEST_USER,
-            dependents: Dependents { people: vec![person.clone()] },
-            allowed_lived: Vec::new(),
-            days_alive: 365,
-        },
-    ] {
-        let reply = send(&mut s, request);
-        let Reply::Response(P::Problem { message, .. }) = reply else {
-            panic!("expected a problem, got {reply:?}")
-        };
-        assert_eq!(message, expected);
-    }
+    let mut page = open_credits_topic(&mut s, TaxSection::Care);
+    put_care_costs(&mut page, &[CareCosts::Yes { expenses: 300_000, incapable_self_care: false }]);
+    rejected_with(send(&mut s, page), "CARE_NEEDS_UNDER_13_OR_SELF_CARE");
     assert_eq!(s.draft, loaded);
-    assert!(!s.dirty);
 }
 
 #[test]
@@ -854,7 +888,7 @@ fn dependents_page_calculates_the_running_estimate() {
             days_alive: 365,
         },
     ) {
-        Reply::Response(P::RunningEstimate { estimate, progress, .. }) => {
+        Reply::Response(P::DependentsRunningEstimate { estimate, progress, .. }) => {
             (shown(&estimate), shown(&progress))
         }
         other => panic!("expected the running estimate, got {other:?}"),
@@ -863,15 +897,13 @@ fn dependents_page_calculates_the_running_estimate() {
     let one = reopened_people(&mut s);
     let (text, progress) = running(&mut s, one.clone());
     assert_eq!(text, shown(&estimate_text(&estimate(&accepted))));
-    // M3-P19: setup, you, people, the checklist, income, adjustments,
-    // credits, other taxes (gate fixes batch A), federal payments and the review.
-    assert!(progress.contains("section 3 of 10"), "{progress}");
+    // Documents and income without a form follow the household pages.
+    assert!(progress.contains("section 3 of 11"), "{progress}");
     // The edited list is estimated merged into the accepted return, exactly
     // as its save stores it, and nothing is stored.
     let mut two = one;
     two.extend(m2_children().into_iter().skip(1));
     let (text, _) = running(&mut s, two.clone());
-    assert!(text.contains("Estimate not available"), "{text}");
     assert_ne!(text, shown(&estimate_text(&estimate(&accepted))));
     assert_eq!(s.draft, accepted);
     assert!(!s.dirty);
@@ -940,35 +972,59 @@ fn employer_paid_student_loan_interest_round_trips_and_is_checked() {
     let mut s = Interview::new(TEST_USER, d);
     let request = go_to(&s.draft, PAGE_REVIEW, TaxSection::StudentLoan);
     assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveStudentLoan { .. })));
-    let forms = vec![Form1098E {
-        interest: 180_000,
-        box_2: Form1098EBox2::Checked { additional_interest: 20_000 },
-    }];
-    let save = |s: &Interview, forms: Vec<Form1098E>, other: i64, employer: i64| {
-        save_student_loan(
-            &s.draft,
-            StudentLoanInterest { forms, other_interest: other, employer_paid_interest: employer },
-        )
-    };
+    let mut forms = vec![box_2(180_000, 20_000)];
+    forms[0].document.borrower = fixture_document_names(&s.draft, -1).unwrap().recipient;
+    let save =
+        |s: &mut Interview, forms: Vec<crate::StudentLoanSource>, other: i64, employer: i64| {
+            let mut sources = crate::tests::support::client::income_pages::open_document_center(s);
+            let P::SaveDocuments { documents, .. } = &mut sources else { unreachable!() };
+            documents.common.student_loans.documents = student_documents(&forms);
+            accepted(&send(s, sources));
+            let navigation = go_to(&s.draft, PAGE_REVIEW, TaxSection::StudentLoan);
+            let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) = send(s, navigation) else {
+                panic!("expected student loan topic")
+            };
+            let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
+            value.other_interest = other;
+            value.employer_paid_interest = employer;
+            for (row, form) in value.forms.iter_mut().zip(forms) {
+                if form.document.box_2 {
+                    row.additional_interest = crate::StudentLoanAdditionalInterest::Checked {
+                        additional_interest: form.additional_interest,
+                    };
+                }
+            }
+            send(s, request)
+        };
     // $1,800.00 box 1 + $200.00 box 2 + $100.00 with no form = $2,100.00;
     // an employer payment of $2,100.01 is one cent too many (server only:
     // the client rule cannot sum the forms).
-    let request = save(&s, forms.clone(), 10_000, 210_001);
-    rejected_with(send(&mut s, request), "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
+    let reply = save(&mut s, forms.clone(), 10_000, 210_001);
+    rejected_with(reply, "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
     // With no form the client rule's case: more than the no-form interest.
-    let request = save(&s, vec![], 10_000, 10_001);
-    rejected_with(send(&mut s, request), "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
+    let reply = save(&mut s, vec![], 10_000, 10_001);
+    rejected_with(reply, "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
     // Employer payment alone is not a claim of interest.
-    let request = save(&s, vec![], 0, 1);
-    rejected_with(send(&mut s, request), "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
+    let reply = save(&mut s, vec![], 0, 1);
+    rejected_with(reply, "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
     // Exactly the whole $2,100.00 is accepted and stored.
-    let request = save(&s, forms.clone(), 10_000, 210_000);
-    assert!(matches!(send(&mut s, request), Reply::Response(P::Review { .. })));
+    let accepted_form_id = s.draft.next_id;
+    let reply = save(&mut s, forms.clone(), 10_000, 210_000);
+    forms[0].id = accepted_form_id;
+    assert!(matches!(reply, Reply::Response(P::Review { .. })));
     assert_eq!(
         s.draft.adjustments.as_ref().unwrap().student_loan,
         StudentLoanClaim {
             student_loan_interest: 10_000,
-            forms: forms.clone(),
+            forms: forms
+                .iter()
+                .cloned()
+                .map(|source| crate::StudentLoanSource {
+                    assigned: crate::DocumentRecipient::Taxpayer,
+                    owner_source: Some(crate::OwnerSource::Matched),
+                    ..source
+                })
+                .collect(),
             employer_paid_interest: 210_000,
         }
     );
@@ -976,7 +1032,10 @@ fn employer_paid_student_loan_interest_round_trips_and_is_checked() {
     let Reply::Edit(P::SaveStudentLoan { value, .. }) = send(&mut s, request) else {
         panic!("expected the student loan page")
     };
-    assert_eq!(value.forms, forms);
+    assert_eq!(
+        value.forms.into_iter().map(|row| row.value).collect::<Vec<_>>(),
+        forms.iter().map(|source| source.document.clone()).collect::<Vec<_>>()
+    );
     assert_eq!(value.other_interest, 10_000);
     assert_eq!(value.employer_paid_interest, 210_000);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
@@ -1000,9 +1059,9 @@ fn aotc_is_derived_for_an_undergraduate() {
     };
     // M3-P19: Continue and Back go to the shown sections around it: other
     // taxes and adjustments, which every return walks for their less-common
-    // pages (gate fixes batch A); deductions have nothing and the final
-    // payments page asks the refund election.
-    assert_eq!(*suggested, TaxSection::OtherTaxes);
+    // pages (gate fixes batch A); deductions have nothing, and federal
+    // payments is walked only with its box, so the last page follows.
+    assert_eq!(*suggested, TaxSection::OftenMissed);
     assert_eq!(*previous, PAGE_ADJUSTMENTS);
     // M3-P18: every hub offers the checklist after its previous section.
     assert_available_sections(
@@ -1018,9 +1077,8 @@ fn aotc_is_derived_for_an_undergraduate() {
         ]
         .map(|t| t as i32),
     );
-    // Setup, you, people, the checklist, income, adjustments, credits,
-    // other taxes, federal payments and the review.
-    assert!(shown(progress).contains("section 7 of 10"));
+    // Documents and income without a form precede the checklist and financial sections.
+    assert!(shown(progress).contains("section 9 of 11"));
     // Amended for M3-N1: every offered topic and Continue are rows.
     assert_eq!(
         hub_rows(&hub),
@@ -1029,46 +1087,45 @@ fn aotc_is_derived_for_an_undergraduate() {
             hub_tail(&[TaxSection::Education, TaxSection::Marketplace], TaxSection::MoreCredits)
         )
     );
-    let page = open_credits_topic(&mut s, TaxSection::Education);
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut s);
     let value = education_value(&page).clone();
     assert!(value.students.is_empty());
     let labels: Vec<_> = value.people.iter().map(|p| status_text(&p.label)).collect();
     assert_eq!(labels, vec!["You"]);
-    let row = StudentCredit {
-        scholarships: 100_000,
-        more: StudentMore {
-            books_from_school: 50_000,
-            other_books: 30_000,
-            scholarship_in_income: ScholarshipInclusion::None,
-            ..Default::default()
-        },
-        ..student(-1, 600_000)
-    };
+    let mut row = student(-1, 600_000);
+    row.form.box_5 = 100_000;
+    let student_document_id = s.draft.next_id;
     let request = save_education(
-        &s.draft,
+        &mut s,
         EducationCredits { students: vec![row.clone()], people: value.people.clone() },
     );
-    let hub = credits_hub(send_past_less_common(&mut s, request));
+    accepted(&send(&mut s, request));
+    let (_, mut annual) =
+        native_education(-1, education_expenses(0), EducationChoice::AmericanOpportunity);
+    annual.more.books_from_school = 50_000;
+    annual.more.other_books = 30_000;
+    accepted(&save_education_answers(&mut s, vec![annual]));
+    let hub = credits_hub(crate::tests::cross::interview::from_review(&mut s, TaxSection::Credits));
     let credits = s.draft.credits.as_ref().unwrap();
-    let sid0_12013 = -1; // You, the first person of the catalog
     assert_eq!(
         credits.education,
-        vec![FederalEducation {
-            student: sid0_12013,
-            method: EducationChoice::AmericanOpportunity,
-            expenses: FederalEducationExpenses {
-                tuition: 600_000,
-                school_materials: 50_000,
-                other_materials: 30_000,
-                assistance: 100_000,
-                refunds: 0,
-                other_benefits: 0,
-                scholarship_in_income: crate::ScholarshipInclusion::None,
+        vec![EducationSource {
+            id: student_document_id,
+            student: -1,
+            form: {
+                let mut form = row.form.clone();
+                form.student = accepted_document_names(&s.draft, Owner::Taxpayer).recipient;
+                form
             },
+            assigned: crate::DocumentRecipient::Taxpayer,
+            owner_source: Some(crate::OwnerSource::Matched),
+            joint_share: None,
         }]
     );
+    assert_eq!(credits.students[0].more.books_from_school, 50_000);
+    assert_eq!(credits.students[0].more.other_books, 30_000);
     assert_eq!(crate::federal_rules::people_students(&s.draft)[0].id, -1);
-    assert!(s.draft.finished_sections.contains(&TaxSection::Education));
+    assert!(s.draft.finished_sections.contains(&TaxSection::Documents));
     assert_eq!(
         hub_rows(&hub).into_iter().find(|row| row.2 == TaxSection::Education).unwrap(),
         row_of("Education credits", "1 student", TaxSection::Education)
@@ -1077,13 +1134,14 @@ fn aotc_is_derived_for_an_undergraduate() {
     assert_eq!(value_of(&r, "refundable_education_credit"), 1_000);
     assert_eq!(value_of(&r, "education_credit"), 1_500);
     // The page reopens with the same row, and its running estimate agrees.
-    let page = open_credits_topic(&mut s, TaxSection::Education);
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    row.id = student_document_id;
+    row.form.student = accepted_document_names(&s.draft, Owner::Taxpayer).recipient;
     assert_eq!(education_value(&page).students, vec![row]);
     let revision = s.draft.revision;
-    credits_hub(send_past_less_common(&mut s, page));
+    accepted(&send(&mut s, page));
     assert_eq!(s.draft.revision, revision);
-    // Continue records the section and, past the payments page (M3-P13),
-    // reaches the review.
+    // The completed summary remains available and its action returns to Review.
     let request = go_to(&s.draft, PAGE_REVIEW, TaxSection::Credits);
     let hub = credits_hub(send_past_less_common(&mut s, request));
     let reply = send(&mut s, go_on(&hub));
@@ -1093,8 +1151,8 @@ fn aotc_is_derived_for_an_undergraduate() {
 
 #[test]
 fn care_row_opens_the_people_page_and_returns_to_the_hub() {
-    // Care now owns the full Form2441 editor; Children retains each person's cost.
-    let mut session = household_return(m2_children());
+    // Care owns each person's cost and the full Form 2441 editor.
+    let mut session = m2_household();
     session.draft.credits.as_mut().unwrap().care.providers.clear();
     session.draft.finished_sections.retain(|section| *section != TaxSection::Care);
     let (mut s, hub) = at_the_credits_hub(session.draft);
@@ -1121,30 +1179,33 @@ fn care_row_opens_the_people_page_and_returns_to_the_hub() {
 
 #[test]
 fn education_is_suggested_while_a_student_is_on_the_return() {
-    // A full-time student filer: the hub suggests education until the topic
-    // is visited; saving it empty shows "None" and suggests Continue.
+    // Student status alone does not require entering a source document.
+    // Education sources remain available through the document center.
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.full_time_student = true;
     let (mut s, hub) = at_the_credits_hub(d);
     let P::Hub { suggested, .. } = &hub else { unreachable!() };
-    assert_eq!(*suggested, TaxSection::Education);
+    assert_eq!(*suggested, TaxSection::OftenMissed);
     assert_eq!(
-        hub_rows(&hub).iter().find(|row| row.2 == TaxSection::Education).unwrap().clone(),
-        row_of("Education credits", "Not started", TaxSection::Education)
+        hub_rows(&hub).into_iter().find(|row| row.2 == TaxSection::Education),
+        Some(row_of("Education credits", "Not started", TaxSection::Education))
     );
-    let page = s.handle(go_on(&hub)).unwrap();
-    let Reply::Edit(page) = page else { panic!("expected the education page, got {page:?}") };
-    let people = education_value(&page).people.clone();
-    let request = save_education(&s.draft, EducationCredits { students: vec![], people });
-    let hub = credits_hub(send_past_less_common(&mut s, request));
+    let request = open_document_center(&mut s);
+    let education = education_value(&request);
+    assert!(education.people.iter().any(|person| person.id == -1));
+    assert!(education.students.is_empty());
+    accepted(&send(&mut s, request));
+    let hub = credits_hub(crate::tests::cross::interview::from_review(&mut s, TaxSection::Credits));
     let P::Hub { suggested, .. } = &hub else { unreachable!() };
-    // M3-P19: Continue goes to the next shown section, other taxes.
-    assert_eq!(*suggested, TaxSection::OtherTaxes);
+    // Continue goes to the next shown section, the last page before the
+    // review (federal payments only with its box).
+    assert_eq!(*suggested, TaxSection::OftenMissed);
     assert_eq!(
-        hub_rows(&hub).into_iter().find(|row| row.2 == TaxSection::Education).unwrap(),
-        row_of("Education credits", "None", TaxSection::Education)
+        hub_rows(&hub).into_iter().find(|row| row.2 == TaxSection::Education),
+        Some(row_of("Education credits", "Not started", TaxSection::Education))
     );
 }
+
 fn election_children(page: &P) -> Vec<(i64, alloc::string::String)> {
     let P::SaveIncomes { children, .. } = page else {
         panic!("expected the income documents page, got {page:?}")
@@ -1154,7 +1215,7 @@ fn election_children(page: &P) -> Vec<(i64, alloc::string::String)> {
 
 #[test]
 fn child_election_page_offers_the_kind_only_with_a_child_the_return_can_report() {
-    let kind = libertas_macros::variant_index!(IncomeDocument::Form8814) as i32;
+    let kind = libertas_macros::variant_index!(crate::IncomeSourceKind::Form8814) as i32;
     // No child: the kind is not offered.
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let page = open_topic(&mut s, TaxSection::InterestDividends);
@@ -1206,7 +1267,8 @@ fn child_election_page_offers_the_kind_only_with_a_child_the_return_can_report()
     );
     // Only Interest and dividends offers the kind and the catalog.
     let wages = open_topic(&mut s, TaxSection::Wages);
-    assert!(election_children(&wages).is_empty());
+    // Wages uses its own typed editor, with no child-election kind or catalog.
+    assert!(matches!(wages, P::SaveWagesAnswers { .. }));
     // A joint return needs no answer about the other parent.
     let mut joint = complete(FederalStatus::Joint);
     add_child(&mut joint);
@@ -1225,26 +1287,34 @@ fn child_election_row_saves_reopens_and_keeps_what_an_import_cannot_write() {
     let mut interest = election_interest(300_000);
     interest.more.foreign_tax = 1_000;
     interest.more.exempt = 20_000;
-    interest.state_details.payer_federal_id = "12-3456789".into();
-    let dividends = Div1099 {
-        more: DivMore {
-            capital_distributions: 40_000,
-            collectible_distributions: 10_000,
-            ..Default::default()
-        },
-        ..native_div1099("Child's Fund".into(), 250_000, 200_000)
-    };
+    interest.payer.federal_id = "12-3456789".into();
+    let mut dividends = native_div1099("Child's Fund".into(), 250_000, 200_000);
+    dividends.capital_distributions = 40_000;
+    dividends.collectible_distributions = 10_000;
+    let dividends = div1099_source(dividends);
+    let dividends =
+        crate::child_election::ChildDividendStatement { id: 0, document: dividends.form };
     let mut row = election_page(
         child,
-        vec![ChildStatement::Int1099(interest), ChildStatement::Div1099(dividends)],
+        vec![
+            ChildStatement::Int1099(interest.interest_source()),
+            ChildStatement::Div1099(dividends),
+        ],
     );
     row.alaska_dividend = 150_000;
     row.nontaxable_social = 120_000;
     row.facts = ChildElectionFacts::FOREIGN_ACCOUNT.0;
-    accepted(&send(
-        &mut s,
-        save_documents(&d, vec![document(0, IncomeDocument::Form8814(row.clone()))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut s,
+            TaxSection::InterestDividends,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Form8814(row.clone()) },
+            )],
+        );
+        send(&mut s, request)
+    });
     // The stored row is named by its child; the small foreign tax of a
     // child's statement is not claimed on the parent's Form 1116 election.
     let stored = s
@@ -1262,35 +1332,70 @@ fn child_election_row_saves_reopens_and_keeps_what_an_import_cannot_write() {
     let page = open_topic(&mut s, TaxSection::InterestDividends);
     let reopened = page_documents(&page).to_vec();
     assert_eq!(reopened.len(), 1);
-    assert_eq!(reopened[0].document, IncomeDocument::Form8814(row.clone()));
+    let ChildStatement::Int1099(expected_interest) = &mut row.statements[0] else { unreachable!() };
+    expected_interest.calls = IntCalls { nominee: vec![0], ..Default::default() };
+    // The saved dividend statement carries its accepted identity.
+    let IncomeSource::Record { value: crate::IncomeRecord::Form8814(reopened_row) } =
+        &reopened[0].document
+    else {
+        unreachable!()
+    };
+    let ChildStatement::Div1099(saved_dividends) = &reopened_row.statements[1] else {
+        unreachable!()
+    };
+    let ChildStatement::Div1099(expected_dividends) = &mut row.statements[1] else {
+        unreachable!()
+    };
+    expected_dividends.id = saved_dividends.id;
+    assert_eq!(
+        reopened[0].document,
+        IncomeSource::Record { value: crate::IncomeRecord::Form8814(row.clone()) }
+    );
     // Applying an import to one statement (its boxes replaced, as the import
     // contract applies them) leaves the person's own answers as typed.
-    let IncomeDocument::Form8814(mut imported) = reopened[0].document.clone() else {
+    let IncomeSource::Record { value: crate::IncomeRecord::Form8814(mut imported) } =
+        reopened[0].document.clone()
+    else {
         unreachable!()
     };
     let ChildStatement::Int1099(statement) = &mut imported.statements[0] else { unreachable!() };
-    statement.taxable = 310_000;
-    statement.payer = "Imported Bank".into();
-    let request = save_documents(
-        &s.draft.clone(),
-        vec![document(reopened[0].id, IncomeDocument::Form8814(imported))],
+    statement.form.interest_income = 310_000;
+    statement.form.payer.name = "Imported Bank".into();
+    let request = save_topic(
+        &mut s,
+        TaxSection::InterestDividends,
+        vec![document(
+            reopened[0].id,
+            IncomeSource::Record { value: crate::IncomeRecord::Form8814(imported) },
+        )],
     );
     accepted(&send(&mut s, request));
     let page = open_topic(&mut s, TaxSection::InterestDividends);
-    let IncomeDocument::Form8814(now) = &page_documents(&page)[0].document else { unreachable!() };
+    let IncomeSource::Record { value: crate::IncomeRecord::Form8814(now) } =
+        &page_documents(&page)[0].document
+    else {
+        unreachable!()
+    };
     assert_eq!(now.alaska_dividend, 150_000);
     assert_eq!(now.nontaxable_social, 120_000);
     assert_eq!(now.other_parent, OtherParentChoice::LivedApart);
     assert_eq!(now.facts, ChildElectionFacts::FOREIGN_ACCOUNT.0);
     let ChildStatement::Int1099(kept) = &now.statements[0] else { unreachable!() };
-    assert_eq!((kept.taxable, kept.payer.as_str()), (310_000, "Imported Bank"));
-    assert_eq!(kept.more.foreign_tax, 1_000);
+    assert_eq!(
+        (kept.form.interest_income, kept.form.payer.name.as_str()),
+        (310_000, "Imported Bank")
+    );
+    assert_eq!(kept.form.foreign_tax_paid, 1_000);
     // The person-supplied fields have no import marker; the three statements
     // are the filer's own importable structs.
     let source = include_str!("../../family/child_election.rs");
     assert!(import_unselected(source, "pub struct Form8814 {"));
-    let model = include_str!("../../federal/federal_model.rs");
-    for item in ["pub struct Int1099 {", "pub struct Div1099 {", "pub struct Oid1099 {"] {
+    let model = crate::federal_model::HUB_SOURCE;
+    for item in [
+        "pub struct Form1099IntPaper {",
+        "pub struct Form1099DivPaper {",
+        "pub struct Form1099OidPaper {",
+    ] {
         let head = &model[..model.find(item).unwrap()];
         assert!(
             head[head.rfind("#[libertas_llm_doc_trans(").unwrap()..]
@@ -1298,9 +1403,176 @@ fn child_election_row_saves_reopens_and_keeps_what_an_import_cannot_write() {
             "{item}"
         );
     }
-    assert!(source.contains("Int1099(crate::Int1099)"));
-    assert!(source.contains("Div1099(crate::Div1099)"));
-    assert!(source.contains("Oid1099(crate::Oid1099)"));
+    assert!(source.contains("Int1099(crate::Form1099IntSource)"));
+    assert!(source.contains("Div1099(ChildDividendStatement)"));
+    assert!(source.contains("Oid1099(crate::Form1099OidSource)"));
+}
+
+#[test]
+fn child_dividend_answers_follow_statement_ids_through_correction_and_restart() {
+    use crate::tests::support::client::exchange;
+
+    let mut d = complete(FederalStatus::Single);
+    add_child(&mut d);
+    let child = d.dependents[0].id;
+    let foreign_id = d.income[0].id;
+    let first = crate::Form1099DivPaper {
+        calendar_year: Some(2026),
+        payer: crate::PrintedParty::from_name("Sample Child Fund".into()),
+        recipient: crate::PrintedParty::from_name("Ava Sample".into()),
+        payer_telephone: "555-0100".into(),
+        account_number: "001-A".into(),
+        ordinary: Some(180_000),
+        qualified: Some(60_000),
+        capital_distributions: Some(3_000),
+        section_1202_gain: Some(1_000),
+        section199a: Some(800),
+        nondividend_distributions: Some(12_000),
+        investment_expenses: Some(400),
+        fatca: true,
+        ..Default::default()
+    };
+    let second = crate::Form1099DivPaper {
+        account_number: "002-B".into(),
+        ordinary: Some(170_000),
+        nondividend_distributions: Some(8_000),
+        investment_expenses: Some(500),
+        ..first.clone()
+    };
+    let row = election_page(
+        child,
+        [first.clone(), second.clone()]
+            .into_iter()
+            .map(|document| {
+                ChildStatement::Div1099(crate::child_election::ChildDividendStatement {
+                    id: 0,
+                    document,
+                })
+            })
+            .collect(),
+    );
+    add(&mut d, child_election(child, row.record().statements, 0, OtherParentChoice::LivedApart));
+    let election = d.income.last().unwrap();
+    let election_id = election.id;
+    let FederalIncome::ChildElection { data } = &election.income else { unreachable!() };
+    let ids: Vec<_> = data
+        .statements
+        .iter()
+        .map(|statement| match statement {
+            ChildIncome::Dividend { statement_id, .. } => *statement_id,
+            _ => unreachable!(),
+        })
+        .collect();
+    assert!(ids.iter().all(|id| *id > 0));
+    assert_ne!(ids[0], ids[1]);
+    let first_lot = crate::CapitalReturn1099Div {
+        kind: crate::CapitalDistributionKind::Nondividend,
+        amount: 12_000,
+        property: vec![],
+        basis: 20_000,
+        term: GainTerm::Long,
+        special: false,
+    };
+    let second_lot = crate::CapitalReturn1099Div {
+        amount: 8_000,
+        basis: 15_000,
+        term: GainTerm::Short,
+        ..first_lot.clone()
+    };
+    let answers = [
+        (ids[0], first_lot, crate::DividendSpecial::NoneOfThese),
+        (ids[1], second_lot, crate::DividendSpecial::Another),
+    ];
+    let mut s = Interview::new(TEST_USER, d);
+    let mut request = open_topic(&mut s, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    // Form 8814 consumes these answers, even when the paper also prints REIT
+    // and section 1202 amounts. It asks no unused nominee or fund questions.
+    // Keyed questions retain their complete identity independently of display order.
+    let mut actual_keys = followups.iter().map(|row| row.key.clone()).collect::<Vec<_>>();
+    let mut expected_keys = ids
+        .iter()
+        .flat_map(|id| {
+            ["capital_returns", "special"]
+                .map(|suffix| alloc::format!("income/{election_id}/statement/{id}/{suffix}"))
+        })
+        .collect::<Vec<_>>();
+    actual_keys.sort();
+    expected_keys.sort();
+    assert_eq!(actual_keys, expected_keys);
+    for (id, lot, treatment) in &answers {
+        let key = alloc::format!("income/{election_id}/statement/{id}");
+        followups
+            .iter_mut()
+            .find(|row| row.key == alloc::format!("{key}/capital_returns"))
+            .unwrap()
+            .answer = crate::DocumentAnswer::DividendCapitalReturns { value: vec![lot.clone()] };
+        followups
+            .iter_mut()
+            .find(|row| row.key == alloc::format!("{key}/special"))
+            .unwrap()
+            .answer = crate::DocumentAnswer::DividendTreatment { value: *treatment };
+    }
+    accepted(&send(&mut s, request));
+
+    let mut request = open_topic(&mut s, TaxSection::InterestDividends);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let crate::IncomeRecord::Form8814(row) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
+    for (statement, (id, paper)) in row.statements.iter().zip([(ids[0], &first), (ids[1], &second)])
+    {
+        let ChildStatement::Div1099(statement) = statement else { unreachable!() };
+        assert_eq!((statement.id, &statement.document), (id, paper));
+    }
+    row.statements.reverse();
+    let ChildStatement::Div1099(corrected) = &mut row.statements[1] else { unreachable!() };
+    corrected.document.corrected = true;
+    corrected.document.ordinary = Some(corrected.document.ordinary.unwrap_or(0) + 1_000);
+    accepted(&send(&mut s, request));
+
+    let corrected_first = crate::Form1099DivPaper {
+        corrected: true,
+        ordinary: Some(first.ordinary.unwrap_or(0) + 1_000),
+        ..first
+    };
+    let election = s.draft.income.iter().find(|entry| entry.id == election_id).unwrap();
+    let FederalIncome::ChildElection { data } = &election.income else { unreachable!() };
+    for (statement, (id, paper)) in
+        data.statements.iter().zip([(ids[1], &second), (ids[0], &corrected_first)])
+    {
+        let ChildIncome::Dividend { statement_id, data } = statement else { unreachable!() };
+        assert_eq!((*statement_id, &data.form), (id, paper));
+        assert_eq!(data.form.ordinary, paper.ordinary);
+        let (_, lot, treatment) = answers.iter().find(|(source, ..)| *source == id).unwrap();
+        assert_eq!(data.capital_returns, vec![lot.clone()]);
+        assert_eq!(data.special, *treatment);
+    }
+    let reopened = open_topic(&mut s, TaxSection::InterestDividends);
+    // restart projects real return_records keys and Avro values, decodes them,
+    // and assembles the accepted return before opening the editor again.
+    let mut loaded = restart(s.draft.clone());
+    assert_eq!(loaded.draft, s.draft);
+    let restarted = open_topic(&mut loaded, TaxSection::InterestDividends);
+    assert_eq!(page_documents(&restarted), page_documents(&reopened));
+    let P::SaveIncomes { followups: expected, .. } = reopened else { unreachable!() };
+    let P::SaveIncomes { followups: actual, .. } = restarted else { unreachable!() };
+    assert_eq!(actual, expected);
+
+    // Both are valid positive IDs; neither may transfer another row's answers.
+    for (id, key) in [
+        (ids[1], "ISSUE_INTERVIEW_A_RECORD_IDENTITY_IS_REPEATED_IN_EE6DC425"),
+        (foreign_id, "ISSUE_INTERVIEW_A_RECORD_NO_LONGER_BELONGS_TO_51E52C2C"),
+    ] {
+        let mut request = open_topic(&mut loaded, TaxSection::InterestDividends);
+        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+        let crate::IncomeRecord::Form8814(row) = &mut documents.documents[0].document else {
+            unreachable!()
+        };
+        let ChildStatement::Div1099(statement) = &mut row.statements[1] else { unreachable!() };
+        statement.id = id;
+        rejected_with(exchange(&mut loaded, request, "child dividend identity"), key);
+    }
 }
 
 #[test]
@@ -1309,14 +1581,19 @@ fn child_election_save_checks_the_child_the_choice_and_the_statements() {
     let child = d.next_id;
     add_child(&mut d);
     let row = |edit: &dyn Fn(&mut Form8814)| {
-        let mut row =
-            election_page(child, vec![ChildStatement::Int1099(election_interest(300_000))]);
+        let mut row = election_page(
+            child,
+            vec![ChildStatement::Int1099(election_interest(300_000).interest_source())],
+        );
         edit(&mut row);
-        document(0, IncomeDocument::Form8814(row))
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::Form8814(row) })
     };
     let save = |d: &FederalDraft, rows: Vec<IncomeDocumentItem>| {
         let mut s = Interview::new(TEST_USER, d.clone());
-        send(&mut s, save_documents(d, rows))
+        {
+            let request = save_topic(&mut s, TaxSection::InterestDividends, rows);
+            send(&mut s, request)
+        }
     };
     rejected_with(save(&d, vec![row(&|_| {}), row(&|_| {})]), "CHILD_ELECTION_TWICE");
     rejected_with(
@@ -1350,7 +1627,11 @@ fn child_election_save_checks_the_child_the_choice_and_the_statements() {
         save(
             &d,
             vec![row(&|r| {
-                r.statements = vec![ChildStatement::Div1099(native_div1099("".into(), 100, 200))]
+                r.statements =
+                    vec![ChildStatement::Div1099(crate::child_election::ChildDividendStatement {
+                        id: 0,
+                        document: dividend_document(native_div1099("".into(), 100, 200)),
+                    })]
             })],
         ),
         "DIV_QUALIFIED_ABOVE_ORDINARY",
@@ -1366,7 +1647,10 @@ fn child_election_save_checks_the_child_the_choice_and_the_statements() {
             current_document_refusal(
                 "income-source-1273",
                 &mut source,
-                vec![document(0, IncomeDocument::Form8814(page.clone()))],
+                vec![document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Form8814(page.clone()) },
+                )],
                 "CHILD_ELECTION_PARENT_NOT_NEEDED",
                 "[documents/documents/0/document/other_parent]",
             )
@@ -1374,7 +1658,10 @@ fn child_election_save_checks_the_child_the_choice_and_the_statements() {
         "CHILD_ELECTION_PARENT_NOT_NEEDED",
     );
     page.other_parent = OtherParentChoice::NotNeeded;
-    accepted(&save(&joint, vec![document(0, IncomeDocument::Form8814(page))]));
+    accepted(&save(
+        &joint,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Form8814(page) })],
+    ));
 }
 
 #[test]
@@ -1384,17 +1671,25 @@ fn child_election_preview_is_line_6_and_zero_for_a_row_left_out() {
     add_child(&mut d);
     let mut s = Interview::new(TEST_USER, d);
     let preview = |s: &mut Interview, row: Form8814| {
-        let request = catalog_preview_document(IncomeDocument::Form8814(row));
+        let request = catalog_preview_document(IncomeSource::Record {
+            value: crate::IncomeRecord::Form8814(row),
+        });
         match send(s, request) {
             Reply::Response(P::IncomePreview { preview, .. }) => preview,
             other => panic!("expected a preview, got {other:?}"),
         }
     };
     // Interest of $4,000: line 6 = 4,000 - 2,700 = 1,300.
-    let row = election_page(child, vec![ChildStatement::Int1099(election_interest(400_000))]);
+    let row = election_page(
+        child,
+        vec![ChildStatement::Int1099(election_interest(400_000).interest_source())],
+    );
     assert_eq!(preview(&mut s, row.clone()), Some(130_000));
     // At most $1,350 nothing is reported; a row left out previews zero.
-    let small = election_page(child, vec![ChildStatement::Int1099(election_interest(130_000))]);
+    let small = election_page(
+        child,
+        vec![ChildStatement::Int1099(election_interest(130_000).interest_source())],
+    );
     assert_eq!(preview(&mut s, small), Some(0));
     let mut out = row;
     out.facts = ChildElectionFacts::OTHER_INCOME.0;
@@ -1407,9 +1702,15 @@ fn child_election_is_named_by_its_child_and_is_removed_with_it() {
     let original = s.draft.clone();
     accepted(&send(&mut s, save_children(&original, vec![row("Ava", "Sample", 20180615)])));
     let child = s.draft.dependents()[0].id;
-    let page = election_page(child, vec![ChildStatement::Int1099(election_interest(300_000))]);
-    let request =
-        save_documents(&s.draft.clone(), vec![document(0, IncomeDocument::Form8814(page))]);
+    let page = election_page(
+        child,
+        vec![ChildStatement::Int1099(election_interest(300_000).interest_source())],
+    );
+    let request = save_topic(
+        &mut s,
+        TaxSection::InterestDividends,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Form8814(page) })],
+    );
     accepted(&send(&mut s, request));
     let label = |s: &Interview| {
         s.draft
@@ -1431,7 +1732,7 @@ fn child_election_is_named_by_its_child_and_is_removed_with_it() {
     // estimate's warning before the save.
     let mut people = reopened_people(&mut s);
     people[0].relationship = Relationship::Foster;
-    let Reply::Response(P::RunningEstimate { warnings, .. }) = send(
+    let Reply::Response(P::DependentsRunningEstimate { warnings, .. }) = send(
         &mut s,
         P::EstimateDependents {
             user: TEST_USER,
@@ -1466,15 +1767,18 @@ fn child_election_is_named_by_its_child_and_is_removed_with_it() {
 fn education_account_page_round_trips_forms_and_expenses_by_identity() {
     let (mut session, child) = education_session();
     let page = open_topic(&mut session, TaxSection::OtherIncome);
-    let P::SaveIncomes { people, allowed_documents, .. } = &page else { unreachable!() };
+    let P::SaveIncomes { people, source_choices, .. } = &page else { unreachable!() };
     // You, your spouse and the dependent, keyed by identity.
     assert_eq!(people.iter().map(|p| p.id).collect::<Vec<_>>(), vec![-1, -2, child]);
-    for kind in [
-        libertas_macros::variant_index!(IncomeDocument::Q1099) as i32,
-        libertas_macros::variant_index!(IncomeDocument::EducationAccountExpenses) as i32,
-    ] {
-        assert!(allowed_documents.contains(&kind));
-    }
+    assert!(source_choices.record.contains(
+        &(libertas_macros::variant_index!(crate::IncomeRecord::EducationAccountExpenses) as i32)
+    ));
+    let center = open_document_center(&mut session);
+    let P::SaveDocuments { allowed_documents, .. } = &center else { unreachable!() };
+    assert!(
+        allowed_documents
+            .contains(&(libertas_macros::variant_index!(crate::IncomeSourceKind::Q1099) as i32))
+    );
     let owned = |owner, id, document| IncomeDocumentItem {
         refund_management: None,
         refund_management_needed: None,
@@ -1486,34 +1790,39 @@ fn education_account_page_round_trips_forms_and_expenses_by_identity() {
         preview: None,
         community: CommunityShare::NotNeeded,
     };
-    let for_child = q1099_page(
+    let mut for_child = q1099_page(
         2_500_000,
         EducationAccount::Qtp { earnings: 500_000, basis: 2_000_000 },
         plain_withdrawal(),
         Q1099Beneficiary::Student { person: child },
     );
-    let spouse_form = q1099_page(
-        100_000,
-        EducationAccount::Coverdell {
-            amounts: CoverdellAmounts::ValueOnly {
-                value: 180_000,
-                basis_start: 210_000,
-                contributions: 40_000,
+    let mut spouse_form = {
+        let mut value = q1099_page(
+            100_000,
+            EducationAccount::Coverdell { amounts: CoverdellAmounts::ValueOnly { value: 180_000 } },
+            Q1099Transfer::Withdrawal { reason: DistributionReason::Death },
+            Q1099Beneficiary::OtherStudent {
+                expenses: 900_000,
+                assistance: 100_000,
+                credit_expenses: 0,
             },
-        },
-        Q1099Transfer::Withdrawal { reason: DistributionReason::Death, redeposited: 10_000 },
-        Q1099Beneficiary::OtherStudent {
-            expenses: 900_000,
-            assistance: 100_000,
-            credit_expenses: 0,
-        },
-    );
-    let roth = q1099_page(
-        600_000,
-        EducationAccount::Qtp { earnings: 200_000, basis: 400_000 },
-        Q1099Transfer::RothIra { rollover: qtp_roth_rollover().rollover },
-        Q1099Beneficiary::Recipient,
-    );
+        );
+        value.coverdell_basis_start = Some(210_000);
+        value.coverdell_contributions = 40_000;
+        value.late_rollovers = Some(0);
+        value.redeposited = 10_000;
+        value
+    };
+    let mut roth = {
+        let mut value = q1099_page(
+            600_000,
+            EducationAccount::Qtp { earnings: 200_000, basis: 400_000 },
+            Q1099Transfer::RothIra,
+            Q1099Beneficiary::Recipient,
+        );
+        value.roth_rollover = Some(qtp_roth_rollover().rollover);
+        value
+    };
     let record = EducationAccountExpenses {
         students: vec![
             EducationAccountStudent {
@@ -1547,21 +1856,61 @@ fn education_account_page_round_trips_forms_and_expenses_by_identity() {
         ],
     };
     let documents = vec![
-        owned(Owner::Taxpayer, 0, IncomeDocument::Q1099(for_child.clone())),
-        owned(Owner::Spouse, 0, IncomeDocument::Q1099(spouse_form.clone())),
-        owned(Owner::Taxpayer, 0, IncomeDocument::Q1099(roth.clone())),
-        owned(Owner::Taxpayer, 0, IncomeDocument::EducationAccountExpenses(record.clone())),
+        owned(
+            crate::DocumentOwner::Yours,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Q1099(education_distribution_document(
+                    for_child.clone(),
+                )),
+            },
+        ),
+        owned(
+            crate::DocumentOwner::Spouses,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Q1099(education_distribution_document(
+                    spouse_form.clone(),
+                )),
+            },
+        ),
+        owned(
+            crate::DocumentOwner::Yours,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Q1099(education_distribution_document(
+                    roth.clone(),
+                )),
+            },
+        ),
+        owned(
+            crate::DocumentOwner::Yours,
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::EducationAccountExpenses(record.clone()),
+            },
+        ),
     ];
-    let request = save_topic(&session.draft, TaxSection::OtherIncome, documents);
-    accepted(&send(&mut session, request));
+    let documents = fixture_owned_rows(&session.draft, documents);
+    save_each_topic(&mut session, documents);
+    // The beneficiary answer remains separate from printed box 6; a recipient who is the
+    // beneficiary is not asked, so the stored answer stays empty.
+    assert!(matches!(
+        session.draft.income.iter().find_map(|entry| match &entry.income {
+            FederalIncome::EducationDistribution { data } if data.form.qtp_to_roth_ira =>
+                Some(&data.beneficiary),
+            _ => None,
+        }),
+        Some(Some(FederalEducationBeneficiary::Recipient))
+    ));
     // Stored by identity, labelled by kind, owned as entered.
     let entries: Vec<_> = session.draft.income.iter().skip(1).collect();
     assert_eq!(entries.len(), 4);
     assert_eq!(entries[0].label, "");
-    assert_eq!(entries[1].owner, Owner::Spouse);
+    assert_eq!(entries[1].owner, crate::DocumentOwner::Spouses);
     assert_eq!(entries[3].label, "");
     let FederalIncome::EducationDistribution { data } = &entries[0].income else { unreachable!() };
-    assert_eq!(data.beneficiary, FederalEducationBeneficiary::Student { person: child });
+    assert_eq!(data.beneficiary, Some(FederalEducationBeneficiary::Student { person: child }));
     let FederalIncome::EducationAccountExpenses { data } = &entries[3].income else {
         unreachable!()
     };
@@ -1569,31 +1918,97 @@ fn education_account_page_round_trips_forms_and_expenses_by_identity() {
     // The stored return reopens as the same page rows, with the previews the
     // forms can state: none for a withdrawal, zero for a Roth transfer.
     session.draft = FederalDraft::from_avro(&session.draft.to_avro()).unwrap();
-    let page = open_topic(&mut session, TaxSection::OtherIncome);
-    let reopened: Vec<_> = page_documents(&page)
-        .iter()
-        .map(|item| (item.owner, item.document.clone(), item.preview))
+    let mut rows: Vec<_> = page_documents(&open_document_center(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
         .collect();
+    rows.extend(page_documents(&open_topic(&mut session, TaxSection::OtherIncome)));
+    let reopened: Vec<_> =
+        rows.iter().map(|item| (item.owner.owned(), item.document.clone(), item.preview)).collect();
     assert_eq!(reopened.len(), 4);
-    assert_eq!(reopened[0], (Owner::Taxpayer, IncomeDocument::Q1099(for_child), None));
-    assert_eq!(reopened[1], (Owner::Spouse, IncomeDocument::Q1099(spouse_form), None));
-    assert_eq!(reopened[2].1, IncomeDocument::Q1099(roth));
+    for_child.form.recipient = accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+    spouse_form.form.recipient = accepted_document_names(&session.draft, Owner::Spouse).recipient;
+    roth.form.recipient = accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+    assert_eq!(
+        reopened[0],
+        (
+            Owner::Taxpayer,
+            IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Q1099(for_child.form) },
+            None
+        )
+    );
+    assert_eq!(
+        reopened[1],
+        (
+            Owner::Spouse,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Q1099(spouse_form.form)
+            },
+            None
+        )
+    );
+    assert_eq!(
+        reopened[2].1,
+        IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Q1099(roth.form) }
+    );
     assert_eq!(reopened[2].2, Some(0));
-    assert_eq!(reopened[3].1, IncomeDocument::EducationAccountExpenses(record.clone()));
+    assert_eq!(
+        reopened[3].1,
+        IncomeSource::Record {
+            value: crate::IncomeRecord::EducationAccountExpenses(record.clone())
+        }
+    );
     assert_eq!(reopened[3].2, Some(0));
 
     // The page rules, on the server with their client keys.
     let base = session.draft.clone();
-    let reject = |documents: Vec<IncomeDocumentItem>, key: &str| {
-        let mut session = Interview::new(TEST_USER, base.clone());
-        let before = session.draft.clone();
-        rejected_with(
-            send(&mut session, save_topic(&before, TaxSection::OtherIncome, documents)),
-            key,
-        );
-        assert_eq!(session.draft, before);
+    let reject =
+        |(documents, answers): (Vec<IncomeDocumentItem>, Option<Vec<crate::DocumentAnswer>>),
+         key: &str| {
+            let mut session = Interview::new(TEST_USER, base.clone());
+            if matches!(key, "Q1099_PART_ABOVE_GROSS" | "Q1099_ROTH_ROLLOVER_NOT_STUDENT") {
+                let request = save_documents(&mut session, documents.clone());
+                accepted(&send(&mut session, request));
+                let before = session.draft.clone();
+                assert_eq!(fixture_paper_answers(&documents[0].document), answers.unwrap());
+                let request =
+                    crate::tests::support::client::income_pages::information_return_answers(
+                        &mut session,
+                        &documents,
+                    );
+                rejected_with(send(&mut session, request), key);
+                assert_eq!(session.draft, before);
+                return;
+            }
+            let before = session.draft.clone();
+            rejected_with(
+                {
+                    let request = if documents
+                        .iter()
+                        .all(|row| matches!(row.document, IncomeSource::Record { .. }))
+                    {
+                        save_topic(&mut session, TaxSection::OtherIncome, documents)
+                    } else {
+                        assert!(
+                            documents
+                                .iter()
+                                .all(|row| !matches!(row.document, IncomeSource::Record { .. }))
+                        );
+                        save_documents(&mut session, documents)
+                    };
+                    send(&mut session, request)
+                },
+                key,
+            );
+            assert_eq!(session.draft, before);
+        };
+    let form = |q: EducationDistributionSource| {
+        let paper = IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Q1099(education_distribution_document(q)),
+        };
+        let answers = fixture_paper_answers(&paper);
+        (vec![owned(crate::DocumentOwner::Yours, 0, paper)], Some(answers))
     };
-    let form = |q: Q1099| vec![owned(Owner::Taxpayer, 0, IncomeDocument::Q1099(q))];
     let qtp = |earnings, basis| EducationAccount::Qtp { earnings, basis };
     reject(
         form(q1099_page(
@@ -1616,44 +2031,57 @@ fn education_account_page_round_trips_forms_and_expenses_by_identity() {
         "Q1099_BOXES_DO_NOT_ADD_UP",
     );
     reject(
-        form(q1099_page(
-            1_000_000,
-            qtp(100_000, 900_000),
-            Q1099Transfer::Withdrawal {
-                reason: DistributionReason::Withdrawal,
-                redeposited: 1_000_001,
-            },
-            Q1099Beneficiary::Recipient,
-        )),
+        form({
+            let mut value = q1099_page(
+                1_000_000,
+                qtp(100_000, 900_000),
+                Q1099Transfer::Withdrawal { reason: DistributionReason::Withdrawal },
+                Q1099Beneficiary::Recipient,
+            );
+            value.redeposited = 1_000_001;
+            value
+        }),
         "Q1099_PART_ABOVE_GROSS",
     );
     reject(
-        form(q1099_page(
-            600_000,
-            EducationAccount::Coverdell {
-                amounts: CoverdellAmounts::Reported { earnings: 200_000, basis: 400_000 },
-            },
-            Q1099Transfer::RothIra { rollover: qtp_roth_rollover().rollover },
-            Q1099Beneficiary::Recipient,
-        )),
+        form({
+            let mut value = q1099_page(
+                600_000,
+                EducationAccount::Coverdell {
+                    amounts: CoverdellAmounts::Reported { earnings: 200_000, basis: 400_000 },
+                },
+                Q1099Transfer::RothIra,
+                Q1099Beneficiary::Recipient,
+            );
+            value.roth_rollover = Some(qtp_roth_rollover().rollover);
+            value
+        }),
         "Q1099_ROTH_ROLLOVER_NOT_529",
     );
     reject(
-        form(q1099_page(
-            600_000,
-            qtp(200_000, 400_000),
-            Q1099Transfer::RothIra { rollover: qtp_roth_rollover().rollover },
-            Q1099Beneficiary::Student { person: child },
-        )),
+        form({
+            let mut value = q1099_page(
+                600_000,
+                qtp(200_000, 400_000),
+                Q1099Transfer::RothIra,
+                Q1099Beneficiary::Student { person: child },
+            );
+            value.roth_rollover = Some(qtp_roth_rollover().rollover);
+            value
+        }),
         "Q1099_ROTH_ROLLOVER_NOT_STUDENT",
     );
     reject(
-        form(q1099_page(
-            600_000,
-            qtp(-200_000, 800_000),
-            Q1099Transfer::RothIra { rollover: qtp_roth_rollover().rollover },
-            Q1099Beneficiary::Recipient,
-        )),
+        form({
+            let mut value = q1099_page(
+                600_000,
+                qtp(-200_000, 800_000),
+                Q1099Transfer::RothIra,
+                Q1099Beneficiary::Recipient,
+            );
+            value.roth_rollover = Some(qtp_roth_rollover().rollover);
+            value
+        }),
         "Q1099_ROTH_ROLLOVER_LOSS",
     );
     reject(
@@ -1666,56 +2094,67 @@ fn education_account_page_round_trips_forms_and_expenses_by_identity() {
         "Q1099_CODE_NOT_COVERDELL",
     );
     reject(
-        form(q1099_page(
-            600_000,
-            EducationAccount::Coverdell {
-                amounts: CoverdellAmounts::ValueOnly { value: 1, basis_start: 0, contributions: 0 },
-            },
-            Q1099Transfer::ExcessLastYear,
-            Q1099Beneficiary::Recipient,
-        )),
+        form({
+            let mut value = q1099_page(
+                600_000,
+                EducationAccount::Coverdell { amounts: CoverdellAmounts::ValueOnly { value: 1 } },
+                Q1099Transfer::ExcessLastYear,
+                Q1099Beneficiary::Recipient,
+            );
+            value.coverdell_basis_start = Some(0);
+            value.late_rollovers = Some(0);
+            value
+        }),
         "Q1099_EXCESS_NEEDS_BOXES",
     );
     reject(
-        vec![
-            owned(Owner::Taxpayer, 0, IncomeDocument::EducationAccountExpenses(record.clone())),
-            owned(Owner::Taxpayer, 0, IncomeDocument::EducationAccountExpenses(record.clone())),
-        ],
+        (
+            vec![
+                owned(
+                    crate::DocumentOwner::Yours,
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::EducationAccountExpenses(record.clone()),
+                    },
+                ),
+                owned(
+                    crate::DocumentOwner::Yours,
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::EducationAccountExpenses(record.clone()),
+                    },
+                ),
+            ],
+            None,
+        ),
         "EDUCATION_ACCOUNT_EXPENSES_TWICE",
     );
-    // The preview of a withdrawal states no amount; a Roth transfer, zero.
-    let preview = |q: Q1099| {
-        let mut request = catalog_preview_document(IncomeDocument::Q1099(q));
-        let P::PreviewDocument { people: request_people, .. } = &mut request else {
-            unreachable!()
-        };
-        *request_people = people.clone();
-        request
-    };
-    assert!(matches!(
-        send(
+    assert_eq!(
+        crate::tests::support::client::income_pages::saved_document_amount(
             &mut session,
-            preview(q1099_page(
-                1_000_000,
-                qtp(100_000, 900_000),
-                plain_withdrawal(),
-                Q1099Beneficiary::Recipient
-            ))
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Q1099(education_distribution_document(
+                    q1099_page(
+                        1_000_000,
+                        qtp(100_000, 900_000),
+                        plain_withdrawal(),
+                        Q1099Beneficiary::Recipient
+                    )
+                ))
+            }
         ),
-        Reply::Response(P::IncomePreview { preview: None, .. })
-    ));
+        None
+    );
 }
 
-// A saved student follows the person: a person who leaves the return takes the
-// expense row (and the record when nobody is left), and a 1099-Q naming that
-// person as its student keeps its amounts as a student not on the return.
+// Topic-owned expense rows follow the people on the return. A source 1099-Q
+// retains its own beneficiary answer and amounts for explicit correction.
 #[test]
 fn education_account_rows_leave_with_their_person() {
     use crate::tests::family::education_accounts::{
         entered, expense_record, q1099_form, qtp, student_row, withdrawal,
     };
     let mut d = complete(FederalStatus::Single);
-    d.checklist.income |= IncomeTopics::WAGES.0 | IncomeTopics::OTHER_INCOME.0;
     add_child(&mut d);
     let child = d.dependents[0].id;
     add(
@@ -1742,15 +2181,8 @@ fn education_account_rows_leave_with_their_person() {
     let pruned = crate::interview::prune(&mut d);
     assert!(!pruned.removed.is_empty());
     let FederalIncome::EducationDistribution { data } = &d.income[1].income else { unreachable!() };
-    assert_eq!(
-        data.beneficiary,
-        FederalEducationBeneficiary::OtherStudent {
-            expenses: 0,
-            assistance: 0,
-            credit_expenses: 0
-        }
-    );
-    assert_eq!(data.gross, 500_000);
+    assert_eq!(data.beneficiary, Some(FederalEducationBeneficiary::Student { person: child }));
+    assert_eq!(data.form.gross_distribution, 500_000);
     let FederalIncome::EducationAccountExpenses { data } = &d.income[2].income else {
         unreachable!()
     };
@@ -1926,4 +2358,206 @@ fn the_children_page_asks_days_on_the_final_return_of_a_person_who_died() {
     let mut s = Interview::new(TEST_USER, joint);
     let request = save_children(&s.draft.clone(), vec![with_days(61)]);
     rejected_with(send(&mut s, request), "RESIDENCE_ANSWER_NOT_ALLOWED");
+}
+
+// Choosing head of household on the first page starts its branch unanswered:
+// the marital situation is an eligibility fact the rules test, so it has no
+// Default and is never pre-answered (the home-cost answer has none either).
+#[test]
+fn head_of_household_marital_situation_starts_unanswered() {
+    let source = include_str!("../../family/filers_model.rs");
+    let branch = &source[source.find("    HeadOfHousehold {").unwrap()..];
+    let branch = &branch[..branch.find("    },").unwrap()];
+    assert!(branch.contains("marital: HeadMarital,"));
+    assert!(branch.contains("paid_over_half_home: bool,"));
+    assert!(!branch.contains("libertas_default"));
+}
+
+// A field's declaration with its doc and attribute lines, from the struct
+// that holds it: the lines above `pub <field>:` up to the previous field.
+fn declared<'a>(source: &'a str, owner: &str, field: &str) -> &'a str {
+    let body = &source[source.find(&alloc::format!("pub struct {owner} {{")).unwrap()..];
+    let body = &body[..body.find("\n}\n").unwrap()];
+    let end = body.find(&alloc::format!("pub {field}:")).unwrap();
+    let start = body[..end].rfind(",\n").map_or(0, |i| i + 2);
+    &body[start..end]
+}
+
+// Blindness is a fact the standard deduction tests (section 63(f)), so it has
+// no Default (app.default.decided) on About you or the spouse page: each
+// unsaved page opens unanswered by WorkflowRequest, and only the person's own
+// answer is saved and reopened by EditRequest.
+#[test]
+fn blindness_starts_unanswered_on_about_you_and_the_spouse_page() {
+    let source = include_str!("../../family/filers_model.rs");
+    for owner in ["FilerDetails", "SpouseDetails"] {
+        let field = declared(source, owner, "blind");
+        assert!(field.contains("Legally blind"), "{owner}: {field}");
+        assert!(!field.contains("libertas_default"), "{owner}: {field}");
+    }
+    let mut s = Interview::new(TEST_USER, FederalDraft::empty("blind".into()));
+    let request = save_setup(&s.draft, ReturnSetup { filing: Filing::MarriedJointly });
+    assert!(matches!(send(&mut s, request), Reply::Response(P::BeginPeople { .. })));
+    let mut you = adult("Robin", "Sample", 19850301);
+    you.details.blind = true;
+    let request = save_you(&s.draft, you);
+    assert!(matches!(send(&mut s, request), Reply::Response(P::BeginSpouse { .. })));
+    let mut spouse = adult("Jordan", "Sample", 19860101);
+    spouse.details.blind = true;
+    let request = crate::tests::cross::interview::save_spouse(&s.draft, spouse);
+    accepted(&send(&mut s, request));
+    let people = s.draft.people.as_ref().unwrap();
+    assert!(people.taxpayer.blind && people.spouse.as_ref().unwrap().blind);
+    let Reply::Edit(P::SavePeople { you, .. }) = navigate_to(&mut s, TaxSection::People) else {
+        panic!("About you reopens with its saved answer")
+    };
+    assert!(you.details.blind);
+    let Reply::Edit(P::SaveSpouse { spouse, .. }) = navigate_to(&mut s, TaxSection::Spouse) else {
+        panic!("the spouse page reopens with its saved answer")
+    };
+    assert!(spouse.details.blind);
+}
+fn navigate_to(s: &mut Interview, section: TaxSection) -> Reply {
+    let request = navigate(&s.draft, section);
+    send(s, request)
+}
+
+// A person added on the Children page initializes fresh: relationship, time
+// lived with you, situation and a competing claim are facts the dependency
+// tests read (section 152), so none has a Default and each starts unanswered.
+// The age rule then waits for a situation the person chose: a 2007 birth
+// date is no refusal as a student and is refused only as a child under 19.
+#[test]
+fn a_new_person_starts_unanswered_and_the_age_rule_waits_for_a_chosen_situation() {
+    let source = include_str!("../../family/dependents_model.rs");
+    for field in ["relationship", "lived", "situation", "competing"] {
+        let declaration = declared(source, "Dependent", field);
+        assert!(!declaration.contains("libertas_default"), "{field}: {declaration}");
+    }
+    let mut s = supporting(FederalStatus::Single);
+    assert!(matches!(
+        navigate_to(&mut s, TaxSection::Children),
+        Reply::Response(P::BeginChildren { .. })
+    ));
+    let loaded = s.draft.clone();
+    let estimate_for = |s: &mut Interview, person: Dependent| {
+        send(
+            s,
+            P::EstimateDependents {
+                user: TEST_USER,
+                dependents: Dependents { people: vec![person] },
+                allowed_lived: Vec::new(),
+                days_alive: 365,
+            },
+        )
+    };
+    let alice = row("Alice", "Sample", 20070612);
+    let student = Dependent { situation: DependentSituation::Student, ..alice.clone() };
+    let reply = estimate_for(&mut s, student.clone());
+    assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
+    let reply = estimate_for(&mut s, alice);
+    let Reply::Response(P::Problem { message, .. }) = reply else {
+        panic!("a chosen child under 19 born in 2007 is refused, got {reply:?}")
+    };
+    assert_eq!(message, libertas::libertas_formatted_text("DEPENDENT_AGE_SITUATION", &[]));
+    assert_eq!(s.draft, loaded, "estimates accept nothing");
+    accepted(&send(&mut s, save_children(&loaded, vec![student])));
+    assert_eq!(s.draft.dependents()[0].situation, DependentSituation::Student);
+}
+
+// Every other fact a rule tests on About you, the spouse page and a person
+// on the Children page has no Default either: whether someone can claim the
+// filer, a death in 2026, the identification number, what a person's facts
+// are used for and the person's rare situations ("None of these" is chosen,
+// never assumed).
+#[test]
+fn rule_tested_people_facts_have_no_default() {
+    let filers = include_str!("../../family/filers_model.rs");
+    for (owner, field) in [
+        ("Filer", "identification"),
+        ("SpouseAnswers", "identification"),
+        ("FilerDetails", "claimable"),
+        ("FilerDetails", "more"),
+        ("SpouseDetails", "claimable"),
+        ("SpouseDetails", "more"),
+    ] {
+        let declaration = declared(filers, owner, field);
+        assert!(!declaration.contains("libertas_default"), "{owner}.{field}: {declaration}");
+    }
+    let people = include_str!("../../family/dependents_model.rs");
+    for field in ["use_for", "identification", "facts"] {
+        let declaration = declared(people, "Dependent", field);
+        assert!(!declaration.contains("libertas_default"), "{field}: {declaration}");
+    }
+    for owner in ["Filer", "SpouseAnswers"] {
+        assert!(!declared(filers, owner, "situations").contains("libertas_default"), "{owner}");
+    }
+    // A Bitflags question is never Nullable: its zero answer, "None of
+    // these", is chosen like any other and saved.
+    assert!(!declared(people, "Dependent", "facts").contains("Option<"));
+    let mut s = supporting(FederalStatus::Single);
+    let loaded = s.draft.clone();
+    let none = Dependent { facts: PersonFacts::NONE.0, ..row("Ava", "Sample", 20180615) };
+    accepted(&send(&mut s, save_children(&loaded, vec![none])));
+    assert_eq!(s.draft.dependents()[0].facts, 0);
+}
+
+// Care for each person is a fact Form 2441 tests: a person added on the
+// Children page has no care answer stored until Child and dependent care
+// answers it. While one is unanswered the page opens by WorkflowRequest
+// (BeginCare) with every row's care unanswered; once all are answered it
+// reopens by EditRequest with the answers.
+#[test]
+fn care_for_a_new_person_starts_unanswered() {
+    let model = include_str!("../../family/form_2441_model.rs");
+    assert!(!declared(model, "CareQualifyingRow", "care").contains("libertas_default"));
+    let mut s = supporting(FederalStatus::Single);
+    let loaded = s.draft.clone();
+    accepted(&send(&mut s, save_children(&loaded, vec![row("Ava", "Sample", 20180615)])));
+    assert_eq!(s.draft.dependents()[0].care, None, "nothing is pre-answered");
+    let Reply::Response(P::BeginCare { value, allowed_filing, .. }) =
+        from_review(&mut s, TaxSection::Care)
+    else {
+        panic!("the unanswered care page opens by WorkflowRequest")
+    };
+    assert!(value.qualifying_people.is_empty());
+    assert_eq!(value.new_people.len(), 1);
+    // The filing status is the return's (single): one allowed choice.
+    assert_eq!(allowed_filing.len(), 1);
+    save_care_costs(&mut s, &[CareCosts::Yes { expenses: 300_000, incapable_self_care: false }]);
+    assert_eq!(s.draft.dependents()[0].care, Some(DependentCare::Yes { care_expenses: 300_000 }));
+    let Reply::Edit(P::SaveCare { value, .. }) = from_review(&mut s, TaxSection::Care) else {
+        panic!("the answered care page reopens by EditRequest")
+    };
+    assert_eq!(
+        value.qualifying_people[0].care,
+        CareCosts::Yes { expenses: 300_000, incapable_self_care: false }
+    );
+    // A second person added later: the page asks again, and the first
+    // person's stored answer stays until the page is saved.
+    let d = s.draft.clone();
+    let mut people = reopened_people(&mut s);
+    people.push(row("Ben", "Sample", 20200301));
+    accepted(&send(&mut s, save_children(&d, people)));
+    assert_eq!(s.draft.dependents()[1].care, None);
+    assert_eq!(s.draft.dependents()[0].care, Some(DependentCare::Yes { care_expenses: 300_000 }));
+    // The answered person arrives with the saved care; only the new one is
+    // unanswered, and saving keeps the first person's care.
+    let Reply::Response(P::BeginCare { value, .. }) = from_review(&mut s, TaxSection::Care) else {
+        panic!("a new person's care is asked by WorkflowRequest")
+    };
+    assert_eq!(value.qualifying_people.len(), 1);
+    assert_eq!(
+        value.qualifying_people[0].care,
+        CareCosts::Yes { expenses: 300_000, incapable_self_care: false }
+    );
+    assert_eq!(value.new_people.len(), 1);
+    let mut page =
+        crate::tests::cross::interview::care_editor(from_review(&mut s, TaxSection::Care));
+    let P::SaveCare { value, .. } = &mut page else { unreachable!() };
+    value.new_people[0].care = CareCosts::No;
+    accepted(&send(&mut s, page));
+    assert_eq!(s.draft.dependents()[0].care, Some(DependentCare::Yes { care_expenses: 300_000 }));
+    assert_eq!(s.draft.dependents()[1].care, Some(DependentCare::No));
+    assert!(matches!(from_review(&mut s, TaxSection::Care), Reply::Edit(P::SaveCare { .. })));
 }

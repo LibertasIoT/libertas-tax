@@ -40,7 +40,7 @@ fn unit51_table_uses_existing_emitter_order_and_optional_rows() {
         RowSpec { form_line: Some((TaxForm::ScheduleB, "1", FormLineKind::Line)), ..SOURCE };
     let mut result = FederalResult::empty(0);
     let mut counts = vec![];
-    lines::emit(
+    crate::line_emission::emit(
         &mut result,
         &mut counts,
         [(&plain, Some(-1)), (&printed, None), (&plain, Some(0)), (&plain, Some(2))],

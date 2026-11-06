@@ -28,7 +28,7 @@ impl Interview {
             page: INCOME_PAGE,
             previous: INCOME_PAGE,
             review,
-            estimate: self.estimate_now(),
+            estimate: self.estimate_now(TaxSection::HomeOffices),
             warnings: Vec::new(),
             progress: self.topic_progress(INCOME_PAGE, Some(TaxSection::HomeOffices)),
             mortgage_loans: self.mortgage_choices(),
@@ -94,7 +94,7 @@ impl Interview {
                     || claim.activities.iter().any(|activity| {
                         !draft.income.iter().any(|entry| {
                             entry.id == activity.activity
-                                && entry.owner == claim.owner
+                                && entry.owner == crate::DocumentOwner::from(claim.owner)
                                 && matches!(entry.income, FederalIncome::Business { .. })
                         })
                     })
@@ -118,5 +118,18 @@ impl Interview {
         }
         finish_section(&mut draft, TaxSection::HomeOffices);
         Ok(draft)
+    }
+}
+
+impl Interview {
+    pub(super) fn save_home_offices(
+        &self,
+        value: &HomeOffices,
+        page: i32,
+    ) -> Result<FederalDraft, SaveFailure> {
+        if page != INCOME_PAGE || !self.reached(INCOME_PAGE) {
+            return Err(status("PROBLEM_SECTION_UNAVAILABLE_YET").into());
+        }
+        self.home_offices_candidate(value)
     }
 }

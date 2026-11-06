@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {"order": 198000, "rule": {"select": "^<SaveGiftCarryovers>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 539000, "rule": {"select": "^<PropertyGiftPage>", "flatten": {"name_row": false}}},
+    {"order": 540000, "rule": {"select": "^<PropertyGiftPage>.gift", "flatten": true}},
+    {"order": 541000, "rule": {"select": "^<PropertyGift>", "flatten": {"name_row": false}}},
+    {"order": 542000, "rule": {"select": "^<PropertyGift>.description", "promote": true}},
+    {"order": 543000, "rule": {"select": "^<VehicleGiftPage>", "flatten": {"name_row": false}}},
+    {"order": 544000, "rule": {"select": "^<VehicleGiftPage>.gift", "flatten": true}},
+    {"order": 545000, "rule": {"select": "^<VehicleGiftSource>", "flatten": {"name_row": false}}},
+    {"order": 546000, "rule": {"select": "^<VehicleGiftPage>.document", "flatten": true}},
+    {"order": 547000, "rule": {"select": "^<Form1098CDocument>", "flatten": {"name_row": false}}},
+    {"order": 548000, "rule": {"select": "^<Form1098CDocument>.form", "flatten": true}},
+    {"order": 549000, "rule": {"select": "^<Form1098CPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["donee", "donee_telephone", "donor"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["calendar_year", "corrected", "box_1", "box_2a", "box_2b", "box_2c", "box_2d", "box_3", "box_4a", "box_4b", "box_4c", "box_5a", "box_5b", "box_5c", "box_6a_yes", "box_6a_no", "box_6b", "box_6c_description", "box_6c_intangible_religious_benefits", "box_7", "treatment"]}]}},
+    {"order": 550000, "rule": {"select": "^<Form1098CPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["donee", "donee_telephone", "donor"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["calendar_year", "corrected", "box_1", "box_2a", "box_2b", "box_2c", "box_2d", "box_3", "box_4a", "box_4b", "box_4c", "box_5a", "box_5b", "box_5c", "box_6a_yes", "box_6a_no", "box_6b", "box_6c_description", "box_6c_intangible_religious_benefits", "box_7", "treatment"]}]}},
+    {"order": 551000, "rule": {"select": "^<Appraisal>.appraiser", "promote": true}},
+    {"order": 552000, "rule": {"select": "^<LessCommonGift>", "flatten": true}},
+    {"order": 553000, "rule": {"select": "^<VehicleUse>", "flatten": true}},
+    {"order": 834000, "rule": {"select": "^<SaveGiftCarryovers.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 889000, "rule": {"select": "^<WhalingCaptain>.owner", "when_single_choice": "hide"}},
+    {"order": 979000, "rule": {"select": "^<GiftCarryovers>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_GIFT_PROPERTY", "fields": ["gifts", "vehicles", "appraisals", "basis_election"]}, {"title": "DISPLAY_GIFT_CARRYOVERS", "fields": ["carryovers", "volunteer", "less_common"]}]}},
+    {"order": 980000, "rule": {"select": "^<GiftCarryovers>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_GIFT_PROPERTY", "fields": ["gifts", "vehicles", "appraisals", "basis_election"]}, {"title": "DISPLAY_GIFT_CARRYOVERS", "fields": ["carryovers", "volunteer", "less_common"]}]}}
+  ]
+}

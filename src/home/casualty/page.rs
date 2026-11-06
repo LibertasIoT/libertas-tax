@@ -1,5 +1,10 @@
 // Request selectors belong to page values, never persisted casualty facts.
-use super::*;
+use super::model::{
+    CasualtyAcquisition, CasualtyDeclaration, CasualtyProperty, HomeCasualtyDamage,
+    PersonalCasualty,
+};
+use alloc::{string::String, vec::Vec};
+use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 /// Business-home source for this casualty property
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -39,25 +44,30 @@ pub struct CasualtyPropertyPage {
     pub acquisition: CasualtyAcquisition,
     /// Adjusted basis before the disaster
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: i64,
     /// Fair market value immediately before the disaster
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub before: i64,
     /// Fair market value immediately after the disaster
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub after: i64,
     /// Insurance or other reimbursement received or expected
     /// Everything you received or expect to receive for this property, whether or not you filed a claim. It reduces the loss.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reimbursement: i64,
     /// Part of it you received during this return’s tax year
     /// Only what you actually received during this return’s tax year can produce a gain here. A payment you expect after that year is a gain in the year you receive it, not on this return.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub received: i64,
 }
@@ -137,9 +147,9 @@ pub struct PersonalCasualtyPage {
     #[libertas_pattern(r"([0-9]{5})?")]
     pub zip: String,
     /// Personal-use property lost or damaged
+    #[libertas_size(min = 1)]
     /// ----
     /// Property
-    #[libertas_size(min = 1)]
     pub properties: Vec<CasualtyPropertyPage>,
     /// Complete Form 4684 Section A records for this return confirmed
     /// No leaves this event's loss out of the estimate; a gain from reimbursement above basis is still included. For a declared event, confirm the declaration and incident period cover the event and each property's location. For every event, all basis, value and insurance-claim records are complete; no unentered casualty/theft event, prior-year election, unlinked business/investment property, postponed gain/replacement election, different AMT basis or pending reimbursement dispute applies. For inherited property, confirm section 1014 basis and no 2010 section 1022/Form 8939 election. Gifted and other carryover-basis holding periods need another worksheet. The major-disaster option requires a presidential major-disaster declaration (DR-), not an emergency-only declaration.

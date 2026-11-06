@@ -39,15 +39,11 @@ fn dividend_with_1202(
     gain: i64,
     exclusion: Option<FundQsbsExclusion>,
 ) -> FederalIncome {
-    let mut data = crate::interview::dividend_record(&crate::Div1099 {
-        more: crate::DivMore {
-            capital_distributions: distributions,
-            section_1202_gain: gain,
-            section_1202_exclusion: exclusion,
-            ..Default::default()
-        },
+    let mut data = crate::DividendSource::printed(dividend_document(crate::Div1099 {
+        capital_distributions: distributions,
+        section_1202_gain: gain,
         ..native_div1099(String::new(), 0, 0)
-    });
+    }));
     data.section_1202_exclusion = exclusion;
     FederalIncome::Dividend { data }
 }
@@ -99,10 +95,10 @@ fn p2_qof_deferral_stays_out_of_line_3e() {
     add(
         &mut d,
         income(FederalIncome::Sale {
-            data: FederalSale {
+            data: sale_source(FederalSale {
                 basis_reporting: BasisReporting::NoForm1099B,
                 ..native_sale(GainTerm::Long, 10_000_000, Some(2_000_000))
-            },
+            }),
         }),
     );
     add(
@@ -131,14 +127,14 @@ fn p2_qof_deferral_stays_out_of_line_3e() {
 fn p3_qof_deferral_takes_the_community_share() {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = community_arizona();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.income[0].community = CommunityShare::Community;
     let mut sale = income(FederalIncome::Sale {
-        data: FederalSale {
+        data: sale_source(FederalSale {
             basis_reporting: BasisReporting::NoForm1099B,
             ..native_sale(GainTerm::Long, 3_000_000, Some(2_000_000))
-        },
+        }),
     });
     sale.community = CommunityShare::Community;
     add(&mut d, sale);
@@ -175,22 +171,22 @@ fn p3_qof_deferral_takes_the_community_share() {
 fn p4_sale_gain_gross_on_a_community_return() {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = community_arizona();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.income[0].community = CommunityShare::Community;
     let mut gain = income(FederalIncome::Sale {
-        data: FederalSale {
+        data: sale_source(FederalSale {
             basis_reporting: BasisReporting::NoForm1099B,
             ..native_sale(GainTerm::Long, 3_000_000, Some(2_000_000))
-        },
+        }),
     });
     gain.community = CommunityShare::Community;
     add(&mut d, gain);
     let mut loss = income(FederalIncome::Sale {
-        data: FederalSale {
+        data: sale_source(FederalSale {
             basis_reporting: BasisReporting::NoForm1099B,
             ..native_sale(GainTerm::Long, 1_000_000, Some(1_400_000))
-        },
+        }),
     });
     loss.community = CommunityShare::Community;
     add(&mut d, loss);
@@ -212,12 +208,14 @@ fn p4_sale_gain_gross_on_a_community_return() {
 fn qof_property(long: i64) -> FederalIncome {
     FederalIncome::OpportunityFund {
         data: QofInvestment {
+            fund_ein: Default::default(),
+            source_recipient: Default::default(),
             fund: "Example Opportunity Fund".into(),
             invested_on: 20190601,
-            short_term: 0,
-            long_term: long,
+            short_term: Some(0),
+            long_term: Some(long),
             gain_code: QofGainCode::Section1231,
-            event: QofEvent::Held { fair_value: Some(long) },
+            event: Some(QofEvent::Held { fair_value: Some(long) }),
             special: false,
         },
     }
@@ -257,7 +255,7 @@ fn s2_qof_section_1231_inclusion_joins_rental_magi() {
 fn s3_two_thirds_gross_income_takes_the_community_share() {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = community_arizona();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![];
     for v in [
         raised_farm(50_000, 0),
@@ -336,13 +334,15 @@ fn s5_code_z_cap_ignores_the_section_1231_y_row() {
     );
 }
 
-// S6: the Form 8958 total of a fund's section 1202 gain uses the separate-return issuer limit:
-// box 2a 8,000,000 less min(6,000,000, 5,000,000) = 3,000,000, as the return itself takes it.
+// Corrected 2026-10-28: apply the separate-return section 1202 issuer limit after ownership.
+// Each spouse has $4,000,000 of distributions less $3,000,000 excluded, below the $5,000,000
+// limit. Form 8958's total is $2,000,000, the sum of both taxable shares (IRC 1202(b)(3);
+// https://www.irs.gov/pub/irs-pdf/f8958.pdf, page 4, "How To Complete Form 8958").
 #[test]
 fn s6_form_8958_total_uses_the_separate_issuer_limit() {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = community_arizona();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.income[0].community = CommunityShare::Community;
     let mut e =
@@ -361,5 +361,5 @@ fn s6_form_8958_total_uses_the_separate_issuer_limit() {
             diag.push_str(&alloc::format!("{} = {}; ", l.id, l.amount));
         }
     }
-    assert_eq!(value(&r, &alloc::format!("form8958_{id}_total")), 3_000_000, "{diag}");
+    assert_eq!(value(&r, &alloc::format!("form8958_{id}_total")), 2_000_000, "{diag}");
 }

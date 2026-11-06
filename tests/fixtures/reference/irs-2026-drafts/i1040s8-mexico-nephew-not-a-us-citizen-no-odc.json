@@ -1,0 +1,71 @@
+{
+ "source": {
+  "title": "Instructions for Schedule 8 (Form 1040), Schedule 8812 (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 3",
+  "example": "Credit for Other Dependents, Example 2",
+  "url": "https://www.irs.gov/pub/irs-dft/i1040s8--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "d1b1893ee232e2cd909a94ac2ef3ba9f2bb2a9591f8f238a6c61b75db3bf4335"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "filer born 1980-06-15, single, W-2 wages $60,000 with $6,000 withholding",
+   "reason": "the example gives no income"
+  },
+  {
+   "fact": "the nephew was born 2016-06-15, got no income, and the filer supplies over half his support",
+   "reason": "the example: a 10-year-old nephew who qualifies as a dependent"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19800615,
+ "pages": [
+  {
+   "page": "foreign_relatives",
+   "children": [
+    [
+     "PAUL",
+     "SAMPLE",
+     20160615
+    ]
+   ]
+  },
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 60000,
+     "withholding": 6000,
+     "social_wages": 60000,
+     "social_tax": 3720,
+     "medicare_wages": 60000,
+     "medicare_tax": 870
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "8812",
+   "line": "4",
+   "amount": 0,
+   "provenance": "stated"
+  },
+  {
+   "form": "8812",
+   "line": "6",
+   "amount": 0,
+   "provenance": "stated"
+  },
+  {
+   "form": "8812",
+   "line": "7",
+   "amount": 0,
+   "provenance": "stated"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

@@ -1,0 +1,64 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 16",
+  "example": "Worksheet A, line 3: Table 1 row 71 or older after November 18, 1996 (160)",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "annuity starts 2026-01-01 with twelve monthly payments of $1,000; code 7 pension, box 2a equal to box 1",
+   "reason": "the table gives only the divisor; the cost is chosen so line 4 is exactly $100 a month"
+  },
+  {
+   "fact": "owner born 19530615 (age 72 on the starting date)",
+   "reason": "selects the table row"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19530615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7",
+     "gross": 12000,
+     "taxable": 12000,
+     "method": {
+      "kind": "simplified",
+      "cost": 16000,
+      "months": 12,
+      "ages": [
+       72
+      ],
+      "started": 20260101
+     }
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 12000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 10800,
+   "provenance": "derived",
+   "derivation": "Worksheet A: cost 16,000 / 160 = $100 a month x 12 = 1,200 excluded; 12,000 - 1,200"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

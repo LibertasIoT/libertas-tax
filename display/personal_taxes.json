@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 655000, "rule": {"select": "^<PersonalTaxElection>", "flatten": true}},
+    {"order": 656000, "rule": {"select": "^<TaxIncomeAllocation>", "flatten": true}}
+  ]
+}

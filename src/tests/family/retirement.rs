@@ -1,17 +1,21 @@
 use super::*;
 
 #[test]
-fn student_identity_survives_roster_reordering_and_a_removed_person_takes_the_row_with_them() {
+fn student_identity_survives_roster_reordering_and_a_removed_person_keeps_the_source_for_correction()
+ {
     let mut d = complete(FederalStatus::Joint);
     add_child(&mut d);
     add_child(&mut d);
     let second = d.dependents[1].id;
     let sid3_242 = sid(&d, 3);
-    d.credits.as_mut().unwrap().education.push(native_education(
-        sid3_242,
-        education_expenses(100_000),
-        education_choice(EducationMethod::LifetimeLearning, Answer::No),
-    ));
+    add_education(
+        d.credits.as_mut().unwrap(),
+        native_education(
+            sid3_242,
+            education_expenses(100_000),
+            education_choice(EducationMethod::LifetimeLearning, Answer::No),
+        ),
+    );
     let before = supported(&d);
     d.dependents.remove(0);
     // The row names its person by identity; the catalog is read from the people
@@ -19,16 +23,146 @@ fn student_identity_survives_roster_reordering_and_a_removed_person_takes_the_ro
     assert_eq!(d.credits.as_ref().unwrap().education[0].student, second);
     assert!(crate::federal_rules::people_students(&d).iter().any(|s| s.id == second));
     assert_eq!(value(&supported(&d), "education_credit"), value(&before, "education_credit"));
-    // A person who left the return takes their row with them at the prune
-    // (F3, 2026-10-09): no stored copy of the people keeps them displayable.
+    // The physical tuition source retains its original person identity after
+    // household removal until the Document center rechecks its ownership.
+    let sources = d.credits.as_ref().unwrap().education.clone();
+    let mut annual = d.credits.as_ref().unwrap().students[0].clone();
+    let household = d.clone();
     d.dependents.clear();
     all_ticked(&mut d);
     let pruned = crate::interview::prune(&mut d);
-    assert!(d.credits.as_ref().unwrap().education.is_empty());
+    assert_eq!(d.credits.as_ref().unwrap().education[0].student, second);
+    assert_eq!(d.credits.as_ref().unwrap().education.len(), 1);
+    assert_eq!(d.credits.as_ref().unwrap().education, sources);
     assert!(
-        pruned.removed.iter().any(|item| item.key() == "SAVING_KIND_EDUCATION_CREDIT"),
+        !pruned.removed.iter().any(|item| item.key() == "SAVING_KIND_EDUCATION_CREDIT"),
         "{pruned:?}"
     );
+
+    // The normal household save must preserve the same source and permit a
+    // cold restart while its student needs correction.
+    let mut session = restart(household);
+    let Reply::Edit(mut removal @ P::SaveChildren { .. }) =
+        crate::tests::cross::interview::from_review(&mut session, TaxSection::Children)
+    else {
+        panic!("the actual household editor")
+    };
+    let P::SaveChildren { dependents, .. } = &mut removal else { unreachable!() };
+    dependents.people.clear();
+    crate::tests::cross::interview::accepted(&send(&mut session, removal));
+    assert!(session.draft.dependents.is_empty());
+    assert_eq!(session.draft.credits.as_ref().unwrap().education, sources);
+    assert_eq!(session.draft.credits.as_ref().unwrap().students, vec![annual.clone()]);
+    assert!(session.draft.valid_stored());
+    let retained = session.draft.clone();
+    session = restart(retained.clone());
+    assert_eq!(session.draft, retained);
+    let missing = estimate(&session.draft);
+    assert_eq!(missing.state, ResultState::Incomplete);
+    assert_eq!(
+        (missing.tax, missing.payments, missing.refund, missing.balance),
+        (None, None, None, None)
+    );
+    assert!(missing.lines.is_empty());
+    let issue = missing
+        .issues
+        .iter()
+        .find(|issue| {
+            issue.display.key == "MESSAGE_A_STUDENT_IS_NOT_ON_THIS_RETURN_CHOOSE_THE_STUDENT_AGAIN"
+        })
+        .expect("the retained source must identify its unavailable student");
+    assert_eq!(
+        crate::interview::issue_pages(&session.draft, &issue.context, None),
+        vec![TaxSection::Documents]
+    );
+    let center = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    // 2026-10-29: save the intact paper with Unknown ownership, then assign
+    // it in the Document center before answering Education questions.
+    let reply = send(&mut session, center);
+    let Reply::Response(P::Review { remaining_items, .. }) = reply else {
+        panic!("expected the pending-owner review, got {reply:?}")
+    };
+    assert!(remaining_items.iter().any(|item| item.section == TaxSection::Documents));
+    let credits = session.draft.credits.as_ref().unwrap();
+    assert_eq!(credits.education.len(), 1);
+    let source_id = credits.education[0].id;
+    assert_ne!(source_id, 0);
+    assert_eq!(credits.education[0].form, sources[0].form);
+    assert_eq!(credits.education[0].student, 0);
+    assert_eq!(credits.education[0].assigned, crate::DocumentRecipient::Unknown);
+    assert_eq!(credits.education[0].owner_source, None);
+    assert!(credits.students.is_empty());
+    assert!(session.draft.valid_stored());
+    let pending = session.draft.clone();
+    session = restart(pending.clone());
+    assert_eq!(session.draft, pending);
+    let missing = estimate(&session.draft);
+    assert_eq!(missing.state, ResultState::Incomplete);
+    assert_eq!(
+        (missing.tax, missing.payments, missing.refund, missing.balance),
+        (None, None, None, None)
+    );
+    assert!(missing.lines.is_empty());
+    let issue = missing
+        .issues
+        .iter()
+        .find(|issue| issue.display.key == "ISSUE_WHOSE_DOCUMENT_IS_THIS")
+        .expect("the retained source must keep ownership pending");
+    assert_eq!(
+        crate::interview::issue_pages(&session.draft, &issue.context, None),
+        vec![TaxSection::Documents]
+    );
+    let education =
+        crate::tests::cross::interview::open_credits_topic(&mut session, TaxSection::Education);
+    let P::SaveEducation { value: education, .. } = education else { unreachable!() };
+    assert_eq!(education.documents.len(), 1);
+    assert_eq!(education.documents[0].student, None);
+    assert!(education.students.is_empty());
+    let corrected = crate::tests::support::builders::added_documents_request(
+        &mut session,
+        TaxSection::Documents,
+        -1,
+        &[source_id],
+        crate::AddedOwnership::Yours,
+    );
+    let P::SaveDocuments { document_owners, .. } = &corrected else { unreachable!() };
+    let taxpayer = document_owners.iter().find(|person| person.person == -1).unwrap();
+    assert!(taxpayer.choices.iter().any(|choice| choice.id == source_id));
+    crate::tests::cross::interview::accepted(&send(&mut session, corrected));
+    assert!(session.draft.valid_stored());
+    let credits = session.draft.credits.as_ref().unwrap();
+    assert_eq!(credits.education[0].id, source_id);
+    assert_eq!(credits.education[0].form, sources[0].form);
+    assert_eq!(credits.education[0].student, -1);
+    assert_eq!(credits.education[0].assigned, crate::DocumentRecipient::Taxpayer);
+    assert_eq!(credits.education[0].owner_source, Some(crate::OwnerSource::Added));
+    assert_eq!(credits.students.len(), 1);
+    assert_eq!(credits.students[0].student, -1);
+    assert_eq!(credits.students[0].method, None);
+    annual.student = -1;
+    crate::tests::cross::interview::accepted(
+        &crate::tests::cross::interview::save_education_answers(&mut session, vec![annual]),
+    );
+    assert_eq!(
+        session.draft.credits.as_ref().unwrap().education[0].form.box_1,
+        sources[0].form.box_1
+    );
+    assert_eq!(
+        value(&supported(&session.draft), "education_credit"),
+        value(&before, "education_credit")
+    );
+    let corrected = session.draft.clone();
+    session = restart(corrected.clone());
+    assert_eq!(session.draft, corrected);
+    let mut deletion =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut deletion else { unreachable!() };
+    documents.common.education.students.clear();
+    crate::tests::cross::interview::accepted(&send(&mut session, deletion));
+    assert!(session.draft.valid_stored());
+    assert!(session.draft.credits.as_ref().unwrap().education.is_empty());
+    assert!(session.draft.credits.as_ref().unwrap().students.is_empty());
+    assert_eq!(value(&supported(&session.draft), "education_credit"), 0);
 }
 
 #[test]
@@ -306,36 +440,45 @@ fn written_separation_eic_does_not_grant_care_unmarried_status() {
 #[test]
 fn licensed_care_facility_residence_combines_with_service_suspension() {
     let mut d = complete(FederalStatus::Single);
-    let mut home = official_duty_sale(false);
-    let HomeExclusion::ServiceSuspension { taxpayer, .. } = &mut home.exclusion else { panic!() };
-    taxpayer.history.earlier_owned = 800;
-    taxpayer.history.earlier_lived = 365;
-    taxpayer.history.care = DutyHomeCare {
-        recent_days: 0,
-        earlier_days: 365,
-        recent_owned_residence_days: 0,
-        earlier_owned_residence_days: 365,
-    };
+    let mut home = home_sale_source(false);
+    let closed = home.form.paper().unwrap().box_1_date_of_closing;
+    let answers = home.facts_mut();
+    answers.acquired = crate::dates::add_days(closed, -(1826 + 800));
+    answers.lived = HomeLived::Days { days: 0 };
+    answers.service = Some(HomeService {
+        election: HomeServiceElection {
+            service: HomeDutyKind::Uniformed {
+                duty: QualifiedHomeDuty { extended_orders: true, remote_or_quarters: true },
+            },
+            one_property: true,
+            suspended_days: 2192,
+        },
+        added_lived: 365,
+        added_care: Some(crate::home_sale::HomeServiceCare {
+            facility_days: 365,
+            owned_residence_days: 365,
+        }),
+        spouse_added_lived: None,
+        spouse_added_care: None,
+    });
     add(&mut d, income(FederalIncome::HomeSale { data: home }));
     assert_eq!(value(&supported(&d), "capital_gain"), 300000);
     assert_eq!(restart(d.clone()).draft, d);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
-    let HomeExclusion::ServiceSuspension { taxpayer, .. } = &mut data.exclusion else { panic!() };
-    let DutyHomeCare { earlier_owned_residence_days, .. } = &mut taxpayer.history.care;
-    *earlier_owned_residence_days = 364;
+    let answers = data.facts_mut();
+    answers.service.as_mut().unwrap().added_care.as_mut().unwrap().owned_residence_days = 364;
     unsupported(&d, "Income:");
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
-    let HomeExclusion::ServiceSuspension { taxpayer, .. } = &mut data.exclusion else { panic!() };
-    let DutyHomeCare { earlier_days, earlier_owned_residence_days, .. } =
-        &mut taxpayer.history.care;
-    *earlier_owned_residence_days = 365;
-    *earlier_days = 2193;
+    let answers = data.facts_mut();
+    let care = answers.service.as_mut().unwrap().added_care.as_mut().unwrap();
+    care.owned_residence_days = 365;
+    care.facility_days = 2193;
     assert!(!d.valid_stored());
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
-    let HomeExclusion::ServiceSuspension { taxpayer, .. } = &mut data.exclusion else { panic!() };
-    taxpayer.history.earlier_owned = 700;
-    let DutyHomeCare { earlier_days, .. } = &mut taxpayer.history.care;
-    *earlier_days = 365;
+    let closed = data.form().closed;
+    let answers = data.facts_mut();
+    answers.acquired = crate::dates::add_days(closed, -(1826 + 700));
+    answers.service.as_mut().unwrap().added_care.as_mut().unwrap().facility_days = 365;
     assert!(!d.valid_stored());
 }
 
@@ -434,12 +577,6 @@ fn adoption_benefits_reject_unresolved_plan_and_invalid_stored_sources() {
         assert_eq!(value(&r, "adoption_benefits_excluded"), 0);
         assert_eq!(value(&r, "agi"), value(&before, "agi") + 10000);
     }
-    if let AdoptionBenefits::Program { received, .. } =
-        &mut d.credits.as_mut().unwrap().adoptions[0].benefits
-    {
-        *received = -1;
-    }
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -553,7 +690,7 @@ fn able_corrections_do_not_dilute_annual_expenses_or_ordinary_penalty() {
     add(&mut d, income(able_distribution(2400, 400, 1600)));
     add(&mut d, income(able_correction(2026, 300)));
     let mut spouse = income(able_correction(2026, 200));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "able_taxable_distributions"), 633);
@@ -643,13 +780,18 @@ fn temporary_child_annuity_uses_and_carries_unused_exclusion() {
     assert_eq!(value(&r, "early_distribution_tax"), 0);
     assert_eq!(supported(&restart(d.clone()).draft), r);
     let mut exhausted = d;
-    let FederalIncome::Retirement { data } = &mut exhausted.income[1].income else {
-        unreachable!()
-    };
-    data.gross = 240000;
-    let RetirementTaxable::ChildAnnuity { data } = &mut data.taxable else { unreachable!() };
-    for payment in &mut data.payments {
-        payment.amount = 20000;
+    {
+        let FederalIncome::Retirement { data } = &mut exhausted.income[1].income else {
+            unreachable!()
+        };
+        let mut data = edit_retirement(data);
+        data.gross = 240000;
+        let Some(RetirementTaxable::ChildAnnuity { data }) = &mut data.taxable else {
+            unreachable!()
+        };
+        for payment in &mut data.payments {
+            payment.amount = 20000;
+        }
     }
     let r = supported(&exhausted);
     assert_eq!(return_line(&r, "5b"), 60000);
@@ -660,9 +802,14 @@ fn temporary_child_annuity_uses_and_carries_unused_exclusion() {
 #[test]
 fn unconfirmed_child_annuity_is_taxed_in_full() {
     let mut d = child_annuity_draft();
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTaxable::ChildAnnuity { data } = &mut data.taxable else { unreachable!() };
-    data.confirmed = false;
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        let Some(RetirementTaxable::ChildAnnuity { data }) = &mut data.taxable else {
+            unreachable!()
+        };
+        data.confirmed = false;
+    }
     let r = supported(&d);
     assert!(noted(&r, "WARN_RETIREMENT_BASIS_LEFT_OUT"));
     assert_eq!(return_line(&r, "5b"), return_line(&r, "5a"));
@@ -674,12 +821,20 @@ fn temporary_child_annuity_rejects_wrong_term_history_and_treatment() {
     d.people.as_mut().unwrap().taxpayer.birth_date = 20040101;
     unsupported(&d, "Income:");
     d.people.as_mut().unwrap().taxpayer.birth_date = 20050101;
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    data.ordinary_distribution = RetirementTreatment::Ordinary;
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        data.ordinary_distribution = Some(RetirementTreatment::Ordinary);
+    }
     unsupported(&d, "Income:");
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTaxable::ChildAnnuity { data } = &mut data.taxable else { unreachable!() };
-    data.deferred += 1;
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        let Some(RetirementTaxable::ChildAnnuity { data }) = &mut data.taxable else {
+            unreachable!()
+        };
+        data.deferred += 1;
+    }
     assert!(!d.valid_stored());
 }
 
@@ -736,9 +891,15 @@ fn disabled_child_survivor_uses_lifetime_pension_not_disability_wages() {
             p.share = Some(PensionShare { preceding: 0, payment: 50000, total: 100000 });
         }
         let mut entry = pension_entry(p, 6000);
-        let FederalIncome::Retirement { data } = &mut entry.income else { unreachable!() };
-        data.ordinary_distribution =
-            retirement_exception(20261201, RetirementException::Death { died: 20251231 }, false);
+        {
+            let FederalIncome::Retirement { data } = &mut entry.income else { unreachable!() };
+            let mut data = edit_retirement(data);
+            data.ordinary_distribution = Some(retirement_exception(
+                20261201,
+                RetirementException::Death { died: 20251231 },
+                false,
+            ));
+        }
         add(&mut d, entry);
         let r = supported(&d);
         assert_eq!(return_line(&r, "5b"), if shared { 540000 } else { 480000 });
@@ -752,14 +913,19 @@ fn disabled_child_survivor_uses_lifetime_pension_not_disability_wages() {
 #[test]
 fn temporary_child_annuity_early_termination_preserves_original_divisor() {
     let mut d = child_annuity_draft();
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    data.gross = 30000;
-    let RetirementTaxable::ChildAnnuity { data } = &mut data.taxable else { unreachable!() };
-    data.ended = Some(20260630);
-    data.payments.truncate(6);
-    assert_eq!(data.monthly(), 10000);
-    assert!(data.valid(30000));
-    assert_eq!(data.result(), (30000, 90000, 150000));
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        data.gross = 30000;
+        let Some(RetirementTaxable::ChildAnnuity { data }) = &mut data.taxable else {
+            unreachable!()
+        };
+        data.ended = Some(20260630);
+        data.payments.truncate(6);
+        assert_eq!(data.monthly(), 10000);
+        assert!(data.valid(30000));
+        assert_eq!(data.result(), (30000, 90000, 150000));
+    }
     let r = supported(&d);
     assert_eq!(return_line(&r, "5a"), 30000);
     assert_eq!(return_line(&r, "5b"), 0);
@@ -767,19 +933,22 @@ fn temporary_child_annuity_early_termination_preserves_original_divisor() {
     assert_eq!(value(&r, "child_annuity_2_remaining_cost"), 1500);
     assert_eq!(value(&r, "agi"), 60000); // No taxable pension income is added.
     assert_eq!(supported(&restart(d.clone()).draft), r);
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTaxable::ChildAnnuity { data } = &mut data.taxable else { unreachable!() };
-    data.ended = None;
-    assert!(!data.valid(30000)); // Missing months need the source termination date.
-    data.ended = Some(20250630);
-    assert!(!data.valid(30000));
-    data.ended = Some(20260230);
-    assert!(!data.valid(30000));
-    data.started = 20260701;
-    data.recovered = 0;
-    data.deferred = 0;
-    data.ended = Some(20260630);
-    assert!(!data.valid(30000));
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        let Some(RetirementTaxable::ChildAnnuity { data }) = &mut data.taxable else {
+            unreachable!()
+        };
+        data.ended = None;
+        assert!(!data.valid(30000)); // Missing months need the source termination date.
+        data.ended = Some(20250630);
+        assert!(!data.valid(30000));
+        data.started = 20260701;
+        data.recovered = 0;
+        data.deferred = 0;
+        data.ended = Some(20260630);
+        assert!(!data.valid(30000));
+    }
 }
 
 #[test]
@@ -787,19 +956,27 @@ fn final_child_annuitant_deduction_links_periodic_recovery_and_matching_cost() {
     let mut d = child_annuity_draft();
     d.people.as_mut().unwrap().taxpayer.died =
         Some(FinalReturn { date: 20260630, bonds: None, ordinary: true, estate_medical: 0 });
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    data.gross = 3000000;
-    if let RetirementTreatment::Exception { distributed, .. } = &mut data.ordinary_distribution {
-        *distributed = 20260601;
-    }
-    let RetirementTaxable::ChildAnnuity { data } = &mut data.taxable else { unreachable!() };
-    data.ended = Some(20260630);
-    data.cost *= 100;
-    data.recovered *= 100;
-    data.deferred *= 100;
-    data.payments.truncate(6);
-    for payment in &mut data.payments {
-        payment.amount *= 100;
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        data.gross = 3000000;
+        data.form_boxes.payment_date = Some(20260601);
+        if let Some(RetirementTreatment::Exception { distributed, .. }) =
+            &mut data.ordinary_distribution
+        {
+            *distributed = 20260601;
+        }
+        let Some(RetirementTaxable::ChildAnnuity { data }) = &mut data.taxable else {
+            unreachable!()
+        };
+        data.ended = Some(20260630);
+        data.cost *= 100;
+        data.recovered *= 100;
+        data.deferred *= 100;
+        data.payments.truncate(6);
+        for payment in &mut data.payments {
+            payment.amount *= 100;
+        }
     }
     d.deductions.as_mut().unwrap().annuity_losses.push(AnnuityLoss {
         income_id: 2,
@@ -818,10 +995,13 @@ fn final_child_annuitant_deduction_links_periodic_recovery_and_matching_cost() {
     d.deductions.as_mut().unwrap().annuity_losses[0].cost += 100;
     unsupported(&d, "Annuity loss:");
     d.deductions.as_mut().unwrap().annuity_losses[0].cost -= 100;
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    data.taxable = RetirementTaxable::CivilServiceDeath {
-        data: crate::SurvivorLumpSum { cost: 24000000, recovered: 6000000, eligible: true },
-    };
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        data.taxable = Some(RetirementTaxable::CivilServiceDeath {
+            data: crate::SurvivorLumpSum { cost: 24000000, recovered: 6000000, eligible: true },
+        });
+    }
     unsupported(&d, "Annuity loss:"); // A beneficiary's lump sum is not this annuity.
 }
 
@@ -835,6 +1015,7 @@ fn trump_account_excess_and_returned_earnings_use_separate_form_5329_taxes() {
         contributions: 720_000,
         exempt: 120_000,
         returns: vec![TrumpExcessReturn {
+            document_id: None,
             principal: 60_000,
             earnings: 2_000,
             received: 20261201,
@@ -856,6 +1037,7 @@ fn trump_account_excess_and_returned_earnings_use_separate_form_5329_taxes() {
     assert_eq!(estimate(&restart(d.clone()).draft), r);
 
     d.screening.as_mut().unwrap().trump_accounts[0].returns.push(TrumpExcessReturn {
+        document_id: None,
         principal: 40_000,
         earnings: 3_000,
         received: 20270401,

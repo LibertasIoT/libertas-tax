@@ -30,7 +30,8 @@ fn fuel_credit_requires_matching_activity_and_unclaimed_qualified_use() {
         fuels: FederalFuelLines {
             gasoline_farm: Some(fuel_use(10_000, 500)),
             ..empty_fuel_lines()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
@@ -47,14 +48,8 @@ fn fuel_credit_requires_matching_activity_and_unclaimed_qualified_use() {
     claim.fuels.gasoline_off_highway.as_mut().unwrap().not_claimed_elsewhere = false;
     fuel_use_left_out(&draft);
     let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
-    data.fuel_tax_credit
-        .as_mut()
-        .unwrap()
-        .fuels
-        .gasoline_off_highway
-        .as_mut()
-        .unwrap()
-        .thousandths_of_gallon = 0;
+    data.fuel_tax_credit.as_mut().unwrap().fuels.gasoline_off_highway.as_mut().unwrap().gallons =
+        0.0;
     assert!(crate::federal_rules::validate_income_amount(&draft.income[1].income).is_err());
 }
 
@@ -146,8 +141,15 @@ fn cash_fuel_recovery_requires_timing_tax_benefit_and_single_reporting() {
     assert_eq!(supported(&draft).tax, baseline.tax);
     recovery_mut(&mut draft).not_reported_elsewhere = true;
     let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
-    data.material_participation = false;
-    assert!(noted(&supported(&draft), "WARN_BUSINESS_LEFT_OUT"));
+    data.material_participation =
+        crate::ParticipationFacts { hours: 0, test: crate::ParticipationTest::None };
+    // 2026-10-24: passive C is calculated; this recovery still needs its
+    // owning active/original-year tax-benefit source, not an assumed zero.
+    let result = estimate(&draft);
+    assert_eq!(result.state, ResultState::Unsupported);
+    assert!(result.issues.iter().any(|issue| issue.display.key
+        == "ISSUE_CONFIRM_THE_CASH_METHOD_ORIGINAL_PRIOR_YEAR_FORM_4136_RETURN_WAS_FI_DAD735AB"));
+    assert!(result.tax.is_none());
 }
 
 #[test]
@@ -270,7 +272,10 @@ fn clean_vehicle_rejects_duplicate_vin_without_consuming_ineligible_used_claim()
     assert!(mixed.issues.iter().any(|issue| issue.section.starts_with("Clean vehicle")));
     let mut direct_result = supported(&complete(FederalStatus::Single));
     let selected = crate::clean_vehicle::calculate(
-        &d,
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
         d.credits.as_ref().unwrap().clean_vehicles.as_ref(),
         d.people.as_ref().unwrap(),
         FederalStatus::Single,

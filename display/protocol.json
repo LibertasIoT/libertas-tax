@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"order": 178000, "rule": {"select": "^<TaxInterviewProtocol>", "suppress_label": true}},
+    {"order": 178010, "rule": {"select": "^<StoredReturnUnavailable>.action", "suppress_label": true}},
+    {"order": 214100, "rule": {"select": "^<EstimateSoFar>", "flatten": true}},
+    {"order": 215000, "rule": {"select": "^<EstimateSoFar>.remaining_items[]", "style": {"icon": "warning"}}},
+    {"order": 215050, "rule": {"select": "^<EstimateSoFar>.remaining_items[]", "switch": {"cases": [{"condition": "resource([status]) == \"ESTIMATE_LATER_ITEMS\"", "style": {"icon": "info", "emphasis": "secondary"}}]}}},
+    {"order": 215100, "rule": {"select": "^<EstimateSoFar>.remaining_items", "when_empty": "hide"}},
+    {"order": 215200, "rule": {"select": "^<EstimateCarry>.remaining_items", "when_empty": "hide"}},
+    {"order": 216100, "rule": {"select": "$.warnings", "when_empty": "hide"}},
+    {"order": 217000, "rule": {"select": "^<SaveWarning>", "style": {"color": "error", "icon": "warning"}}},
+    {"order": 218000, "rule": {"select": "^<SaveWarning>.message", "promote": true}},
+    {"order": 220000, "rule": {"select": "^<ReviewItem>", "switch": {"cases": [{"condition": "resource([status]) == \"REVIEW_NOT_STARTED\" || resource([status]) == \"REVIEW_NONE\"", "style": {"emphasis": "muted"}}, {"condition": "resource([status]) == \"REVIEW_PLANNED_TOPIC\" || resource([status]) == \"REVIEW_COMING_UP\"", "style": {"emphasis": "secondary"}}]}}},
+    {"order": 221000, "rule": {"select": "^<ReviewItem>:selected", "style": {"emphasis": "primary", "color": "primary"}}},
+    {"order": 665000, "rule": {"select": "^<HubTopics>", "flatten": {"name_row": false}}},
+    {"order": 805000, "rule": {"select": "^<ReviewItem>.status", "promote": true}},
+    {"order": 807000, "rule": {"select": "^<ReviewItem>", "label": {"field": "item"}}},
+    {"order": 818000, "rule": {"select": "^<AllTopicsLink>", "label": {"field": "label"}}},
+    {"order": 819000, "rule": {"select": "^<AllTopicsLink>.label", "promote": true}},
+    {"order": 848000, "rule": {"select": "^<EstimateSoFar>.line", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

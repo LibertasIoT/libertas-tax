@@ -57,7 +57,12 @@ fn investment_interest_separates_carryovers_and_coordinates_niit_amt() {
 #[test]
 fn investment_interest_private_activity_debt_has_separate_amt_limit() {
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Interest { data: native_exempt_interest(2000000, 2000000) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest {
+            data: interest_source(native_exempt_interest(2000000, 2000000)),
+        }),
+    );
     investment_borrowing(&mut d, 0, 0, 0);
     d.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().loans[0]
         .private_activity = 3000000;
@@ -124,11 +129,13 @@ fn trading_interest_requires_participation_and_separate_amt_facts() {
     for missing in 0..2 {
         let mut d = trading_interest_draft(10_000, false, 0);
         let FederalIncome::Scorp { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_scorp(data);
         if missing == 0 {
             data.participation = None;
         } else {
             data.amt = None;
         }
+        drop(data);
         let r = estimate(&d);
         assert!(r.issues.iter().any(|i| i.section == "K-1 investment interest"));
         assert!(
@@ -215,7 +222,7 @@ fn qsbs_prior_nol_refigures_ira_before_itemized_agi_limits() {
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).medical = 1_000_000;
     ded.cash_charity = 100_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic J Inc.", 10_000, 110_000, 0));
     let after = supported(&d);

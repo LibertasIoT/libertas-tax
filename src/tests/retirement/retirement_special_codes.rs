@@ -8,6 +8,9 @@ use crate::tests::support::assert::line_amount as cents;
 // unchecked, every confirmation Yes; the base return carries a $60,000 W-2 with $6,500 withheld.
 use super::*;
 use crate::tests::cross::interview::{accepted, document, open_topic, save_topic};
+use crate::tests::support::client::income_pages::{
+    open_document_center, open_documents, save_documents,
+};
 use crate::{
     ExceptionRepayment, InheritedLumpSumTax, IraRepaymentDeposit, LumpSumMethod,
     RolloverDestination, RolloverTarget, TaxableMethod as M,
@@ -20,9 +23,15 @@ fn filer(birth: u32) -> FederalDraft {
     d
 }
 // One 1099-R in dollars: box 1, box 2a, the printed box 7a and box 7b and the branch.
-fn form(printed: &str, ira: bool, gross: i64, taxable: i64, code: DistributionCode) -> R1099 {
+fn form(
+    printed: &str,
+    ira: bool,
+    gross: i64,
+    taxable: i64,
+    code: DistributionCode,
+) -> R1099Answered {
     let mut r = printed_as(crate::tests::cross::interview::r1099(gross * 100, code, ira), printed);
-    r.taxable = taxable * 100;
+    r.source_mut().form.taxable = Some(taxable * 100);
     r
 }
 fn normal() -> DistributionCode {
@@ -37,58 +46,128 @@ fn early_with(facts: RetirementException, distributed: u32) -> DistributionCode 
         exception: EarlyException::Applies { second: None, distributed, facts, repaid: None },
     }
 }
-fn doc(r: R1099) -> IncomeDocumentItem {
-    document(0, IncomeDocument::R1099(r))
+fn doc(r: R1099Answered) -> IncomeDocumentItem {
+    document(
+        0,
+        IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(r)),
+        },
+    )
 }
 fn form_8606(basis: i64, year_end: i64) -> IncomeDocumentItem {
     document(
         0,
-        IncomeDocument::Form8606(Form8606 {
-            adjustment: 0,
-            reservist_repayments: vec![],
-            basis: basis * 100,
-            year_end: year_end * 100,
-        }),
+        IncomeSource::Record {
+            value: crate::IncomeRecord::Form8606(Form8606 {
+                adjustment: 0,
+                reservist_repayments: vec![],
+                basis: basis * 100,
+                year_end: year_end * 100,
+            }),
+        },
     )
 }
 fn gift(date: u32, amount: i64, split: bool) -> IncomeDocumentItem {
     document(
         0,
-        IncomeDocument::Qcd(QcdGift {
-            date,
-            amount: amount * 100,
-            inherited: None,
-            split_interest: split,
-        }),
+        IncomeSource::Record {
+            value: crate::IncomeRecord::Qcd(QcdGift {
+                date,
+                amount: amount * 100,
+                inherited: None,
+                split_interest: split,
+            }),
+        },
     )
 }
-// Saves the documents on the Retirement page and returns the session.
+// Saves sources and their retained facts through their owning editors.
 fn save(d: &FederalDraft, documents: Vec<IncomeDocumentItem>) -> Interview {
     let mut s = Interview::new(TEST_USER, d.clone());
-    accepted(&send(&mut s, save_topic(d, TaxSection::Retirement, documents)));
+    accepted(&crate::tests::support::client::save_retirement_fixture(&mut s, documents));
     s
 }
-// The key of the Problem a save of these documents is refused with.
+// A malformed source is refused against the accepted prerequisite facts.
 fn refusal(d: &FederalDraft, documents: Vec<IncomeDocumentItem>) -> Vec<u8> {
     let mut s = Interview::new(TEST_USER, d.clone());
+    let baseline = s.draft.clone();
+    let dirty = s.dirty;
     let Reply::Response(P::Problem { message, .. }) =
-        send(&mut s, save_topic(d, TaxSection::Retirement, documents))
+        crate::tests::support::client::save_retirement_fixture(&mut s, documents)
     else {
-        panic!("expected a refused save")
+        panic!("expected refused retirement save")
     };
-    assert_eq!(s.draft, *d);
+    assert_eq!(s.draft, baseline);
+    assert_eq!(s.dirty, dirty);
+    message
+}
+
+fn source_refusal_key(
+    case: &str,
+    d: &FederalDraft,
+    sources: Vec<IncomeDocumentItem>,
+    key: &str,
+    path: &str,
+) -> Vec<u8> {
+    let mut session = Interview::new(TEST_USER, d.clone());
+    let baseline = open_document_center(&mut session);
+    accepted(&send(&mut session, baseline));
+    let request = save_documents(&mut session, sources.clone());
+    let Reply::Response(P::Problem { message, .. }) =
+        crate::tests::support::client::current_income_refusal(
+            case,
+            &mut session,
+            request,
+            key,
+            path,
+        )
+    else {
+        unreachable!()
+    };
+    message
+}
+fn record_refusal_key(
+    case: &str,
+    d: &FederalDraft,
+    documents: Vec<IncomeDocumentItem>,
+    key: &str,
+    path: &str,
+) -> Vec<u8> {
+    let mut session = Interview::new(TEST_USER, d.clone());
+    let (records, sources): (Vec<_>, Vec<_>) =
+        documents.into_iter().partition(|row| matches!(row.document, IncomeSource::Record { .. }));
+    assert!(!sources.is_empty() && !records.is_empty());
+    let request = save_documents(&mut session, sources.clone());
+    accepted(&send(&mut session, request));
+    crate::tests::support::client::income_pages::save_information_return_answers(
+        &mut session,
+        &sources,
+    );
+    let baseline = open_topic(&mut session, TaxSection::Retirement);
+    accepted(&send(&mut session, baseline));
+    let request = save_topic(&mut session, TaxSection::Retirement, records);
+    let Reply::Response(P::Problem { message, .. }) =
+        crate::tests::support::client::current_income_refusal(
+            case,
+            &mut session,
+            request,
+            key,
+            path,
+        )
+    else {
+        unreachable!()
+    };
     message
 }
 fn key(k: &str) -> Vec<u8> {
     libertas::libertas_formatted_text(k, &[])
 }
 // The stored 1099-R records, in order.
-fn stored(s: &Interview) -> Vec<&FederalRetirement> {
+fn stored(s: &Interview) -> Vec<FederalRetirement> {
     s.draft
         .income
         .iter()
         .filter_map(|e| match &e.income {
-            FederalIncome::Retirement { data } => Some(data),
+            FederalIncome::Retirement { data } => Some(FederalRetirement::from(data)),
             _ => None,
         })
         .collect()
@@ -102,9 +181,11 @@ fn has_note(r: &FederalResult, key: &str) -> bool {
 fn additional_tax(r: &FederalResult) -> i64 {
     r.lines.iter().find(|l| l.id == "early_distribution_tax").map_or(0, |l| l.amount / 100)
 }
-// Reopens the Retirement page and saves it unchanged: the records are the same.
+// Both owning editors were accepted during setup; unchanged Saves preserve the complete draft.
 fn round_trips(s: &Interview) {
     let mut again = restart(s.draft.clone());
+    let request = open_document_center(&mut again);
+    accepted(&send(&mut again, request));
     let request = open_topic(&mut again, TaxSection::Retirement);
     accepted(&send(&mut again, request));
     assert_eq!(again.draft, s.draft);
@@ -194,12 +275,12 @@ fn f1_an_ira_repayment_of_a_birth_or_adoption_distribution_lowers_the_taxable_am
     round_trips(&s);
     // (b) A repayment needs the owner's Form 8606.
     assert_eq!(
-        current_income_key(
+        source_refusal_key(
             "income-source-9211",
             &d,
             vec![doc(row(true))],
             "R_REPAYMENT_NEEDS_FORM_8606",
-            "[documents/documents/0/document/code/exception/repaid]"
+            "[documents/common/retirement/documents/0/document/code/exception/repaid]"
         ),
         key("R_REPAYMENT_NEEDS_FORM_8606")
     );
@@ -239,11 +320,11 @@ fn f2_roth_rollovers_are_taxed_and_a_designated_roth_early_distribution_adds_box
     let s = save(&d, vec![doc(form("G", false, 30_000, 30_000, to_roth()))]);
     assert_eq!(
         stored(&s)[0].ordinary_distribution,
-        RetirementTreatment::Rollover {
+        Some(RetirementTreatment::Rollover {
             destination: RolloverDestination::Roth,
             amount: 3_000_000,
             early: false
-        }
+        })
     );
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5a"), 3_000_000);
@@ -267,7 +348,8 @@ fn f2_roth_rollovers_are_taxed_and_a_designated_roth_early_distribution_adds_box
     );
     // (d)
     let mut row = form("1B", false, 12_000, 3_000, early());
-    row.more.box_10 = 400_000;
+    row.source_mut().form.box_10 = Some(400_000);
+    row.source_mut().box_10_basis = Some(crate::InPlanRothBasis::Known { amount: 0 });
     let s = save(&d, vec![doc(row.clone())]);
     assert_eq!(stored(&s)[0].box_10, 400_000);
     let r = supported(&s.draft);
@@ -276,8 +358,38 @@ fn f2_roth_rollovers_are_taxed_and_a_designated_roth_early_distribution_adds_box
     assert_eq!(additional_tax(&r), 700);
     round_trips(&s);
     let mut plain = form("1", false, 12_000, 3_000, early());
-    plain.more.box_10 = 400_000;
+    plain.source_mut().form.box_10 = Some(400_000);
     assert_eq!(refusal(&d, vec![doc(plain)]), key("R_BOX10_WITHOUT_B"));
+}
+
+// Pub. 575 (Figuring your recapture amount; Example Recapture Allocation Chart) and the Form 5329
+// instructions, line 1: only the part of box 10 allocated to the Taxable column of the chart is the
+// recapture amount. Box 1 35,000, box 2a 3,500, box 10 31,500 of which 1,500 was not taxable when
+// rolled in: line 1 is 3,500 + 30,000 = 33,500 and the 10% tax 3,350. An answer left empty keeps the
+// tax uncalculated (never assumed 0), and the part cannot exceed box 10 or stand without it.
+#[test]
+fn f2_box_10_recapture_leaves_out_the_part_not_taxable_when_rolled_in() {
+    let d = filer(19690615);
+    let mut row = form("1B", false, 35_000, 3_500, early());
+    row.source_mut().form.box_10 = Some(3_150_000);
+    row.source_mut().box_10_basis = Some(crate::InPlanRothBasis::Known { amount: 150_000 });
+    let s = save(&d, vec![doc(row.clone())]);
+    assert_eq!(stored(&s)[0].box_10_basis, Some(150_000));
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "early_taxpayer_taxable"), 33_500);
+    assert_eq!(additional_tax(&r), 3_350);
+    round_trips(&s);
+    row.source_mut().box_10_basis = None;
+    let unknown = estimate(&save(&d, vec![doc(row.clone())]).draft);
+    assert!(unknown.issues.iter().any(|i| i.display.key == "ISSUE_BOX_10_BASIS_UNKNOWN"));
+    row.source_mut().box_10_basis = Some(crate::InPlanRothBasis::Known { amount: 3_150_001 });
+    assert_eq!(refusal(&d, vec![doc(row.clone())]), key("R_BOX10_BASIS_ABOVE_BOX10"));
+    row.source_mut().form.box_10 = Some(0);
+    row.source_mut().box_10_basis = Some(crate::InPlanRothBasis::Known { amount: 1 });
+    assert_eq!(DistributionCodes::treatment_rule(&row), Some("R_BOX10_BASIS_WITHOUT_BOX10"));
+    // No printed box 10 calls for this personal answer; Source cannot supply it.
+    let s = save(&d, vec![doc(row)]);
+    assert_eq!(stored(&s)[0].box_10_basis, None);
 }
 
 // F3: code 7 annuity under the Simplified Method, 2026 start (B5, pinned). Owner born 1960-01-15. Box
@@ -306,7 +418,9 @@ fn simplified(duration: PensionDuration) -> M {
 fn f3_the_simplified_method_for_a_2026_start_is_pinned() {
     let d = filer(19600115);
     let mut row = form("7", false, 12_000, 12_000, normal());
-    row.more.taxable_method = simplified(PensionDuration::Single { age: 66 });
+    // The payer did not settle box 2a; this fixture exercises its worksheet.
+    row.source_mut().form.taxable_not_determined = true;
+    row.source_mut().taxable_method = Some(simplified(PensionDuration::Single { age: 66 }));
     let s = save(&d, vec![doc(row)]);
     let id = s.draft.income[1].id;
     let r = supported(&s.draft);
@@ -315,7 +429,10 @@ fn f3_the_simplified_method_for_a_2026_start_is_pinned() {
     assert_eq!(return_line(&r, "5b"), 1_052_400);
     round_trips(&s);
     let mut row = form("7", false, 12_000, 12_000, normal());
-    row.more.taxable_method = simplified(PensionDuration::Joint { age: 66, survivor_age: 64 });
+    // The payer did not settle box 2a; this fixture exercises its worksheet.
+    row.source_mut().form.taxable_not_determined = true;
+    row.source_mut().taxable_method =
+        Some(simplified(PensionDuration::Joint { age: 66, survivor_age: 64 }));
     let s = save(&d, vec![doc(row)]);
     let id = s.draft.income[1].id;
     let r = supported(&s.draft);
@@ -385,7 +502,7 @@ fn f5_a_roth_distribution_follows_the_ordering_rules_and_recaptures_the_conversi
         &d,
         vec![
             doc(crate::tests::cross::interview::r1099(3_300_000, code, false)),
-            document(0, IncomeDocument::RothHistory(history)),
+            document(0, IncomeSource::Record { value: crate::IncomeRecord::RothHistory(history) }),
         ],
     );
     let id = s.draft.income.last().unwrap().id;
@@ -452,13 +569,13 @@ fn corrective(excess_deferral: i64) -> DistributionCode {
 fn f7_a_corrective_distribution_is_wages_less_the_excess_already_counted_or_an_iras_earnings() {
     let mut d = filer(19860202);
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!("a wage") };
-    data.other_box12.push(W2CodeAmount { code: W2Code::D, amount: 2_600_000 });
+    edit_wage(data).other_box12.push(W2CodeAmount { code: W2Code::D, amount: 2_600_000 });
     let base_1h = return_line(&supported(&d), "1h");
     assert_eq!(base_1h, 150_000);
     let s = save(&d, vec![doc(form("8", false, 1_560, 1_560, corrective(1_500)))]);
     assert!(matches!(
         stored(&s)[0].ordinary_distribution,
-        RetirementTreatment::Corrective { excess_deferral: 150_000 }
+        Some(RetirementTreatment::Corrective { excess_deferral: 150_000 })
     ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "1h"), 156_000);
@@ -469,12 +586,12 @@ fn f7_a_corrective_distribution_is_wages_less_the_excess_already_counted_or_an_i
     round_trips(&s);
     // (b)
     assert_eq!(
-        current_income_key(
+        source_refusal_key(
             "income-source-9223",
             &d,
             vec![doc(form("8", false, 1_600, 1_600, corrective(1_600)))],
             "R_EXCESS_DEFERRAL_ABOVE_W2_EXCESS",
-            "[documents/documents/0/document/code/excess_deferral]"
+            "[documents/common/retirement/documents/0/document/code/excess_deferral]"
         ),
         key("R_EXCESS_DEFERRAL_ABOVE_W2_EXCESS")
     );
@@ -506,7 +623,7 @@ fn f8_recharacterizations_and_an_earlier_years_return_are_not_2026_income() {
     let d = filer(19860202);
     let before = supported(&d);
     let mut row = form("P", true, 6_300, 300, DistributionCode::NotIncome);
-    row.withholding = 3_000;
+    row.source_mut().form.withholding = Some(3_000);
     let s = save(&d, vec![doc(row)]);
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "4a"), 0);
@@ -560,7 +677,7 @@ fn f9_a_prohibited_transaction_is_an_early_distribution_unless_the_owner_was_59_
     let r = supported(&save(&filer(19660801), vec![doc(row())]).draft);
     assert_eq!(additional_tax(&r), 8_000);
     let mut roth = form("5", false, 80_000, 80_000, normal());
-    roth.code = DistributionCode::Other;
+    roth.source_mut().code = Some(DistributionCode::Other);
     let s = save(&filer(19700501), vec![doc(roth)]);
     let r = estimate(&s.draft);
     assert!(has_issue(&r, "ISSUE_1099R_CODE_5"), "{r:?}");
@@ -584,12 +701,12 @@ fn f10_a_qcd_with_the_one_time_split_interest_election_is_excluded() {
     let payments = &s.draft.adjustments.as_ref().unwrap().qualified_charity[0].payments;
     assert_eq!(payments.iter().filter(|p| p.split_interest).count(), 1);
     assert_eq!(
-        current_income_key(
+        record_refusal_key(
             "income-source-9177",
             &d,
             vec![doc(row()), gift(20260601, 4_000, false), gift(20260602, 56_000, true)],
             "QCD_SPLIT_INTEREST_ABOVE_LIMIT",
-            "[documents/documents/2/document/amount]"
+            "[documents/documents/1/document/amount]"
         ),
         key("QCD_SPLIT_INTEREST_ABOVE_LIMIT")
     );
@@ -616,7 +733,7 @@ fn f11_a_distribution_for_a_main_home_in_a_disaster_area_is_part_iv() {
     let d = filer(19860909);
     let row = |distributed| {
         let mut r = form("1", false, 15_000, 15_000, early());
-        r.disaster = home(distributed);
+        r.source_mut().disaster = Some(home(distributed));
         r
     };
     let s = save(&d, vec![doc(row(20260210))]);
@@ -659,7 +776,7 @@ fn qualified_for(distributed: u32, began: u32, declared: u32) -> DisasterDistrib
 fn f12_the_undesignated_rest_keeps_its_rollover_and_the_period_is_a_rule() {
     let d = filer(19860909);
     let mut late = form("1", false, 30_000, 30_000, early());
-    late.disaster = qualified_for(20260725, 20260110, 20260120);
+    late.source_mut().disaster = Some(qualified_for(20260725, 20260110, 20260120));
     assert_eq!(refusal(&d, vec![doc(late)]), key("DISASTER_OUTSIDE_PERIOD"));
     let mut inside = form(
         "1",
@@ -674,7 +791,7 @@ fn f12_the_undesignated_rest_keeps_its_rollover_and_the_period_is_a_rule() {
             exception: EarlyException::None,
         },
     );
-    inside.disaster = qualified_for(20260501, 20260310, 20260320);
+    inside.source_mut().disaster = Some(qualified_for(20260501, 20260310, 20260320));
     let s = save(&d, vec![doc(inside.clone())]);
     let r = supported(&s.draft);
     assert_eq!(value(&r, "form_8915_taxpayer_2026_line_11"), 7_000);
@@ -683,14 +800,19 @@ fn f12_the_undesignated_rest_keeps_its_rollover_and_the_period_is_a_rule() {
     assert!(!hits_removed(&r));
     round_trips(&s);
     // Designated and rolled over together cannot pass box 1.
-    let DisasterDistribution::Qualified { amount, .. } = &mut inside.disaster else {
+    let DisasterDistribution::Qualified { amount, .. } =
+        inside.source_mut().disaster.as_mut().unwrap()
+    else {
         unreachable!()
     };
     *amount = 2_200_000;
     assert_eq!(refusal(&d, vec![doc(inside)]), key("DISASTER_AND_ROLLOVER_ABOVE_GROSS"));
     let mut annuity = form("7D", false, 30_000, 30_000, normal());
-    annuity.disaster = qualified_for(20260501, 20260310, 20260320);
-    assert_eq!(refusal(&d, vec![doc(annuity)]), key("R_DISASTER_NONQUALIFIED"));
+    annuity.source_mut().disaster = Some(qualified_for(20260501, 20260310, 20260320));
+    assert_eq!(DistributionCodes::treatment_rule(&annuity), Some("R_DISASTER_NONQUALIFIED"));
+    // An annuity's printed codes do not offer a disaster election on its topic.
+    let s = save(&d, vec![doc(annuity)]);
+    assert_eq!(stored(&s)[0].disaster, DisasterDistribution::No);
 }
 
 // A gift to charity out of the same 1099-R is excluded first and the designation applies to the rest
@@ -701,8 +823,12 @@ fn f12_the_undesignated_rest_keeps_its_rollover_and_the_period_is_a_rule() {
 fn a_gift_to_charity_comes_out_before_the_disaster_designation() {
     let d = filer(19510110);
     let mut row = form("7Y", true, 60_000, 60_000, normal());
-    row.disaster = qualified_for(20260501, 20260310, 20260320);
-    let DisasterDistribution::Qualified { amount, .. } = &mut row.disaster else { unreachable!() };
+    row.source_mut().disaster = Some(qualified_for(20260501, 20260310, 20260320));
+    let DisasterDistribution::Qualified { amount, .. } =
+        row.source_mut().disaster.as_mut().unwrap()
+    else {
+        unreachable!()
+    };
     *amount = 2_000_000;
     let s = save(&d, vec![doc(row.clone()), gift(20260601, 10_000, false)]);
     let r = supported(&s.draft);
@@ -712,17 +838,21 @@ fn a_gift_to_charity_comes_out_before_the_disaster_designation() {
     assert!(!hits_removed(&r));
     round_trips(&s);
     // The designation cannot reach into the gift.
-    let DisasterDistribution::Qualified { amount, .. } = &mut row.disaster else { unreachable!() };
+    let DisasterDistribution::Qualified { amount, .. } =
+        row.source_mut().disaster.as_mut().unwrap()
+    else {
+        unreachable!()
+    };
     *amount = 2_200_000;
-    row.gross = 2_500_000;
-    row.taxable = 2_500_000;
+    row.source_mut().form.gross = 2_500_000;
+    row.source_mut().form.taxable = Some(2_500_000);
     assert_eq!(
-        current_income_key(
+        record_refusal_key(
             "income-source-9187",
             &d,
             vec![doc(row), gift(20260601, 10_000, false)],
             "DISASTER_ABOVE_QCD_REST",
-            "[documents/documents/1/document/amount]"
+            "[documents/documents/0/document/amount]"
         ),
         key("DISASTER_ABOVE_QCD_REST")
     );
@@ -751,7 +881,7 @@ fn decedent_tax(death_benefit: i64, estate_tax: i64) -> InheritedLumpSumTax {
         confirmed: true,
     }
 }
-fn four_a(died: u32, taxable: i64, tax: InheritedLumpSumTax) -> R1099 {
+fn four_a(died: u32, taxable: i64, tax: InheritedLumpSumTax) -> R1099Answered {
     form("4A", false, taxable, taxable, DistributionCode::DeathLumpSum { died, tax })
 }
 #[test]
@@ -791,7 +921,7 @@ fn f13_form_4972_takes_the_death_benefit_exclusion_and_the_shared_estate_tax() {
     );
     // (b)
     let mut shared = four_a(20000101, 30_000, decedent_tax(0, 1_000));
-    shared.more.box_9a_percent = Some(50.0);
+    shared.source_mut().form.box_9a_percent = Some(50.0);
     let s = save(&d, vec![doc(shared)]);
     let id = s.draft.income[1].id;
     let r = supported(&s.draft);
@@ -872,7 +1002,7 @@ fn f15_only_one_ira_to_ira_rollover_is_tax_free_in_a_year() {
         )
     };
     assert_eq!(
-        current_income_key(
+        source_refusal_key(
             "income-source-9154",
             &d,
             vec![
@@ -880,7 +1010,7 @@ fn f15_only_one_ira_to_ira_rollover_is_tax_free_in_a_year() {
                 doc(rolled(RolloverDestination::IraNextYear))
             ],
             "IRA_ROLLOVER_ONCE_A_YEAR",
-            "[documents/documents/1/document/code]"
+            "[documents/common/retirement/documents/1/document/code]"
         ),
         key("IRA_ROLLOVER_ONCE_A_YEAR")
     );
@@ -1070,15 +1200,15 @@ fn the_new_branches_round_trip_through_the_page() {
     assert_eq!(stored(&s).len(), 8);
     assert!(matches!(
         stored(&s)[0].ordinary_distribution,
-        RetirementTreatment::Corrective { excess_deferral: 0 }
+        Some(RetirementTreatment::Corrective { excess_deferral: 0 })
     ));
     assert!(matches!(
         stored(&s)[4].ordinary_distribution,
-        RetirementTreatment::QualifiedCareCharge { investment_reduction: 0 }
+        Some(RetirementTreatment::QualifiedCareCharge)
     ));
     assert!(matches!(
         stored(&s)[5].ordinary_distribution,
-        RetirementTreatment::Rollover { destination: RolloverDestination::Roth, .. }
+        Some(RetirementTreatment::Rollover { destination: RolloverDestination::Roth, .. })
     ));
     let r = estimate(&s.draft);
     assert!(!hits_removed(&r), "{r:?}");
@@ -1104,7 +1234,7 @@ fn the_new_branches_round_trip_through_the_page() {
 fn box_9a_is_accepted_with_every_treatment_and_stored_only_on_form_4972() {
     let d = filer(19600101);
     let mut row = form("7", false, 5_000, 5_000, normal());
-    row.more.box_9a_percent = Some(25.0);
+    row.source_mut().form.box_9a_percent = Some(25.0);
     let s = save(&d, vec![doc(row)]);
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5b"), 500_000);
@@ -1114,11 +1244,15 @@ fn box_9a_is_accepted_with_every_treatment_and_stored_only_on_form_4972() {
         DistributionCode::RothIra { sequence: None, rolled_over: 0, roth: RothIraCode::Qualified },
         false,
     );
-    roth.more.box_9a_percent = Some(50.0);
-    accepted(&send(
-        &mut Interview::new(TEST_USER, d.clone()),
-        save_topic(&d, TaxSection::Retirement, vec![doc(roth)]),
-    ));
+    roth.source_mut().form.box_9a_percent = Some(50.0);
+    accepted(&{
+        let mut session = Interview::new(TEST_USER, d.clone());
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![doc(roth)],
+        );
+        send(&mut session, request)
+    });
 }
 
 // No test of this crate still names a refusal this unit removed: the keys appear only in this list.
@@ -1149,4 +1283,92 @@ fn no_test_still_expects_a_removed_refusal() {
         }
     }
     assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+#[test]
+fn retirement_external_answers_survive_source_correction_and_write_with_same_save_form8606() {
+    use crate::tests::support::client::income_pages::{information_return_answers, page_documents};
+    let mut session = Interview::new(TEST_USER, filer(19900402));
+    let mut pension = form("7", false, 30_000, 30_000, normal());
+    pension.set_public_safety(vec![crate::PublicSafetyPaid {
+        coverage: crate::PublicSafetyPaidCoverage::Medical,
+        premiums: 500_000,
+        funded: 400_000,
+    }]);
+    let desired =
+        vec![doc(pension), doc(form("1", true, 5_000, 5_000, repaid_birth_adoption(true)))];
+    let request = save_documents(&mut session, desired.clone());
+    accepted(&send(&mut session, request));
+    // Both the actual Form 8606 and its distribution's actual repayment are entered in one topic Save.
+    let P::SaveIncomes { documents: records, .. } =
+        save_topic(&mut session, TaxSection::Retirement, vec![form_8606(0, 40_000)])
+    else {
+        unreachable!()
+    };
+    let mut request = information_return_answers(&mut session, &desired);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    *documents = records;
+    accepted(&send(&mut session, request));
+    let premiums = session.draft.screening.as_ref().unwrap().public_safety.clone();
+    let repayments =
+        session.draft.adjustments.as_ref().unwrap().ira_basis[0].special_repayments.clone();
+    assert_eq!(premiums.len(), 1);
+    assert_eq!((premiums[0].premiums, premiums[0].funded), (500_000, 400_000));
+    assert_eq!(repayments.len(), 1);
+    assert_eq!(
+        repayments[0].payments,
+        vec![IraRepaymentDeposit { date: 20261120, amount: 200_000 }]
+    );
+    let page = open_documents(&mut session);
+    accepted(&send(&mut session, page));
+    assert_eq!(session.draft.screening.as_ref().unwrap().public_safety, premiums);
+    assert_eq!(
+        session.draft.adjustments.as_ref().unwrap().ira_basis[0].special_repayments,
+        repayments
+    );
+    let mut sources = page_documents(&open_documents(&mut session));
+    for source in &mut sources {
+        let IncomeSource::Retirement { value: crate::RetirementDocument::R1099(row) } =
+            &mut source.document
+        else {
+            continue;
+        };
+        row.withholding = Some(1_000);
+    }
+    let request = save_documents(&mut session, sources);
+    accepted(&send(&mut session, request));
+    session = restart(session.draft);
+    assert_eq!(session.draft.screening.as_ref().unwrap().public_safety, premiums);
+    assert_eq!(
+        session.draft.adjustments.as_ref().unwrap().ira_basis[0].special_repayments,
+        repayments
+    );
+    let request = open_topic(&mut session, TaxSection::Retirement);
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    assert!(followups.iter().any(|row| matches!(
+        &row.answer,
+        crate::DocumentAnswer::RetirementPublicSafety { value: Some(_) }
+    )));
+    assert!(followups.iter().any(|row| matches!(
+        &row.answer,
+        crate::DocumentAnswer::RetirementTreatment {
+            code: Some(crate::RetirementTreatmentView::Early {
+                exception: EarlyException::Applies { repaid: Some(_), .. },
+                ..
+            })
+        }
+    )));
+    accepted(&send(&mut session, request));
+    assert_eq!(session.draft.screening.as_ref().unwrap().public_safety, premiums);
+    assert_eq!(
+        session.draft.adjustments.as_ref().unwrap().ira_basis[0].special_repayments,
+        repayments
+    );
+    // Removing the physical sources removes their external answer records as well.
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.retirement.documents.clear();
+    accepted(&send(&mut session, request));
+    assert!(session.draft.screening.as_ref().unwrap().public_safety.is_empty());
+    assert!(session.draft.adjustments.as_ref().unwrap().ira_basis[0].special_repayments.is_empty());
 }

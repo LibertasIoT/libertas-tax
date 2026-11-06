@@ -73,6 +73,7 @@ pub(crate) fn current(
             Some(statement.service)
         }
         FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
             let Some(statement) = &data.qbi_statement else {
                 return Ok(CurrentSales::default());
             };

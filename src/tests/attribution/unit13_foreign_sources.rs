@@ -33,7 +33,7 @@ fn unit13_foreign_wages_preserve_native_per_owner_annual_rounding() {
     let mut d = foreign_income_owner_fixture();
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(foreign_pay(1000));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::ForeignEmployment { data } = &mut entry.income else { unreachable!() };
         data.wages += 49;
         add(&mut d, entry);

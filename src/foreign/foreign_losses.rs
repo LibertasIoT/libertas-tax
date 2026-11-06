@@ -1,8 +1,8 @@
 #![allow(clippy::needless_range_loop, clippy::type_complexity)]
 use crate::FederalResult;
-use crate::kernel::lines::line;
 use crate::kernel::phase;
 use crate::kernel::ratio::{allocate_remaining, positive};
+use crate::line_emission::line;
 use alloc::format;
 
 // Section1.904-4(c)(2)(ii): passive loss groups reduce other passive

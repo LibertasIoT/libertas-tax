@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {"order": 188000, "rule": {"select": "^<SaveHsa>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 255000, "rule": {"select": "^<HsaPage>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HSA_ACCOUNT", "fields": ["employer_sources", "accounts"]}, {"title": "DISPLAY_HSA_FAMILY", "fields": ["other_coverage", "family_method", "family_split"]}, {"title": "DISPLAY_HSA_OTHER", "fields": ["funding", "linked_deposits"]}, {"title": "DISPLAY_ARCHER_CONTRIBUTIONS", "fields": ["archer"]}]}},
+    {"order": 256000, "rule": {"select": "^<HsaPage>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HSA_ACCOUNT", "fields": ["employer_sources", "accounts"]}, {"title": "DISPLAY_HSA_FAMILY", "fields": ["other_coverage", "family_method", "family_split"]}, {"title": "DISPLAY_HSA_OTHER", "fields": ["funding", "linked_deposits"]}, {"title": "DISPLAY_ARCHER_CONTRIBUTIONS", "fields": ["archer"]}]}},
+    {"order": 261000, "rule": {"select": "^<HsaAccount>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HSA_ACCOUNT", "fields": ["owner", "coverage", "personal", "employer"]}, {"title": "DISPLAY_HSA_EXCESS", "fields": ["corrections", "late_excess", "prior_employer_excess", "excess_accounting"]}, {"title": "DISPLAY_HSA_OTHER", "fields": ["last_month_loss", "last_month_history", "funding_history"]}]}},
+    {"order": 262000, "rule": {"select": "^<HsaAccount>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HSA_ACCOUNT", "fields": ["owner", "coverage", "personal", "employer"]}, {"title": "DISPLAY_HSA_EXCESS", "fields": ["corrections", "late_excess", "prior_employer_excess", "excess_accounting"]}, {"title": "DISPLAY_HSA_OTHER", "fields": ["last_month_loss", "last_month_history", "funding_history"]}]}},
+    {"order": 520000, "rule": {"select": "^<HsaAccount>", "flatten": {"name_row": false}}},
+    {"order": 521000, "rule": {"select": "^<HsaCoverageYear>", "flatten": true}},
+    {"order": 522000, "rule": {"select": "^<FamilySplit>", "flatten": true}},
+    {"order": 746000, "rule": {"select": "^<HsaPage>.family_split", "promote": {"use_parent_name": false}}},
+    {"order": 747000, "rule": {"select": "^<HsaAccount>.owner", "promote": true}},
+    {"order": 824000, "rule": {"select": "^<SaveHsa.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

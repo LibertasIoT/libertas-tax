@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 29000, "rule": {"select": "^<RentalEnergyBuildingFactsPage>.recovery", "when_single_choice": "hide"}}
+  ]
+}

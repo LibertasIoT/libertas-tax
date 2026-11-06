@@ -1,3 +1,6 @@
+pub use crate::health_employer_source::{
+    HealthEmployerBinding, HealthEmployerKind, HealthEmployerYear,
+};
 use crate::validation::ValidationIssue;
 // Coverage: W-2 employer HSA/Archer contribution-year sources.
 // Same-owner accepted source identities and actual year allocations supply the
@@ -14,16 +17,6 @@ use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 type Rule = &'static str;
 
-/// Employer medical-account contribution kind
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum HealthEmployerKind {
-    /// HSA, Form W-2 box 12 code W
-    Hsa,
-    /// Archer MSA, Form W-2 box 12 code R
-    Archer,
-}
 impl HealthEmployerKind {
     fn code(self) -> W2Code {
         match self {
@@ -31,64 +24,6 @@ impl HealthEmployerKind {
             Self::Archer => W2Code::R,
         }
     }
-}
-
-/// Contribution year of the entered W-2 amount
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum HealthEmployerYear {
-    // The printed W-2 code does not identify the designated contribution year;
-    // missing employer records retain source availability, not a guessed year.
-    // HEALTH_EMPLOYER_YEAR_REQUIRED remains the named calculation boundary.
-    /// Not yet determined
-    /// Use the employer's actual designation. The App cannot complete this source until its contribution year is known.
-    Unknown,
-    /// All designated for 2026
-    CurrentYear,
-    /// All designated for 2025
-    PriorYear,
-    /// Split between 2026 and 2025
-    Split {
-        /// Amount designated for 2026
-        /// The rest of the displayed W-2 code amount belongs to 2025; do not enter that source amount again as an outside-W-2 employer contribution.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        current: i64,
-    },
-}
-impl HealthEmployerYear {
-    fn checked_current_part(&self, reported: i64) -> Result<i64, ValidationIssue> {
-        match self {
-            Self::Unknown => Err(ValidationIssue::new("HEALTH_EMPLOYER_YEAR_REQUIRED").at_record()),
-            Self::CurrentYear => Ok(reported),
-            Self::PriorYear => Ok(0),
-            Self::Split { current } if (0..=reported).contains(current) => Ok(*current),
-            Self::Split { .. } => {
-                Err(ValidationIssue::new("HEALTH_EMPLOYER_SPLIT_ABOVE_REPORTED")
-                    .at_field("current"))
-            }
-        }
-    }
-    fn current_part(&self, reported: i64) -> Result<i64, Rule> {
-        self.checked_current_part(reported).map_err(|issue| issue.key)
-    }
-}
-
-/// Accepted W-2 medical-account year allocation
-/// The source amount is an accepted binding, not another editable contribution.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct HealthEmployerBinding {
-    /// Actual accepted income document identity
-    pub document: i64,
-    /// Actual accepted income owner
-    pub owner: Owner,
-    /// Actual source code kind
-    pub kind: HealthEmployerKind,
-    /// Source code amount when this allocation was accepted
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub accepted_amount: i64,
-    /// Designated contribution year
-    pub allocation: HealthEmployerYear,
 }
 
 /// Entered W-2 employer contribution
@@ -118,14 +53,24 @@ pub struct HealthEmployerSourceRow {
     pub allocation: HealthEmployerYear,
 }
 
+// An entered W-2 code amount whose contribution year is asked separately.
+struct Source {
+    document: i64,
+    label: Vec<u8>,
+    owner: Owner,
+    kind: HealthEmployerKind,
+    reported: i64,
+}
+
 // Actual accepted source projection; no manual entered total can manufacture a
 // source. One row per W-2 ID and code, irrespective of other W-2 field changes.
-fn live_sources(d: &FederalDraft, keep_zero: bool) -> Result<Vec<HealthEmployerSourceRow>, Rule> {
+fn live_sources(d: &FederalDraft, keep_zero: bool) -> Result<Vec<Source>, Rule> {
     let mut rows = Vec::new();
     for entry in &d.income {
         let FederalIncome::Wage { data } = &entry.income else {
             continue;
         };
+        let data = crate::FederalWage::from(data);
         for kind in [HealthEmployerKind::Hsa, HealthEmployerKind::Archer] {
             let entries: Vec<_> =
                 data.other_box12.iter().filter(|b| b.code == kind.code()).collect();
@@ -145,40 +90,138 @@ fn live_sources(d: &FederalDraft, keep_zero: bool) -> Result<Vec<HealthEmployerS
             if entry.id <= 0 {
                 return Err("HEALTH_EMPLOYER_SOURCE_NOT_OFFERED");
             }
-            rows.push(HealthEmployerSourceRow {
+            rows.push(Source {
                 document: entry.id,
-                label: crate::interview::income_display_label(entry, d.dependents()).encode(),
-                owner: entry.owner,
+                label: crate::income_names::income_display_label(entry, d.dependents()).encode(),
+                owner: entry.owner.owned(),
                 kind,
                 reported,
-                allocation: HealthEmployerYear::Unknown,
             });
         }
     }
     Ok(rows)
 }
-fn same_source(binding: &HealthEmployerBinding, row: &HealthEmployerSourceRow) -> bool {
+fn same_source(binding: &HealthEmployerBinding, row: &Source) -> bool {
     binding.document == row.document && binding.kind == row.kind && binding.owner == row.owner
 }
-fn split_changed(binding: &HealthEmployerBinding, row: &HealthEmployerSourceRow) -> bool {
+fn split_changed(binding: &HealthEmployerBinding, row: &Source) -> bool {
     matches!(binding.allocation, HealthEmployerYear::Split { .. })
         && binding.accepted_amount != row.reported
 }
 
-// Opening a page never clears/stamps/rebinds a changed Split. Normal source
-// mutations are guarded; even a hypothetical stale snapshot retains the choice
-// until it is explicitly cleared through the ordinary year control.
+// The sources whose contribution year the person has answered. A source with
+// no accepted allocation (or a Split whose source amount changed) is asked
+// first and never appears as a row.
 pub(crate) fn page_rows(
     d: &FederalDraft,
     bindings: &[HealthEmployerBinding],
 ) -> Result<Vec<HealthEmployerSourceRow>, Rule> {
-    let mut rows = live_sources(d, false)?;
-    for row in &mut rows {
-        if let Some(binding) = bindings.iter().find(|b| same_source(b, row)) {
-            row.allocation = binding.allocation.clone();
+    let mut rows = Vec::new();
+    for source in live_sources(d, false)? {
+        if let Some(binding) =
+            bindings.iter().find(|b| same_source(b, &source) && !split_changed(b, &source))
+        {
+            rows.push(HealthEmployerSourceRow {
+                document: source.document,
+                label: source.label,
+                owner: source.owner,
+                kind: source.kind,
+                reported: source.reported,
+                allocation: binding.allocation.clone(),
+            });
         }
     }
     Ok(rows)
+}
+
+// Test fixtures that designate every reported amount for the current year
+// (what their synthetic returns always meant) without the questions page.
+#[cfg(test)]
+pub(crate) fn page_rows_current_year(
+    d: &FederalDraft,
+    bindings: &[HealthEmployerBinding],
+) -> Result<Vec<HealthEmployerSourceRow>, Rule> {
+    Ok(live_sources(d, false)?
+        .into_iter()
+        .map(|source| HealthEmployerSourceRow {
+            allocation: bindings
+                .iter()
+                .find(|b| same_source(b, &source) && !split_changed(b, &source))
+                .map_or(HealthEmployerYear::CurrentYear, |b| b.allocation.clone()),
+            document: source.document,
+            label: source.label,
+            owner: source.owner,
+            kind: source.kind,
+            reported: source.reported,
+        })
+        .collect())
+}
+
+/// An entered W-2 code amount whose designated contribution year is not
+/// answered: the page asks it first, as a required question.
+pub(crate) struct OpenSource {
+    pub document: i64,
+    pub kind: HealthEmployerKind,
+    pub label: Vec<u8>,
+}
+
+pub(crate) fn open_sources(
+    d: &FederalDraft,
+    bindings: &[HealthEmployerBinding],
+) -> Result<Vec<OpenSource>, Rule> {
+    Ok(live_sources(d, false)?
+        .into_iter()
+        .filter(|source| {
+            !bindings.iter().any(|b| same_source(b, source) && !split_changed(b, source))
+        })
+        .map(|source| OpenSource {
+            document: source.document,
+            kind: source.kind,
+            label: source.label,
+        })
+        .collect())
+}
+
+/// The answered contribution year of one open source, as a binding.
+pub(crate) fn answered_binding(
+    d: &FederalDraft,
+    document: i64,
+    kind: HealthEmployerKind,
+    allocation: HealthEmployerYear,
+) -> Result<HealthEmployerBinding, ValidationIssue> {
+    let source = live_sources(d, false)
+        .map_err(ValidationIssue::new)?
+        .into_iter()
+        .find(|source| source.document == document && source.kind == kind)
+        .ok_or_else(|| ValidationIssue::new("HEALTH_EMPLOYER_SOURCE_NOT_OFFERED"))?;
+    allocation.checked_current_part(source.reported)?;
+    Ok(HealthEmployerBinding {
+        document,
+        owner: source.owner,
+        kind,
+        accepted_amount: source.reported,
+        allocation,
+    })
+}
+
+// A saved source edit never leaves a stale answer: a binding whose W-2 source
+// is gone, changed owner or code, or whose Split no longer matches the
+// reported amount is dropped, and the year is asked again (a required
+// question) when the source still exists.
+pub(crate) fn prune(d: &mut FederalDraft) {
+    let Some(adjustments) = d.adjustments.as_ref() else { return };
+    let Ok(sources) = live_sources(d, true) else { return };
+    let kept: Vec<_> = adjustments
+        .health_employer_w2
+        .iter()
+        .filter(|b| sources.iter().any(|s| same_source(b, s) && !split_changed(b, s)))
+        .cloned()
+        .collect();
+    if kept.len() != adjustments.health_employer_w2.len()
+        && let Some(adjustments) = d.adjustments.as_mut()
+    {
+        adjustments.health_employer_w2 = kept;
+    }
 }
 
 // Existing source-reference guard: reject deletion/type/code/owner loss before
@@ -196,9 +239,6 @@ pub(crate) fn reference_issue(
         Err(key) => return Some((None, ValidationIssue::new(key))),
     };
     for binding in bindings {
-        if matches!(binding.allocation, HealthEmployerYear::Unknown) {
-            continue;
-        }
         let Some(row) = rows.iter().find(|row| same_source(binding, row)) else {
             return Some((
                 Some(binding.document),
@@ -221,7 +261,7 @@ pub(crate) fn reference_rule(d: &FederalDraft, bindings: &[HealthEmployerBinding
 
 // Literal source membership and current amount are validated on normal Save as
 // well as native Estimate. The readonly client collection is not trusted data.
-// Unknown can save incomplete; only an answered binding can enter tax totals.
+// Every offered source must be answered: an unanswered source is asked first.
 pub(crate) fn accept_page_issue(
     d: &FederalDraft,
     previous_bindings: &[HealthEmployerBinding],
@@ -230,9 +270,15 @@ pub(crate) fn accept_page_issue(
     let offered = live_sources(d, false)
         .map_err(|key| ValidationIssue::new(key).at_field("employer_sources"))?;
     if rows.len() != offered.len() {
-        return Err(
-            ValidationIssue::new("HEALTH_EMPLOYER_SOURCE_NOT_OFFERED").at_field("employer_sources")
-        );
+        let missing = offered.iter().any(|source| {
+            !rows.iter().any(|row| row.document == source.document && row.kind == source.kind)
+        });
+        return Err(ValidationIssue::new(if missing {
+            "HEALTH_EMPLOYER_YEAR_REQUIRED"
+        } else {
+            "HEALTH_EMPLOYER_SOURCE_NOT_OFFERED"
+        })
+        .at_field("employer_sources"));
     }
     let mut result: Vec<HealthEmployerBinding> = Vec::new();
     for (index, row) in rows.iter().enumerate() {
@@ -264,25 +310,15 @@ pub(crate) fn accept_page_issue(
                 })
                 .in_list("employer_sources", index));
         }
-        // Do not silently restamp a hypothetical stale accepted Split merely
-        // because this page carries the current live amount. Its retained
-        // choice stays visible, and the ordinary Unknown choice explicitly
-        // clears it before a new allocation can be accepted.
+        // A retained Split whose source amount changed is asked again, never
+        // silently restamped by a row carrying the live amount.
         if previous_bindings
             .iter()
-            .any(|binding| same_source(binding, row) && split_changed(binding, row))
-            && !matches!(row.allocation, HealthEmployerYear::Unknown)
+            .any(|binding| same_source(binding, source) && split_changed(binding, source))
         {
             return Err(ValidationIssue::new("HEALTH_EMPLOYER_SOURCE_CHANGED")
                 .at_field("allocation")
                 .in_list("employer_sources", index));
-        }
-        if matches!(row.allocation, HealthEmployerYear::Unknown) {
-            // Choosing Unknown explicitly clears the accepted source binding.
-            // The live W-2 still generates its row and mandatory source issue.
-            // A later source deletion is therefore possible through normal
-            // controls after the health allocation is cleared.
-            continue;
         }
         row.allocation
             .checked_current_part(row.reported)
@@ -326,6 +362,28 @@ pub(crate) fn binding_rule(d: &FederalDraft, bindings: &[HealthEmployerBinding])
         .then_some("HEALTH_EMPLOYER_SOURCE_TWICE")
 }
 
+// The matching owner's current-year account record.
+fn has_account(d: &FederalDraft, owner: Owner, kind: HealthEmployerKind) -> bool {
+    d.adjustments.as_ref().is_some_and(|a| match kind {
+        HealthEmployerKind::Hsa => a.hsa.iter().any(|h| h.owner == owner),
+        HealthEmployerKind::Archer => matches!(&a.archer, crate::ArcherContributions::Records { owners, .. } if owners.iter().any(|h| h.owner == owner)),
+    })
+}
+
+/// The account kind a current-year employer contribution lacks, if any: the
+/// page refuses to save without the owner's matching account record.
+pub(crate) fn account_missing(
+    d: &FederalDraft,
+    bindings: &[HealthEmployerBinding],
+) -> Option<HealthEmployerKind> {
+    [HealthEmployerKind::Hsa, HealthEmployerKind::Archer].into_iter().find(|kind| {
+        [Owner::Taxpayer, Owner::Spouse].into_iter().any(|owner| {
+            source_totals(d, bindings, owner, *kind).is_ok_and(|(current, _)| current > 0)
+                && !has_account(d, owner, *kind)
+        })
+    })
+}
+
 // Complete mandatory-source gate, shared by estimate and normal walk review.
 // This catches new W-2s, stale Split, duplicate accepted bindings and unknown
 // years independently of whether a current account happens to exist.
@@ -348,10 +406,7 @@ pub(crate) fn mandatory_rule(d: &FederalDraft, bindings: &[HealthEmployerBinding
             Ok(value) => value,
             Err(key) => return Some(key),
         };
-        if current > 0 && !d.adjustments.as_ref().is_some_and(|a| match row.kind {
-            HealthEmployerKind::Hsa => a.hsa.iter().any(|h| h.owner == row.owner),
-            HealthEmployerKind::Archer => matches!(&a.archer, crate::ArcherContributions::Records { owners, .. } if owners.iter().any(|h| h.owner == row.owner)),
-        }) {
+        if current > 0 && !has_account(d, row.owner, row.kind) {
             return Some("HEALTH_EMPLOYER_ACCOUNT_REQUIRED");
         }
     }
@@ -382,9 +437,6 @@ pub(crate) fn source_totals(
         let Some(binding) = bindings.iter().find(|b| same_source(b, row)) else {
             continue;
         };
-        if matches!(binding.allocation, HealthEmployerYear::Unknown) {
-            continue;
-        }
         let part = binding.allocation.current_part(row.reported)?;
         current = current.checked_add(part).ok_or("HEALTH_EMPLOYER_TOTAL_INVALID")?;
         prior = prior.checked_add(row.reported - part).ok_or("HEALTH_EMPLOYER_TOTAL_INVALID")?;
@@ -403,7 +455,17 @@ pub(crate) fn effective_total(
         return Err("HEALTH_EMPLOYER_TOTAL_INVALID");
     }
     let (current, _) = source_totals(d, bindings, owner, kind)?;
-    outside.checked_add(current).ok_or("HEALTH_EMPLOYER_TOTAL_INVALID")
+    let statements = crate::contribution_documents::project(d).ok().map_or(0, |totals| {
+        let owner = usize::from(owner == Owner::Spouse);
+        match kind {
+            HealthEmployerKind::Hsa => totals.hsa[owner].employer_outside,
+            HealthEmployerKind::Archer => totals.archer[owner].employer_outside,
+        }
+    });
+    outside
+        .checked_add(current)
+        .and_then(|v| v.checked_add(statements))
+        .ok_or("HEALTH_EMPLOYER_TOTAL_INVALID")
 }
 
 pub(crate) fn bindings(d: &FederalDraft) -> &[HealthEmployerBinding] {

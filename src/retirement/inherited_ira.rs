@@ -8,131 +8,13 @@
 // the group's after-QCD/funding taxable share, with prefix residual allocation.
 // Tests: inherited_traditional_disaster_uses_its_group_basis_and_ira_spread;
 // the original no-disaster basis/tax/carry oracles remain unchanged.
-use crate::FederalResult;
-use crate::federal_rules::valid_birth;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction};
-use alloc::string::String;
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
+use crate::line_emission::emit as emit_lines;
+use crate::{FederalInheritedIra, FederalResult, InheritedEstateTax};
 
-/// Inherited IRA
-/// One for each person you inherited from and each kind of IRA: all their traditional, SEP and SIMPLE IRAs together, or all their Roth IRAs together. The Forms 1099-R you choose it on supply the distributions and withholding. A spouse who treated the IRA as their own enters it as their own IRA instead.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct InheritedIraAccount {
-    /// Name of the person you inherited from
-    #[libertas_size(min = 1)]
-    pub decedent: String,
-    /// Date they died
-    #[libertas_date_only]
-    // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-    #[libertas_number(min = 19750101, max = 20261231)]
-    pub died: u32,
-    /// Kind of IRA
-    pub kind: InheritedIraKindFacts,
-}
-
-/// Kind of IRA
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum InheritedIraKindFacts {
-    /// Traditional, SEP or SIMPLE IRA
-    /// All of them from this person together.
-    Traditional {
-        /// After-tax basis passed to you
-        /// Leave empty when the person had no nondeductible contributions: their Forms 8606 and the estate's allocation show it.
-        /// [NullText]
-        /// No after-tax traditional IRA basis passed to me
-        /// [SetText]
-        /// The after-tax basis allocated to me is
-        basis: Option<InheritedIraBasis>,
-        /// Federal estate tax on this IRA
-        /// Leave empty unless a federal estate tax return was filed and tax paid.
-        /// No estate-tax deduction is claimed without these facts.
-        /// [NullText]
-        /// Do not claim an estate-tax deduction for this inherited IRA
-        /// [SetText]
-        /// The paid federal estate-tax facts for this IRA are
-        #[libertas_default($null)]
-        estate_tax: Option<InheritedEstateTax>,
-    },
-    /// Roth IRA
-    /// All Roth IRAs from this person together.
-    Roth {
-        /// Their first Roth IRA year
-        /// The first tax year they contributed to or converted into any Roth IRA. The five-year clock continues after the death.
-        // Tax structure: Roth IRA history starts with 1998 and cannot begin after this tax year.
-        #[libertas_number(min = 1998, max = 2026)]
-        first_year: u32,
-        /// Contributions and conversions passed to you
-        /// Needed only when the five years are not over. Leave empty if you don't have it: the App then taxes the whole withdrawal and tells you.
-        /// [NullText]
-        /// No inherited Roth basis record is needed or available
-        /// [SetText]
-        /// The inherited contributions and conversions allocated to me are
-        basis: Option<crate::InheritedRothBasis>,
-    },
-}
-
-/// Inherited IRA
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct FederalInheritedIra {
-    /// Name of the person inherited from
-    #[libertas_size(min = 1)]
-    pub decedent: String,
-    /// Original owner's death date
-    #[libertas_date_only]
-    pub died: u32,
-    /// Kind of IRA and its allocated basis
-    pub kind: InheritedIraKindFacts,
-}
-
-/// Basis allocated to this inherited IRA group
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct InheritedIraBasis {
-    /// Unrecovered basis before this year's beneficiary payments
-    /// Use this beneficiary's allocated basis from filed Form 8606 and estate/custodian records after prior withdrawals. For a 2026 death, use the completed estate allocation before this beneficiary's payments, including any death-year basis adjustment. Never use the entire decedent's basis when other beneficiaries received shares.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub prior: i64,
-    /// Total December 31, 2026 value of this inherited IRA group
-    /// Include every inherited traditional, SEP and SIMPLE IRA from this deceased owner belonging to this recipient, including accounts with no withdrawal. Exclude Roth IRAs, other deceased owners and the recipient's personal accounts. No transfer may be omitted from the year-end value; unresolved in-transit amounts need source reconciliation.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub year_end: i64,
-}
-/// Estate-return facts for inherited IRA income
-/// The App calculates this year's section 691(c) deduction. Keep the administrator's remaining allocation for later distributions; never transfer another beneficiary's share or reuse value already used for a deduction.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct InheritedEstateTax {
-    /// Federal estate tax after credits, actually paid
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub paid: i64,
-    /// Estate tax after credits without net income-in-respect-of-decedent value
-    /// Use the estate administrator's recomputation excluding all IRD value net of related deductible expenses. Do not subtract unrelated estate assets or state inheritance taxes.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub without_ird: i64,
-    /// Total estate-tax value of all income in respect of the decedent
-    /// Gross IRD value in the entire estate, before related expenses, including other beneficiaries' shares and non-IRA items. This is the allocation denominator, not just this IRA's value.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub total_ird: i64,
-    /// Unused estate-tax IRD value allocated to this beneficiary's IRA group
-    /// Start with the administrator's estate-tax value for this beneficiary and deceased owner, excluding after-tax basis and amounts already used for prior-year deductions. Do not include later investment growth or another beneficiary's share.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub remaining_value: i64,
-    /// Final estate values, payment and unused beneficiary allocation confirmed
-    /// No unresolved estate adjustment or duplicate allocation to another income entry, beneficiary or year. The App does not prepare Form 706. Surviving-annuitant special computations and capital-gain IRD use different calculations. No takes no estate-tax deduction this year, with a review note.
-    pub confirmed: bool,
-}
 impl InheritedEstateTax {
-    fn valid(&self) -> bool {
-        [self.paid, self.without_ird, self.total_ird, self.remaining_value]
-            .iter()
-            .all(|v| (0..=100000000000).contains(v))
-    }
     pub(crate) fn deduction(&self, r: &mut FederalResult, id: i64, taxable: Option<i64>) -> i64 {
         crate::require_localized!(
             r,
@@ -142,7 +24,7 @@ impl InheritedEstateTax {
                 && self.total_ird > 0
                 && self.remaining_value <= self.total_ird
                 && taxable.is_some(),
-            &crate::IssueContext::Review,
+            &crate::IssueContext::income_id(id),
             "Inherited estate tax",
             "ISSUE_CONFIRM_PAID_FEDERAL_ESTATE_TAX_THE_ESTATE_WIDE_RECOMPUTATION_AND_G_2E262284",
             "Confirm paid federal estate tax, the estate-wide recomputation and gross IRD denominator, and this beneficiary's unused allocation. A shared QCD cap or deductible-contribution adjustment across several sources needs an explicit source allocation before this deduction can be determined.",
@@ -182,79 +64,7 @@ impl InheritedEstateTax {
         deduction
     }
 }
-impl InheritedIraAccount {
-    // The page rule, checked again on save with the same key: the Roth IRA's
-    // first year is not after the year of death.
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        matches!(&self.kind, InheritedIraKindFacts::Roth { first_year, .. }
-                if *first_year > self.died / 10000)
-        .then(|| {
-            crate::validation::ValidationIssue::new("INHERITED_ROTH_FIRST_YEAR_AFTER_DEATH")
-                .at_field("first_year")
-                .in_field("kind")
-        })
-    }
-    pub(crate) fn record(&self) -> FederalInheritedIra {
-        FederalInheritedIra {
-            decedent: self.decedent.clone(),
-            died: self.died,
-            kind: self.kind.clone(),
-        }
-    }
-}
 impl FederalInheritedIra {
-    pub(crate) fn account(&self) -> InheritedIraAccount {
-        InheritedIraAccount {
-            decedent: self.decedent.clone(),
-            died: self.died,
-            kind: self.kind.clone(),
-        }
-    }
-    pub(crate) fn roth(&self) -> bool {
-        matches!(self.kind, InheritedIraKindFacts::Roth { .. })
-    }
-    // Section 408A(d)(2): a distribution is qualified once the original
-    // owner's five-tax-year period is over; death satisfies the age leg.
-    pub(crate) fn roth_qualified(&self) -> bool {
-        matches!(self.kind, InheritedIraKindFacts::Roth { first_year, .. } if first_year <= 2021)
-    }
-    pub(crate) fn valid(&self) -> bool {
-        valid_birth(self.died)
-            && !self.decedent.trim().is_empty()
-            && match &self.kind {
-                InheritedIraKindFacts::Traditional { basis, estate_tax } => {
-                    estate_tax.as_ref().is_none_or(InheritedEstateTax::valid)
-                        && basis.as_ref().is_none_or(|b| {
-                            [b.prior, b.year_end].iter().all(|v| (0..=100000000000).contains(v))
-                        })
-                }
-                InheritedIraKindFacts::Roth { first_year, basis } => {
-                    (1998..=self.died / 10000).contains(first_year)
-                        && basis.as_ref().is_none_or(|v| {
-                            [v.regular, v.converted].iter().all(|v| (0..=100000000000).contains(v))
-                        })
-                }
-            }
-    }
-    // The traditional record's facts.
-    pub(crate) fn basis(&self) -> Option<&InheritedIraBasis> {
-        match &self.kind {
-            InheritedIraKindFacts::Traditional { basis, .. } => basis.as_ref(),
-            InheritedIraKindFacts::Roth { .. } => None,
-        }
-    }
-    pub(crate) fn estate_tax(&self) -> Option<&InheritedEstateTax> {
-        match &self.kind {
-            InheritedIraKindFacts::Traditional { estate_tax, .. } => estate_tax.as_ref(),
-            InheritedIraKindFacts::Roth { .. } => None,
-        }
-    }
-    pub(crate) fn roth_basis(&self) -> Option<&crate::InheritedRothBasis> {
-        match &self.kind {
-            InheritedIraKindFacts::Roth { basis, .. } => basis.as_ref(),
-            InheritedIraKindFacts::Traditional { .. } => None,
-        }
-    }
     // The traditional record's taxable amount for the linked payments'
     // `gross`. No basis entered means none: the whole group is taxed.
     pub(crate) fn taxable(
@@ -359,7 +169,7 @@ pub(crate) struct InheritedResult {
 pub(crate) fn calculate(
     d: &crate::FederalDraft,
     r: &mut FederalResult,
-    qcd: &crate::retirement::QcdResult,
+    qcd: &crate::retirement_return::QcdResult,
     funding: &crate::hsa_funding::FundingResult,
 ) -> InheritedResult {
     let mut result = InheritedResult::default();
@@ -408,11 +218,13 @@ pub(crate) fn allocate_designated(
         .into_iter()
         .filter_map(|(entry, _, _)| {
             let disaster = match &entry.income {
-                crate::FederalIncome::Retirement { data } => &data.disaster,
-                crate::FederalIncome::Roth { data } => &data.disaster,
+                crate::FederalIncome::Retirement { data } => {
+                    crate::FederalRetirement::from(data).disaster
+                }
+                crate::FederalIncome::Roth { data } => crate::RothWithdrawal::from(data).disaster,
                 _ => return None,
             };
-            match disaster {
+            match &disaster {
                 crate::DisasterDistribution::Qualified { amount, .. } => Some((entry.id, *amount)),
                 _ => None,
             }
@@ -460,18 +272,22 @@ pub(crate) fn allocate_designated(
 pub(crate) fn project_relief(
     d: &crate::FederalDraft,
     r: &mut FederalResult,
-    basis: &crate::retirement::BasisResult,
+    basis: &crate::retirement_return::BasisResult,
 ) {
     for entry in &d.income {
         let crate::FederalIncome::InheritedIra { data } = &entry.income else {
             continue;
         };
         let special = payments(d, entry.id).iter().any(|(payment, _, _)| match &payment.income {
-            crate::FederalIncome::Retirement { data } => !matches!(
-                data.disaster,
-                crate::DisasterDistribution::No | crate::DisasterDistribution::Qualified { .. }
-            ),
-            crate::FederalIncome::Roth { data } => {
+            crate::FederalIncome::Retirement { data: source } => {
+                let data = &crate::FederalRetirement::from(source);
+                !matches!(
+                    data.disaster,
+                    crate::DisasterDistribution::No | crate::DisasterDistribution::Qualified { .. }
+                )
+            }
+            crate::FederalIncome::Roth { data: source } => {
+                let data = &crate::RothWithdrawal::from(source);
                 !matches!(
                     data.disaster,
                     crate::DisasterDistribution::No | crate::DisasterDistribution::Qualified { .. }
@@ -557,7 +373,11 @@ pub(crate) fn resolve(
     match account {
         Some(id) => match d.income.iter().find(|e| e.id == id) {
             Some(e) => match &e.income {
-                FederalIncome::InheritedIra { .. } if e.owner != owner => Link::OtherOwner,
+                FederalIncome::InheritedIra { .. }
+                    if e.owner != crate::DocumentOwner::from(owner) =>
+                {
+                    Link::OtherOwner
+                }
                 FederalIncome::InheritedIra { data } if data.roth() != roth => Link::WrongKind,
                 FederalIncome::InheritedIra { .. } => Link::Record(id),
                 _ => Link::Missing,
@@ -566,7 +386,7 @@ pub(crate) fn resolve(
         },
         None => {
             let mut records = d.income.iter().filter(|e| {
-                e.owner == owner
+                e.owner == crate::DocumentOwner::from(owner)
                     && matches!(&e.income, FederalIncome::InheritedIra { data } if data.roth() == roth)
             });
             match (records.next(), records.next()) {
@@ -581,16 +401,22 @@ pub(crate) fn resolve(
 pub(crate) fn link_of(d: &crate::FederalDraft, e: &crate::FederalIncomeEntry) -> Option<Link> {
     use crate::{FederalIncome, InheritedLink, RetirementTaxable};
     match &e.income {
-        FederalIncome::Retirement { data } => match data.taxable {
-            RetirementTaxable::Inherited { account, .. } => {
-                Some(resolve(d, e.owner, false, account))
+        FederalIncome::Retirement { data: source } => {
+            let data = &crate::FederalRetirement::from(source);
+            match data.taxable {
+                Some(RetirementTaxable::Inherited { account, .. }) => {
+                    Some(resolve(d, e.owner.owned(), false, account))
+                }
+                _ => None,
             }
-            _ => None,
-        },
-        FederalIncome::Roth { data } => match data.inherited {
-            InheritedLink::Yes { account } => Some(resolve(d, e.owner, true, account)),
-            InheritedLink::No => None,
-        },
+        }
+        FederalIncome::Roth { data: source } => {
+            let data = &crate::RothWithdrawal::from(source);
+            match data.inherited {
+                InheritedLink::Yes { account } => Some(resolve(d, e.owner.owned(), true, account)),
+                InheritedLink::No => None,
+            }
+        }
         _ => None,
     }
 }
@@ -604,8 +430,14 @@ pub(crate) fn payments(
         .iter()
         .filter(|e| link_of(d, e) == Some(Link::Record(id)))
         .filter_map(|e| match &e.income {
-            FederalIncome::Retirement { data } => Some((e, data.gross, data.withholding)),
-            FederalIncome::Roth { data } => Some((e, data.gross, data.withholding)),
+            FederalIncome::Retirement { data: source } => {
+                let data = &crate::FederalRetirement::from(source);
+                Some((e, data.gross, data.withholding))
+            }
+            FederalIncome::Roth { data: source } => {
+                let data = &crate::RothWithdrawal::from(source);
+                Some((e, data.gross, data.withholding))
+            }
             _ => None,
         })
         .collect()

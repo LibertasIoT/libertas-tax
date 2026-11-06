@@ -6,7 +6,8 @@
 // Parts X-XI, f4136--dft/i4136--dft line 4a).
 use super::*;
 use crate::tests::cross::interview::{
-    open_other_taxes, other_taxes_request, refusal, save_other_taxes,
+    open_often_missed, open_other_taxes, other_taxes_request, refusal, save_other_taxes,
+    save_unprepared,
 };
 
 pub(in crate::tests) fn ok(reply: &Reply) {
@@ -45,7 +46,7 @@ fn schedule_h_through_the_other_taxes_page() {
     //   Schedule H total 434 + 102 + 21 = 557 on Schedule 2 line 17a.
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::HouseholdEmployees { employers: vec![nanny(3_500)] }],
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&nanny(3_500)).into()] }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "household_0_social_tax"), 434);
@@ -53,15 +54,18 @@ fn schedule_h_through_the_other_taxes_page() {
     assert_eq!(value(&r, "household_0_futa_tax"), 21);
     assert_eq!(value(&r, "household_0_tax"), 557);
     assert_eq!(line23(&s.draft) - before, 55_700);
-    // The checklist's household tick follows the entry.
-    assert_ne!(s.draft.checklist.other_taxes & OtherTaxTopics::HOUSEHOLD_EMPLOYEE.0, 0);
+    // The household employee box follows the entry.
+    assert_ne!(s.draft.checklist.activities & ActivityTopics::HOUSEHOLD_EMPLOYEE.0, 0);
     // Round trip: saved, restarted, reopened unchanged.
     let stored = s.draft.clone();
     let mut again = restart(stored.clone());
     let P::SaveOtherTaxes { value: shown, .. } = open_other_taxes(&mut again) else {
         unreachable!()
     };
-    assert_eq!(shown.taxes, vec![OtherTax::HouseholdEmployees { employers: vec![nanny(3_500)] }]);
+    assert_eq!(
+        shown.taxes,
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&nanny(3_500)).into()] }]
+    );
     let page = open_other_taxes(&mut again);
     let request = other_taxes_request(&page, &again.draft.clone(), shown.taxes.clone());
     ok(&send(&mut again, request));
@@ -76,14 +80,17 @@ fn schedule_h_line_a_threshold_is_three_thousand_dollars() {
     e.workers[0].pay[0].cash = 299_999;
     e.states[0].periods[0].wages = 299_999;
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    ok(&save_other_taxes(&mut s, vec![OtherTax::HouseholdEmployees { employers: vec![e] }]));
+    ok(&save_other_taxes(
+        &mut s,
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&e).into()] }],
+    ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "household_0_social_tax"), 0);
     assert_eq!(value(&r, "household_0_tax"), 18);
     // $3,000.00 exactly: 372 + 87 + 18 = 477.
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::HouseholdEmployees { employers: vec![nanny(3_000)] }],
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&nanny(3_000)).into()] }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "household_0_social_tax"), 372);
@@ -99,11 +106,14 @@ fn schedule_h_futa_quarter_test_is_one_thousand_dollars() {
     e.workers[0].pay[0].cash = 99_999;
     e.states[0].periods[0].wages = 99_999;
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    ok(&save_other_taxes(&mut s, vec![OtherTax::HouseholdEmployees { employers: vec![e] }]));
+    ok(&save_other_taxes(
+        &mut s,
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&e).into()] }],
+    ));
     assert_eq!(value(&supported(&s.draft), "household_0_tax"), 0);
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::HouseholdEmployees { employers: vec![nanny(1_000)] }],
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&nanny(1_000)).into()] }],
     ));
     assert_eq!(value(&supported(&s.draft), "household_0_tax"), 6);
 }
@@ -119,7 +129,7 @@ fn schedule_h_owner_rules_are_checked_on_save() {
     assert!(
         refusal(save_other_taxes(
             &mut s,
-            vec![OtherTax::HouseholdEmployees { employers: vec![spouse.clone()] }],
+            vec![OtherTax::HouseholdEmployees { employers: vec![(&spouse).into()] }],
         ))
         .contains("joint return")
     );
@@ -128,13 +138,17 @@ fn schedule_h_owner_rules_are_checked_on_save() {
     refused_key(
         save_other_taxes(
             &mut s,
-            vec![OtherTax::HouseholdEmployees { employers: vec![nanny(3_000), nanny(4_000)] }],
+            vec![OtherTax::HouseholdEmployees {
+                employers: vec![(&nanny(3_000)).into(), (&nanny(4_000)).into()],
+            }],
         ),
         "HOUSEHOLD_EMPLOYER_TWICE",
     );
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::HouseholdEmployees { employers: vec![nanny(3_000), spouse] }],
+        vec![OtherTax::HouseholdEmployees {
+            employers: vec![(&nanny(3_000)).into(), (&spouse).into()],
+        }],
     ));
     // Leaving the joint return erases the spouse's employer (walk-owned
     // data: the row's owner leaves allowed_owners).
@@ -186,22 +200,23 @@ pub(in crate::tests) fn gift(
 // The page's list, refusal kinds and review row.
 
 #[test]
-fn other_taxes_list_keeps_its_refusal_kinds() {
+fn unprepared_situations_are_kept_beside_the_calculated_taxes() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::Section965, OtherTax::HouseholdEmployees { employers: vec![nanny(3_000)] }],
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&nanny(3_000)).into()] }],
     ));
-    assert_eq!(s.draft.tax_refusals, vec![OtherTaxRefusal::Section965]);
+    ok(&save_unprepared(&mut s, vec![Unprepared::Section965]));
+    assert_eq!(s.draft.often_missed.unprepared, vec![Unprepared::Section965]);
+    // The Other taxes page lists only the taxes it calculates.
     let P::SaveOtherTaxes { value, .. } = open_other_taxes(&mut s) else { unreachable!() };
-    // Records first, then the refusal kinds.
     assert_eq!(
         value.taxes,
-        vec![OtherTax::HouseholdEmployees { employers: vec![nanny(3_000)] }, OtherTax::Section965,]
+        vec![OtherTax::HouseholdEmployees { employers: vec![(&nanny(3_000)).into()] }]
     );
-    // An empty list clears both.
+    // An empty list clears its records and leaves the unprepared situation.
     ok(&save_other_taxes(&mut s, vec![]));
-    assert!(s.draft.situations.is_empty());
+    assert_eq!(s.draft.often_missed.unprepared, vec![Unprepared::Section965]);
     assert!(s.draft.screening.as_ref().unwrap().household_employment.is_empty());
 }
 
@@ -213,14 +228,11 @@ fn named_additional_taxes_survive_pages_and_restart_and_clear_without_zero_tax()
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     assert_eq!(supported(&s.draft).tax, Some(502_300));
     let installment =
-        OtherTax::OtherAdditionalTaxes { kind: RareAdditionalTax::InstallmentLotsTimeshares };
+        Unprepared::OtherAdditionalTaxes { kind: RareAdditionalTax::InstallmentLotsTimeshares };
     let deferred =
-        OtherTax::OtherAdditionalTaxes { kind: RareAdditionalTax::DeferredCompensation409A };
-    ok(&save_other_taxes(&mut s, vec![installment.clone(), deferred.clone()]));
-    assert_eq!(
-        s.draft.tax_refusals,
-        vec![installment.refusal().unwrap(), deferred.refusal().unwrap()]
-    );
+        Unprepared::OtherAdditionalTaxes { kind: RareAdditionalTax::DeferredCompensation409A };
+    ok(&save_unprepared(&mut s, vec![installment.clone(), deferred.clone()]));
+    assert_eq!(s.draft.often_missed.unprepared, vec![installment.clone(), deferred.clone()]);
     let r = estimate(&s.draft);
     assert_eq!(r.state, ResultState::Unsupported);
     for (key, source) in [
@@ -233,34 +245,34 @@ fn named_additional_taxes_survive_pages_and_restart_and_clear_without_zero_tax()
         );
     }
     let mut s = restart(s.draft.clone());
-    let P::SaveOtherTaxes { value, .. } = open_other_taxes(&mut s) else { unreachable!() };
-    assert_eq!(value.taxes, vec![installment.clone(), deferred.clone()]);
+    let P::SaveOftenMissed { value, .. } = open_often_missed(&mut s) else { unreachable!() };
+    assert_eq!(value.unprepared, Some(vec![installment.clone(), deferred.clone()]));
     let accepted = s.draft.clone();
     let dirty = s.dirty;
     refused_key(
-        save_other_taxes(&mut s, vec![installment.clone(), installment]),
+        save_unprepared(&mut s, vec![installment.clone(), installment]),
         "MESSAGE_CHOOSE_EACH_SITUATION_ONLY_ONCE",
     );
     assert_eq!(s.draft, accepted);
     assert_eq!(s.dirty, dirty);
-    ok(&save_other_taxes(&mut s, vec![]));
-    assert!(s.draft.tax_refusals.is_empty());
+    ok(&save_unprepared(&mut s, vec![]));
+    assert!(s.draft.often_missed.unprepared.is_empty());
     // Clearing an actual indication restores the ordinary computation; no
     // uncomputed tax has been silently assigned zero while the fact remains.
     assert_eq!(supported(&s.draft).tax, Some(502_300));
 }
 
 #[test]
-fn other_taxes_server_rejects_duplicate_kinds_without_mutation() {
+fn unprepared_server_rejects_duplicate_kinds_without_mutation() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let before = s.draft.clone();
     let dirty = s.dirty;
     // 2026-10-15 D-13 removes the former 24-item cap; actual kind uniqueness remains.
     refused_key(
-        save_other_taxes(
+        save_unprepared(
             &mut s,
             vec![
-                OtherTax::OtherAdditionalTaxes {
+                Unprepared::OtherAdditionalTaxes {
                     kind: RareAdditionalTax::AnotherIdentifiedAddedTax,
                 };
                 25
@@ -279,10 +291,10 @@ fn all_sixteen_named_additional_taxes_fit_the_accepted_return_bound() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let items: Vec<_> = RareAdditionalTax::ALL
         .into_iter()
-        .map(|kind| OtherTax::OtherAdditionalTaxes { kind })
+        .map(|kind| Unprepared::OtherAdditionalTaxes { kind })
         .collect();
-    ok(&save_other_taxes(&mut s, items.clone()));
-    assert_eq!(s.draft.tax_refusals.len(), 16);
+    ok(&save_unprepared(&mut s, items.clone()));
+    assert_eq!(s.draft.often_missed.unprepared.len(), 16);
     assert!(s.draft.valid_stored());
     let r = estimate(&s.draft);
     assert_eq!(r.state, ResultState::Unsupported);
@@ -303,8 +315,8 @@ fn all_sixteen_named_additional_taxes_fit_the_accepted_return_bound() {
         );
     }
     let mut s = restart(s.draft.clone());
-    let P::SaveOtherTaxes { value, .. } = open_other_taxes(&mut s) else { unreachable!() };
-    assert_eq!(value.taxes, items);
+    let P::SaveOftenMissed { value, .. } = open_often_missed(&mut s) else { unreachable!() };
+    assert_eq!(value.unprepared, Some(items));
     assert!(s.draft.valid_stored());
     assert_eq!(estimate(&s.draft), r);
 }
@@ -317,7 +329,7 @@ fn unit13_mortgage_gift_owner_save_checks_actual_joint_positive_tax() {
     refused_key(
         save_other_taxes(
             &mut session,
-            vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home.clone()] }],
+            vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home.clone().into()] }],
         ),
         "MORTGAGE_GIFT_OWNER_REQUIRED",
     );
@@ -334,7 +346,7 @@ fn unit13_mortgage_gift_owner_save_checks_actual_joint_positive_tax() {
     *owners = Some(MortgageSubsidyGiftOwners::Spouse);
     ok(&save_other_taxes(
         &mut session,
-        vec![OtherTax::MortgageSubsidyRecapture { homes: vec![owned.clone()] }],
+        vec![OtherTax::MortgageSubsidyRecapture { homes: vec![owned.clone().into()] }],
     ));
     assert_eq!(value(&supported(&session.draft), "mortgage_subsidy_recapture_tax"), 7_500);
     let stored = session.draft.clone();
@@ -344,14 +356,14 @@ fn unit13_mortgage_gift_owner_save_checks_actual_joint_positive_tax() {
         unreachable!()
     };
     assert_eq!(mortgage_gift_owners, vec![0, 1, 2]);
-    assert_eq!(shown.taxes, vec![OtherTax::MortgageSubsidyRecapture { homes: vec![owned] }]);
+    assert_eq!(shown.taxes, vec![OtherTax::MortgageSubsidyRecapture { homes: vec![owned.into()] }]);
     ok(&save_other_taxes(&mut again, shown.taxes));
     assert_eq!(again.draft, stored);
     // Actual zero recapture permits the explicit null answer on a joint return.
     ok(&save_other_taxes(
         &mut again,
         vec![OtherTax::MortgageSubsidyRecapture {
-            homes: vec![gift(20200601, 200_000, 200_000, 0, 60)],
+            homes: vec![gift(20200601, 200_000, 200_000, 0, 60).into()],
         }],
     ));
     assert_eq!(value(&supported(&again.draft), "mortgage_subsidy_recapture_tax"), 0);
@@ -362,7 +374,7 @@ fn unit13_mortgage_gift_owner_save_checks_actual_joint_positive_tax() {
     assert!(mortgage_gift_owners.is_empty());
     ok(&save_other_taxes(
         &mut single,
-        vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home] }],
+        vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home.into()] }],
     ));
     assert_eq!(value(&supported(&single.draft), "mortgage_subsidy_recapture_tax"), 7_500);
     let before = single.draft.clone();
@@ -378,7 +390,7 @@ fn unit13_mortgage_gift_owner_save_checks_actual_joint_positive_tax() {
     refused_key(
         save_other_taxes(
             &mut single,
-            vec![OtherTax::MortgageSubsidyRecapture { homes: vec![invalid] }],
+            vec![OtherTax::MortgageSubsidyRecapture { homes: vec![invalid.into()] }],
         ),
         "MORTGAGE_GIFT_OWNER_NOT_JOINT",
     );
@@ -390,25 +402,27 @@ fn unit13_mortgage_gift_owner_save_checks_actual_joint_positive_tax() {
 // subtotals survive ordinary native editors and persisted-record restart.
 #[test]
 fn schedule_2_common_w2_codes_and_8828_native_save_reopen_restart() {
-    use crate::tests::cross::interview::open_topic;
     use crate::tests::support::client::exchange;
     use crate::tests::support::client::unit50_interview_native::NativeInterviewCase;
 
     let wages = NativeInterviewCase("TAX_UNIT18_COMMON_W2");
     let taxes = NativeInterviewCase("TAX_UNIT18_COMMON_TAXES");
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut request = open_topic(&mut session, TaxSection::Wages);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     wages.write("SEED", &request);
-    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    let IncomeDocument::W2(w2) = &mut documents.documents[0].document else { unreachable!() };
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::WageDocument::W2(w2) = &mut documents.common.wages.documents[0].document else {
+        unreachable!()
+    };
     // $60,000 covered wages: ordinary SS $3,720 and Medicare $870.
     // Reported uncollected tax is A40+B10+M20+N5=$75; reduce only the
     // respective payroll withholding boxes, leaving box2=$6,500 unchanged.
-    w2.social_tax -= 6_000;
-    w2.medicare_tax -= 1_500;
-    w2.more.box12 = [(W2Code::A, 4_000), (W2Code::B, 1_000), (W2Code::M, 2_000), (W2Code::N, 500)]
+    *w2.social_tax.as_mut().expect("printed Social Security tax") -= 6_000;
+    *w2.medicare_tax.as_mut().expect("printed Medicare tax") -= 1_500;
+    w2.box12 = [(W2Code::A, 4_000), (W2Code::B, 1_000), (W2Code::M, 2_000), (W2Code::N, 500)]
         .into_iter()
-        .map(|(code, amount)| Box12Entry { code, amount })
+        .map(|(code, amount)| crate::PrintedBox12Entry { code, amount: Some(amount) })
         .collect();
     wages.save(&mut session, request);
 
@@ -419,7 +433,7 @@ fn schedule_2_common_w2_codes_and_8828_native_save_reopen_restart() {
     // x6.25% x60% holding x100% income factor=$7,500, the smaller cap
     // (Form 8828 lines 14 and 19-23).
     answers.taxes = vec![OtherTax::MortgageSubsidyRecapture {
-        homes: vec![gift(20200601, 300_000, 200_000, 0, 60)],
+        homes: vec![gift(20200601, 300_000, 200_000, 0, 60).into()],
     }];
     taxes.save(&mut session, request);
     let result = supported(&session.draft);
@@ -439,10 +453,13 @@ fn schedule_2_common_w2_codes_and_8828_native_save_reopen_restart() {
     assert_eq!(return_line(&result, "25c"), 0);
     assert_eq!(result.tax, Some(1_259_800)); // ordinary $5,023 + $7,575
 
-    let mut invalid = open_topic(&mut session, TaxSection::Wages);
-    let P::SaveIncomes { documents, .. } = &mut invalid else { unreachable!() };
-    let IncomeDocument::W2(w2) = &mut documents.documents[0].document else { unreachable!() };
-    w2.withholding = w2.wages + 1;
+    let mut invalid =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+    let crate::WageDocument::W2(w2) = &mut documents.common.wages.documents[0].document else {
+        unreachable!()
+    };
+    w2.withholding = Some(w2.wages.expect("printed wages") + 1);
     let before_invalid = session.draft.clone();
     refused_key(
         exchange(&mut session, invalid, "common Schedule 2 invalid W-2"),
@@ -460,7 +477,7 @@ fn schedule_2_common_w2_codes_and_8828_native_save_reopen_restart() {
         if field == "label" {
             homes[0].label = " ".into();
         } else {
-            let MortgageSubsidyDisposition::Ordinary { facts, .. } = &mut homes[0].disposition
+            let MortgageSubsidyDispositionView::Ordinary { facts, .. } = &mut homes[0].disposition
             else {
                 unreachable!()
             };
@@ -485,7 +502,7 @@ fn schedule_2_common_w2_codes_and_8828_native_save_reopen_restart() {
     }
     let saved = taxes.restart(&mut session);
     assert_eq!(supported(&session.draft), result);
-    let reopened = open_topic(&mut session, TaxSection::Wages);
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut session);
     wages.write("REOPENED", &reopened);
     ok(&send(&mut session, reopened));
     let reopened = open_other_taxes(&mut session);

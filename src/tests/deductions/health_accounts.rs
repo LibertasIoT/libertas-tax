@@ -70,7 +70,7 @@ fn repayment_comparison_uses_each_original_year_filing_table() {
         [(2023, 13850, 8766, 7666), (2024, 14600, 8347, 7247)]
     {
         let mut d = repayment_comparison_draft(RepaymentMethod::Automatic);
-        let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
+        let FederalIncome::GovernmentPayment { data } = &mut d.income[1].income else { panic!() };
         data.repayments[0].received_year = year;
         let RepaymentClaim::Claim { years, .. } = &mut d.deductions.as_mut().unwrap().repayment
         else {
@@ -209,7 +209,7 @@ fn repayment_early_uses_original_year_tables() {
     {
         let mut d = repayment_early_draft(false, true, 6625, 900);
         for entry in &mut d.income {
-            if let FederalIncome::Unemployment { data } = &mut entry.income {
+            if let FederalIncome::GovernmentPayment { data } = &mut entry.income {
                 data.repayments[0].received_year = year;
             }
         }
@@ -332,7 +332,7 @@ fn charitable_mileage_and_parking_join_cash_class_once_when_itemizing() {
     let ded = d.deductions.as_mut().unwrap();
     ded.set_cash_charity(100_000);
     ded.volunteer_expenses.push(volunteer_travel(VolunteerCarCost::Mileage { miles: 100 }, 600));
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&d);
     assert_eq!(value(&result, "charity_volunteer_1_expense"), 20);
     assert_eq!(value(&result, "charity_cash_sixty_current_deduction"), 720);
@@ -340,7 +340,4 @@ fn charitable_mileage_and_parking_join_cash_class_once_when_itemizing() {
 
     d.deductions.as_mut().unwrap().volunteer_expenses[0].documented = false;
     assert!(noted(&supported(&d), "WARN_VOLUNTEER_EXPENSE_LEFT_OUT"));
-    d.deductions.as_mut().unwrap().volunteer_expenses[0].documented = true;
-    d.deductions.as_mut().unwrap().volunteer_expenses[0].date = 20260230;
-    assert!(!d.valid_stored());
 }

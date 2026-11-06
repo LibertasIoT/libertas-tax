@@ -1,8 +1,8 @@
 use crate::tests::*;
 
-pub(in crate::tests) fn fuel_use(thousandths_of_gallon: u32, actual_cost: i64) -> FederalFuelUse {
+pub(in crate::tests) fn fuel_use(thousandths: u32, actual_cost: i64) -> FederalFuelUse {
     FederalFuelUse {
-        thousandths_of_gallon,
+        gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
         actual_cost,
         qualified: true,
         not_claimed_elsewhere: true,
@@ -101,14 +101,12 @@ pub(in crate::tests) fn farm_aviation_gasoline(
     }
 }
 
-pub(in crate::tests) fn government_vendor_sale(
-    thousandths_of_gallon: u32,
-) -> FederalGovernmentFuelSale {
+pub(in crate::tests) fn government_vendor_sale(thousandths: u32) -> FederalGovernmentFuelSale {
     FederalGovernmentFuelSale {
         date: 20260615,
         buyer_name: "Synthetic State Roads Agency".into(),
         buyer_tin: "12-3456789".into(),
-        thousandths_of_gallon,
+        gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
         actual_fuel_cost: 30_000,
         tax_relief: FederalVendorTaxRelief::TaxExcludedPrice,
         taxed_244_undyed_fuel: true,
@@ -119,19 +117,17 @@ pub(in crate::tests) fn government_vendor_sale(
     }
 }
 
-pub(in crate::tests) fn government_vendor_claim(
-    thousandths_of_gallon: u32,
-) -> FederalVendorStateClaim {
+pub(in crate::tests) fn government_vendor_claim(thousandths: u32) -> FederalVendorStateClaim {
     FederalVendorStateClaim {
         uv_registration_number: "UV-SYNTHETIC-637".into(),
         registration_active: true,
-        sales: vec![government_vendor_sale(thousandths_of_gallon)],
+        sales: vec![government_vendor_sale(thousandths)],
         records_complete: true,
     }
 }
 
 pub(in crate::tests) fn blocked_pump_vendor_claim(
-    thousandths_of_gallon: u32,
+    thousandths: u32,
     access: FederalBlockedPumpAccess,
 ) -> FederalBlockedPumpKeroseneClaim {
     let locked = access == FederalBlockedPumpAccess::LockedBetweenSales;
@@ -146,7 +142,7 @@ pub(in crate::tests) fn blocked_pump_vendor_claim(
             date: 20260615,
             buyer_name: (if locked { "Synthetic Buyer" } else { "" }).into(),
             buyer_address: (if locked { "100 Example Street" } else { "" }).into(),
-            thousandths_of_gallon,
+            gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
             actual_fuel_cost: 30_000,
             tax_relief: FederalVendorTaxRelief::TaxExcludedPrice,
             taxed_244_undyed_nonaviation: true,
@@ -158,12 +154,12 @@ pub(in crate::tests) fn blocked_pump_vendor_claim(
     }
 }
 
-pub(in crate::tests) fn bus_vendor_sale(thousandths_of_gallon: u32) -> FederalVendorBusSale {
+pub(in crate::tests) fn bus_vendor_sale(thousandths: u32) -> FederalVendorBusSale {
     FederalVendorBusSale {
         date: 20260615,
         buyer_name: "Synthetic Bus Operator".into(),
         buyer_address: "100 Sample Avenue".into(),
-        thousandths_of_gallon,
+        gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
         actual_fuel_cost: 30_000,
         tax_relief: FederalVendorTaxRelief::TaxExcludedPrice,
         taxed_244_undyed_nonaviation: true,
@@ -180,7 +176,7 @@ pub(in crate::tests) fn bus_vendor_sale(thousandths_of_gallon: u32) -> FederalVe
 pub(in crate::tests) fn card_issuer_sale(
     reference: &str,
     fuel: FederalCardIssuerFuel,
-    thousandths_of_gallon: u32,
+    thousandths: u32,
 ) -> FederalCardIssuerSale {
     FederalCardIssuerSale {
         sale_reference: reference.into(),
@@ -190,7 +186,7 @@ pub(in crate::tests) fn card_issuer_sale(
         buyer_address: "1 Test Plaza".into(),
         card_account_reference: "TEST-GOV-CARD-1".into(),
         fuel,
-        thousandths_of_gallon,
+        gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
         actual_fuel_cost: 100_000,
         taxed_at_stated_rate: true,
         issuer_card_used_by_buyer: true,
@@ -280,7 +276,8 @@ pub(in crate::tests) fn retained_card_issuer_business() -> FederalBusiness {
         fuels: FederalFuelLines {
             card_issuer: Some(retained_card_issuer_claim()),
             ..FederalFuelLines::default()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
@@ -305,24 +302,22 @@ pub(in crate::tests) fn cash_retained_card_issuer_business() -> FederalBusiness 
     business
 }
 
-pub(in crate::tests) fn bus_vendor_claim(thousandths_of_gallon: u32) -> FederalVendorBusClaim {
+pub(in crate::tests) fn bus_vendor_claim(thousandths: u32) -> FederalVendorBusClaim {
     FederalVendorBusClaim {
         ub_registration_number: "UB-SYNTHETIC-637".into(),
         registration_active: true,
-        sales: vec![bus_vendor_sale(thousandths_of_gallon)],
+        sales: vec![bus_vendor_sale(thousandths)],
         records_complete: true,
     }
 }
 
-pub(in crate::tests) fn aviation_vendor_claim(
-    thousandths_of_gallon: u32,
-) -> FederalVendorAviationClaim {
+pub(in crate::tests) fn aviation_vendor_claim(thousandths: u32) -> FederalVendorAviationClaim {
     let sale = FederalVendorAviationSale {
         sale_reference: "synthetic-sale-8a".into(),
         date: 20260615,
         buyer_name: "Synthetic Commercial Air Carrier".into(),
         buyer_address: "100 Airport Road".into(),
-        thousandths_of_gallon,
+        gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
         actual_fuel_cost: 30_000,
         original_tax_rate: FederalVendorAviationTaxRate::TaxedAt219,
         tax_relief: FederalVendorTaxRelief::TaxExcludedPrice,
@@ -348,7 +343,7 @@ pub(in crate::tests) fn aviation_vendor_claim(
 }
 
 pub(in crate::tests) fn noncommercial_aviation_vendor_claim(
-    thousandths_of_gallon: u32,
+    thousandths: u32,
 ) -> FederalVendorNoncommercialAviationClaim {
     FederalVendorNoncommercialAviationClaim {
         ua_registration_number: "UA-SYNTHETIC-637".into(),
@@ -358,7 +353,7 @@ pub(in crate::tests) fn noncommercial_aviation_vendor_claim(
             date: 20260615,
             buyer_name: "Synthetic Private Aircraft Operator".into(),
             buyer_address: "200 Airport Road".into(),
-            thousandths_of_gallon,
+            gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
             actual_fuel_cost: 30_000,
             tax_relief: FederalVendorTaxRelief::TaxExcludedPrice,
             taxed_at_244: true,
@@ -381,7 +376,7 @@ pub(in crate::tests) fn nontaxable_aviation_vendor_claim(
         government_buyer_tin: None,
         use_type: FederalAviationNontaxableUse::ForeignTrade,
         original_tax_rate: FederalVendorAviationTaxRate::TaxedAt244,
-        thousandths_of_gallon: gallons,
+        gallons: crate::kernel::natural::natural(i64::from(gallons), 1_000),
         actual_fuel_cost: 30_000,
         tax_relief: FederalVendorTaxRelief::TaxExcludedPrice,
         taxed_at_stated_rate: true,
@@ -487,12 +482,12 @@ pub(in crate::tests) fn fuel_credit_sources(
     let baseline = supported(&without_credit);
     let FederalIncome::Business { data } = &mut business else { unreachable!() };
     data.fuel_tax_credit = Some(FederalFuelTaxCredit {
-        fuels: business_fuels,
+        fuels: business_fuels.into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
     partner.fuel_tax_credit = Some(PartnerFuelTaxCredit {
-        fuels: partner_fuels,
+        fuels: partner_fuels.into(),
         statement_complete: true,
         farm_activity,
     });

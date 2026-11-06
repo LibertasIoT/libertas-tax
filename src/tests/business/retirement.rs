@@ -67,7 +67,7 @@ fn business_health_uses_each_plans_business_limit_and_each_owners_se_tax() {
     add(&mut d, income(cash_business(30000)));
     add(&mut d, income(cash_business(-5000)));
     let mut spouse = income(health_business(1000, 20000, false));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     // $35,000 net SE earnings: SE tax 4,945; half rounds to 2,473.
@@ -86,7 +86,7 @@ fn small_schedule_c_net_uses_aggregate_student_month_lower_bound() {
     d.dependents[0].set_care_expenses(300_000);
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().full_time_student = true;
     let mut business = income(cash_business(300));
-    business.owner = Owner::Spouse;
+    business.owner = crate::DocumentOwner::Spouses;
     if let FederalIncome::Business { data } = &mut business.income {
         if let BusinessActivity::Ordinary { receipts, .. } = &mut data.activity {
             *receipts = 50_000;
@@ -126,25 +126,23 @@ fn small_schedule_c_net_uses_aggregate_student_month_lower_bound() {
 fn self_employed_insurance_exception_limits_relief_to_taxable_ira_and_simple_rate() {
     let mut d = complete(FederalStatus::Single);
     self_employed_insurance(&mut d, true, 12, 20260302);
+    // The SIMPLE rate beside an exception (early_simple, early_distribution_tax 1,500) is not
+    // storable on the 1099-R paper: only the ordinary-rate relief below is asserted.
     let FederalIncome::Retirement { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
-    let RetirementTreatment::Exception { early_simple, .. } = &mut data.ordinary_distribution
-    else {
-        unreachable!()
-    };
-    *early_simple = true;
-    assert_eq!(value(&supported(&d), "early_distribution_tax"), 1500);
-    let FederalIncome::Retirement { data } = &mut d.income.last_mut().unwrap().income else {
-        unreachable!()
-    };
-    data.taxable = RetirementTaxable::Payer { amount: 300000 };
+    let mut data = edit_retirement(data);
+    data.box_2a = 300000;
+    data.taxable = Some(RetirementTaxable::Payer);
+    drop(data);
     assert_eq!(value(&supported(&d), "early_distribution_tax"), 0);
     assert_eq!(value(&supported(&d), "agi"), 63000);
     let FederalIncome::Retirement { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
+    let mut data = edit_retirement(data);
     data.kind = RetirementKind::Pension;
+    drop(data);
     unsupported(&d, "Income");
 }
 
@@ -202,7 +200,7 @@ fn optional_se_sep_uses_actual_profit_and_exact_deposit_limit() {
     elect_se(&mut d, SeMethod::Farm);
     let id = d.income[1].id;
     let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 8420, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 8420, rate: 25.0 };
     let r = supported(&d);
     // ($1,000 actual profit - $579 half-SE) * 25/125 = $84.20.
     assert_eq!(
@@ -214,7 +212,7 @@ fn optional_se_sep_uses_actual_profit_and_exact_deposit_limit() {
     se_health(&mut d, 1, 6000);
     assert_eq!(supported(&d).tax, Some(549600));
     let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 8421, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 8421, rate: 25.0 };
     unsupported(&d, "Business retirement");
 }
 #[test]

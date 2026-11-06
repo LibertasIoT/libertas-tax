@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 491000, "rule": {"select": "^<Patr1099Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_COOP_SOURCE", "fields": ["corrected", "calendar_year", "payer", "payer_telephone", "recipient", "account_number", "patronage", "nonpatronage", "per_unit_retains", "withholding", "redeemed"]}, {"title": "DISPLAY_COOP_QUALIFICATION", "fields": ["section_199a_g", "qualified_payments", "qualified_items", "sstb_items", "specified_cooperative"]}, {"title": "DISPLAY_COOP_CREDITS", "fields": ["investment", "work_opportunity", "other_credits_and_deductions"]}]}},
+    {"order": 494000, "rule": {"select": "^<Patr1099Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_COOP_SOURCE", "fields": ["corrected", "calendar_year", "payer", "payer_telephone", "recipient", "account_number", "patronage", "nonpatronage", "per_unit_retains", "withholding", "redeemed"]}, {"title": "DISPLAY_COOP_QUALIFICATION", "fields": ["section_199a_g", "qualified_payments", "qualified_items", "sstb_items", "specified_cooperative"]}, {"title": "DISPLAY_COOP_CREDITS", "fields": ["investment", "work_opportunity", "other_credits_and_deductions"]}]}}
+  ]
+}

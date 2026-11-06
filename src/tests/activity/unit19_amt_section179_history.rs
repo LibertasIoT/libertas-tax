@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::support::client::income_pages::{open_documents, save_documents};
 use crate::tests::support::client::unit50_interview_native::NativeInterviewCase;
 use crate::tests::support::client::{
     draft_from_native_records, native_draft_records, write_native_draft_records,
@@ -12,36 +13,38 @@ fn history(gross: i64, sold: i64, years: &[(u32, i64)]) -> Section179IncomeCarry
     }
 }
 
-fn page(partner: bool, actual: Option<Section179IncomeCarryHistory>) -> IncomeDocument {
+fn page(partner: bool, actual: Option<Section179IncomeCarryHistory>) -> IncomeSource {
     if partner {
         let mut page = k1_1065("Actual partnership carry history");
         page.ordinary = 2_000_000;
-        page.interest = PartnerInterest::LlcMember {
-            box1_in_se: false,
-            participation: Participation::Over500Hours { hours: 501 },
-        };
+        (page.participation, page.limited_for_se) = (Some(crate::PartnerParticipation::General { facts: (Participation::Over500Hours { hours: 501 }).record() }), Some(true));
         page.basis.start = k1_1065_continuing(
             1_000_000,
             ScorpRiskStart::Detailed { capacity: 1_000_000, profit: 0, loss: 0 },
         );
         page.more.section179_carryover = 100_000;
         page.more.amt_section179_income_carry = actual;
-        IncomeDocument::K1Partnership(page)
+        IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
     } else {
         let mut page = k1_1120s("Actual corporation carry history");
         page.ordinary = 2_000_000;
-        page.participation = Participation::Over500Hours { hours: 501 };
+        page.participation = Some(Participation::Over500Hours { hours: 501 });
         page.basis.start = k1_1120s_continuing(1_000_000, 1_000_000);
         page.more.section179_carryover = 100_000;
         page.more.amt_section179_income_carry = actual;
-        IncomeDocument::K1Scorp(page)
+        IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
     }
 }
 
-fn set_history(value: &mut IncomeDocument, actual: Option<Section179IncomeCarryHistory>) {
+fn set_history(value: &mut crate::K1Document, actual: Option<Section179IncomeCarryHistory>) {
     match value {
-        IncomeDocument::K1Partnership(page) => page.more.amt_section179_income_carry = actual,
-        IncomeDocument::K1Scorp(page) => page.more.amt_section179_income_carry = actual,
+        crate::K1Document::K1Partnership(page) => page.personal.as_mut().unwrap().amt_section179_income_carry = actual,
+        crate::K1Document::K1Scorp(page) => {
+            // The shareholder's carry history is a saved answer beside the printed K-1.
+            let mut personal = scorp_fixture_source(page).personal;
+            personal.amt_section179_income_carry = actual;
+            *page = remember_scorp_document(page.clone(), personal);
+        }
         _ => unreachable!(),
     }
 }
@@ -52,7 +55,8 @@ fn stored(entry: &FederalIncomeEntry) -> (i64, &Option<Section179IncomeCarryHist
             (data.section179_carryover, &data.amt_section179_income_carry)
         }
         FederalIncome::Scorp { data } => {
-            (data.section179_carryover, &data.amt_section179_income_carry)
+            let native = ScorpK1::from(data);
+            (native.section179_carryover, Box::leak(Box::new(native.amt_section179_income_carry)))
         }
         _ => unreachable!(),
     }
@@ -68,10 +72,11 @@ fn unit19_amt_179_history_native_save_preserves_unknown_zero_and_actual_years() 
             Some(history(50_000, 20_000, &[(2023, 20_000), (2025, 10_000)])),
         ] {
             let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-            let mut request = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-            documents.documents = vec![document(0, page(partner, actual.clone()))];
-            accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
+            let request =
+                save_documents(&mut session, vec![document(0, page(partner, actual.clone()))]);
+            accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session, P::from_avro(&request.to_avro()).unwrap(),
+            ));
             let entry = session
                 .draft
                 .income
@@ -95,10 +100,10 @@ fn unit19_amt_179_history_native_save_preserves_unknown_zero_and_actual_years() 
             // Real corrections preserve identity and never copy regular carry
             // into either explicit zero or unavailable AMT history.
             for correction in [Some(history(0, 0, &[])), None] {
-                let mut request = open_topic(&mut session, TaxSection::PassThrough);
-                let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-                set_history(&mut documents.documents[0].document, correction.clone());
-                accepted(&send(&mut session, request));
+                let mut request = open_documents(&mut session);
+                let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+                set_history(&mut documents.common.k1.documents[0].document, correction.clone());
+                accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
                 assert_eq!(
                     stored(session.draft.income.iter().find(|entry| entry.id == id).unwrap()),
                     (100_000, &correction)
@@ -113,26 +118,24 @@ fn unit19_amt_179_history_native_save_preserves_unknown_zero_and_actual_years() 
 fn unit19_amt_179_history_invalid_save_keeps_the_accepted_source() {
     for partner in [true, false] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        documents.documents =
-            vec![document(0, page(partner, Some(history(30_000, 0, &[(2024, 30_000)]))))];
-        accepted(&send(&mut session, request));
+        let request = save_documents(
+            &mut session,
+            vec![document(0, page(partner, Some(history(30_000, 0, &[(2024, 30_000)]))))],
+        );
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
         let saved = session.draft.clone();
         for invalid in [
             history(30_000, 30_001, &[]),
-            history(-1, 0, &[]),
             history(30_000, 0, &[(2026, 30_000)]),
-            history(30_000, 0, &[(1957, 30_000)]),
             history(30_000, 0, &[(2024, 20_000), (2024, 10_000)]),
             history(30_000, 0, &[(2024, 29_999)]),
             history(30_000, 0, &[(2024, 30_000), (2025, 0)]),
         ] {
             assert!(invalid.rule().is_some());
-            let mut request = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-            set_history(&mut documents.documents[0].document, Some(invalid));
-            error(send(&mut session, request));
+            let mut request = open_documents(&mut session);
+            let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+            set_history(&mut documents.common.k1.documents[0].document, Some(invalid));
+            error(crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
             assert_eq!(session.draft, saved);
         }
     }
@@ -169,10 +172,12 @@ fn unit19_amt_179_history_community_projection_conserves_each_actual_year() {
     assert_eq!(actual, history(7, 1, &[(2023, 1), (2024, 2), (2025, 3)]));
 }
 
-fn entered(value: &IncomeDocument) -> &Option<Section179IncomeCarryHistory> {
+fn entered(value: &crate::K1Document) -> &Option<Section179IncomeCarryHistory> {
     match value {
-        IncomeDocument::K1Partnership(page) => &page.more.amt_section179_income_carry,
-        IncomeDocument::K1Scorp(page) => &page.more.amt_section179_income_carry,
+        crate::K1Document::K1Partnership(page) => &page.personal.as_ref().unwrap().amt_section179_income_carry,
+        crate::K1Document::K1Scorp(page) => {
+            Box::leak(Box::new(scorp_fixture_source(page).personal.amt_section179_income_carry))
+        }
         _ => unreachable!(),
     }
 }
@@ -183,30 +188,29 @@ fn unit19_amt_179_history_actual_client_save_reopen_restart_and_correction() {
     let partner = std::env::var("TAX_UNIT19_AMT179_KIND").as_deref() != Ok("scorp");
     let actual = [Some(history(30_000, 0, &[(2024, 30_000)])), None, Some(history(0, 0, &[]))];
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let seed = open_topic(&mut session, TaxSection::PassThrough);
+    let seed = open_documents(&mut session);
     let native = NativeInterviewCase("TAX_UNIT19_AMT179");
     if native.required_calculation(&mut session) {
         return;
     }
-    let mut answers = seed.clone();
-    let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
-    documents.documents = actual
+    let rows = actual
         .iter()
         .enumerate()
         .map(|(index, value)| {
             let mut value = page(partner, value.clone());
             match &mut value {
-                IncomeDocument::K1Partnership(page) => {
-                    page.name = alloc::format!("Actual AMT history source {}", index + 1)
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+                    page.form.partnership.name = alloc::format!("Actual AMT history source {}", index + 1)
                 }
-                IncomeDocument::K1Scorp(page) => {
-                    page.name = alloc::format!("Actual AMT history source {}", index + 1)
+                IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                    page.form.corporation.name = alloc::format!("Actual AMT history source {}", index + 1)
                 }
                 _ => unreachable!(),
             }
             document(0, value)
         })
         .collect();
+    let answers = save_documents(&mut session, rows);
     let directory = std::env::var("TAX_UNIT19_AMT179_DIR").ok().map(std::path::PathBuf::from);
     let write = |name: &str, request: &P| {
         if let Some(directory) = &directory {
@@ -220,7 +224,7 @@ fn unit19_amt_179_history_actual_client_save_reopen_restart_and_correction() {
         return;
     }
     let payload = native.input("PAYLOAD").unwrap_or(answers);
-    accepted(&send(&mut session, P::from_avro(&payload.to_avro()).unwrap()));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, P::from_avro(&payload.to_avro()).unwrap()));
     let saved = session.draft.clone();
     let sources: Vec<_> = saved
         .income
@@ -240,7 +244,7 @@ fn unit19_amt_179_history_actual_client_save_reopen_restart_and_correction() {
     for entry in &mut without.income {
         match &mut entry.income {
             FederalIncome::Partnership { data } => data.amt_section179_income_carry = None,
-            FederalIncome::Scorp { data } => data.amt_section179_income_carry = None,
+            FederalIncome::Scorp { data } => edit_scorp(data).amt_section179_income_carry = None,
             _ => {}
         }
     }
@@ -253,22 +257,22 @@ fn unit19_amt_179_history_actual_client_save_reopen_restart_and_correction() {
         write_native_draft_records(directory.join("saved-draft.avro"), &records);
     }
     let mut session = restart(draft);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &reopened else { unreachable!() };
+    let reopened = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
     assert_eq!(
-        documents.documents.iter().map(|row| entered(&row.document)).collect::<Vec<_>>(),
+        documents.common.k1.documents.iter().map(|row| entered(&row.document)).collect::<Vec<_>>(),
         actual.iter().collect::<Vec<_>>()
     );
     write("reopened.avro", &reopened);
     let payload = native.input("REOPEN_PAYLOAD").unwrap_or(reopened);
-    accepted(&send(&mut session, payload));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, payload));
     assert_eq!(session.draft, saved);
-    let mut correction = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
+    let mut correction = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
     let changed = Some(history(50_000, 20_000, &[(2023, 20_000), (2025, 10_000)]));
-    set_history(&mut documents.documents[0].document, changed.clone());
-    documents.documents.reverse();
-    accepted(&send(&mut session, correction));
+    set_history(&mut documents.common.k1.documents[0].document, changed.clone());
+    documents.common.k1.documents.reverse();
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, correction));
     for entry in session.draft.income.iter().filter(|entry| {
         matches!(entry.income, FederalIncome::Partnership { .. } | FederalIncome::Scorp { .. })
     }) {

@@ -22,7 +22,7 @@ fn rental_energy_statutory_prior_cap_basis_and_original_qbi_ubia() {
         crate::extended_rules::depreciation_for_year(
             &data.buildings[0],
             false,
-            &data.property_type,
+            (&data.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             None,
             SourceFact::Reported(290_000)
@@ -49,24 +49,24 @@ fn rental_energy_fractional_area_savings_round_once_to_the_shared_cent_amount() 
     let FederalIncome::Rental { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
-    data.energy_buildings[0].square_feet = "123.45".into();
+    data.energy_buildings[0].square_feet = 123.45;
     let crate::RentalEnergyProject::Eecbp { certification: Some(cert) } =
         &mut data.buildings[0].energy.as_mut().unwrap().project
     else {
         unreachable!()
     };
-    cert.savings_percent = "35.55".into();
+    cert.savings_percent = 35.55;
     // RP25-32: $.59+$.02*(35.55-25)=$.801/sf;123.45*.801=$98.88345.
     // D02 2026-10-19: once to$98.88, identical deduction/basis reduction.
     let prepared = crate::rental_energy::calculate(data, d.tax_year);
     assert!(prepared.boundaries.is_empty());
     assert_eq!(prepared.reductions, vec![9888]);
-    assert_eq!(data.energy_buildings[0].square_feet, "123.45");
+    assert_eq!(data.energy_buildings[0].square_feet, 123.45);
     assert_eq!(
         crate::extended_rules::depreciation_for_year(
             &data.buildings[0],
             false,
-            &data.property_type,
+            (&data.property_type, &crate::RentalLocation::UnitedStates),
             u32::try_from(d.tax_year).unwrap(),
             None,
             SourceFact::Reported(prepared.reductions[0])
@@ -91,9 +91,12 @@ fn rental_energy_fractional_area_savings_round_once_to_the_shared_cent_amount() 
     let exact_lines = r.lines.clone();
     let displayed = crate::draft_return(&r);
     for form in [TaxForm::ScheduleE, TaxForm::Form4562] {
-        assert!(displayed.iter().filter(|row| row.form_line.as_ref()
-            .is_some_and(|line| line.form == form)).all(|row| row.money
-            .is_none_or(|amount| amount % 100 == 0)));
+        assert!(
+            displayed
+                .iter()
+                .filter(|row| row.form_line.as_ref().is_some_and(|line| line.form == form))
+                .all(|row| row.money.is_none_or(|amount| amount % 100 == 0))
+        );
     }
     for (form, line, amount) in [
         (TaxForm::Form4562, "19j", 10_700),
@@ -103,12 +106,16 @@ fn rental_energy_fractional_area_savings_round_once_to_the_shared_cent_amount() 
         (TaxForm::ScheduleE, "21", 1_779_400),
         (TaxForm::ScheduleE, "24", 1_779_400),
     ] {
-        assert!(displayed.iter().any(|row| row.form_line.as_ref()
-            .is_some_and(|tag| tag.form == form && tag.line == line) && row.amount == amount),
-            "{form:?} {line}: {displayed:?}");
+        assert!(
+            displayed.iter().any(|row| row
+                .form_line
+                .as_ref()
+                .is_some_and(|tag| tag.form == form && tag.line == line)
+                && row.amount == amount),
+            "{form:?} {line}: {displayed:?}"
+        );
     }
     assert_eq!(r.lines, exact_lines);
-
 }
 
 #[test]
@@ -217,7 +224,7 @@ fn rental_energy_unprepared_basis_and_wrong_physical_association_never_guess() {
         crate::extended_rules::depreciation_for_year(
             &data.buildings[0],
             false,
-            &data.property_type,
+            (&data.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             None,
             SourceFact::NotReported
@@ -253,7 +260,7 @@ fn rental_energy_native_parent_save_claim_reopen_clear_and_restart_keep_identity
     page.building.in_service = 20261201;
     page.expenses = crate::tests::cross::interview::no_rental_expenses();
     page.expenses.repairs = 200_000;
-    page.more.energy_buildings = vec![rental_energy_building()];
+    page.more.energy_buildings = vec![rental_energy_building().into()];
     accepted(&save_rentals(&mut session, vec![page]));
     let saved = stored_rentals(&session);
     let physical = saved[0].2.energy_buildings[0].id;
@@ -262,15 +269,15 @@ fn rental_energy_native_parent_save_claim_reopen_clear_and_restart_keep_identity
     let mut request = open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, rental_energy_buildings, .. } = &mut request else { panic!() };
     assert!(rental_energy_buildings.iter().any(|choice| choice.id == physical));
-    let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { panic!() };
+    let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else { panic!() };
     page.building.energy = Some((&rental_energy_claim(physical)).into());
     let accepted_before = session.draft.clone();
     let callback = estimate_documents_from_save(&request);
-    let Reply::Response(P::IncomeRunningEstimate { estimate, .. }) = send(&mut session, callback)
+    let Reply::Response(P::IncomeRunningEstimate { estimate, .. }) = crate::tests::support::client::income_pages::candidate_save_review(&mut session, callback)
     else {
         panic!("native current-claim callback")
     };
-    assert!(!status_message(&estimate).key.starts_with("ESTIMATE_UNAVAILABLE"));
+    assert!(!status_message(&estimate.unwrap().line).key.starts_with("ESTIMATE_UNAVAILABLE"));
     assert_eq!(session.draft, accepted_before);
     accepted(&send(&mut session, request));
     let reopened = crate::tests::cross::interview::reopened_rentals(session.draft.clone());
@@ -280,14 +287,15 @@ fn rental_energy_native_parent_save_claim_reopen_clear_and_restart_keep_identity
     assert_eq!(current.building.energy.as_ref().unwrap().physical_building, physical);
     assert_rentals_round_trip(&mut session, &[current]);
     let before = session.draft.clone();
-    for invalid in ["cost", "building", "decimal"] {
+    for invalid in ["cost", "building"] {
         let mut request = open_topic(&mut session, TaxSection::Rentals);
         let P::SaveIncomes { documents, .. } = &mut request else { panic!() };
-        let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { panic!() };
+        let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else {
+            panic!()
+        };
         match invalid {
             "cost" => page.building.energy.as_mut().unwrap().qualifying_cost = 10_000_001,
             "building" => page.building.energy.as_mut().unwrap().physical_building = cost,
-            "decimal" => page.more.energy_buildings[0].square_feet = "1.".into(),
             _ => unreachable!(),
         }
         assert!(
@@ -298,7 +306,7 @@ fn rental_energy_native_parent_save_claim_reopen_clear_and_restart_keep_identity
     }
     let mut request = open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, .. } = &mut request else { panic!() };
-    let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { panic!() };
+    let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else { panic!() };
     page.building.energy = None;
     page.more.energy_buildings.clear();
     accepted(&send(&mut session, request));
@@ -319,15 +327,31 @@ fn rental_form_depreciation_total_rounds_the_sum_once_after_native_save() {
     accepted(&save_rentals(&mut session, vec![page.clone(), page]));
     let saved = session.draft.clone();
     let result = supported(&saved);
-    let depreciation: Vec<_> = result.lines.iter().filter(|row| row.form_line.as_ref()
-        .is_some_and(|line| line.form == TaxForm::ScheduleE && line.line == "18"))
-        .map(|row| row.amount).collect();
+    let depreciation: Vec<_> = result
+        .lines
+        .iter()
+        .filter(|row| {
+            row.form_line
+                .as_ref()
+                .is_some_and(|line| line.form == TaxForm::ScheduleE && line.line == "18")
+        })
+        .map(|row| row.amount)
+        .collect();
     assert_eq!(depreciation, vec![49, 49]);
     let displayed = crate::draft_return(&result);
-    assert!(!displayed.iter().any(|row| row.form_line.as_ref()
-        .is_some_and(|line| line.form == TaxForm::ScheduleE && line.line == "18")));
-    let total = displayed.iter().find(|row| row.form_line.as_ref()
-        .is_some_and(|line| line.form == TaxForm::ScheduleE && line.line == "23d")).unwrap();
+    assert!(!displayed.iter().any(|row| {
+        row.form_line
+            .as_ref()
+            .is_some_and(|line| line.form == TaxForm::ScheduleE && line.line == "18")
+    }));
+    let total = displayed
+        .iter()
+        .find(|row| {
+            row.form_line
+                .as_ref()
+                .is_some_and(|line| line.form == TaxForm::ScheduleE && line.line == "23d")
+        })
+        .unwrap();
     // D-2026-10-19-01: 49c+49c=98c prints$1; separately rounded
     // source lines print$0. The accepted sources and exact totals stay intact.
     assert_eq!(total.money, Some(100));

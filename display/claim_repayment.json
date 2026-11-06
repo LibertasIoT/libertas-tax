@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 387000, "rule": {"select": "^<RepaymentTaxYear>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_REPAY_RETURN", "fields": ["year", "filers", "status", "benefits", "standard", "income_tax", "separate_lived_apart"]}, {"title": "DISPLAY_REPAY_INCOME", "fields": ["wages", "interest", "dividends", "capital", "exempt_interest", "private_activity_interest", "social", "retirement", "early"]}, {"title": "DISPLAY_REPAY_CREDITS", "fields": ["capital_exclusions", "minimum_tax", "eic", "ssns", "elderly"]}]}},
+    {"order": 388000, "rule": {"select": "^<RepaymentTaxYear>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_REPAY_RETURN", "fields": ["year", "filers", "status", "benefits", "standard", "income_tax", "separate_lived_apart"]}, {"title": "DISPLAY_REPAY_INCOME", "fields": ["wages", "interest", "dividends", "capital", "exempt_interest", "private_activity_interest", "social", "retirement", "early"]}, {"title": "DISPLAY_REPAY_CREDITS", "fields": ["capital_exclusions", "minimum_tax", "eic", "ssns", "elderly"]}]}}
+  ]
+}

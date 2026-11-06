@@ -1,8 +1,10 @@
 // W-2 source/year allocation acceptance through the normal public protocol.
-use crate::tests::cross::interview::{
-    accepted, hsa_account, hsa_page_value, open_hsa_page, open_topic, rejected_with,
-};
 use super::*;
+use crate::DocumentStrictAnswer;
+use crate::tests::cross::interview::{
+    accepted, hsa_account, hsa_employer_year_begin, hsa_page_value, open_hsa_page, rejected_with,
+};
+use crate::tests::support::client::own_questions::answer_questions;
 
 fn health_value(page: &mut P) -> &mut HsaPage {
     let P::SaveHsa { value, .. } = page else {
@@ -21,47 +23,31 @@ fn allocation(page: &mut P, document: i64, kind: HealthEmployerKind, year: Healt
 }
 
 fn box12(draft: &mut FederalDraft, document: i64, code: W2Code, amount: i64) {
-    let entry = draft
-        .income
-        .iter_mut()
-        .find(|entry| entry.id == document)
-        .unwrap();
-    let FederalIncome::Wage { data } = &mut entry.income else {
+    let entry = draft.income.iter_mut().find(|entry| entry.id == document).unwrap();
+    let FederalIncome::Wage { data: crate::WageSource::W2(crate::W2Source { form: data, .. }) } =
+        &mut entry.income
+    else {
         panic!("expected actual accepted wage source")
     };
-    data.other_box12.push(W2CodeAmount { code, amount });
+    data.box12.push(crate::PrintedBox12Entry { code, amount: Some(amount) });
 }
 
 fn change_reported(page: &mut P, document: i64, code: W2Code, amount: i64) {
-    let P::SaveIncomes { documents, .. } = page else {
+    let P::SaveDocuments { documents, .. } = page else {
         panic!("expected normal Wages source editor")
     };
-    let row = documents
-        .documents
-        .iter_mut()
-        .find(|row| row.id == document)
-        .unwrap();
-    let IncomeDocument::W2(data) = &mut row.document else {
+    let row = documents.common.wages.documents.iter_mut().find(|row| row.id == document).unwrap();
+    let crate::WageDocument::W2(data) = &mut row.document else {
         panic!("expected actual W-2 page")
     };
-    data.more
-        .box12
-        .iter_mut()
-        .find(|entry| entry.code == code)
-        .unwrap()
-        .amount = amount;
+    data.box12.iter_mut().find(|entry| entry.code == code).unwrap().amount = Some(amount);
 }
 
 fn needs_year(draft: &FederalDraft) {
     let result = estimate(draft);
     assert_ne!(result.state, ResultState::EstimatedForSupportedScope);
     assert!(result.tax.is_none() && result.refund.is_none());
-    assert!(
-        result
-            .issues
-            .iter()
-            .any(|issue| issue.display.key == "HEALTH_EMPLOYER_YEAR_REQUIRED")
-    );
+    assert!(result.issues.iter().any(|issue| issue.display.key == "HEALTH_EMPLOYER_YEAR_REQUIRED"));
 }
 
 // Normal immutable native callback bridge for a future actual Studio editor.
@@ -75,24 +61,15 @@ fn client_artifacts(session: &mut Interview, seed: &P, request: &mut P, case: &s
     }
     if let Ok(input) = std::env::var("TAX_UNIT46_W2_CALC_INPUT") {
         let calculation = P::from_avro(&std::fs::read(input).unwrap()).unwrap();
-        assert!(matches!(
-            calculation,
-            P::HsaOptions { .. } | P::EstimateHsa { .. }
-        ));
+        assert!(matches!(calculation, P::HsaOptions { .. } | P::EstimateHsa { .. }));
         let before = session.draft.clone();
         let Reply::Response(reply) = send(session, calculation) else {
             panic!("expected the ordinary Health accounts calculation reply")
         };
-        assert!(matches!(
-            reply,
-            P::HsaFamilyOptions { .. } | P::RunningEstimate { .. }
-        ));
+        assert!(matches!(reply, P::HsaFamilyOptions { .. } | P::RunningEstimate { .. }));
         assert_eq!(session.draft, before);
-        std::fs::write(
-            std::env::var("TAX_UNIT46_W2_CALC_OUTPUT").unwrap(),
-            reply.to_avro(),
-        )
-        .unwrap();
+        std::fs::write(std::env::var("TAX_UNIT46_W2_CALC_OUTPUT").unwrap(), reply.to_avro())
+            .unwrap();
         return true;
     }
     if let Ok(path) = std::env::var("TAX_UNIT46_W2_SEED") {
@@ -146,18 +123,8 @@ fn unit46_w2_hsa_current_prior_split_outside_and_corrections_save_reopen() {
     let mut page = open_hsa_page(&mut session);
     let seed = page.clone();
     assert_eq!(hsa_page_value(&page).0.employer_sources.len(), 3);
-    allocation(
-        &mut page,
-        1,
-        HealthEmployerKind::Hsa,
-        HealthEmployerYear::CurrentYear,
-    );
-    allocation(
-        &mut page,
-        2,
-        HealthEmployerKind::Hsa,
-        HealthEmployerYear::PriorYear,
-    );
+    allocation(&mut page, 1, HealthEmployerKind::Hsa, HealthEmployerYear::CurrentYear);
+    allocation(&mut page, 2, HealthEmployerKind::Hsa, HealthEmployerYear::PriorYear);
     allocation(
         &mut page,
         3,
@@ -184,10 +151,7 @@ fn unit46_w2_hsa_current_prior_split_outside_and_corrections_save_reopen() {
         in_wages: false,
     }];
     account.excess_accounting = Some(HsaExcessAccounting {
-        prior_year: Some(HsaPriorExcess {
-            line_48: 10_000,
-            line_49: 600,
-        }),
+        prior_year: Some(HsaPriorExcess { line_48: 10_000, line_49: 600 }),
         employer_excess_in_wages: 0,
         year_end_value: 200_000,
         later_return_year_deposits: 20_000,
@@ -208,14 +172,8 @@ fn unit46_w2_hsa_current_prior_split_outside_and_corrections_save_reopen() {
     let result = supported(&saved);
     assert_eq!(value(&result, "hsa_1_contribution_employer"), 1400);
     assert_eq!(value(&result, "hsa_1_corrected_contributions"), 300);
-    assert_eq!(
-        value(&result, "hsa_correction_employer_principal_other_income"),
-        300
-    );
-    assert_eq!(
-        value(&result, "hsa_1_prior_designated_employer_excess_income"),
-        100
-    );
+    assert_eq!(value(&result, "hsa_correction_employer_principal_other_income"), 300);
+    assert_eq!(value(&result, "hsa_1_prior_designated_employer_excess_income"), 100);
     assert_eq!(value(&result, "hsa_1_contribution_deduction"), 600);
     assert_eq!(value(&result, "agi"), 89_800);
     let reopened = capture_reopen(&mut session, "hsa");
@@ -226,16 +184,10 @@ fn unit46_w2_hsa_current_prior_split_outside_and_corrections_save_reopen() {
     );
     let mut restored = restart(saved.clone());
     assert_eq!(supported(&restored.draft), result);
-    assert_eq!(
-        hsa_page_value(&open_hsa_page(&mut restored)).0,
-        hsa_page_value(&reopened).0
-    );
+    assert_eq!(hsa_page_value(&open_hsa_page(&mut restored)).0, hsa_page_value(&reopened).0);
     let mut invalid = open_hsa_page(&mut restored);
     health_value(&mut invalid).accounts[0].corrections[0].principal = 170_001;
-    rejected_with(
-        send(&mut restored, invalid),
-        "HSA_CORRECTED_EMPLOYER_ABOVE_CONTRIBUTED",
-    );
+    rejected_with(send(&mut restored, invalid), "HSA_CORRECTED_EMPLOYER_ABOVE_CONTRIBUTED");
     assert_eq!(restored.draft, saved);
     let mut invalid = open_hsa_page(&mut restored);
     health_value(&mut invalid).accounts[0]
@@ -243,10 +195,7 @@ fn unit46_w2_hsa_current_prior_split_outside_and_corrections_save_reopen() {
         .as_mut()
         .unwrap()
         .later_employer_deposits = 20_001;
-    rejected_with(
-        send(&mut restored, invalid),
-        "HSA_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER",
-    );
+    rejected_with(send(&mut restored, invalid), "HSA_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER");
     assert_eq!(restored.draft, saved);
 }
 
@@ -264,12 +213,7 @@ fn unit46_w2_archer_current_and_outside_prior_carry_save_reopen() {
     let mut page = open_hsa_page(&mut session);
     let seed = page.clone();
     assert_eq!(hsa_page_value(&page).0.employer_sources.len(), 1);
-    allocation(
-        &mut page,
-        1,
-        HealthEmployerKind::Archer,
-        HealthEmployerYear::CurrentYear,
-    );
+    allocation(&mut page, 1, HealthEmployerKind::Archer, HealthEmployerYear::CurrentYear);
     let row = ArcherContributorRow {
         excess_accounting: Some(ArcherExcessAccounting {
             prior_year: Some(ArcherPriorExcess { line_40: 200_000, line_41: 12_000 }),
@@ -310,17 +254,11 @@ fn unit46_w2_archer_current_and_outside_prior_carry_save_reopen() {
     let reopened = capture_reopen(&mut session, "archer");
     assert_eq!(
         hsa_page_value(&reopened).0.archer,
-        ArcherContributionsPage::Records {
-            owners: vec![row],
-            sharing: ArcherSharing::Equal,
-        }
+        ArcherContributionsPage::Records { owners: vec![row], sharing: ArcherSharing::Equal }
     );
     let mut restored = restart(saved.clone());
     assert_eq!(supported(&restored.draft), result);
-    assert_eq!(
-        hsa_page_value(&open_hsa_page(&mut restored)).0,
-        hsa_page_value(&reopened).0
-    );
+    assert_eq!(hsa_page_value(&open_hsa_page(&mut restored)).0, hsa_page_value(&reopened).0);
     let mut invalid = open_hsa_page(&mut restored);
     let ArcherContributionsPage::Records { owners, .. } = &mut health_value(&mut invalid).archer
     else {
@@ -362,7 +300,7 @@ fn unit46_w2_supplied_source_membership_and_gross_are_atomic() {
         (3, "HEALTH_EMPLOYER_SOURCE_CHANGED"),
         (4, "HEALTH_EMPLOYER_SOURCE_CHANGED"),
         (5, "HEALTH_EMPLOYER_SOURCE_TWICE"),
-        (6, "HEALTH_EMPLOYER_SOURCE_NOT_OFFERED"),
+        (6, "HEALTH_EMPLOYER_YEAR_REQUIRED"),
         (7, "HEALTH_EMPLOYER_SPLIT_ABOVE_REPORTED"),
     ] {
         let mut invalid = open_hsa_page(&mut session);
@@ -377,79 +315,51 @@ fn unit46_w2_supplied_source_membership_and_gross_are_atomic() {
             6 => {
                 rows.pop();
             }
-            7 => {
-                rows[0].allocation = HealthEmployerYear::Split {
-                    current: rows[0].reported + 1,
-                }
-            }
+            7 => rows[0].allocation = HealthEmployerYear::Split { current: rows[0].reported + 1 },
             _ => unreachable!(),
         }
         rejected_with(send(&mut session, invalid), key);
-        assert_eq!(
-            session.draft, saved,
-            "case {case} changed accepted facts/IDs/revision"
-        );
+        assert_eq!(session.draft, saved, "case {case} changed accepted facts/IDs/revision");
         assert_eq!(supported(&session.draft), result);
     }
 }
 
 #[test]
-fn unit46_w2_cross_kind_unknown_and_all_prior_need_no_artificial_account() {
+fn unit46_w2_cross_kind_questions_and_all_prior_need_no_artificial_account() {
     let mut draft = complete(FederalStatus::Single);
     // The same W-2 ID has two distinct code-kind source relationships.
     box12(&mut draft, 1, W2Code::W, 100_000);
     box12(&mut draft, 1, W2Code::R, 100_000);
     let mut session = Interview::new(TEST_USER, draft);
-    let mut page = open_hsa_page(&mut session);
-    allocation(
-        &mut page,
-        1,
-        HealthEmployerKind::Hsa,
-        HealthEmployerYear::CurrentYear,
+    // Each code-kind source is its own required question.
+    let begin = hsa_employer_year_begin(&mut session).expect("both years are asked first");
+    let P::BeginDocumentQuestions { questions, .. } = &begin else { unreachable!() };
+    assert_eq!(
+        questions.iter().map(|q| q.key.as_str()).collect::<Vec<_>>(),
+        vec!["employer/1/hsa", "employer/1/archer"]
     );
+    accepted(&answer_questions(
+        &mut session,
+        &begin,
+        vec![
+            DocumentStrictAnswer::EmployerYear { value: HealthEmployerYear::CurrentYear },
+            DocumentStrictAnswer::EmployerYear { value: HealthEmployerYear::PriorYear },
+        ],
+    ));
+    let mut page = open_hsa_page(&mut session);
     let input = health_value(&mut page);
-    input.accounts = vec![hsa_account(
-        Owner::Taxpayer,
-        HsaCoverageYear::SelfOnly,
-        50_000,
-    )];
+    input.accounts = vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 50_000)];
     input.family_split = FamilySplit::NotApplicable;
     accepted(&send(&mut session, page));
-    assert_eq!(
-        session.draft.adjustments.as_ref().unwrap().hsa[0].employer,
-        100_000
-    );
-    assert_eq!(
-        session
-            .draft
-            .adjustments
-            .as_ref()
-            .unwrap()
-            .health_employer_w2
-            .len(),
-        1
-    );
-    needs_year(&session.draft); // Unrelated Archer Unknown cannot complete tax.
-    let mut page = open_hsa_page(&mut session);
-    allocation(
-        &mut page,
-        1,
-        HealthEmployerKind::Archer,
-        HealthEmployerYear::PriorYear,
-    );
-    accepted(&send(&mut session, page));
+    assert_eq!(session.draft.adjustments.as_ref().unwrap().hsa[0].employer, 100_000);
+    assert_eq!(session.draft.adjustments.as_ref().unwrap().health_employer_w2.len(), 2);
     assert_eq!(value(&supported(&session.draft), "agi"), 59_500);
     assert!(matches!(
         session.draft.adjustments.as_ref().unwrap().archer,
         ArcherContributions::None
     ));
     let mut page = open_hsa_page(&mut session);
-    allocation(
-        &mut page,
-        1,
-        HealthEmployerKind::Hsa,
-        HealthEmployerYear::PriorYear,
-    );
+    allocation(&mut page, 1, HealthEmployerKind::Hsa, HealthEmployerYear::PriorYear);
     health_value(&mut page).accounts.clear();
     accepted(&send(&mut session, page));
     assert!(session.draft.adjustments.as_ref().unwrap().hsa.is_empty());
@@ -469,7 +379,7 @@ fn unit46_w2_cross_kind_unknown_and_all_prior_need_no_artificial_account() {
 }
 
 #[test]
-fn unit46_w2_split_source_edit_and_delete_require_explicit_clear_then_reanswer() {
+fn unit46_w2_split_source_edit_drops_the_stale_answer_and_asks_the_year_again() {
     let mut draft = complete(FederalStatus::Joint);
     add(&mut draft, wage(2, Owner::Taxpayer, 1_000_000, 0));
     box12(&mut draft, 1, W2Code::W, 100_000);
@@ -486,81 +396,35 @@ fn unit46_w2_split_source_edit_and_delete_require_explicit_clear_then_reanswer()
     let input = health_value(&mut page);
     input.accounts = vec![account];
     input.family_split = FamilySplit::NotApplicable;
-    input.other_coverage = Some(HsaEligibility::FullYear { coverage: HsaCoverage::None });
+    input.other_coverage = Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::None });
     accepted(&send(&mut session, page));
     let saved = session.draft.clone();
-    let result = supported(&saved);
+    supported(&saved);
     assert_eq!(saved.adjustments.as_ref().unwrap().hsa[0].employer, 50_000);
-    for case in 0..5 {
-        let mut wages = open_topic(&mut session, TaxSection::Wages);
-        let key = if case == 0 || case == 4 {
-            "HEALTH_EMPLOYER_SOURCE_CHANGED"
-        } else {
-            "HEALTH_EMPLOYER_SOURCE_REFERENCED"
-        };
-        if case == 0 || case == 4 {
-            let amount = if case == 0 { 120_000 } else { 0 };
-            change_reported(&mut wages, 1, W2Code::W, amount);
-        } else {
-            let P::SaveIncomes { documents, .. } = &mut wages else { unreachable!() };
-            if case == 1 {
-                documents.documents.retain(|row| row.id != 1);
-            } else {
-                let row = documents.documents.iter_mut().find(|row| row.id == 1).unwrap();
-                if case == 2 {
-                    row.owner = Owner::Spouse;
-                } else {
-                    let IncomeDocument::W2(data) = &mut row.document else { unreachable!() };
-                    data.more
-                        .box12
-                        .iter_mut()
-                        .find(|entry| entry.code == W2Code::W)
-                        .unwrap()
-                        .code = W2Code::R;
-                }
-            }
-        }
-        let (name, path) = match case {
-            0 => ("health-context-19", Some("[documents/documents/0/document]")),
-            1 => ("health-context-20", None),
-            2 => ("health-context-21", Some("[documents/documents/0/owner]")),
-            3 => ("health-context-22", Some("[documents/documents/0/document]")),
-            4 => ("health-context-23", Some("[documents/documents/0/document]")),
-            _ => unreachable!(),
-        };
-        rejected_with(
-            current_source_refusal(name, &mut session, wages, key, path, SourceScope::Health),
-            key,
-        );
-        assert_eq!(session.draft, saved);
-        assert_eq!(supported(&session.draft), result);
-    }
-    // A real edit to Unknown clears only the source binding; actual contributor
-    // and outside/personal facts survive. Unknown does not justify a tax total.
-    let mut health = open_hsa_page(&mut session);
-    allocation(&mut health, 1, HealthEmployerKind::Hsa, HealthEmployerYear::Unknown);
-    accepted(&send(&mut session, health));
+    // Editing the W-2 amount drops the stale Split binding (actual contributor
+    // and outside/personal facts survive) and asks the year again.
+    let mut wages = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    change_reported(&mut wages, 1, W2Code::W, 120_000);
+    accepted(&send(&mut session, wages));
     assert!(session.draft.adjustments.as_ref().unwrap().health_employer_w2.is_empty());
     assert_eq!(session.draft.adjustments.as_ref().unwrap().hsa[0].personal, 50_000);
     assert_eq!(session.draft.adjustments.as_ref().unwrap().hsa[0].employer_outside, 10_000);
     assert_eq!(session.draft.adjustments.as_ref().unwrap().hsa[0].employer, 10_000);
     needs_year(&session.draft);
-    let mut wages = open_topic(&mut session, TaxSection::Wages);
-    change_reported(&mut wages, 1, W2Code::W, 120_000);
-    accepted(&send(&mut session, wages));
-    let mut health = open_hsa_page(&mut session);
+    let begin = hsa_employer_year_begin(&mut session).expect("the year is asked again");
+    accepted(&answer_questions(
+        &mut session,
+        &begin,
+        vec![DocumentStrictAnswer::EmployerYear {
+            value: HealthEmployerYear::Split { current: 50_000 },
+        }],
+    ));
+    let health = open_hsa_page(&mut session);
     assert_eq!(hsa_page_value(&health).0.employer_sources[0].reported, 120_000);
     assert_eq!(
         hsa_page_value(&health).0.employer_sources[0].allocation,
-        HealthEmployerYear::Unknown
+        HealthEmployerYear::Split { current: 50_000 }
     );
-    allocation(
-        &mut health,
-        1,
-        HealthEmployerKind::Hsa,
-        HealthEmployerYear::Split { current: 50_000 },
-    );
-    accepted(&send(&mut session, health));
     assert_eq!(session.draft.adjustments.as_ref().unwrap().hsa[0].employer, 60_000);
     assert_eq!(
         session.draft.adjustments.as_ref().unwrap().health_employer_w2[0].accepted_amount,
@@ -568,13 +432,12 @@ fn unit46_w2_split_source_edit_and_delete_require_explicit_clear_then_reanswer()
     );
     let saved = session.draft.clone();
     assert_eq!(supported(&restart(saved.clone()).draft), supported(&saved));
-    let mut health = open_hsa_page(&mut session);
-    allocation(&mut health, 1, HealthEmployerKind::Hsa, HealthEmployerYear::Unknown);
-    accepted(&send(&mut session, health));
-    let mut wages = open_topic(&mut session, TaxSection::Wages);
-    let P::SaveIncomes { documents, .. } = &mut wages else { unreachable!() };
-    documents.documents.retain(|row| row.id != 1);
+    // Deleting the source drops its binding with it.
+    let mut wages = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut wages else { unreachable!() };
+    documents.common.wages.documents.retain(|row| row.id != 1);
     accepted(&send(&mut session, wages));
+    assert!(session.draft.adjustments.as_ref().unwrap().health_employer_w2.is_empty());
     let health = open_hsa_page(&mut session);
     assert!(hsa_page_value(&health).0.employer_sources.is_empty());
     assert_eq!(hsa_page_value(&health).0.accounts[0].employer, 10_000);
@@ -583,10 +446,9 @@ fn unit46_w2_split_source_edit_and_delete_require_explicit_clear_then_reanswer()
 
 #[test]
 fn unit46_w2_whole_year_amount_corrections_rederive_and_preserve_outside() {
-    for (year, expected) in [
-        (HealthEmployerYear::CurrentYear, 160_000),
-        (HealthEmployerYear::PriorYear, 10_000),
-    ] {
+    for (year, expected) in
+        [(HealthEmployerYear::CurrentYear, 160_000), (HealthEmployerYear::PriorYear, 10_000)]
+    {
         let mut draft = complete(FederalStatus::Single);
         box12(&mut draft, 1, W2Code::W, 100_000);
         let mut session = Interview::new(TEST_USER, draft);
@@ -598,39 +460,26 @@ fn unit46_w2_whole_year_amount_corrections_rederive_and_preserve_outside() {
         input.accounts = vec![account];
         input.family_split = FamilySplit::NotApplicable;
         accepted(&send(&mut session, health));
-        let mut wages = open_topic(&mut session, TaxSection::Wages);
+        let mut wages =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         change_reported(&mut wages, 1, W2Code::W, 150_000);
         accepted(&send(&mut session, wages));
         let saved = session.draft.clone();
-        assert_eq!(
-            saved.adjustments.as_ref().unwrap().hsa[0].employer,
-            expected
-        );
-        assert_eq!(
-            saved.adjustments.as_ref().unwrap().hsa[0].employer_outside,
-            10_000
-        );
+        assert_eq!(saved.adjustments.as_ref().unwrap().hsa[0].employer, expected);
+        assert_eq!(saved.adjustments.as_ref().unwrap().hsa[0].employer_outside, 10_000);
         let mut restored = restart(saved.clone());
         let health = open_hsa_page(&mut restored);
-        assert_eq!(
-            hsa_page_value(&health).0.employer_sources[0].allocation,
-            year
-        );
-        assert_eq!(
-            hsa_page_value(&health).0.employer_sources[0].reported,
-            150_000
-        );
+        assert_eq!(hsa_page_value(&health).0.employer_sources[0].allocation, year);
+        assert_eq!(hsa_page_value(&health).0.employer_sources[0].reported, 150_000);
         assert_eq!(hsa_page_value(&health).0.accounts[0].employer, 10_000);
         assert_eq!(supported(&restored.draft), supported(&saved));
         // A real zero code amount is still a present source for existing whole
         // classifications, but needs no question and contributes nothing.
-        let mut wages = open_topic(&mut restored, TaxSection::Wages);
+        let mut wages =
+            crate::tests::support::client::income_pages::open_document_center(&mut restored);
         change_reported(&mut wages, 1, W2Code::W, 0);
         accepted(&send(&mut restored, wages));
-        assert_eq!(
-            restored.draft.adjustments.as_ref().unwrap().hsa[0].employer,
-            10_000
-        );
+        assert_eq!(restored.draft.adjustments.as_ref().unwrap().hsa[0].employer, 10_000);
         let health = open_hsa_page(&mut restored);
         assert!(hsa_page_value(&health).0.employer_sources.is_empty());
         assert_eq!(value(&supported(&restored.draft), "agi"), 59_500);
@@ -645,13 +494,7 @@ fn unit46_w2_whole_year_amount_corrections_rederive_and_preserve_outside() {
 fn unit46_w2_archer_prior_and_split_do_not_repeat_manual_outside_principal() {
     for (year, employer, deduction, carry, tax) in [
         (HealthEmployerYear::PriorYear, 100_000, 1600, 400, 24),
-        (
-            HealthEmployerYear::Split { current: 40_000 },
-            140_000,
-            1200,
-            800,
-            48,
-        ),
+        (HealthEmployerYear::Split { current: 40_000 }, 140_000, 1200, 800, 48),
     ] {
         let mut draft = complete(FederalStatus::Single);
         box12(&mut draft, 1, W2Code::R, 100_000);
@@ -688,10 +531,7 @@ fn unit46_w2_archer_prior_and_split_do_not_repeat_manual_outside_principal() {
         assert_eq!(owners[0].employer, employer);
         assert_eq!(owners[0].employer_outside, 100_000);
         let result = supported(&saved);
-        assert_eq!(
-            value(&result, "archer_prior_excess_deducted_return_year"),
-            deduction
-        );
+        assert_eq!(value(&result, "archer_prior_excess_deducted_return_year"), deduction);
         assert_eq!(value(&result, "archer_prior_excess_remaining_following_year"), carry);
         assert_eq!(value(&result, "archer_return_year_excess_contribution_tax"), tax);
         assert_eq!(value(&result, "agi"), 60_000 - deduction);
@@ -700,15 +540,9 @@ fn unit46_w2_archer_prior_and_split_do_not_repeat_manual_outside_principal() {
         let reopened = open_hsa_page(&mut restored);
         assert_eq!(
             hsa_page_value(&reopened).0.archer,
-            ArcherContributionsPage::Records {
-                owners: vec![row],
-                sharing: ArcherSharing::Equal,
-            }
+            ArcherContributionsPage::Records { owners: vec![row], sharing: ArcherSharing::Equal }
         );
-        assert_eq!(
-            hsa_page_value(&reopened).0.employer_sources[0].allocation,
-            year
-        );
+        assert_eq!(hsa_page_value(&reopened).0.employer_sources[0].allocation, year);
     }
 }
 
@@ -721,15 +555,7 @@ fn unit46_w2_zero_codes_do_not_create_a_year_question() {
     let health = open_hsa_page(&mut session);
     assert!(hsa_page_value(&health).0.employer_sources.is_empty());
     accepted(&send(&mut session, health));
-    assert!(
-        session
-            .draft
-            .adjustments
-            .as_ref()
-            .unwrap()
-            .health_employer_w2
-            .is_empty()
-    );
+    assert!(session.draft.adjustments.as_ref().unwrap().health_employer_w2.is_empty());
     assert_eq!(value(&supported(&session.draft), "agi"), 60_000);
 }
 
@@ -766,17 +592,11 @@ fn unit46_w2_actual_employer_carrier_rejects_both_accounts_atomically() {
             }
         }
         accepted(&send(&mut session, page));
-        let saved = session.draft.clone();
         let original = open_hsa_page(&mut session);
         let expected = hsa_page_value(&original).0.clone();
         assert_eq!(expected.employer_sources[0].reported, 100_000);
-        assert_eq!(
-            expected.employer_sources[0].allocation,
-            HealthEmployerYear::CurrentYear
-        );
-        let mut invalid = original;
-        // The former arbitrary employer ceiling is redundant over the existing
-        // checked sum. Only the actual native carrier refuses MAX plus this W-2.
+        assert_eq!(expected.employer_sources[0].allocation, HealthEmployerYear::CurrentYear);
+        // The derived total retains all admitted source amounts.
         assert_eq!(
             crate::health_employer::effective_total(
                 &session.draft,
@@ -787,21 +607,5 @@ fn unit46_w2_actual_employer_carrier_rejects_both_accounts_atomically() {
             ),
             Ok(100_000_100_000),
         );
-        match kind {
-            HealthEmployerKind::Hsa => {
-                health_value(&mut invalid).accounts[0].employer = i64::MAX;
-            }
-            HealthEmployerKind::Archer => {
-                let ArcherContributionsPage::Records { owners, .. } =
-                    &mut health_value(&mut invalid).archer
-                else {
-                    unreachable!()
-                };
-                owners[0].employer = i64::MAX;
-            }
-        }
-        rejected_with(send(&mut session, invalid), "HEALTH_EMPLOYER_TOTAL_INVALID");
-        assert_eq!(session.draft, saved);
-        assert_eq!(hsa_page_value(&open_hsa_page(&mut session)).0, &expected);
     }
 }

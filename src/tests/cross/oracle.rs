@@ -4,7 +4,10 @@
 extern crate std;
 
 #[path = "monetary_capture.rs"]
-mod monetary_capture;
+pub(in crate::tests) mod monetary_capture;
+
+#[path = "oracle_stream.rs"]
+mod stream;
 
 use crate::interview::{Interview, Reply};
 use crate::{FederalDraft, FederalResult, TaxInterviewProtocol as P};
@@ -151,6 +154,7 @@ fn save(root: &Path, input: Input, expected: Output) {
     publish(&root.join("origins").join(format!("{origin_id}.json")), &origin);
 }
 pub(crate) fn record_estimate(draft: &FederalDraft, result: &FederalResult) {
+    let _untracked = tax_test_heap::untracked();
     monetary_capture::estimate(result);
     let Some(root) = capture_dir() else {
         return;
@@ -159,6 +163,7 @@ pub(crate) fn record_estimate(draft: &FederalDraft, result: &FederalResult) {
     save(root, input, Output::Estimate { result: result_digest(result) });
 }
 pub(crate) fn begin_send(session: &Interview, request: &P) -> Option<InputCapture> {
+    let _untracked = tax_test_heap::untracked();
     let root = capture_dir()?;
     Some(InputCapture(Input::Send {
         session: Session {
@@ -187,6 +192,7 @@ fn send_output(session: &Interview, reply: &Reply) -> Output {
     }
 }
 pub(crate) fn finish_send(capture: Option<InputCapture>, session: &Interview, reply: &Reply) {
+    let _untracked = tax_test_heap::untracked();
     monetary_capture::send(session, reply);
     if let Some(InputCapture(input)) = capture {
         save(capture_dir().unwrap(), input, send_output(session, reply));
@@ -438,16 +444,19 @@ fn pack_corpus(source: &Path, destination: &Path) {
     let temporary = TemporaryFile(temporary);
     let mut writer = zstd::stream::write::Encoder::new(file, 9).unwrap();
     writer.include_checksum(true).unwrap();
-    writer.write_all(HEADER).unwrap();
-    writer.write_all(&u64::try_from(packed.inputs.len()).unwrap().to_le_bytes()).unwrap();
-    for (id, bytes) in &packed.inputs {
-        let mut record = id.as_bytes().to_vec();
-        record.extend_from_slice(bytes);
-        write_record(&mut writer, &record);
-    }
-    write_record(&mut writer, &serde_json::to_vec(&packed.cases).unwrap());
+    write_corpus(&mut writer, &packed);
     drop(writer.finish().unwrap());
     promote_candidate(&temporary, destination, &packed);
+}
+fn write_corpus(writer: &mut impl IoWrite, corpus: &Corpus) {
+    writer.write_all(HEADER).unwrap();
+    writer.write_all(&u64::try_from(corpus.inputs.len()).unwrap().to_le_bytes()).unwrap();
+    for (id, bytes) in &corpus.inputs {
+        let mut record = id.as_bytes().to_vec();
+        record.extend_from_slice(bytes);
+        write_record(writer, &record);
+    }
+    write_record(writer, &serde_json::to_vec(&corpus.cases).unwrap());
 }
 struct TemporaryFile(PathBuf);
 impl Drop for TemporaryFile {
@@ -472,7 +481,10 @@ fn replay(corpus: &Corpus, input: &Input) -> Output {
     match input {
         Input::Estimate { draft } => {
             let draft = FederalDraft::from_avro(load_blob(corpus, draft)).unwrap();
-            Output::Estimate { result: result_digest(&crate::federal_rules::estimate(&draft)) }
+            let result = crate::federal_rules::estimate(&draft);
+            // The review's remaining items assert that every issue opens a page.
+            crate::interview::remaining_items(&draft, &result, crate::TaxSection::Review);
+            Output::Estimate { result: result_digest(&result) }
         }
         Input::Send { session, request } => {
             let draft = FederalDraft::from_avro(load_blob(corpus, &session.draft)).unwrap();
@@ -501,12 +513,8 @@ fn replay_shard(shard: usize) {
     if single_test_mode() {
         return;
     }
-    static CORPUS: OnceLock<Corpus> = OnceLock::new();
-    let corpus = CORPUS.get_or_init(|| load_corpus(&corpus_path()));
-    match std::env::var_os("TAX_ORACLE_LIST") {
-        Some(directory) => list_changes(corpus, Path::new(&directory), (shard, SHARDS)),
-        None => assert!(replay_cases(corpus, false, (shard, SHARDS)).is_empty()),
-    }
+    let corpus = stream::Corpus::open(&corpus_path());
+    corpus.replay(shard, SHARDS, std::env::var_os("TAX_ORACLE_LIST").as_deref().map(Path::new));
 }
 macro_rules! oracle_shards {
     ($($name:ident = $shard:expr),*) => {$(
@@ -634,15 +642,20 @@ fn replay_figures(corpus: &Corpus, ids: &Path) {
     let ids = fs::read_to_string(ids).unwrap();
     let ids: Vec<_> = ids.lines().filter(|id| !id.is_empty()).collect();
     let next = AtomicUsize::new(0);
+    let thread = std::thread::current();
+    let test = thread.name().expect("figure replay requires a named test thread");
     std::thread::scope(|scope| {
         for _ in 0..std::thread::available_parallelism().unwrap().get() {
-            scope.spawn(|| {
-                let _guard = ReplayGuard::new();
-                while let Some(id) = ids.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let case = cases.get(*id).unwrap_or_else(|| panic!("no oracle case {id}"));
-                    monetary_capture::replay_as(id, || replay(corpus, &case.input));
-                }
-            });
+            std::thread::Builder::new()
+                .name(String::from(test))
+                .spawn_scoped(scope, || {
+                    let _guard = ReplayGuard::new();
+                    while let Some(id) = ids.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let case = cases.get(*id).unwrap_or_else(|| panic!("no oracle case {id}"));
+                        monetary_capture::replay_as(id, || replay(corpus, &case.input));
+                    }
+                })
+                .unwrap();
         }
     });
 }
@@ -653,15 +666,38 @@ fn control_root() -> PathBuf {
 }
 #[test]
 fn list_mode_writes_every_changed_case_and_fails_once() {
-    // A one-case slice of the real corpus: its own digest passes, a changed one is listed.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/oracle/corpus.zst");
-    let mut corpus = load_corpus(&path);
-    let index =
-        corpus.cases.iter().position(|case| matches!(case.input, Input::Estimate { .. })).unwrap();
-    corpus.cases = std::vec![corpus.cases.swap_remove(index)];
+    // A current-format control: its own digest passes, a changed one is listed.
+    // Historical corpus compatibility belongs to the eight replay shards.
+    let draft = crate::tests::support::builders::complete(crate::FederalStatus::Single);
+    let bytes = draft.to_avro();
+    let input = digest("tax-oracle-v1/avro", &bytes);
+    let mut corpus = Corpus {
+        inputs: BTreeMap::from([(input.clone(), bytes)]),
+        cases: std::vec![Case {
+            version: 1,
+            input: Input::Estimate { draft: input },
+            expected: Output::Estimate {
+                result: result_digest(&crate::federal_rules::estimate(&draft)),
+            },
+            tests: std::vec![
+                "tests::cross::oracle::list_mode_writes_every_changed_case_and_fails_once"
+                    .to_string(),
+            ],
+        }],
+    };
     let root = control_root();
     list_changes(&corpus, &root, (0, 1));
     assert_eq!(fs::read_to_string(root.join("changed.jsonl")).unwrap(), "");
+    let stream_root = root.join("stream");
+    let packed_path = root.join("valid.zst");
+    let mut writer =
+        zstd::stream::write::Encoder::new(fs::File::create(&packed_path).unwrap(), 1).unwrap();
+    write_corpus(&mut writer, &corpus);
+    writer.finish().unwrap();
+    stream::Corpus::open(&packed_path).replay(0, 1, Some(&stream_root));
+    for name in ["cases.jsonl", "changed.jsonl"] {
+        assert_eq!(fs::read(root.join(name)).unwrap(), fs::read(stream_root.join(name)).unwrap());
+    }
     let id = case_id(&corpus.cases[0]);
     let listed: serde_json::Value =
         serde_json::from_str(fs::read_to_string(root.join("cases.jsonl")).unwrap().trim()).unwrap();
@@ -678,6 +714,52 @@ fn list_mode_writes_every_changed_case_and_fails_once() {
     assert_eq!(line["input"], id.as_str());
     assert_eq!(line["expected"], serde_json::json!({"Estimate": {"result": "changed"}}));
     assert_eq!(line["actual"], serde_json::json!({"Ok": actual}));
+    let packed_path = root.join("changed.zst");
+    let mut writer =
+        zstd::stream::write::Encoder::new(fs::File::create(&packed_path).unwrap(), 1).unwrap();
+    write_corpus(&mut writer, &corpus);
+    writer.finish().unwrap();
+    let failure = std::panic::catch_unwind(|| {
+        stream::Corpus::open(&packed_path).replay(0, 1, Some(&stream_root));
+    })
+    .unwrap_err();
+    assert!(failure.downcast_ref::<String>().unwrap().contains("listed 1 changed case(s)"));
+    for name in ["cases.jsonl", "changed.jsonl"] {
+        assert_eq!(fs::read(root.join(name)).unwrap(), fs::read(stream_root.join(name)).unwrap());
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn streaming_corpus_rejects_corrupt_hash_truncation_and_trailing_records() {
+    let bytes = std::vec![0];
+    let id = digest("tax-oracle-v1/avro", &bytes);
+    let corpus = Corpus {
+        inputs: BTreeMap::from([(id.clone(), bytes)]),
+        cases: std::vec![Case {
+            version: 1,
+            input: Input::Estimate { draft: id },
+            expected: Output::Estimate { result: "unused".to_string() },
+            tests: std::vec!["tests::tiny".to_string()],
+        }],
+    };
+    let root = control_root();
+    fs::create_dir_all(&root).unwrap();
+    let mut valid = Vec::new();
+    write_corpus(&mut valid, &corpus);
+    let path = root.join("tiny.zst");
+    fs::write(&path, zstd::stream::encode_all(valid.as_slice(), 1).unwrap()).unwrap();
+    drop(stream::Corpus::open(&path));
+    let mut hash = valid.clone();
+    hash[HEADER.len() + 8 + 8 + 64] ^= 1;
+    let mut trailing = valid.clone();
+    trailing.push(0);
+    for invalid in [hash, valid[..valid.len() - 1].to_vec(), trailing] {
+        fs::write(&path, zstd::stream::encode_all(invalid.as_slice(), 1).unwrap()).unwrap();
+        assert!(std::panic::catch_unwind(|| stream::Corpus::open(&path)).is_err());
+        fs::write(&path, zstd::stream::encode_all(valid.as_slice(), 1).unwrap()).unwrap();
+        drop(stream::Corpus::open(&path));
+    }
     fs::remove_dir_all(root).unwrap();
 }
 

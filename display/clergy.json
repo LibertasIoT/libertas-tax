@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 591000, "rule": {"select": "^<ClergyRecord>", "flatten": true}},
+    {"order": 592000, "rule": {"select": "^<ClergyRole>", "flatten": true}},
+    {"order": 593000, "rule": {"select": "^<MinisterHousing>", "flatten": true}}
+  ]
+}

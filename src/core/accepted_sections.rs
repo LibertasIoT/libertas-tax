@@ -55,10 +55,9 @@ impl FederalDraft {
                 TaxAppData::ScreeningSection { screening: self.screening.clone() },
                 TaxAppData::InjuredSpouseSection { injured_spouse: self.injured_spouse.clone() },
                 TaxAppData::ReviewSelections {
-                    situations: self.situations.clone(),
-                    adjustment_refusals: self.adjustment_refusals.clone(),
+                    often_missed: self.often_missed.clone(),
                     credit_refusals: self.credit_refusals.clone(),
-                    tax_refusals: self.tax_refusals.clone(),
+                    without_form: self.without_form.clone(),
                 },
                 TaxAppData::CoverdellExcessSection {
                     coverdell_excess: self.coverdell_excess.clone(),
@@ -126,17 +125,9 @@ impl FederalDraft {
                 }
                 (
                     5,
-                    TaxAppData::ReviewSelections {
-                        situations,
-                        adjustment_refusals,
-                        credit_refusals,
-                        tax_refusals,
-                    },
+                    TaxAppData::ReviewSelections { often_missed, credit_refusals, without_form },
                 ) => {
-                    if selections
-                        .replace((situations, adjustment_refusals, credit_refusals, tax_refusals))
-                        .is_some()
-                    {
+                    if selections.replace((often_missed, credit_refusals, without_form)).is_some() {
                         return Err(AcceptedSectionsError::Records);
                     }
                 }
@@ -163,7 +154,7 @@ impl FederalDraft {
         let credits = credits.ok_or(AcceptedSectionsError::Records)?;
         let screening = screening.ok_or(AcceptedSectionsError::Records)?;
         let injured_spouse = injured_spouse.ok_or(AcceptedSectionsError::Records)?;
-        let (situations, adjustment_refusals, credit_refusals, tax_refusals) =
+        let (often_missed, credit_refusals, without_form) =
             selections.ok_or(AcceptedSectionsError::Records)?;
         let coverdell_excess = coverdell_excess.ok_or(AcceptedSectionsError::Records)?;
         let payments = payments.ok_or(AcceptedSectionsError::Records)?;
@@ -173,10 +164,9 @@ impl FederalDraft {
         self.credits = credits.clone();
         self.screening = screening.clone();
         self.injured_spouse = injured_spouse.clone();
-        self.situations = situations.clone();
-        self.adjustment_refusals = adjustment_refusals.clone();
+        self.often_missed = often_missed.clone();
         self.credit_refusals = credit_refusals.clone();
-        self.tax_refusals = tax_refusals.clone();
+        self.without_form = without_form.clone();
         self.coverdell_excess = coverdell_excess.clone();
         self.payments = payments.clone();
         self.home_sites = home_sites.clone();

@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 247000, "rule": {"select": "^<HsaCorrection>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}},
+    {"order": 248000, "rule": {"select": "^<HsaCorrection>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}},
+    {"order": 249000, "rule": {"select": "^<HsaCorrectionPage>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}},
+    {"order": 250000, "rule": {"select": "^<HsaCorrectionPage>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}}
+  ]
+}

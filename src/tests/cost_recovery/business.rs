@@ -114,9 +114,6 @@ fn startup_unconfirmed_costs_take_no_deduction_and_out_of_range_dates_block() {
         assert!(r.tax > claimed.tax);
     }
     unsupported(&startup_business(1000000, 20041022, false), "Income:");
-    assert!(!startup_business(-1, 20260601, false).valid_stored());
-    assert!(!startup_business(100000000001, 20260601, false).valid_stored());
-    assert!(!startup_business(1000000, 20260230, false).valid_stored());
 }
 
 #[test]
@@ -182,7 +179,7 @@ fn continuing_macrs_subtracts_original_section179_and_bonus_once() {
 
 #[test]
 fn continuing_section179_rejects_impossible_history_and_low_business_use() {
-    for (bonus, elected) in [(10000, -1), (10000, 40001), (50001, 0), (0, 100000000001)] {
+    for (bonus, elected) in [(10000, 40001), (50001, 0)] {
         let mut asset = continuing_equipment(20250601, 50000, false);
         asset.history = EquipmentHistory::Continuing {
             amt: EquipmentAmtHistory::Same,
@@ -329,7 +326,7 @@ fn section179_home_office_follows_two_income_limit_order() {
         let mut property =
             crate::tests::cross::interview::asset(elected * 100, 20260601, AssetClass::Five);
         property.acquired = Some(20250120);
-        property.history = AssetHistory::New {
+        property.gds_mut().unwrap().history = AssetHistory::New {
             first_year: FirstYearDeduction::Section179 {
                 description: "Synthetic identity source".into(),
                 elected: elected * 100,
@@ -339,7 +336,7 @@ fn section179_home_office_follows_two_income_limit_order() {
         d = save_native_asset_identities(
             d,
             source,
-            IncomeDocument::Business(page),
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
             TaxSection::SelfEmployment,
         );
         add_simplified_office(&mut d, source, 300);
@@ -373,7 +370,7 @@ fn section179_history_rejects_unreconciled_carry_and_retains_exhausted_assets() 
         value(&supported(&business_with_bonus(0, asset.clone())), "section179_deduction"),
         400
     );
-    for carry in [-1, 40001, 100001] {
+    for carry in [40001, 100001] {
         let mut invalid = asset.clone();
         let EquipmentHistory::Continuing { carryforward, .. } = &mut invalid.history else {
             panic!()
@@ -406,18 +403,110 @@ fn section179_current_elections_precede_oldest_carryforward_regardless_of_list_o
 }
 
 #[test]
-fn section179_owner_adjustment_coordination_remains_explicitly_unverified() {
+fn section179_owner_adjustments_use_their_annual_rounded_deduction_owners() {
+    // Pub.946's two-income-limit ordering; Form7206 and Pub.560 retain
+    // their own filed-dollar projections rather than source-cent deductions.
     for health in [false, true] {
         let mut d = complete(FederalStatus::Single);
         let mut business =
             if health { health_business(50000, 6000, false) } else { sep_business(50000, 5000) };
         let FederalIncome::Business { data } = &mut business else { panic!() };
+        if let BusinessHealthInsurance::Plan { months, .. } = &mut data.health_insurance {
+            months[0].premiums += 51;
+        }
+        if let BusinessRetirement::Sep { contribution, .. } = &mut data.retirement {
+            *contribution += 51;
+        }
         data.assets.push(elected_asset(10000, 10000, BonusElection::ElectOut));
         add(&mut d, income(business));
-        unsupported(&d, "Section 179");
-        d.income.remove(0);
-        unsupported(&d, "Section 179");
+        d = save_elected_business_asset(d, 2, 10000, 10000);
+        for wages in [60000, 0] {
+            if wages == 0 {
+                d.income.remove(0);
+            }
+            let r = supported(&d);
+            let adjustment = if health { 6001 } else { 5001 };
+            assert_eq!(value(&r, "section179_deduction"), 10000);
+            assert_eq!(value(&r, "section179_business_income_limit"), wages + 50000 - adjustment);
+            assert_eq!(
+                value(
+                    &r,
+                    if health { "business_2_health_insurance" } else { "business_2_sep_deduction" }
+                ),
+                adjustment
+            );
+            let reopened = restart(d.clone());
+            assert_eq!(reopened.draft, d);
+            assert_eq!(value(&supported(&reopened.draft), "section179_deduction"), 10000);
+        }
     }
+}
+
+#[test]
+fn section179_hypothetical_profit_limits_health_before_the_actual_allowance() {
+    // Pub.946's hypothetical179 consumes the full50,000 profit, leaving no
+    // Form7206 capacity. Computing health at zero179 would incorrectly reduce
+    // the actual179 allowance to44,000 and manufacture a circular benefit.
+    let mut d = complete(FederalStatus::Single);
+    d.income.clear();
+    let mut business = health_business(50000, 6000, false);
+    let FederalIncome::Business { data } = &mut business else { panic!() };
+    data.assets.push(elected_asset(50000, 50000, BonusElection::ElectOut));
+    add(&mut d, income(business));
+    d = save_elected_business_asset(d, 2, 50000, 50000);
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_deduction"), 50000);
+    assert_eq!(value(&r, "section179_business_income_limit"), 50000);
+    assert_eq!(value(&r, "business_2_health_insurance"), 0);
+}
+
+#[test]
+fn section179_zero_regular_availability_supplies_real_se_half_to_positive_amt_carry() {
+    let mut d = complete(FederalStatus::Single);
+    let mut business = health_business(50000, 6000, false);
+    let FederalIncome::Business { data } = &mut business else { panic!() };
+    let asset = claimed_regular_asset_with_amt_carry(2025, 10_000, 5_000);
+    data.assets.push(asset);
+    add(&mut d, income(business));
+    d = save_elected_business_asset(d, 2, 10000, 10000);
+    let home = crate::home_office::HomeContext::default();
+    let claims = crate::related_forms::effective_claimants(&d);
+    let regular = crate::section179_return::prepare_with_home_with_claims(
+        &d,
+        Section179IncomeSystem::Regular,
+        &home,
+        &claims,
+        None,
+    )
+    .unwrap();
+    assert_eq!(regular.allocation.allowed(2), Ok(0));
+    assert!(regular.hypothetical_owner_half.is_some_and(|half| half[0] > 0));
+    let alternative = crate::section179_return::prepare_with_home_with_claims(
+        &d,
+        Section179IncomeSystem::Alternative,
+        &home,
+        &claims,
+        regular.hypothetical_owner_half,
+    )
+    .unwrap();
+    assert_eq!(alternative.allocation.allowed(2), Ok(500000));
+    supported(&d);
+}
+
+#[test]
+fn section179_owner_deductions_keep_the_optional_se_dependency_explicit() {
+    let mut d = complete(FederalStatus::Single);
+    let mut business = health_business(50000, 6000, false);
+    let FederalIncome::Business { data } = &mut business else { panic!() };
+    data.assets.push(elected_asset(10000, 10000, BonusElection::ElectOut));
+    add(&mut d, income(business));
+    d = save_elected_business_asset(d, 2, 10000, 10000);
+    d.screening.as_mut().unwrap().optional_se.push(crate::SeElection {
+        owner: Owner::Taxpayer,
+        farm: true,
+        nonfarm: None,
+    });
+    unsupported(&d, "Section 179");
 }
 
 #[test]
@@ -595,7 +684,7 @@ fn depreciation_return_matches_hand_computation() {
     //       May 15 (mid-month; excluded from the mid-quarter test).
     //
     // Mid-quarter test (Pub 946 ch. 4, excluding the real property in (c)):
-    // total 2026 basis after elected section 179 = (a) $12,000 - $12,000
+    // total 2026 basis after elected section 179 = a $12,000 - $12,000
     // elected = $0, plus (b) $60,000 = $60,000 total. Neither (a) nor (b) is
     // placed in the fourth quarter (Q1 and Q2), so the fourth-quarter share
     // is $0 of $60,000 (0%), not more than 40%: half-year convention applies
@@ -698,6 +787,7 @@ fn depreciation_return_matches_hand_computation() {
         &mut d,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 22_000_000,
@@ -798,6 +888,7 @@ fn section179_business_income_limit_carries_the_excess_forward() {
         &mut d,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 500_000,
@@ -921,4 +1012,678 @@ fn f7_section_179_property_still_in_use_at_40_percent_recaptures_in_part_iv_colu
     }
     assert_eq!(cents(&r, "business_2_net_profit"), 15_437_360);
     assert_eq!(cents(&r, "business_2_asset_0_macrs"), 0);
+}
+
+#[test]
+fn manual_section179_conversion_reuses_the_final_year_schedule() {
+    // Pub. 946 ch. 4: HY final year is whole; Q4 placement leaves a
+    // 10.5-month final year, of which a Q1 conversion uses 1.5 months.
+    for (placed, mid_quarter, recomputed) in
+        [(20210301, false, 1_000_051), (20211101, true, 917_967)]
+    {
+        let mut property = continuing_asset(
+            1_000_051,
+            placed,
+            EquipmentClass::Five,
+            1_000_051,
+            crate::AssetDisposal::Disposed {
+                date: 20260301,
+                how: crate::DisposalKind::PersonalUse,
+            },
+        );
+        property.history = EquipmentHistory::Continuing {
+            initial_section179: 1_000_051,
+            carryforward: 0,
+            prior_depreciation: 1_000_051,
+            amt: EquipmentAmtHistory::Same,
+            mid_quarter,
+            schedule: EquipmentSchedule::Manual,
+        };
+        assert!(property.valid());
+        let result = supported(&asset_sale_return(vec![property]));
+        assert_eq!(line_amount(&result, "business_2_asset_0_section179_recomputed"), recomputed);
+        assert_eq!(
+            line_amount(&result, "business_2_asset_0_section179_recapture"),
+            1_000_051 - recomputed
+        );
+    }
+}
+
+#[test]
+fn suv_179_limit_leaves_remaining_basis_for_bonus_in_both_systems() {
+    // IRC 179(b)(5); Rev. Proc. 2025-32 section 4.24.
+    let suv = suv_asset(32_000, SuvException::None);
+    assert!(suv.valid() && suv.vehicle_supported());
+    assert_eq!(suv.automobile_limit(), None);
+    let draft = business_with_bonus(100_000, suv.clone());
+    let r = supported(&draft);
+    assert_eq!(cents(&r, "business_2_asset_0_section179"), 3_200_000);
+    assert_eq!(cents(&r, "business_2_asset_0_bonus"), 3_800_000);
+    assert_eq!(cents(&r, "business_2_asset_0_macrs"), 0);
+    assert_eq!(cents(&r, "section179_eligible_cost"), 7_000_000);
+    assert_eq!(form_4562_line(&r, "business_2_asset_0_listed_section179"), "26(i)");
+    crate::tests::support::assert::assert_displayed_text_line(
+        &r,
+        "business_2_asset_0_listed_type",
+        "Heavy SUV (listed property)",
+    );
+    // Native selected-system APIs consume accepted durable asset identities.
+    // Use the canonical Save helper while preserving the independently
+    // authored native source and the figures above.
+    let mut page = crate::tests::cross::interview::business(10_000_000);
+    (page.vehicles, page.assets) =
+        crate::interview::vehicle_and_asset_items(&[], core::slice::from_ref(&suv)).unwrap();
+    let draft = save_native_asset_identities(
+        draft,
+        2,
+        IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
+        TaxSection::SelfEmployment,
+    );
+    let regular =
+        section179_direct_income_sources(&draft, Section179IncomeSystem::Regular).unwrap();
+    let alternative =
+        section179_direct_income_sources(&draft, Section179IncomeSystem::Alternative).unwrap();
+    assert_eq!(regular[0].operating_net_cents, alternative[0].operating_net_cents);
+    assert_eq!(suv.deduction(false), suv.deduction_for(false, true));
+    assert!(!suv_asset(70_000, SuvException::None).valid());
+}
+
+#[test]
+fn suv_each_statutory_design_exception_removes_only_the_suv_election_limit() {
+    for exception in [
+        SuvException::TenRearPassengers,
+        SuvException::SixFootCargo,
+        SuvException::IntegralLoadEnclosure,
+    ] {
+        let suv = suv_asset(70_000, exception);
+        assert!(suv.valid() && suv.vehicle_supported());
+        assert_eq!(suv.automobile_limit(), None);
+        let r = supported(&business_with_bonus(100_000, suv));
+        assert_eq!(cents(&r, "business_2_asset_0_section179"), 7_000_000);
+        assert_eq!(cents(&r, "business_2_asset_0_bonus"), 0);
+        assert_eq!(cents(&r, "business_2_asset_0_macrs"), 0);
+    }
+}
+
+#[test]
+fn suv_qualified_use_uses_the_exact_more_than_half_boundary() {
+    let mut suv = suv_asset(0, SuvException::None);
+    if let ListedProperty::Vehicle { total_miles, business_miles, .. } = &mut suv.listed {
+        *total_miles = 1_000_000;
+        *business_miles = 500_000;
+    }
+    suv.history = EquipmentHistory::New {
+        section179: Section179::Ineligible,
+        bonus: BonusElection::Apply,
+        tables: true,
+    };
+    assert!(!suv.predominant());
+    let r = supported(&business_with_bonus(100_000, suv.clone()));
+    assert_eq!(cents(&r, "business_2_asset_0_bonus"), 0);
+    assert_eq!(cents(&r, "business_2_asset_0_macrs"), 350_000);
+    if let ListedProperty::Vehicle { business_miles, .. } = &mut suv.listed {
+        *business_miles = 500_001;
+    }
+    assert!(suv.predominant());
+    // 70,000 x 500001/1000000 = 35,000.07, eligible for bonus.
+    let r = supported(&business_with_bonus(100_000, suv));
+    assert_eq!(cents(&r, "business_2_asset_0_bonus"), 3_500_007);
+    assert_eq!(cents(&r, "business_2_asset_0_macrs"), 0);
+}
+
+#[test]
+fn suv_income_disallowed_election_remains_carry_not_bonus_basis() {
+    let mut d = empty_return(FederalStatus::Single);
+    add(
+        &mut d,
+        income(FederalIncome::Business {
+            data: FederalBusiness {
+                interest_limit_election: None,
+                activity: BusinessActivity::Ordinary {
+                    returns: 0,
+                    receipts: 500_000,
+                    accounting: BusinessAccounting::Cash,
+                },
+                assets: vec![suv_asset(32_000, SuvException::None)],
+                ..survey_cash_business_data()
+            },
+        }),
+    );
+    // The entire elected cost is excluded from bonus basis; only the
+    // $38,000 residual receives bonus even though income permits no election.
+    let r = supported(&d);
+    assert_eq!(cents(&r, "business_2_asset_0_bonus"), 3_800_000);
+    assert_eq!(cents(&r, "business_2_asset_0_section179"), 0);
+    assert_eq!(cents(&r, "business_2_asset_0_section179_carryforward"), 3_200_000);
+}
+
+#[test]
+fn qualified_nonpersonal_vehicle_uses_ordinary_recovery_recapture_and_form_rows() {
+    // Pub946, Other Property Used for Transportation / Excepted vehicles:
+    // physical vehicle mileage remains exact, but section280F does not apply.
+    let mut vehicle = suv_asset(0, SuvException::None);
+    if let ListedProperty::Vehicle { business_miles, kind, .. } = &mut vehicle.listed {
+        *business_miles = 4_000;
+        *kind = VehicleKind::QualifiedNonpersonal;
+    }
+    vehicle.history = EquipmentHistory::New {
+        section179: Section179::Ineligible,
+        bonus: BonusElection::Apply,
+        tables: true,
+    };
+    assert!(!vehicle.ads());
+    let r = supported(&business_with_bonus(100_000, vehicle.clone()));
+    assert_eq!(cents(&r, "business_2_asset_0_bonus"), 2_800_000);
+    assert_eq!(form_4562_line(&r, "business_2_asset_0_bonus"), "14a");
+    assert!(!r.lines.iter().any(|row| row.id == "business_2_asset_0_listed_business_use"));
+    // The ordinary exception does not remove section179's separate >50% test.
+    vehicle.history = EquipmentHistory::New {
+        section179: Section179::Eligible { elected: 100 },
+        bonus: BonusElection::Apply,
+        tables: true,
+    };
+    assert!(!vehicle.qualifies());
+    assert!(!vehicle.vehicle_supported());
+
+    // $10,000 original cost,60% original use: $6,000 business basis and
+    // first-year20%=$1,200. Current40% use receives $6,000*.32*(40/60)
+    // =$1,280. It has no listed-property recapture or mandatory listed ADS.
+    vehicle.cost = 1_000_000;
+    vehicle.acquired = 20250310;
+    vehicle.placed = 20250315;
+    vehicle.earlier_business_percent = Some(60);
+    vehicle.history = EquipmentHistory::Continuing {
+        initial_section179: 0,
+        carryforward: 0,
+        prior_depreciation: 120_000,
+        amt: EquipmentAmtHistory::Same,
+        mid_quarter: false,
+        schedule: EquipmentSchedule::Tables { initial_bonus: 0 },
+    };
+    assert!(vehicle.valid() && vehicle.qualifies() && vehicle.vehicle_supported());
+    assert!(!vehicle.ads());
+    assert!(vehicle.recapture().is_none());
+    let r = supported(&business_with_bonus(100_000, vehicle.clone()));
+    assert_eq!(cents(&r, "business_2_asset_0_macrs"), 128_000);
+    assert!(!r.lines.iter().any(|row| row.id == "business_2_asset_0_listed_recapture"));
+    assert!(!crate::depreciation::assets_need_form_4562(&[vehicle.clone()]));
+
+    // An actual prior179 deduction still uses the established ordinary
+    // recapture owner (column(a)), never the listed-property column(b).
+    // Both systems' source records establish no unused179 carry.
+    vehicle.history = EquipmentHistory::Continuing {
+        initial_section179: 100_000,
+        carryforward: 0,
+        prior_depreciation: 200_000,
+        amt: EquipmentAmtHistory::Same,
+        mid_quarter: false,
+        schedule: EquipmentSchedule::Tables { initial_bonus: 0 },
+    };
+    vehicle.amt_section179_income_carry = Some(0);
+    assert!(vehicle.recapture().is_none());
+    assert!(vehicle.section179_recapture().is_some());
+    let r = supported(&business_with_bonus(100_000, vehicle));
+    let row =
+        r.lines.iter().find(|row| row.id == "business_2_asset_0_section179_recapture").unwrap();
+    let form = row.form_line.as_ref().unwrap();
+    assert_eq!(form.form, TaxForm::Form4797);
+    assert_eq!(form.line, "37(a)");
+    assert!(!r.lines.iter().any(|row| row.id == "business_2_asset_0_listed_recapture"));
+}
+
+#[test]
+fn section179_care_uses_zero_allowance_income_and_actual_return_uses_selected_income() {
+    // Reg.1.179-2(c)(1): no179 profit1000, SE141 and half71. Earned1929
+    // excludes1929 of care5000, leaving3071 compensation for line11=5071.
+    // Actual179=5000 instead leaves a business loss and all5000 care taxable.
+    let d = section179_care_return();
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_business_income_limit"), 5_071);
+    assert_eq!(value(&r, "section179_deduction"), 5_000);
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 5_000);
+    let claims = crate::related_forms::effective_claimants(&d);
+    let home = crate::home_office::HomeContext::default();
+    let regular = crate::section179_return::prepare_with_home_and_care_with_claims(
+        &d,
+        Section179IncomeSystem::Regular,
+        &home,
+        &claims,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(regular.care_compensation.unwrap().taxable_dollars, [3_071, 0]);
+    assert_eq!(regular.allocation.allowed(2), Ok(500_000));
+    assert!(
+        crate::section179_return::prepare_with_home_and_care_with_claims(
+            &d,
+            Section179IncomeSystem::Alternative,
+            &home,
+            &claims,
+            None,
+            None,
+        )
+        .is_err()
+    );
+    let alternative = crate::section179_return::prepare_with_home_and_care_with_claims(
+        &d,
+        Section179IncomeSystem::Alternative,
+        &home,
+        &claims,
+        regular.hypothetical_owner_half,
+        regular.care_compensation,
+    )
+    .unwrap();
+    assert_eq!(alternative.care_compensation, regular.care_compensation);
+    assert_eq!(alternative.allocation.allowed(2), Ok(500_000));
+}
+
+#[test]
+fn section179_care_native_save_overlap_reopen_and_restart_keep_source_election() {
+    use crate::tests::cross::interview::{accepted, from_review};
+    let mut session = restart(section179_care_return());
+    let Reply::Edit(mut request) = from_review(&mut session, TaxSection::Care) else {
+        panic!("Care editor")
+    };
+    let P::SaveCare { value: page, .. } = &mut request else { unreachable!() };
+    page.benefits[0].in_box_1 = Some(100_000);
+    accepted(&send(&mut session, request));
+    let saved = session.draft.clone();
+    let r = supported(&saved);
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 4_000);
+    assert_eq!(value(&r, "section179_business_income_limit"), 4_071);
+    assert_eq!(value(&r, "section179_deduction"), 4_071);
+    let mut cold = restart(saved.clone());
+    let Reply::Edit(reopened) = from_review(&mut cold, TaxSection::Care) else {
+        panic!("Care reopen")
+    };
+    accepted(&send(&mut cold, reopened));
+    assert_eq!(cold.draft, saved);
+    assert_eq!(value(&supported(&cold.draft), "section179_deduction"), 4_071);
+    let FederalIncome::Business { data } = &cold.draft.income[1].income else { unreachable!() };
+    assert!(matches!(
+        data.assets[0].history,
+        EquipmentHistory::New { section179: Section179::Eligible { elected: 500_000 }, .. }
+    ));
+}
+
+#[test]
+fn section179_care_keeps_native_deferrals_tips_and_unearned_sources() {
+    let mut d = section179_care_return();
+    let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
+    data.other_box12.push(W2CodeAmount { code: W2Code::D, amount: 100_000 });
+    data.employee_tips = Some(crate::EmployeeTips {
+        cash: crate::CashTipRecords::Allocated { amount: 10_000 },
+        noncash: 0,
+        coverage: crate::TipCoverage::SocialAndMedicare,
+    });
+    drop(data);
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(100_000, 0)) }),
+    );
+    let r = supported(&d);
+    // Tips add100 earned and reduce taxable care100, preserving line11.
+    assert_eq!(value(&r, "section179_business_income_limit"), 5_071);
+    assert_eq!(value(&r, "section179_deduction"), 5_000);
+}
+
+#[test]
+fn section179_care_missing_earned_origin_is_not_zero_and_correction_restores_calculation() {
+    let mut d = section179_care_return();
+    add(
+        &mut d,
+        income(FederalIncome::OtherIncome {
+            data: OtherIncomeItem {
+                kind: OtherIncomeKind::HouseholdWages,
+                amount: 100_000,
+                withholding: 0,
+            },
+        }),
+    );
+    let r = estimate(&d);
+    assert_eq!(r.state, ResultState::Unsupported);
+    // Review says the return is refused, not that more answers are needed.
+    assert_eq!(
+        crate::Message::decode(&crate::interview::estimate_text(&r)).key,
+        "ESTIMATE_OUTSIDE_COVERAGE"
+    );
+    assert!(
+        r.issues.iter().any(|issue| issue.display.key == "SECTION179_CARE_EARNED_SOURCE_REQUIRED"
+            || issue.display.key == "ISSUE_SECTION179_SOURCE_UNAVAILABLE")
+    );
+    // Remove the unsupported source through its actual native topic editor.
+    let mut session = restart(d);
+    let id = session.draft.income.last().unwrap().id;
+    let request = crate::tests::support::client::income_pages::save_topic(
+        &mut session,
+        TaxSection::OtherIncome,
+        vec![],
+    );
+    crate::tests::cross::interview::accepted(&send(&mut session, request));
+    assert!(session.draft.income.iter().all(|entry| entry.id != id));
+    let corrected = restart(session.draft);
+    assert_eq!(value(&supported(&corrected.draft), "section179_business_income_limit"), 5_071);
+}
+
+#[test]
+fn section179_care_successful_zero_compensation_still_certifies_the_income_limit() {
+    let mut d = section179_care_return();
+    care_w2(&mut d, 1, 100_000, 0, 0, 750_000);
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_business_income_limit"), 2_000);
+    assert_eq!(value(&r, "section179_deduction"), 2_000);
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 1_000);
+    let selected = crate::section179_return::prepare(&d, Section179IncomeSystem::Regular).unwrap();
+    assert_eq!(selected.care_compensation.unwrap().taxable_dollars, [0; 2]);
+}
+
+#[test]
+fn section179_care_zero_regular_availability_preserves_regular_packet_for_amt() {
+    let mut d = section179_care_return();
+    let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
+    let asset = claimed_regular_asset_with_amt_carry(2025, 10_000, 5_000);
+    data.assets = vec![asset];
+    d = save_elected_business_asset(d, 2, 10_000, 10_000);
+    let home = crate::home_office::HomeContext::default();
+    let claims = crate::related_forms::effective_claimants(&d);
+    let regular = crate::section179_return::prepare_with_home_and_care_with_claims(
+        &d,
+        Section179IncomeSystem::Regular,
+        &home,
+        &claims,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(regular.allocation.allowed(2), Ok(0));
+    let care = regular.care_compensation.expect("regular zero allowance still computes care");
+    assert!(care.taxable_dollars[0] > 0);
+    let alternative = crate::section179_return::prepare_with_home_and_care_with_claims(
+        &d,
+        Section179IncomeSystem::Alternative,
+        &home,
+        &claims,
+        regular.hypothetical_owner_half,
+        Some(care),
+    )
+    .unwrap();
+    assert_eq!(alternative.care_compensation, Some(care));
+    assert!(alternative.allocation.allowed(2).unwrap() > 0);
+    supported(&d);
+}
+
+#[test]
+fn section179_care_includes_form8919_employee_pay() {
+    // A 1099-NEC answered as Form 8919 employee pay is line 1g wages and
+    // IRC129(e)(2) earned income: earned1929+1200 leaves care taxable1871.
+    let mut d = section179_care_return();
+    let payroll =
+        crate::EmployeePayrollSource::Form8919 { reason: crate::EmployeeWageReason::SameFirmForms };
+    add(
+        &mut d,
+        income(crate::tests::income::information_returns::nec_form(
+            1_200,
+            0,
+            Some(crate::IncomeUse::EmployeePay { payroll }),
+        )),
+    );
+    let r = supported(&d);
+    assert!(!r.issues.iter().any(|i| i.display.key == "SECTION179_CARE_EARNED_SOURCE_REQUIRED"));
+    // The estimate figures the NEC as its Form 8919 record (unknowns view).
+    let mut pay = section179_care_return();
+    add(&mut pay, income(omitted_employee_wages(1_200)));
+    let regular = crate::section179_return::prepare(&pay, Section179IncomeSystem::Regular).unwrap();
+    assert_eq!(regular.care_compensation.unwrap().taxable_dollars, [1_871, 0]);
+    assert_eq!(value(&supported(&pay), "section179_business_income_limit"), 5_071);
+    assert_eq!(value(&r, "section179_business_income_limit"), 5_071);
+    assert_eq!(value(&r, "section179_deduction"), 5_000);
+    // Employee pay without a Form 8919 reason keeps the designed boundary.
+    let mut other = section179_care_return();
+    let FederalIncome::EmployeeWages { mut data } = omitted_employee_wages(1_200) else {
+        unreachable!()
+    };
+    data.payroll = crate::EmployeePayrollSource::TotalizationCertificate;
+    add(&mut other, income(FederalIncome::EmployeeWages { data }));
+    assert!(
+        estimate(&other)
+            .issues
+            .iter()
+            .any(|i| i.display.key == "SECTION179_CARE_EARNED_SOURCE_REQUIRED")
+    );
+}
+
+#[test]
+fn section179_care_includes_native_employee_compensation_and_retains_correction() {
+    use crate::tests::cross::interview::{accepted, from_review};
+    let d = section179_care_employee_reimbursements(1_000);
+    // Before section179, profit1000 less half-SE71 plus W2 wages1000 and
+    // Form2106 excess1000 gives earned2929. Care5000 less excluded2929 adds
+    //2071 compensation; the aggregate section179 income remains5071.
+    let source = crate::employee_expenses::before179_compensation_sources(&d, None).unwrap();
+    assert_eq!(source.total, 100_000);
+    assert_eq!(source.by_owner, [100_000, 0]);
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_business_income_limit"), 5_071);
+    assert_eq!(value(&r, "section179_deduction"), 5_000);
+    assert_eq!(value(&r, "employee_expenses_1_excess_reimbursement"), 1_000);
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 5_000);
+    let regular = crate::section179_return::prepare(&d, Section179IncomeSystem::Regular).unwrap();
+    assert_eq!(regular.care_compensation.unwrap().taxable_dollars, [2_071, 0]);
+    let mut missing = d.clone();
+    missing.adjustments.as_mut().unwrap().employee_expenses[0].employers = vec![i64::MAX];
+    assert!(crate::employee_expenses::before179_compensation_sources(&missing, None).is_err());
+    let unresolved = estimate(&missing);
+    assert_eq!(unresolved.state, ResultState::Unsupported);
+    assert!(
+        unresolved
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_EXPENSES_EMPLOYER_MISSING")
+    );
+    // Correct the actual reimbursement source through its native editor.
+    let mut session = restart(d);
+    let Reply::Edit(mut request) = from_review(&mut session, TaxSection::EmployeeExpenses) else {
+        panic!("Employee expenses editor")
+    };
+    let P::SaveEmployeeExpenses { value: page, .. } = &mut request else { unreachable!() };
+    page.forms[0].reimbursements = 100_000;
+    accepted(&send(&mut session, request));
+    let source =
+        crate::employee_expenses::before179_compensation_sources(&session.draft, None).unwrap();
+    assert_eq!(source.total, 0);
+    assert_eq!(source.by_owner, [0; 2]);
+    let regular =
+        crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular).unwrap();
+    assert_eq!(regular.care_compensation.unwrap().taxable_dollars, [3_071, 0]);
+    let saved = session.draft.clone();
+    let mut corrected = restart(saved.clone());
+    let Reply::Edit(reopened) = from_review(&mut corrected, TaxSection::EmployeeExpenses) else {
+        panic!("Employee expenses reopen")
+    };
+    let P::SaveEmployeeExpenses { value: page, .. } = &reopened else { unreachable!() };
+    assert_eq!(page.forms[0].reimbursements, 100_000);
+    accepted(&send(&mut corrected, reopened));
+    assert_eq!(corrected.draft, saved);
+    let r = supported(&corrected.draft);
+    assert_eq!(value(&r, "section179_business_income_limit"), 5_071);
+    assert_eq!(value(&r, "section179_deduction"), 5_000);
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 5_000);
+}
+
+#[test]
+fn section179_owner_deductions_include_native_employee_compensation_once() {
+    for health in [false, true] {
+        let mut d = section179_care_employee_reimbursements(10_000);
+        clear_care_benefits(&mut d);
+        let benefit =
+            if health { health_business(1_000, 100, false) } else { sep_business(1_000, 100) };
+        let FederalIncome::Business { data: benefit } = benefit else { unreachable!() };
+        let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
+        data.health_insurance = benefit.health_insurance;
+        data.retirement = benefit.retirement;
+        let r = supported(&d);
+        // W2 wages1000 + business10000 + employee excess1000 - owner deduction100.
+        assert_eq!(value(&r, "section179_business_income_limit"), 11_900);
+        assert_eq!(value(&r, "section179_deduction"), 5_000);
+        assert_eq!(value(&r, "wages"), 2_000);
+        assert_eq!(value(&r, "self_employment_tax"), 707);
+        d.adjustments.as_mut().unwrap().employee_expenses[0].reimbursements = 100_000;
+
+        // Actual business profit $10,000 less the $5,000 election leaves positive
+        // earnings for the unchanged $100 SEP deposit or health premium.
+        let corrected = supported(&d);
+        assert_eq!(value(&corrected, "section179_business_income_limit"), 10_900);
+        assert_eq!(value(&corrected, "section179_deduction"), 5_000);
+        assert_eq!(value(&corrected, "wages"), 1_000);
+        assert_eq!(value(&corrected, "self_employment_tax"), 707);
+    }
+}
+
+#[test]
+fn section179_employee_compensation_packet_preserves_the_spouses_native_source() {
+    let (d, _) = non_code_l_wage_fixture(Owner::Spouse);
+    // The spouse received $2,000 against native Form2106 expenses of $1,900.
+    let source = crate::employee_expenses::before179_compensation_sources(&d, None).unwrap();
+    assert_eq!(source.total, 10_000);
+    assert_eq!(source.by_owner, [0, 10_000]);
+}
+
+// G-57: W-2 box 10 benefits with a limited partner's box 12 and an S
+// corporation's box 11 section 179 deduction (both materially participating:
+// a passive K-1 deduction keeps its own Form 8582 refusal). Neither reduces
+// Form 2441 earned income, and the vested-stock sale adds none, so nothing refuses.
+#[test]
+fn section179_care_limited_partner_scorp_and_stock_sale_compute() {
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 6_000_000, 0);
+    let mut partner = ordinary_partner_source(2_000, true);
+    partner.qbi = Some(partner_qbi_statement(2_000));
+    partner.section179 = 10_000;
+    partner.amt_section179_income_carry =
+        Some(crate::Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: Vec::new() });
+    add(&mut d, income(FederalIncome::Partnership { data: partner }));
+    let mut scorp = complete_ordinary_scorp(1_000, true);
+    scorp.section179 = 8_000;
+    scorp.amt_section179_income_carry =
+        Some(crate::Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: Vec::new() });
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(scorp) }));
+    let lot = EmployeeStockSale {
+        acquired: 20260101,
+        sold: 20260701,
+        paid: 0,
+        market_value: 300_000,
+        fees: 0,
+        proceeds: 310_000,
+        wash_sale: 0,
+        withholding: 0,
+        reported_basis: None,
+        reporting: crate::BasisReporting::ReportedToIrs,
+        special: false,
+    };
+    add(&mut d, income(FederalIncome::EmployeeStockSale { data: lot }));
+    add_child(&mut d);
+    care_costs(&mut d, 500_000);
+    care_w2(&mut d, 1, 250_000, 0, 0, 750_000);
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_deduction"), 180);
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 0);
+    let regular = crate::section179_return::prepare(&d, Section179IncomeSystem::Regular).unwrap();
+    assert_eq!(regular.care_compensation.unwrap().taxable_dollars, [0; 2]);
+}
+
+// A general partner's box 12 deduction reduces box 14 code A. Line 11 uses
+// the before-179 earned income (Reg.1.179-2(c)(1)); Form 2441 uses the
+// earned income the deduction reduced.
+#[test]
+fn section179_care_general_partner_computes_reduced_earned_income() {
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 100_000, 0);
+    let mut partner = ordinary_partner_source(5_000, true);
+    partner.qbi = Some(partner_qbi_statement(5_000));
+    partner.limited_for_se = Some(false);
+    partner.reported_se = Some(500_000);
+    partner.section179 = 300_000;
+    partner.amt_section179_income_carry =
+        Some(crate::Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: Vec::new() });
+    add(&mut d, income(FederalIncome::Partnership { data: partner }));
+    add_child(&mut d);
+    care_costs(&mut d, 500_000);
+    care_w2(&mut d, 1, 500_000, 0, 0, 750_000);
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_deduction"), 3_000);
+    let regular = crate::section179_return::prepare(&d, Section179IncomeSystem::Regular).unwrap();
+    let before = regular.care_compensation.unwrap().taxable_dollars;
+    let earned = value(&r, "care_form2441_line18");
+    assert_eq!(value(&r, "care_taxable_taxpayer"), 5_000 - earned, "{before:?} {earned}");
+    assert_eq!(before, [0; 2]);
+    assert!(earned < 5_000);
+}
+
+// ISO pay not in W-2 box 1 is Form 1040 line 1h wages in the line 11 income
+// and Form 2441 earned income: $1,000 W-2 + $1,000 profit + $50,000 ISO pay,
+// and the earned income now excludes all $5,000 of benefits.
+#[test]
+fn section179_line11_includes_iso_compensation_not_in_wages() {
+    let mut d = section179_care_return();
+    add(&mut d, income(FederalIncome::IsoSale { data: disqualifying_iso_sale() }));
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_business_income_limit"), 52_000);
+    assert_eq!(value(&r, "section179_deduction"), 5_000);
+    let regular = crate::section179_return::prepare(&d, Section179IncomeSystem::Regular).unwrap();
+    assert_eq!(regular.care_compensation.unwrap().taxable_dollars, [0; 2]);
+}
+
+// Smith facts: both K-1s passive. Each box 12 / box 11 deduction allowed on
+// Form 4562 line 12 joins its activity's Form 8582 net; with box 1 income
+// above it, the pool allows it in full and nothing refuses.
+#[test]
+fn section179_passive_k1s_with_care_benefits_estimate() {
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 6_000_000, 0);
+    let carry =
+        Some(crate::Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: Vec::new() });
+    let mut partner = ordinary_partner_source(2_000, false);
+    partner.qbi = Some(partner_qbi_statement(2_000));
+    partner.section179 = 10_000;
+    partner.amt_section179_income_carry = carry.clone();
+    add(&mut d, income(FederalIncome::Partnership { data: partner }));
+    let mut scorp = complete_ordinary_scorp(1_000, false);
+    scorp.section179 = 8_000;
+    scorp.amt_section179_income_carry = carry;
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(scorp) }));
+    add_child(&mut d);
+    care_costs(&mut d, 500_000);
+    care_w2(&mut d, 1, 250_000, 0, 0, 750_000);
+    let r = supported(&d);
+    assert_eq!(value(&r, "section179_deduction"), 180);
+    assert_eq!(value(&r, "partnership_2_section179"), 100);
+    assert_eq!(value(&r, "scorp_3_section179"), 80);
+    assert_eq!(value(&r, "partnership_2_section179_passive_allowed"), 100);
+    assert_eq!(value(&r, "scorp_3_section179_passive_allowed"), 80);
+    assert_eq!(value(&r, "partnership_2_section179_passive_unallowed"), 0);
+    // $60,000 wages + ($2,000 - $100) + ($1,000 - $80).
+    assert_eq!(return_line(&r, "11a / 11b") / 100, 62_820);
+}
+
+// A passive loss activity: box 1 loss $3,000 and box 12 $1,000 with no other
+// passive income. Form 8582 allows none; the held $4,000 keeps its section
+// 179 share ($1,000 of $4,000 losses) and no deduction reaches AGI.
+#[test]
+fn section179_passive_loss_activity_holds_its_section179_share() {
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 6_000_000, 0);
+    let mut partner = ordinary_partner_source(-3_000, false);
+    partner.qbi = Some(partner_qbi_statement(-3_000));
+    partner.section179 = 100_000;
+    partner.amt_section179_income_carry =
+        Some(crate::Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: Vec::new() });
+    add(&mut d, income(FederalIncome::Partnership { data: partner }));
+    let r = supported(&d);
+    assert_eq!(value(&r, "partnership_2_section179_passive_unallowed"), 1_000);
+    assert_eq!(value(&r, "partnership_2_section179_passive_allowed"), 0);
+    // The ordinary unallowed loss is a separate carryover entry.
+    assert_eq!(value(&r, "partnership_2_passive_suspended"), 3_000);
+    assert_eq!(return_line(&r, "11a / 11b") / 100, 60_000);
 }

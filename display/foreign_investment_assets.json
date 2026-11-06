@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 597000, "rule": {"select": "^<InvestmentAssetSource>", "flatten": true}},
+    {"order": 598000, "rule": {"select": "^<InvestmentAssetBasis>", "flatten": true}},
+    {"order": 599000, "rule": {"select": "^<ForeignInvestmentAssets>", "flatten": true}},
+    {"order": 777000, "rule": {"select": "^<InvestmentAssetYield>.source", "promote": true}},
+    {"order": 778000, "rule": {"select": "^<ForeignInvestmentAsset>.label", "promote": true}},
+    {"order": 779000, "rule": {"select": "^<InvestmentBasisChange>.date", "promote": true}}
+  ]
+}

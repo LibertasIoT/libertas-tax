@@ -69,6 +69,7 @@ fn result(directory: &Path, draft: &FederalDraft) {
                 crate::community::refund_community_percent(&pension.income, pension.community, 5)
                     .unwrap();
             let FederalIncome::Retirement { data } = &pension.income else { unreachable!() };
+            let data = FederalRetirement::from(data);
             assert_eq!(
                 crate::kernel::ratio::fraction(data.gross, i64::from(community), 100),
                 600000
@@ -199,6 +200,7 @@ pub(in crate::tests) fn run() {
             let previous_revision = session.draft.revision;
             let changed = session.draft.injured_spouse.as_ref() != Some(&intended);
             let mut candidate = session.draft.clone();
+            candidate.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
             candidate.injured_spouse = Some(intended.clone());
             candidate.revision = previous_revision + i64::from(changed);
             let expected = supported(&candidate);

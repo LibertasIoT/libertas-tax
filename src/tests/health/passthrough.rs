@@ -12,7 +12,7 @@ fn current_hsa_funding_rejects_unlinked_wrong_owner_and_mismatched_basis() {
     d.adjustments.as_mut().unwrap().ira_basis = vec![prior_ira_basis(Owner::Taxpayer, 200, 500)];
     unsupported(&d, "HSA funding");
     d.adjustments.as_mut().unwrap().ira_basis.clear();
-    d.income.iter_mut().find(|v| v.id == id).unwrap().owner = Owner::Spouse;
+    d.income.iter_mut().find(|v| v.id == id).unwrap().owner = crate::DocumentOwner::Spouses;
     assert!(!d.valid_stored());
     assert_eq!(estimate(&d).state, ResultState::Incomplete);
 }
@@ -162,11 +162,15 @@ fn hsa_funding_remaining_basis_applies_to_later_roth_conversion() {
 fn hsa_payment_reference_rejects_wrong_owner_kind_and_inherited_group() {
     let good = inherited_hsa_funding(4000, 0, 4000, 0, 4000);
     let mut inferred = good.clone();
-    if let FederalIncome::Retirement { data } = &mut inferred.income[2].income {
-        data.taxable = RetirementTaxable::Inherited { account: None, payer: data.gross };
+    if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+        &mut inferred.income[2].income
+    {
+        data.form.taxable = Some(data.form.gross);
+        data.code = Some(DistributionCode::Inherited { account: None });
+        data.taxable_method = Some(TaxableMethod::BoxTwoA);
     }
     assert_eq!(
-        crate::retirement::ira_funding_source(&inferred, 3).unwrap().inherited.unwrap().0,
+        crate::retirement_return::ira_funding_source(&inferred, 3).unwrap().inherited.unwrap().0,
         2
     );
     assert!(inferred.valid_stored());
@@ -174,8 +178,8 @@ fn hsa_payment_reference_rejects_wrong_owner_kind_and_inherited_group() {
     for variant in 0..7 {
         let mut d = good.clone();
         match variant {
-            0 => d.income[2].owner = Owner::Spouse,
-            1 => d.income[1].owner = Owner::Spouse,
+            0 => d.income[2].owner = crate::DocumentOwner::Spouses,
+            1 => d.income[1].owner = crate::DocumentOwner::Spouses,
             2 => {
                 let mut group = inherited_roth(2020, 0, 0);
                 group.id = 2;
@@ -185,17 +189,20 @@ fn hsa_payment_reference_rejects_wrong_owner_kind_and_inherited_group() {
             4 => d.income.retain(|entry| entry.id != 3),
             5 => d.income.retain(|entry| entry.id != 2),
             _ => {
-                if let FederalIncome::Retirement { data } = &mut d.income[2].income {
-                    data.taxable =
-                        RetirementTaxable::Inherited { account: None, payer: data.gross };
+                if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+                    &mut d.income[2].income
+                {
+                    data.form.taxable = Some(data.form.gross);
+                    data.code = Some(DistributionCode::Inherited { account: None });
+                    data.taxable_method = Some(TaxableMethod::BoxTwoA);
                 }
                 add(&mut d, inherited_ira(0, 0)); // Two inferred same-kind groups: ambiguous.
             }
         }
         assert!(
-            crate::retirement::ira_funding_source(&d, 3).is_none()
-                || crate::retirement::ira_funding_source(&d, 3).unwrap().entry.owner
-                    != Owner::Taxpayer
+            crate::retirement_return::ira_funding_source(&d, 3).is_none()
+                || crate::retirement_return::ira_funding_source(&d, 3).unwrap().entry.owner
+                    != crate::DocumentOwner::Yours
         );
         assert_eq!(
             crate::hsa_funding::source_reference_rule(&d),

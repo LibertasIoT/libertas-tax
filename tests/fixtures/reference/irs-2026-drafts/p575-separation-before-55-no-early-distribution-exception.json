@@ -1,0 +1,41 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 29",
+  "example": "Separation from service in or after age 55, Example (George)",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "George born 1971-06-15 (age 55 in 2026), separated on 2020-06-01 at age 49; a $10,000 distribution from the plan on 2026-08-01, code 1, box 2a equal to box 1",
+   "reason": "the example gives ages only; the case has him claim the separation exception, which the facts do not meet, so the return stops on the exception's issue instead of taking it"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19710615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "1",
+     "gross": 10000,
+     "taxable": 10000,
+     "separated": 20200601
+    }
+   ]
+  }
+ ],
+ "expected": [],
+ "expected_state": "Unsupported",
+ "expected_issues": [
+  "ISSUE_THE_EXCEPTION_S_DATE_ACCOUNT_TYPE_EMPLOYMENT_ELIGIBILITY_OR_SEPARAT_9E1325F3"
+ ]
+}

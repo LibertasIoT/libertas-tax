@@ -1,22 +1,21 @@
-// Calendar-date arithmetic on yyyymmdd values (the App's date encoding): the
-// one place for leap years, month lengths, day numbers and anniversaries.
-// Callers validate a date with `federal_rules::valid_date` first; the helpers
-// of an invalid date return an unspecified value but never panic.
+// Calendar-date arithmetic on yyyymmdd values (the App's date encoding).
+// Shared Gregorian validation and month rules belong to the kernel calendar.
+// Callers validate dates before using arithmetic helpers.
 
-/// Whether `year` is a Gregorian leap year.
-pub(crate) fn is_leap_year(year: u32) -> bool {
-    year.is_multiple_of(400) || (year.is_multiple_of(4) && !year.is_multiple_of(100))
+pub(crate) use crate::kernel::calendar::{days_in_month, is_leap_year, valid_date};
+
+pub(crate) fn source_valid_date(date: u32) -> bool {
+    date / 10000 >= 1850 && valid_date(date)
 }
 
-/// The number of days in a month; 0 for a month outside 1 to 12.
-pub(crate) fn days_in_month(year: u32, month: u32) -> u32 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
+pub(crate) fn valid_birth(date: u32) -> bool {
+    date / 10000 <= 2026 && source_valid_date(date)
+}
+// A date a rental can first be available to rent on a 2026 return: through
+// 2027, the year an exchange's replacement property can still be received
+// (section 1031(a)(3)); not a birth date.
+pub(crate) fn valid_service_date(date: u32) -> bool {
+    date / 10000 <= 2027 && source_valid_date(date)
 }
 
 /// The last day of a month, as yyyymmdd.
@@ -84,7 +83,7 @@ pub(crate) fn held_more_than_one_year(acquired: u32, disposed: u32) -> bool {
 // Checked calendar shift for source deadlines; `add_days` keeps the
 // unchecked signed shift the disaster rules use.
 pub(crate) fn add_days_checked(date: u32, days: u32) -> Option<u32> {
-    if !crate::federal_rules::valid_date(date) {
+    if !source_valid_date(date) {
         return None;
     }
     let target = ordinal(date).checked_add(i32::try_from(days).ok()?)?;

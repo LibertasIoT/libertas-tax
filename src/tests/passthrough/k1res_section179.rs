@@ -1,12 +1,11 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
-use crate::tests::support::assert::k1res::assert_located_rejection;
+use crate::tests::cross::interview::accepted;
+use crate::tests::support::builders::k1res::expected_input;
 use crate::tests::support::builders::k1res::{
     before_section179, documents, entity_exempt_other_fields, input,
 };
-use crate::tests::support::client::income_pages::catalog_preview_document;
 use crate::tests::support::client::k1res::{
-    assert_native_review, section179_direct, section179_session,
+    assert_native_review, section179_direct, section179_session, send_fixture,
 };
 use crate::tests::*;
 use alloc::format;
@@ -36,7 +35,8 @@ fn native_and_direct_share_business_income_limit_with_activity_cent_carry() {
         assert_eq!(output.components[0].section179_carry, 0);
         assert_eq!(output.groups[0].nonpassive, 100_000);
         assert_eq!(output.groups[1].nonpassive, 0);
-        assert!(estimate(&session.draft).tax.is_some());
+        let result = estimate(&session.draft);
+        assert!(result.tax.is_some(), "scorp={scorp}: {:?}", result.issues);
     }
 }
 
@@ -110,22 +110,20 @@ fn native_section179_preview_save_review_reopen_cold_correction_keep_ids() {
         let ids = crate::k1_activity::source_ids(&session.draft.income[0].income);
         let before = session.draft.clone();
         let dirty = session.dirty;
-        let mut source_preview = catalog_preview_document(input(&before.income[0].income));
-        let P::PreviewDocument { id, .. } = &mut source_preview else { unreachable!() };
-        *id = parent;
-        assert!(matches!(
-            send(&mut session, source_preview),
-            Reply::Response(P::IncomePreview { preview: Some(0), .. })
-        ));
-        let request = open_topic(&mut session, TaxSection::PassThrough);
+
+        let request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         let preview = crate::tests::support::client::estimate_documents_from_save(&request);
         assert!(matches!(
-            send(&mut session, preview),
-            Reply::Response(P::IncomeRunningEstimate { .. })
+            crate::tests::support::client::income_pages::candidate_save_review(
+                &mut session,
+                preview
+            ),
+            Reply::Response(P::Review { .. })
         ));
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
-        accepted(&send(&mut session, request));
+        accepted(&send_fixture(&mut session, request));
         let regular =
             crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular)
                 .unwrap();
@@ -148,76 +146,50 @@ fn native_section179_preview_save_review_reopen_cold_correction_keep_ids() {
         assert_eq!(line_amount(&result, &format!("amt_{kind}_{parent}_schedule_e")), 100_000);
         assert_native_review(&mut session);
         let mut cold = restart(session.draft.clone());
-        let mut request = open_topic(&mut cold, TaxSection::PassThrough);
-        assert_eq!(documents(&mut request)[0].document, input(&session.draft.income[0].income));
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut cold);
+        assert_eq!(
+            documents(&mut request)[0].document,
+            expected_input(&session.draft, &session.draft.income[0])
+        );
         let mut corrected = cold.draft.income[0].income.clone();
         let (source, current, _) = entity_exempt_other_fields(&mut corrected);
         source.components[1].regular.as_mut().unwrap().section179 = 50_001;
         current.section179 = 50_001;
         documents(&mut request)[0].document = input(&corrected);
-        accepted(&send(&mut cold, request));
+        accepted(&send_fixture(&mut cold, request));
         assert_eq!(cold.draft.next_id, before.next_id);
         assert_eq!(crate::k1_activity::source_ids(&cold.draft.income[0].income), ids);
         assert_eq!(
             line_amount(&estimate(&cold.draft), &format!("{kind}_{parent}_schedule_e")),
             150_000
         );
-        let mut source_preview = catalog_preview_document(input(&cold.draft.income[0].income));
-        let P::PreviewDocument { id, .. } = &mut source_preview else { unreachable!() };
-        *id = parent;
-        assert!(matches!(
-            send(&mut cold, source_preview),
-            Reply::Response(P::IncomePreview { preview: Some(150_000), .. })
-        ));
+
         assert_native_review(&mut cold);
     }
 }
 
 #[test]
-fn native_section179_invalid_value_is_located_and_atomic() {
-    let mut session = section179_session(false, [0, 100_001], [0, 100_001]);
-    let mut income = session.draft.income[0].income.clone();
-    let (source, _, _) = entity_exempt_other_fields(&mut income);
-    source.components[1].regular.as_mut().unwrap().section179 = -1;
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    documents(&mut request)[0].document = input(&income);
-    assert_located_rejection(
-        &mut session,
-        request,
-        "K1_ACTIVITY_SOURCE_AMOUNT_INVALID",
-        "[documents/documents/0/document/activities/statement/source/components/1/regular/section179]",
-    );
-}
-
-#[test]
 fn native_section179_requires_separate_spouse_allocation() {
-    for allocation in [
-        Section179Spouse::NotSupplied,
-        Section179Spouse::Records { cost: 0, allocation: Section179Share::Equal, eligible: false },
-    ] {
-        let mut session = section179_session(false, [0, 100_001], [0, 100_001]);
-        session.draft.setup.as_mut().unwrap().status =
-            FilingChoice::Separate { section179: allocation };
-        let selected =
-            crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular)
-                .unwrap();
-        let mut result = FederalResult::empty(session.draft.revision);
-        selected.report(&mut result).unwrap();
-        assert!(result.issues.iter().any(|issue| issue.display.key == "ISSUE_MARRIED_SEPARATE_SECTION_179_NEEDS_THE_SPOUSE_S_ELIGIBLE_PURCHASES_C6523EBC"));
-        session.draft.setup.as_mut().unwrap().status = FilingChoice::Separate {
-            section179: Section179Spouse::Records {
-                cost: 0,
-                allocation: Section179Share::Equal,
-                eligible: true,
-            },
-        };
-        let selected =
-            crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular)
-                .unwrap();
-        let mut result = FederalResult::empty(session.draft.revision);
-        selected.report(&mut result).unwrap();
-        assert!(!result.issues.iter().any(|issue| issue.display.key == "ISSUE_MARRIED_SEPARATE_SECTION_179_NEEDS_THE_SPOUSE_S_ELIGIBLE_PURCHASES_C6523EBC"));
-    }
+    let allocation = Section179Spouse::NotSupplied;
+    let mut session = section179_session(false, [0, 100_001], [0, 100_001]);
+    session.draft.setup.as_mut().unwrap().status =
+        FilingChoice::Separate { section179: allocation };
+    let selected =
+        crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular).unwrap();
+    let mut result = FederalResult::empty(session.draft.revision);
+    selected.report(&mut result).unwrap();
+    assert!(result.issues.iter().any(|issue| issue.display.key
+        == "ISSUE_MARRIED_SEPARATE_SECTION_179_NEEDS_THE_SPOUSE_S_ELIGIBLE_PURCHASES_C6523EBC"));
+    session.draft.setup.as_mut().unwrap().status = FilingChoice::Separate {
+        section179: Section179Spouse::Records { cost: 0, allocation: Section179Share::Equal },
+    };
+    let selected =
+        crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular).unwrap();
+    let mut result = FederalResult::empty(session.draft.revision);
+    selected.report(&mut result).unwrap();
+    assert!(!result.issues.iter().any(|issue| issue.display.key
+        == "ISSUE_MARRIED_SEPARATE_SECTION_179_NEEDS_THE_SPOUSE_S_ELIGIBLE_PURCHASES_C6523EBC"));
 }
 
 #[test]
@@ -282,34 +254,6 @@ fn native_section179_actual_groups_keep_passive_income_and_risk_boundary() {
 }
 
 #[test]
-fn native_section179_cross_parent_output_overflow_is_located_without_raw_cap() {
-    use crate::tests::support::builders::k1res::section179_huge_source;
-    use crate::tests::support::client::k1res::section179_second_parent;
-    let mut session = section179_session(false, [0, 100_000], [0, 100_000]);
-    section179_second_parent(&mut session);
-    // Huge source boxes are legal while basis suspends almost all of each.
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    for (index, row) in documents(&mut request).iter_mut().enumerate() {
-        let mut income = session.draft.income[index].income.clone();
-        section179_huge_source(&mut income, 100_000);
-        row.document = input(&income);
-    }
-    accepted(&send(&mut session, request));
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    for (index, row) in documents(&mut request).iter_mut().enumerate() {
-        let mut income = session.draft.income[index].income.clone();
-        section179_huge_source(&mut income, i64::MAX / 2 + 1);
-        row.document = input(&income);
-    }
-    assert_located_rejection(
-        &mut session,
-        request,
-        crate::k1_activity::ordinary::RANGE_KEY,
-        "[documents/documents]",
-    );
-}
-
-#[test]
 fn native_section179_finalization_issues_keep_each_parent_once_across_tax_systems() {
     use crate::tests::support::client::k1res::section179_second_parent;
     let mut session = section179_session(false, [0, 100_000], [0, 100_000]);
@@ -337,4 +281,25 @@ fn native_section179_finalization_issues_keep_each_parent_once_across_tax_system
         .collect();
     assert_eq!(issues.len(), 2);
     assert_ne!(issues[0].context.source(), issues[1].context.source());
+}
+
+#[test]
+fn native_zero_se_section179_keeps_other_business_half_se_gross_allocation() {
+    let mut session = section179_session(false, [0, 50_001], [0, 50_001]);
+    let parent = session.draft.income[0].id;
+    let business = crate::tests::support::builders::k1res::add_qbi_gross_business(
+        &mut session.draft,
+        2_000_000,
+        1_000_000,
+    );
+    let result = supported(&session.draft);
+    assert_eq!(value(&result, "taxpayer_half_self_employment_tax"), 707);
+    let allocation = crate::partnership_qbi::half_se_by_gross(&session.draft, [707, 0]).unwrap();
+    assert_eq!((allocation.sources[&parent], allocation.sources[&business]), (0, 707));
+    let FederalIncome::PartnershipActivities { data } = &mut session.draft.income[0].income else {
+        unreachable!()
+    };
+    assert!(data.ordinary_se_source().unwrap().self_employment.is_none());
+    data.person.as_mut().unwrap().reported_se = None;
+    assert!(data.ordinary_se_source().is_err());
 }

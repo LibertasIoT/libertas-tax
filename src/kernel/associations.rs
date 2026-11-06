@@ -1,10 +1,43 @@
-// Additive owner; canonical record adapters migrate here during phase B.
 #![allow(dead_code)]
 
 use super::source_fact::SourceFact;
 use crate::Owner;
 
 pub(crate) type SourceId = i64;
+
+// Borrowed facts from an accepted original return. The owning adapter supplies
+// the authoritative original-return set and durable filer identity.
+// Names, amounts and filing status do not establish that identity. Incomplete
+// original-return history stays unavailable rather than becoming an empty set.
+pub(crate) struct AcceptedOriginalReturn<'a, F: ?Sized> {
+    pub(crate) id: SourceId,
+    pub(crate) tax_year: SourceFact<i32>,
+    pub(crate) filer: SourceFact<&'a F>,
+}
+
+pub(crate) fn operative_filed_return<F: Eq + ?Sized>(
+    originals: SourceFact<&[AcceptedOriginalReturn<'_, F>]>,
+    tax_year: SourceFact<i32>,
+    filer: SourceFact<&F>,
+) -> SourceFact<SourceId> {
+    let (SourceFact::Reported(tax_year), SourceFact::Reported(filer)) = (tax_year, filer) else {
+        return SourceFact::Unavailable;
+    };
+    match originals {
+        SourceFact::NotReported | SourceFact::Reported([]) => SourceFact::NotReported,
+        SourceFact::Reported([original]) if original.id > 0 => {
+            match (&original.tax_year, &original.filer) {
+                (SourceFact::Reported(year), SourceFact::Reported(identity))
+                    if *year == tax_year && *identity == filer =>
+                {
+                    SourceFact::Reported(original.id)
+                }
+                _ => SourceFact::Unavailable,
+            }
+        }
+        _ => SourceFact::Unavailable,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SourceKind {
@@ -18,6 +51,7 @@ pub(crate) enum SourceKind {
     Credit,
     Facility,
     Equipment,
+    CasualtyEvent,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +60,7 @@ pub(crate) enum Relation {
     Property,
     K1Parent,
     CreditOrigin,
+    CasualtyEvent,
 }
 
 impl Relation {
@@ -38,6 +73,7 @@ impl Relation {
             ),
             Self::K1Parent => target == SourceKind::K1,
             Self::CreditOrigin => matches!(target, SourceKind::Facility | SourceKind::Equipment),
+            Self::CasualtyEvent => target == SourceKind::CasualtyEvent,
         }
     }
 }

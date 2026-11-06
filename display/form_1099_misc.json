@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 282000, "rule": {"select": "^<Form1099MiscPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_MISC_INCOME", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "fatca_filing_requirement", "account_number", "rents", "royalties", "other", "substitute", "crop_insurance"]}, {"title": "DISPLAY_MISC_BUSINESS", "fields": ["fishing", "medical", "direct_sales", "attorney", "fish_sales", "section_409a_deferrals", "cash_tips", "tip_occupation_codes", "overtime"]}, {"title": "DISPLAY_MISC_WITHHELD", "fields": ["withholding", "deferred", "state_details"]}]}},
+    {"order": 285000, "rule": {"select": "^<Form1099MiscPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_MISC_INCOME", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "fatca_filing_requirement", "account_number", "rents", "royalties", "other", "substitute", "crop_insurance"]}, {"title": "DISPLAY_MISC_BUSINESS", "fields": ["fishing", "medical", "direct_sales", "attorney", "fish_sales", "section_409a_deferrals", "cash_tips", "tip_occupation_codes", "overtime"]}, {"title": "DISPLAY_MISC_WITHHELD", "fields": ["withholding", "deferred", "state_details"]}]}}
+  ]
+}

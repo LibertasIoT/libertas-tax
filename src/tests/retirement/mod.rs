@@ -14,4 +14,5 @@ pub(in crate::tests) mod retirement;
 pub(in crate::tests) mod retirement_special_codes;
 pub(in crate::tests) mod retirement_treatments;
 pub(in crate::tests) mod roth_pages;
+pub(in crate::tests) mod ssa_1099;
 pub(in crate::tests) mod unasked_pages;

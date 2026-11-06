@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {"order": 163000, "rule": {"select": "^<Dependents>.people", "layout": "summary", "paths": ["first_name", "last_name", "birth_date", "relationship"], "arrangement": "table"}},
+    {"order": 163500, "rule": {"select": "^<Dependents>.people", "when": {"width": "compact"}, "layout": "summary", "paths": ["first_name", "last_name", "birth_date"], "arrangement": "table"}},
+    {"order": 185000, "rule": {"select": "^<SaveChildren>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 219000, "rule": {"select": "^<PersonChoice>.label", "promote": true}},
+    {"order": 223000, "rule": {"select": "^<libertas-tax::Dependent>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["first_name", "last_name", "birth_date", "death_date", "relationship", "identification"]}, {"ratio": 1, "fields": ["lived", "situation", "facts"]}]}},
+    {"order": 224000, "rule": {"select": "^<libertas-tax::Dependent>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_DEPENDENT_ABOUT", "fields": ["first_name", "last_name", "birth_date", "death_date", "relationship", "identification"]}, {"title": "DISPLAY_DEPENDENT_HOME", "fields": ["lived", "situation", "facts", "competing"]}]}},
+    {"order": 225000, "rule": {"select": "^<libertas-tax::Dependent>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_DEPENDENT_ABOUT", "fields": ["first_name", "last_name", "birth_date", "death_date", "relationship", "identification"]}, {"title": "DISPLAY_DEPENDENT_HOME", "fields": ["lived", "situation", "facts", "competing"]}]}},
+    {"order": 468000, "rule": {"select": "^<CompetingClaim>", "flatten": true}},
+    {"order": 471000, "rule": {"select": "^<LivedWithYou>", "flatten": true}},
+    {"order": 472000, "rule": {"select": "^<DependentSituation>", "flatten": true}},
+    {"order": 588000, "rule": {"select": "^<DependentResidency>", "flatten": true}},
+    {"order": 695000, "rule": {"select": "^<Dependents>.people", "promote": {"use_parent_name": false}}},
+    {"order": 696000, "rule": {"select": "^<libertas-tax::Dependent>.relationship", "promote": {"use_parent_name": false}}},
+    {"order": 821000, "rule": {"select": "^<BeginChildren.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 822000, "rule": {"select": "^<SaveChildren.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 822500, "rule": {"select": "^<SaveChildren>.credits", "when_empty": "hide", "suppress_label": true}}
+  ]
+}

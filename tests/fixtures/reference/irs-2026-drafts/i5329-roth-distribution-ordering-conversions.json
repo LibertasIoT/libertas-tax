@@ -1,0 +1,90 @@
+{
+ "source": {
+  "title": "Instructions for Form 5329 (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 5",
+  "example": "Line 1, Example (Roth IRA distribution of $33,000)",
+  "url": "https://www.irs.gov/pub/irs-dft/i5329--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "55f531aad380ec1ac63cc697e0f5d0cd603c503e18cebd9fb04b0bd46633aa35"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "taxpayer born 1973-06-15 (age 53 on July 10, 2026); wages $60,000",
+   "reason": "the example gives age 53 and no other income"
+  },
+  {
+   "fact": "2022 conversion $20,000 with $5,000 basis; 2023 conversion $10,000 with $3,000 basis; $2,000 regular contributions in 2022 and 2023; no 2024-2026 contributions",
+   "reason": "the example: Form 8606 line 17 $5,000/$3,000, line 18 $15,000/$7,000"
+  },
+  {
+   "fact": "the 1099-R shows code J, box 1 $33,000 and box 2a $0; no exception",
+   "reason": "the example gives a $33,000 early Roth distribution"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19730615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 60000,
+     "withholding": 0,
+     "social_wages": 60000,
+     "social_tax": 3720,
+     "medicare_wages": 60000,
+     "medicare_tax": 870
+    }
+   ]
+  },
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "roth_distribution",
+     "gross": 33000,
+     "regular": 4000,
+     "first_year": 2022,
+     "conversions": [
+      [
+       2022,
+       15000,
+       5000
+      ],
+      [
+       2023,
+       7000,
+       3000
+      ]
+     ]
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "4a",
+   "amount": 33000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "4b",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch2",
+   "line": "5",
+   "amount": 2200,
+   "provenance": "derived",
+   "derivation": "10% of the $22,000 on Form 5329 line 1 (the taxable conversion amounts allocated, all within 5 years)"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

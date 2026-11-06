@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {"order": 189000, "rule": {"select": "^<SaveSelfEmployedBenefits>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 259000, "rule": {"select": "^<SelfEmployedBenefits>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HEALTH_PLANS", "fields": ["businesses", "partnerships", "scorporations"]}, {"title": "DISPLAY_MARKETPLACE_SHARING", "fields": ["ptc_method", "policies", "benchmarks"]}]}},
+    {"order": 260000, "rule": {"select": "^<SelfEmployedBenefits>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HEALTH_PLANS", "fields": ["businesses", "partnerships", "scorporations"]}, {"title": "DISPLAY_MARKETPLACE_SHARING", "fields": ["ptc_method", "policies", "benchmarks"]}]}},
+    {"order": 523000, "rule": {"select": "^<SeHealth>", "flatten": true}},
+    {"order": 524000, "rule": {"select": "^<SeRetirement>", "flatten": true}},
+    {"order": 525000, "rule": {"select": "^<PartnerBenefits>", "flatten": {"name_row": false}}},
+    {"order": 526000, "rule": {"select": "^<PartnerPlan>", "flatten": true}},
+    {"order": 748000, "rule": {"select": "^<BusinessBenefits>.health", "promote": {"use_parent_name": false}}},
+    {"order": 749000, "rule": {"select": "^<PartnerBenefits>.name", "promote": true}},
+    {"order": 825000, "rule": {"select": "^<SaveSelfEmployedBenefits.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

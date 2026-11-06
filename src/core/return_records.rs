@@ -6,6 +6,18 @@ pub(crate) const LAYOUT: u32 = 1;
 pub(crate) type Records = Vec<(TaxDataKey, TaxAppData)>;
 pub(crate) type RecordResult<T> = Result<T, &'static str>;
 
+pub(crate) fn format_key(user: LibertasUser, tax_year: i32) -> TaxDataKey {
+    // Kind 0 is the stable generation marker within this user/year namespace.
+    TaxDataKey::ReturnRecord { user, tax_year, copy: 0, kind: 0, id: 0 }
+}
+
+pub(crate) fn known_format(value: &TaxAppData) -> RecordResult<()> {
+    match value {
+        TaxAppData::StorageFormat { format } if *format == crate::STORAGE_FORMAT => Ok(()),
+        _ => Err("Unknown or corrupt storage format marker"),
+    }
+}
+
 pub(crate) fn header_key(user: LibertasUser, tax_year: i32) -> TaxDataKey {
     TaxDataKey::ReturnRecord { user, tax_year, copy: 0, kind: 1, id: 0 }
 }
@@ -19,6 +31,7 @@ pub(crate) fn header(draft: &FederalDraft, next_filed_copy: i64) -> WorkingHeade
         cookie,
         revision,
         finished_sections,
+        situations_unanswered,
         finished,
         setup,
         people,
@@ -30,10 +43,9 @@ pub(crate) fn header(draft: &FederalDraft, next_filed_copy: i64) -> WorkingHeade
         credits,
         screening,
         payments,
-        situations: _,
-        adjustment_refusals: _,
         credit_refusals: _,
-        tax_refusals: _,
+        often_missed: _,
+        without_form: _,
         coverdell_excess: _,
         checklist: _,
         injured_spouse,
@@ -58,6 +70,7 @@ pub(crate) fn header(draft: &FederalDraft, next_filed_copy: i64) -> WorkingHeade
         cookie: cookie.clone(),
         revision: *revision,
         finished_sections: finished_sections.clone(),
+        situations_unanswered: situations_unanswered.clone(),
         finished: *finished,
         section_presence,
         income_count: i64::try_from(income.len()).expect("income count fits i64"),
@@ -86,10 +99,13 @@ pub(crate) fn project(
 ) -> RecordResult<Records> {
     let metadata = header(draft, next_copy);
     known_header(&metadata, draft.tax_year)?;
-    let mut records = alloc::vec![(
-        header_key(user, draft.tax_year),
-        TaxAppData::WorkingHeader { header: metadata }
-    )];
+    let mut records = alloc::vec![
+        (
+            format_key(user, draft.tax_year),
+            TaxAppData::StorageFormat { format: crate::STORAGE_FORMAT }
+        ),
+        (header_key(user, draft.tax_year), TaxAppData::WorkingHeader { header: metadata }),
+    ];
     records.extend(
         crate::household_records::project(user, 0, draft)
             .map_err(|_| "Invalid household projection")?,
@@ -113,6 +129,7 @@ pub(crate) fn assemble(
     if user <= 0 {
         return Err("Invalid verified user");
     }
+    let mut format_present = false;
     let mut metadata = None;
     let mut household = Vec::new();
     let mut setup = Vec::new();
@@ -120,12 +137,18 @@ pub(crate) fn assemble(
     let mut sections = Vec::new();
     for (key, value) in records {
         let TaxDataKey::ReturnRecord { user: owner, tax_year: year, copy, kind, id } = &key else {
-            return Err("Unexpected legacy key in keyed return");
+            return Err("Unexpected key in keyed return");
         };
         if *owner != user || *year != tax_year || *copy != 0 {
             return Err("Wrong return namespace");
         }
         match *kind {
+            0 if *id == 0 => {
+                known_format(&value)?;
+                if core::mem::replace(&mut format_present, true) {
+                    return Err("Duplicate storage format marker");
+                }
+            }
             1 if *id == 0 => {
                 let TaxAppData::WorkingHeader { header } = value else {
                     return Err("Invalid header payload");
@@ -142,12 +165,16 @@ pub(crate) fn assemble(
             _ => return Err("Unknown record kind"),
         }
     }
+    if !format_present {
+        return Err("Missing storage format marker");
+    }
     let metadata = metadata.ok_or("Missing header")?;
     let mut draft = FederalDraft::empty(metadata.cookie.clone());
     draft.tax_year = metadata.tax_year;
     draft.next_id = metadata.next_id;
     draft.revision = metadata.revision;
     draft.finished_sections = metadata.finished_sections.clone();
+    draft.situations_unanswered = metadata.situations_unanswered.clone();
     draft.finished = metadata.finished;
     crate::household_records::assemble(user, 0, &mut draft, household)
         .map_err(|_| "Corrupt household records")?;

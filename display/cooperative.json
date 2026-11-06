@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 278000, "rule": {"select": "^<CoopAllocation>", "layout": "tabs", "sections": [{"title": "DISPLAY_COOP_SOURCE", "fields": ["id", "distributions", "personal", "personal_qualification", "properties", "income_use", "redemptions"]}, {"title": "DISPLAY_COOP_QUALIFICATION", "fields": ["qualified_payments", "qualified_items", "sstb_items", "section_199a_g", "notice"]}, {"title": "DISPLAY_COOP_ALLOCATION", "fields": ["patron_allocation", "sstb_expenses"]}]}},
+    {"order": 489000, "rule": {"select": "^<CoopAllocationInput>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_COOP_SOURCE", "fields": ["id", "distributions", "personal", "personal_qualification", "properties", "income_use", "redemptions"]}, {"title": "DISPLAY_COOP_QUALIFICATION", "fields": ["qualified_payments", "qualified_items", "sstb_items", "section_199a_g", "notice"]}, {"title": "DISPLAY_COOP_ALLOCATION", "fields": ["patron_allocation", "sstb_expenses"]}]}},
+    {"order": 490000, "rule": {"select": "^<CoopAllocationInput>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_COOP_SOURCE", "fields": ["id", "distributions", "personal", "personal_qualification", "properties", "income_use", "redemptions"]}, {"title": "DISPLAY_COOP_QUALIFICATION", "fields": ["qualified_payments", "qualified_items", "sstb_items", "section_199a_g", "notice"]}, {"title": "DISPLAY_COOP_ALLOCATION", "fields": ["patron_allocation", "sstb_expenses"]}]}}
+  ]
+}

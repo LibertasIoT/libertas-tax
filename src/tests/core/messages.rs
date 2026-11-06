@@ -33,7 +33,7 @@ fn arity(template: &str) -> usize {
     }
     count
 }
-fn sources() -> Vec<(std::path::PathBuf, alloc::string::String)> {
+fn sources() -> impl Iterator<Item = (std::path::PathBuf, alloc::string::String)> {
     let mut files = Vec::new();
     let mut dirs = vec![std::path::PathBuf::from("src")];
     while let Some(dir) = dirs.pop() {
@@ -44,12 +44,15 @@ fn sources() -> Vec<(std::path::PathBuf, alloc::string::String)> {
                     dirs.push(path);
                 }
             } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("lib.rs") {
-                let text = std::fs::read_to_string(&path).unwrap();
-                files.push((path, text));
+                files.push(path);
             }
         }
     }
-    files
+    // Read each file only when it is checked, so source texts do not accumulate.
+    files.into_iter().map(|path| {
+        let text = std::fs::read_to_string(&path).unwrap();
+        (path, text)
+    })
 }
 
 #[test]
@@ -74,13 +77,20 @@ fn every_message_key_is_declared_with_matching_arguments() {
                 keys += 1;
             }
             if word.starts_with("SAVING_KIND_")
+                && word != "SAVING_KIND_"
                 && word.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
             {
+                // A literal that already names one form of the kind is declared as itself.
+                if word.ends_with("_ONE") || word.ends_with("_MANY") {
+                    assert!(resource(word).is_some(), "{} names undeclared {word}", path.display());
+                    continue;
+                }
                 for suffix in ["_ONE", "_MANY"] {
                     let key = alloc::format!("{word}{suffix}");
                     assert!(resource(&key).is_some(), "{} names undeclared {key}", path.display());
                 }
             } else if word.starts_with("SAVING_")
+                && word != "SAVING_KIND_"
                 && word.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
             {
                 assert!(resource(word).is_some(), "{} names undeclared {word}", path.display());
@@ -384,4 +394,45 @@ fn business_credit_rows_are_labeled_from_the_credit_and_the_kind() {
         row.english(),
         "Form 3800 4d — Business credit Form 3468 Part VI 2026 carryback 2025"
     );
+}
+
+#[test]
+fn keyed_locators_preserve_the_submitted_member_and_nested_field() {
+    use crate::validation::{SaveFailure, ValidationIssue};
+    let key = "income/7/\"bracket]雪";
+    let target = ValidationIssue::new("DOCUMENT_QUESTIONS_CHANGED")
+        .at_field("answer")
+        .in_key("followups", key)
+        .field;
+    let failure = SaveFailure::from(
+        ValidationIssue::new("DOCUMENT_QUESTIONS_CHANGED")
+            .at_field("amount")
+            .in_list("followups", 1),
+    );
+    let message = failure.message.clone();
+    let mapped = failure.map_submitted_items(&["followups"], &[None, target]);
+    assert_eq!(mapped.message, message);
+    assert_eq!(
+        mapped.field.unwrap().square(),
+        "[followups/=\"income/7/\\\"bracket]雪\"/answer/amount]"
+    );
+    assert_eq!(
+        ValidationIssue::new("DOCUMENT_QUESTIONS_CHANGED")
+            .at_field("amount")
+            .in_key("rows", -42i64)
+            .field
+            .unwrap()
+            .square(),
+        "[rows/=-42/amount]"
+    );
+    assert_eq!(
+        ValidationIssue::new("DOCUMENT_QUESTIONS_CHANGED")
+            .at_field("amount")
+            .in_key("rows", 42u64)
+            .field
+            .unwrap()
+            .square(),
+        "[rows/=42/amount]"
+    );
+    assert!(ValidationIssue::new("DOCUMENT_QUESTIONS_CHANGED").in_key("rows", key).field.is_none());
 }

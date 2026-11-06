@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 357000, "rule": {"select": "^<ScorpParticipation>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["ordinary_scope", "minutes", "substantially_all", "at_least_as_much", "prior_ten", "personal_service", "service_years"]}, {"ratio": 1, "fields": ["regular", "management_minutes", "paid_manager", "other_manager_more", "other_business_over_100"]}]}},
+    {"order": 946000, "rule": {"select": "^<ScorpParticipation>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SPART_TESTS", "fields": ["ordinary_scope", "minutes", "substantially_all", "at_least_as_much"]}, {"title": "DISPLAY_SPART_PRIOR", "fields": ["prior_ten", "personal_service", "service_years", "regular"]}, {"title": "DISPLAY_SPART_MANAGEMENT", "fields": ["management_minutes", "paid_manager", "other_manager_more", "other_business_over_100"]}]}},
+    {"order": 947000, "rule": {"select": "^<ScorpParticipation>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SPART_TESTS", "fields": ["ordinary_scope", "minutes", "substantially_all", "at_least_as_much"]}, {"title": "DISPLAY_SPART_PRIOR", "fields": ["prior_ten", "personal_service", "service_years", "regular"]}, {"title": "DISPLAY_SPART_MANAGEMENT", "fields": ["management_minutes", "paid_manager", "other_manager_more", "other_business_over_100"]}]}}
+  ]
+}

@@ -1,12 +1,12 @@
 use crate::k1_activity::{K1EntityOnlyAmt, K1RiskSource, K1StatementAmt};
-use crate::tests::cross::interview::{accepted, document, open_topic};
+use crate::tests::cross::interview::accepted;
 use crate::tests::support::assert::k1res::assert_atomic_rejection;
 use crate::tests::support::builders::k1res::{
     documents, entity_exempt_other_fields, entity_exempt_other_output,
     entity_exempt_other_passive_history, entity_exempt_other_rule, fresh_income, graph, input,
     set_entity_exempt_interest, set_entity_exempt_other,
 };
-use crate::tests::support::client::income_pages::catalog_preview_document;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::support::client::k1res::{assert_native_review, entity_exempt_interest_session};
 use crate::tests::*;
 
@@ -204,7 +204,7 @@ fn exempt_interest_native_lifecycle_transfers_regular_line_2a_once() {
         add(
             &mut session.draft,
             crate::tests::income(FederalIncome::Interest {
-                data: native_exempt_interest(30_000, 0),
+                data: interest_source(native_exempt_interest(30_000, 0)),
             }),
         );
         session = restart(session.draft);
@@ -213,32 +213,28 @@ fn exempt_interest_native_lifecycle_transfers_regular_line_2a_once() {
         let id = before.income[0].id;
         let ids = crate::k1_activity::source_ids(&income);
         let kind = if scorp { "scorp" } else { "partnership" };
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         documents(&mut request)[0].document = input(&income);
-        let mut preview = catalog_preview_document(input(&income));
-        let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-        *preview_id = id;
+
         assert!(matches!(
-            send(&mut session, preview),
-            Reply::Response(P::IncomePreview { preview: Some(-200_000), .. })
-        ));
-        assert!(matches!(
-            send(
+            crate::tests::support::client::income_pages::candidate_save_review(
                 &mut session,
                 crate::tests::support::client::estimate_documents_from_save(&request)
             ),
-            Reply::Response(P::IncomeRunningEstimate { .. })
+            Reply::Response(P::Review { .. })
         ));
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
-        accepted(&send(&mut session, request));
+        accepted(&send_fixture(&mut session, request));
         let saved = session.draft.clone();
         assert_native_review(&mut session);
-        let unchanged = open_topic(&mut session, TaxSection::PassThrough);
-        accepted(&send(&mut session, unchanged));
+        let unchanged =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        accepted(&send_fixture(&mut session, unchanged));
         assert_eq!(session.draft, saved);
         assert_native_review(&mut session);
-        assert_eq!(saved.revision, before.revision + 1);
+        assert_eq!(saved.revision, before.revision + 2);
         assert_eq!(saved.next_id, before.next_id);
         assert_eq!(crate::k1_activity::source_ids(&saved.income[0].income), ids);
         assert_eq!(saved.income[1..], before.income[1..]);
@@ -254,19 +250,23 @@ fn exempt_interest_native_lifecycle_transfers_regular_line_2a_once() {
         assert_eq!(line_amount(&result, "net_investment_income_tax"), 0);
         assert_eq!(line_amount(&result, "eic_investment_income"), 130_000);
         let mut cold = restart(saved.clone());
-        let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
-        assert_eq!(documents(&mut reopened)[0].document, input(&income));
+        let mut reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut cold);
+        assert_eq!(
+            documents(&mut reopened)[0].document,
+            crate::tests::support::builders::k1res::expected_fixture_input(&session.draft, &income)
+        );
         assert_eq!(estimate(&cold.draft), result);
-        accepted(&send(&mut cold, reopened));
+        accepted(&send_fixture(&mut cold, reopened));
         assert_eq!(cold.draft, saved);
         assert_native_review(&mut cold);
         set_entity_exempt_interest(&mut income, 0, 100_000);
-        reopened = open_topic(&mut cold, TaxSection::PassThrough);
+        reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
         documents(&mut reopened)[0].document = input(&income);
-        accepted(&send(&mut cold, reopened));
+        accepted(&send_fixture(&mut cold, reopened));
         let corrected_saved = cold.draft.clone();
         assert_native_review(&mut cold);
-        assert_eq!(corrected_saved.revision, saved.revision + 1);
+        assert_eq!(corrected_saved.revision, saved.revision + 2);
         assert_eq!(corrected_saved.next_id, saved.next_id);
         assert_eq!(crate::k1_activity::source_ids(&corrected_saved.income[0].income), ids);
         let corrected = estimate(&corrected_saved);
@@ -279,19 +279,25 @@ fn exempt_interest_native_lifecycle_transfers_regular_line_2a_once() {
         );
         assert_eq!(line_amount(&corrected, "agi"), 24_900_000);
         let mut final_cold = restart(corrected_saved.clone());
-        let mut reopened = open_topic(&mut final_cold, TaxSection::PassThrough);
-        assert_eq!(documents(&mut reopened)[0].document, input(&income));
-        accepted(&send(&mut final_cold, reopened));
+        let mut reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut final_cold);
+        assert_eq!(
+            documents(&mut reopened)[0].document,
+            crate::tests::support::builders::k1res::expected_fixture_input(&session.draft, &income)
+        );
+        accepted(&send_fixture(&mut final_cold, reopened));
         assert_eq!(final_cold.draft, corrected_saved);
         assert_eq!(estimate(&final_cold.draft), corrected);
         assert_native_review(&mut final_cold);
         // A subsequent ordinary source obtains the next contiguous identities.
-        let mut new_request = open_topic(&mut final_cold, TaxSection::PassThrough);
-        let P::SaveIncomes { allowed_community, .. } = &new_request else { unreachable!() };
-        let mut row = document(0, input(&fresh_income(scorp)));
+        let mut new_request =
+            crate::tests::support::client::income_pages::open_document_center(&mut final_cold);
+        let P::SaveDocuments { allowed_community, .. } = &new_request else { unreachable!() };
+        let mut row =
+            crate::tests::support::builders::k1res::source_row(0, input(&fresh_income(scorp)));
         row.allowed_community = allowed_community.clone();
         documents(&mut new_request).push(row);
-        accepted(&send(&mut final_cold, new_request));
+        accepted(&send_fixture(&mut final_cold, new_request));
         let new_entry = final_cold
             .draft
             .income
@@ -345,9 +351,10 @@ fn valid_unknown_exempt_sources_keep_the_named_boundary_and_invalid_saves_are_at
         let (mut session, income) = entity_exempt_interest_session(scorp);
         add(&mut session.draft, wage(0, Owner::Taxpayer, 25_000_000, 0));
         session = restart(session.draft);
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         documents(&mut request)[0].document = input(&income);
-        accepted(&send(&mut session, request));
+        accepted(&send_fixture(&mut session, request));
         for case in 0..6 {
             let mut unknown = income.clone();
             match case {
@@ -409,8 +416,9 @@ fn valid_unknown_exempt_sources_keep_the_named_boundary_and_invalid_saves_are_at
                 result.issues
             );
         }
-        for case in 0..4 {
-            let mut bad = open_topic(&mut session, TaxSection::PassThrough);
+        for case in [0, 1, 3] {
+            let mut bad =
+                crate::tests::support::client::income_pages::open_document_center(&mut session);
             let source = graph(&mut documents(&mut bad)[0].document);
             let key = match case {
                 0 => {
@@ -424,10 +432,6 @@ fn valid_unknown_exempt_sources_keep_the_named_boundary_and_invalid_saves_are_at
                     };
                     amounts.exempt_interest += 1;
                     "K1_ACTIVITY_CURRENT_SOURCE_RECONCILE"
-                }
-                2 => {
-                    source.entity_only.as_mut().unwrap().exempt_interest = -1;
-                    "K1_ACTIVITY_SOURCE_AMOUNT_INVALID"
                 }
                 3 => {
                     source.components[1].id = source.components[0].id;

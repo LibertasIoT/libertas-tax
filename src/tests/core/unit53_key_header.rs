@@ -13,7 +13,7 @@ fn semantic_key_has_fixed_field_boundaries_and_full_width_identities() {
     };
     let bytes = key.to_key_bytes().unwrap();
     assert_eq!(bytes.len(), 32);
-    assert_eq!(&bytes[..2], &[0, 2]);
+    assert_eq!(&bytes[..2], &[0, 1]);
     assert_eq!(&bytes[2..10], &[0x81, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!(&bytes[10..14], &[0x80, 0, 7, 0xea]);
     assert_eq!(&bytes[14..22], &[0xff; 8]);
@@ -40,9 +40,7 @@ fn user_year_prefix_includes_copies_and_kinds_but_isolates_other_returns() {
         let key = TaxDataKey::ReturnRecord { user: owner, tax_year: year, copy, kind, id };
         assert_eq!(key.to_key_bytes().unwrap().starts_with(&prefix), included);
     }
-    for key in [TaxDataKey::StorageFormat { user }, TaxDataKey::Draft { user }] {
-        assert!(!key.to_key_bytes().unwrap().starts_with(&prefix));
-    }
+    assert!(!TaxDataKey::StorageFormat { user }.to_key_bytes().unwrap().starts_with(&prefix));
 }
 
 #[test]

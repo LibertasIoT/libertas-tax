@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 41000, "rule": {"select": "^<Rrb1099Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "corrected", "duplicate", "year", "claim_number", "recipient_id", "recipient"]}, {"title": "DISPLAY_LUMP_SUM_BENEFITS", "fields": ["benefits_paid", "benefits_repaid", "benefits", "workers_compensation", "prior_year", "two_years_prior", "earlier_years", "withholding", "medicare_premiums", "earlier_year_details"]}]}},
+    {"order": 42000, "rule": {"select": "^<Rrb1099Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "corrected", "duplicate", "year", "claim_number", "recipient_id", "recipient"]}, {"title": "DISPLAY_LUMP_SUM_BENEFITS", "fields": ["benefits_paid", "benefits_repaid", "benefits", "workers_compensation", "prior_year", "two_years_prior", "earlier_years", "withholding", "medicare_premiums", "earlier_year_details"]}]}}
+  ]
+}

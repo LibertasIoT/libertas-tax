@@ -1,7 +1,57 @@
 // Equipment annual schedules. Source eligibility, selected tax system,
 // bonus/179 elections and 280F limits remain with their existing owners.
 use super::{Month, macrs_tables};
-use crate::kernel::{phase, ratio, source_fact::SourceFact};
+use crate::kernel::{
+    phase, ratio,
+    ratio::exact::{self, Exact},
+    source_fact::SourceFact,
+};
+
+// The numeric policy owns only arithmetic projection. Calendar, method, history,
+// table selection and convention stages below are shared by both carriers.
+// Native cents retain their existing stage rounding; exact cents stay inside
+// cost recovery until its output is rounded at the domain boundary.
+pub(crate) trait Basis: Clone + Ord {
+    fn whole(value: i64) -> Self;
+    fn checked_sub_native(&self, value: i64) -> Option<Self>;
+    fn subtract(&self, other: &Self) -> Self;
+    fn fraction(&self, numerator: i64, denominator: i64) -> Self;
+    fn checked_fraction(&self, numerator: i64, denominator: i64) -> Option<Self>;
+}
+impl Basis for i64 {
+    fn whole(value: i64) -> Self {
+        value
+    }
+    fn checked_sub_native(&self, value: i64) -> Option<Self> {
+        self.checked_sub(value)
+    }
+    fn subtract(&self, other: &Self) -> Self {
+        *self - *other
+    }
+    fn fraction(&self, numerator: i64, denominator: i64) -> Self {
+        ratio::fraction(*self, numerator, denominator)
+    }
+    fn checked_fraction(&self, numerator: i64, denominator: i64) -> Option<Self> {
+        ratio::checked_fraction(*self, numerator, denominator)
+    }
+}
+impl Basis for Exact {
+    fn whole(value: i64) -> Self {
+        exact::whole(value)
+    }
+    fn checked_sub_native(&self, value: i64) -> Option<Self> {
+        Some(self - exact::whole(value))
+    }
+    fn subtract(&self, other: &Self) -> Self {
+        self - other
+    }
+    fn fraction(&self, numerator: i64, denominator: i64) -> Self {
+        self * Exact::new(numerator.into(), denominator.into())
+    }
+    fn checked_fraction(&self, numerator: i64, denominator: i64) -> Option<Self> {
+        (denominator != 0).then(|| self.fraction(numerator, denominator))
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Period {
@@ -99,7 +149,7 @@ pub(crate) struct AdjustedBasisContinuation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Schedule {
+pub(crate) struct Schedule<B = i64> {
     pub placed: Month,
     pub tax_year: u32,
     pub period: Period,
@@ -107,7 +157,7 @@ pub(crate) struct Schedule {
     pub convention: Convention,
     pub approach: Approach,
     // Actual history_basis(), which can differ from current business basis.
-    pub history_basis_cents: i64,
+    pub history_basis_cents: B,
     pub history: History,
     // Tentative raw_bonus_amount(), BEFORE any passenger/280F limitation.
     pub raw_bonus_cents: i64,
@@ -123,17 +173,17 @@ pub(crate) struct Schedule {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Amounts {
+pub(crate) struct Amounts<B = i64> {
     // Opening history basis less tentative raw bonus, before current MACRS.
     // This is NOT final remaining basis after business-use/280F limitations.
-    pub basis_after_raw_bonus_cents: i64,
+    pub basis_after_raw_bonus_cents: B,
     // The native full-year helper when evaluated; same-year disposal returns
     // zero BEFORE that helper, not a hypothetical undisposed annual allowance.
-    pub full_year_cents: i64,
-    pub current_macrs_cents: i64,
+    pub full_year_cents: B,
+    pub current_macrs_cents: B,
 }
 
-pub(crate) fn calculate(source: SourceFact<Schedule>) -> SourceFact<Amounts> {
+pub(crate) fn calculate<B: Basis>(source: SourceFact<Schedule<B>>) -> SourceFact<Amounts<B>> {
     match source {
         SourceFact::Reported(schedule) => {
             schedule.amounts().map_or(SourceFact::Unavailable, SourceFact::Reported)
@@ -143,7 +193,7 @@ pub(crate) fn calculate(source: SourceFact<Schedule>) -> SourceFact<Amounts> {
     }
 }
 
-impl Schedule {
+impl<B: Basis> Schedule<B> {
     // Remaining-period rate for a source-qualified basis adjustment,
     // anchored to effective_year rather than the year later being calculated.
     // Pub225 Brown / Pub946 without tables: round the reciprocal to four
@@ -157,7 +207,7 @@ impl Schedule {
         {
             return None;
         }
-        let native = NativeSchedule {
+        let native = NativeSchedule::<i64> {
             placed: self.placed,
             tax_year: effective_year,
             period: self.period,
@@ -178,12 +228,12 @@ impl Schedule {
         Some((rate, 10000))
     }
 
-    fn amounts(self) -> Option<Amounts> {
+    fn amounts(self) -> Option<Amounts<B>> {
         // These are the source calendar/basis requirements, not amount caps.
         if !self.placed.valid()
             || !(1..=9999).contains(&self.tax_year)
             || self.tax_year < self.placed.year
-            || self.history_basis_cents < 0
+            || self.history_basis_cents < B::whole(0)
             || self.raw_bonus_cents < 0
             || self.disposed.is_some_and(|date| {
                 !date.valid() || date.year != self.tax_year || date.index() < self.placed.index()
@@ -196,7 +246,7 @@ impl Schedule {
                 if elected179_cents >= 0 && self.placed.year == self.tax_year =>
             {
                 (
-                    self.history_basis_cents.checked_sub(elected179_cents)?,
+                    self.history_basis_cents.checked_sub_native(elected179_cents)?,
                     elected179_cents.checked_add(self.raw_bonus_cents)?,
                     true,
                 )
@@ -217,7 +267,7 @@ impl Schedule {
                 && self.placed.year < self.tax_year =>
             {
                 (
-                    self.history_basis_cents.checked_sub(
+                    self.history_basis_cents.checked_sub_native(
                         prior_depreciation_cents.checked_add(carryforward179_cents)?,
                     )?,
                     initial179_cents.checked_add(initial_bonus_cents)?,
@@ -226,8 +276,8 @@ impl Schedule {
             }
             _ => return None,
         };
-        let basis = opening.checked_sub(self.raw_bonus_cents)?;
-        if basis < 0 || original_deductions > self.history_basis_cents {
+        let basis = opening.checked_sub_native(self.raw_bonus_cents)?;
+        if basis < B::whole(0) || B::whole(original_deductions) > self.history_basis_cents {
             return None;
         }
         // The source's raw-bonus stage must actually supply zero for this
@@ -245,7 +295,7 @@ impl Schedule {
             method: self.method,
             convention: self.convention,
             table_basis_cents: (self.approach == Approach::Tables)
-                .then_some((self.history_basis_cents, original_deductions)),
+                .then_some((self.history_basis_cents.clone(), B::whole(original_deductions))),
             basis_after_raw_bonus_cents: basis,
             continuing: !new,
             current_use_fraction: self.current_use_fraction,
@@ -266,8 +316,10 @@ impl Schedule {
             || continuation.prior_depreciation_cents > prior_depreciation_cents
             || (self.tax_year == continuation.effective_year
                 && continuation.prior_depreciation_cents != prior_depreciation_cents)
-            || continuation.adjusted_basis_cents
-                > self.history_basis_cents.checked_sub(continuation.prior_depreciation_cents)?
+            || B::whole(continuation.adjusted_basis_cents)
+                > self
+                    .history_basis_cents
+                    .checked_sub_native(continuation.prior_depreciation_cents)?
         {
             return None;
         }
@@ -281,12 +333,13 @@ impl Schedule {
         }
         let native = NativeSchedule {
             table_basis_cents: None,
-            basis_after_raw_bonus_cents: remaining,
+            basis_after_raw_bonus_cents: B::whole(remaining),
             ..native
         };
-        let straight = NativeSchedule { method: Method::StraightLine, ..native }.full_year();
+        let straight =
+            NativeSchedule { method: Method::StraightLine, ..native.clone() }.full_year();
         let full = if remaining == 0 || native.remaining_eighths() <= 0 {
-            0
+            B::whole(0)
         } else if native.remaining_eighths() <= 8 || self.method == Method::StraightLine {
             straight
         } else {
@@ -295,8 +348,11 @@ impl Schedule {
                 return None;
             }
             phase::cap(
-                phase::floor(straight, ratio::checked_fraction(remaining, numerator, denominator)?),
-                [remaining],
+                phase::floor(
+                    straight,
+                    B::whole(remaining).checked_fraction(numerator, denominator)?,
+                ),
+                [B::whole(remaining)],
             )
         };
         Some(native.amounts_after_full_year(full))
@@ -307,7 +363,7 @@ impl Schedule {
 // preserves their signed arithmetic, calendar normalization and division errors;
 // the checked SourceFact entry above retains its separate availability contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NativeSchedule {
+pub(crate) struct NativeSchedule<B = i64> {
     pub placed: Month,
     pub tax_year: u32,
     pub period: Period,
@@ -316,36 +372,36 @@ pub(crate) struct NativeSchedule {
     // None selects manual. Some carries original history basis and the full
     // original179-plus-bonus deductions separately: their subtraction must
     // remain lazy, after the out-of-range and final-year table early returns.
-    pub table_basis_cents: Option<(i64, i64)>,
-    pub basis_after_raw_bonus_cents: i64,
+    pub table_basis_cents: Option<(B, B)>,
+    pub basis_after_raw_bonus_cents: B,
     pub continuing: bool,
     pub current_use_fraction: Option<(u32, u32)>,
     pub disposed: Option<Month>,
 }
 
-impl NativeSchedule {
-    fn quarter(self) -> i64 {
+impl<B: Basis> NativeSchedule<B> {
+    fn quarter(&self) -> i64 {
         i64::from(self.placed.month.saturating_sub(1) / 3).min(3)
     }
-    fn first_eighths(self) -> i64 {
+    fn first_eighths(&self) -> i64 {
         match self.convention {
             Convention::HalfYear => 4,
             Convention::MidQuarter => 7 - 2 * self.quarter(),
         }
     }
-    fn remaining_eighths(self) -> i64 {
+    fn remaining_eighths(&self) -> i64 {
         self.period.years() * 8
             - self.first_eighths()
             - (i64::from(self.tax_year) - i64::from(self.placed.year) - 1) * 8
     }
-    fn factor(self) -> i64 {
+    fn factor(&self) -> i64 {
         match self.method {
             Method::Regular if self.period.years() <= 10 => 200,
             Method::Regular | Method::Declining150 => 150,
             Method::StraightLine => 100,
         }
     }
-    fn rates(self) -> &'static [i64] {
+    fn rates(&self) -> &'static [i64] {
         Table {
             placed: self.placed,
             period: self.period,
@@ -354,16 +410,16 @@ impl NativeSchedule {
         }
         .rates()
     }
-    pub(crate) fn full_year(self) -> i64 {
-        let basis = self.basis_after_raw_bonus_cents;
-        if let Some((original_basis, initial_deductions)) = self.table_basis_cents {
+    pub(crate) fn full_year(&self) -> B {
+        let basis = self.basis_after_raw_bonus_cents.clone();
+        if let Some((original_basis, initial_deductions)) = &self.table_basis_cents {
             let rates = self.rates();
             let year = self.tax_year.saturating_sub(self.placed.year) as usize;
             return match rates.get(year) {
-                None => 0,
+                None => B::whole(0),
                 Some(_) if year + 1 == rates.len() => basis,
                 Some(rate) => phase::cap(
-                    ratio::fraction(original_basis - initial_deductions, *rate, 100000),
+                    original_basis.subtract(initial_deductions).fraction(*rate, 100000),
                     [basis],
                 ),
             };
@@ -373,26 +429,30 @@ impl NativeSchedule {
         if self.continuing {
             let remaining = self.remaining_eighths();
             if remaining <= 0 {
-                return 0;
+                return B::whole(0);
             }
-            let straight = ratio::fraction(basis, 8, remaining.max(8));
-            let declining = ratio::fraction(basis, factor, 100 * years);
+            let straight = basis.fraction(8, remaining.max(8));
+            let declining = basis.fraction(factor, 100 * years);
             return if self.method == Method::StraightLine {
                 straight
             } else {
                 phase::cap(phase::floor(straight, declining), [basis])
             };
         }
-        ratio::fraction(basis, factor * self.first_eighths(), 800 * years)
+        basis.fraction(factor * self.first_eighths(), 800 * years)
     }
-    pub(crate) fn amounts(self) -> Amounts {
-        let full = if !self.continuing && self.disposed.is_some() { 0 } else { self.full_year() };
+    pub(crate) fn amounts(self) -> Amounts<B> {
+        let full = if !self.continuing && self.disposed.is_some() {
+            B::whole(0)
+        } else {
+            self.full_year()
+        };
         self.amounts_after_full_year(full)
     }
-    fn amounts_after_full_year(self, full: i64) -> Amounts {
-        let mut current = full;
+    fn amounts_after_full_year(self, full: B) -> Amounts<B> {
+        let mut current = full.clone();
         if let Some((numerator, denominator)) = self.current_use_fraction {
-            current = ratio::fraction(current, i64::from(numerator), i64::from(denominator));
+            current = current.fraction(i64::from(numerator), i64::from(denominator));
         }
         if self.continuing
             && let Some(date) = self.disposed
@@ -402,26 +462,47 @@ impl NativeSchedule {
             } else {
                 self.remaining_eighths() <= 8
             };
-            // Keep the native final-year full-amount early returns.
-            current = match self.convention {
-                Convention::HalfYear if final_year => current,
-                Convention::HalfYear => ratio::fraction(current, 12, 24),
-                Convention::MidQuarter => {
-                    let half_months = 3 + 6 * i64::from((date.month.clamp(1, 12) - 1) / 3);
-                    let last = 24 - (21 - 6 * self.quarter());
-                    if final_year && half_months >= last {
-                        current
-                    } else {
-                        ratio::fraction(current, half_months, if final_year { last } else { 24 })
-                    }
-                }
-            };
+            current = disposal_amount(self.convention, self.quarter(), final_year, current, date);
         }
         Amounts {
             basis_after_raw_bonus_cents: self.basis_after_raw_bonus_cents,
             full_year_cents: full,
             current_macrs_cents: current,
         }
+    }
+}
+
+// One convention owner for native and retained capped annual schedules.
+fn disposal_amount<B: Basis>(
+    convention: Convention,
+    quarter: i64,
+    final_year: bool,
+    current: B,
+    date: Month,
+) -> B {
+    match convention {
+        Convention::HalfYear if final_year => current,
+        Convention::HalfYear => current.fraction(12, 24),
+        Convention::MidQuarter => {
+            let half_months = 3 + 6 * i64::from((date.month.clamp(1, 12) - 1) / 3);
+            let last = 24 - (21 - 6 * quarter);
+            if final_year && half_months >= last {
+                current
+            } else {
+                current.fraction(half_months, if final_year { last } else { 24 })
+            }
+        }
+    }
+}
+impl Table {
+    pub(crate) fn disposal_amount(self, year: u32, current: i64, date: Month) -> i64 {
+        disposal_amount(
+            self.convention,
+            i64::from((self.placed.month - 1) / 3),
+            year.saturating_sub(self.placed.year) as usize + 1 >= self.rates().len(),
+            current,
+            date,
+        )
     }
 }
 

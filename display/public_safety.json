@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 657000, "rule": {"select": "^<PublicSafetyCoverage>", "flatten": true}},
+    {"order": 658000, "rule": {"select": "^<PublicSafetyPaidCoverage>", "flatten": true}},
+    {"order": 802000, "rule": {"select": "^<PublicSafetyPaid>.coverage", "promote": {"use_parent_name": false}}}
+  ]
+}

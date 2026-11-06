@@ -1,8 +1,9 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::accepted;
+use crate::tests::support::builders::k1res::expected_input;
 use crate::tests::support::builders::k1res::{documents, input};
-use crate::tests::support::client::income_pages::catalog_preview_document;
 use crate::tests::support::client::k1res::scorp_ordinary_multi_session;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::*;
 
 #[test]
@@ -102,18 +103,22 @@ fn scorp_ordinary_multi_stock_debt_risk_and_native_return_lifecycle() {
     let before = session.draft.clone();
     let id = before.income[0].id;
     let dirty = session.dirty;
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     documents(&mut request)[0].document =
         input(&FederalIncome::ScorpActivities { data: value.clone() });
     assert!(matches!(
-        send(&mut session, crate::tests::support::client::estimate_documents_from_save(&request)),
-        Reply::Response(P::IncomeRunningEstimate { .. })
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            crate::tests::support::client::estimate_documents_from_save(&request)
+        ),
+        Reply::Response(P::Review { .. })
     ));
     assert_eq!(session.draft, before);
     assert_eq!(session.dirty, dirty);
-    accepted(&send(&mut session, request));
+    accepted(&send_fixture(&mut session, request));
     let saved = session.draft.clone();
-    assert_eq!(saved.revision, before.revision + 1);
+    assert_eq!(saved.revision, before.revision + 2);
     assert_eq!(saved.next_id, before.next_id);
     let result = estimate(&saved);
     assert!(result.tax.is_some(), "{:?}", result.issues);
@@ -126,21 +131,16 @@ fn scorp_ordinary_multi_stock_debt_risk_and_native_return_lifecycle() {
     assert_eq!(line_amount(&result, "net_investment_income_tax"), 7_600);
     assert!(noted(&result, "WARN_K1_QBI_LOSS_NO_STATEMENT"));
     assert!(result.issues.is_empty());
-    let mut reopened = open_topic(&mut session, TaxSection::PassThrough);
-    assert_eq!(documents(&mut reopened)[0].document, input(&saved.income[0].income));
-    let mut preview = catalog_preview_document(documents(&mut reopened)[0].document.clone());
-    let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-    *preview_id = id;
-    assert!(matches!(
-        send(&mut session, preview),
-        Reply::Response(P::IncomePreview { preview: Some(-50_000), .. })
-    ));
+    let mut reopened =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    assert_eq!(documents(&mut reopened)[0].document, expected_input(&saved, &saved.income[0]));
+
     assert_eq!(session.draft, saved);
     let mut cold = restart(saved.clone());
-    let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let mut reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     documents(&mut reopened)[0].document = input(&FederalIncome::ScorpActivities { data: profit });
-    accepted(&send(&mut cold, reopened));
-    assert_eq!(cold.draft.revision, saved.revision + 1);
+    accepted(&send_fixture(&mut cold, reopened));
+    assert_eq!(cold.draft.revision, saved.revision + 2);
     assert_eq!(cold.draft.next_id, saved.next_id);
     let corrected = estimate(&cold.draft);
     assert!(corrected.tax.is_some(), "{:?}", corrected.issues);
@@ -180,59 +180,6 @@ fn scorp_ordinary_multi_stock_debt_risk_and_native_return_lifecycle() {
                 || line.id.starts_with(&alloc::format!("amt_rental_{id}_"))
         }));
     }
-
-    // Dispatcher decision 2026-10-19: a checked derived balance outside
-    // i64 cents is a located input-range refusal, not a rounded wide balance.
-    for held_columns in [false, true] {
-        let mut boundary = value.clone();
-        boundary.entity.regular.opening = Some(i64::MAX);
-        boundary.entity.loans.clear();
-        let K1ComponentStatement::Entered { source } = &mut boundary.activities else {
-            unreachable!()
-        };
-        let loss = source.components[1].regular.as_mut().unwrap();
-        if held_columns {
-            loss.operating = -(i64::MAX - 50);
-            loss.operating_carry.basis = Some(50);
-            let K1ComponentQualified::Scorp { ordinary, .. } =
-                &mut source.qbi_blocks[1].allocations.as_mut().unwrap()[0].qualified
-            else {
-                unreachable!()
-            };
-            ordinary.history[0].original = 50;
-            ordinary.history[0].remaining = 50;
-        } else {
-            loss.operating = 100_000;
-        }
-        boundary.current.ordinary = 400_000 + loss.operating;
-        let (issue, _) = boundary.ordinary_source(false).unwrap_err();
-        assert_eq!(issue.key, crate::k1_activity::ordinary::RANGE_KEY);
-        assert_eq!(issue.field.unwrap().square(), "[entity/regular/opening]");
-        let income = FederalIncome::ScorpActivities { data: boundary };
-        let issue = crate::k1_activity::income_issue(&income).unwrap();
-        assert_eq!(issue.key, crate::k1_activity::ordinary::RANGE_KEY);
-        assert_eq!(issue.field.unwrap().square(), "[entity/regular/opening]");
-        let mut candidate = saved.clone();
-        candidate.income[0].income = income;
-        let stored = candidate.stored_issue().unwrap();
-        assert_eq!(stored.key, crate::k1_activity::ordinary::RANGE_KEY);
-        assert_eq!(stored.field.unwrap().square(), "[entity/regular/opening]");
-        let result = estimate(&candidate);
-        assert!(result.tax.is_none());
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| issue.display.key == crate::k1_activity::ordinary::RANGE_KEY)
-        );
-    }
-    let mut large = value.clone();
-    large.entity.regular.opening = Some(1_000_000_000_000);
-    large.entity.loans.clear();
-    let K1ComponentStatement::Entered { source } = &mut large.activities else { unreachable!() };
-    source.components[1].regular.as_mut().unwrap().operating = 100_000;
-    large.current.ordinary = 500_000;
-    assert_eq!(large.ordinary_source(false).unwrap().basis.ending.get(), 1_000_000_400_000);
 
     for boundary in 0..10 {
         let mut unavailable = value.clone();

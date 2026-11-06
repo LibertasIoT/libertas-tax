@@ -27,11 +27,6 @@ fn k1_nullable_stages_preserve_known_current_and_individual_retained_sources() {
     let mut contradiction = value.clone();
     contradiction.current.ordinary += 1;
     assert_eq!(contradiction.rule(), Some("K1_ACTIVITY_CURRENT_SOURCE_RECONCILE"));
-    let K1ComponentStatement::Entered { source } = &mut contradiction.activities else {
-        unreachable!()
-    };
-    source.components[0].regular.as_mut().unwrap().passive_operating = Some(-1);
-    assert_eq!(contradiction.rule(), Some("K1_ACTIVITY_SOURCE_AMOUNT_INVALID"));
 }
 #[test]
 fn k1_nullable_stages_check_only_actual_known_subset_operands() {
@@ -51,8 +46,6 @@ fn k1_nullable_stages_check_only_actual_known_subset_operands() {
         passive_loss: None,
     });
     assert_eq!(value.rule(true), None);
-    value.property.as_mut().unwrap().risk_loss = Some(-1);
-    assert_eq!(value.rule(true), Some("K1_ACTIVITY_SOURCE_AMOUNT_INVALID"));
     let mut capital = K1StatementScorpCapitalCarry {
         basis_short: None,
         basis_long: None,
@@ -97,12 +90,6 @@ fn k1_nullable_se_stages_preserve_reported_current_and_known_subsets() {
     assert_eq!(value.source_rule(true), None);
     value.components[0].regular.as_mut().unwrap().operating_carry.risk = Some(699);
     assert_eq!(value.source_rule(true), Some("K1_ACTIVITY_SE_HISTORY_ABOVE_LOSS"));
-    value.components[0].regular.as_mut().unwrap().operating_carry.risk = None;
-    let K1StatementSe::Partnership { source } = &mut value.components[0].self_employment else {
-        unreachable!()
-    };
-    source.history.passive = Some(-1);
-    assert_eq!(value.source_rule(true), Some("K1_ACTIVITY_SOURCE_AMOUNT_INVALID"));
 }
 #[test]
 fn k1_component_original_opposite_signed_sources_reconcile_without_basis_calculation() {

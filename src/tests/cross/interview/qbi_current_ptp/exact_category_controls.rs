@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::support::client::income_pages::{open_document_center, save_documents};
 
 #[test]
 fn current_ptp_keeps_fractional_source_cents_before_the_category_report() {
@@ -12,7 +13,13 @@ fn current_ptp_keeps_fractional_source_cents_before_the_category_report() {
             .qbi
             .as_ref()
             .unwrap()
-            .calculate(&owner, crate::tests::support::builders::k1_amount(0), 0, 239_250, FederalStatus::Single)
+            .calculate(
+                &owner,
+                crate::tests::support::builders::k1_amount(0),
+                0,
+                239_250,
+                FederalStatus::Single,
+            )
             .unwrap();
         // Exactly one half of the unchanged source cents, including odd
         // cents and both signs. No cent or Dollar has rounded in this API.
@@ -29,7 +36,10 @@ fn current_ptp_keeps_fractional_source_cents_before_the_category_report() {
         (-155, None, -155),
         (155, Some(false), 155),
     ] {
-        let activity = crate::business_rules::QbiActivity { source_wages_cents: None, source_property_cents: None, source_income_cents: None,
+        let activity = crate::business_rules::QbiActivity {
+            source_wages_cents: None,
+            source_property_cents: None,
+            source_income_cents: None,
             owner: None,
             income,
             wages: 0,
@@ -56,24 +66,27 @@ fn current_ptp_mixed_category_joins_raw_items_reit_and_annual_estate_outputs() {
         // as in the existing TD9847 independent-DNI control, not another
         // entered taxable amount or a reconstructed activity/loss pool.
         draft.income[0] = wage(1, Owner::Taxpayer, (239_250 + 16_100 - sign * 101 - 1) * 100, 0);
+        name_accepted_income_documents(&mut draft);
         let wage_source = draft.income[0].clone();
         let mut session = Interview::new(TEST_USER, draft);
         ptp_save_prior_carry(&mut session, &alloc::format!("{case}-prior"), exchange);
-        let dividends = Div1099 {
-            more: DivMore {
-                section199a: 25,
-                ..Default::default()
-            },
-            answers: DivAnswers {
-                reit_eligible: Some(true),
-                after_death: None,
-            },
+        let dividends = {
+            let mut source = crate::DividendSource::printed(dividend_document(Div1099 {
+             section199a: 25,
+
             ..native_div1099("Synthetic qualifying REIT source".into(), 100, 0)
+            }));
+            source.reit_eligible = Some(true.into());
+            dividend_document(source)
         };
-        let dividend_request = save_topic(
-            &session.draft,
-            TaxSection::InterestDividends,
-            vec![document(0, IncomeDocument::Div1099(dividends))],
+        let dividend_request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividends),
+                },
+            )],
         );
         accepted(&exchange(&mut session, dividend_request, &alloc::format!("{case}-reit"), false));
         let mut current = ptp_page(0, true);
@@ -91,12 +104,27 @@ fn current_ptp_mixed_category_joins_raw_items_reit_and_annual_estate_outputs() {
         estate.qbi.statements[0].kind = crate::EstateQbiKind::PubliclyTradedPartnership;
         estate.qbi.statements[0].name = "Actual apportioned non-SSTB PTP statement".into();
         let sources = vec![
-            document(0, IncomeDocument::K1Partnership(current.clone())),
-            document(0, IncomeDocument::K1Partnership(qualified.clone())),
-            document(0, IncomeDocument::K1EstateTrust(estate.clone())),
+            document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((current.clone()).into()) },
+            ),
+            document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((qualified.clone()).into()) },
+            ),
+            document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(estate.clone())) },
+            ),
         ];
-        let request = save_topic(&session.draft, TaxSection::PassThrough, sources);
-        let display = ptp_estimate_and_save(&mut session, request, &case, exchange, credit_estimate_documents_from_save);
+        let request = save_documents(&mut session, sources);
+        let display = ptp_estimate_and_save(
+            &mut session,
+            request,
+            &case,
+            exchange,
+            credit_estimate_documents_from_save,
+        );
         let result = supported(&session.draft);
         // Entity annual output is already +/-2 Dollars, explicitly lifted to
         // +/-200 cents WITHOUT reconstructing its150 source cents or phasing.
@@ -121,10 +149,10 @@ fn current_ptp_mixed_category_joins_raw_items_reit_and_annual_estate_outputs() {
         ptp_reopen_and_cold_resave(
             &mut session,
             &[
-            IncomeDocument::K1Partnership(current),
-            IncomeDocument::K1Partnership(qualified),
-            IncomeDocument::K1EstateTrust(estate),
-        ],
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((current).into()) },
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((qualified).into()) },
+                IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(estate)) },
+            ],
             &result,
             &case,
             exchange,
@@ -145,31 +173,55 @@ fn current_ptp_signed_sources_reach_actual_joint_injured_owner_columns() {
     // fixture. Joint midpoint478500: W2s506700 +REIT4000 +PTP101-101
     // =AGI510700; standard32200 ->preQBI478500. Taxpayer and Spouse have
     // separate actual qualified REIT2002/1998 and signed PTP+10050c/-10050c.
-    let draft = crate::tests::attribution::injured_spouse::injured_return(
+    let mut draft = crate::tests::attribution::injured_spouse::injured_return(
         (486_700, 100_000),
         (20_000, 10_000),
         0,
         crate::tests::attribution::injured_spouse::allocation(),
     );
+    let people = draft.people.as_mut().unwrap();
+    people.taxpayer.first_name = "Alex".into();
+    people.taxpayer.last_name = "Morgan".into();
+    let spouse = people.spouse.as_mut().unwrap();
+    spouse.first_name = "Jordan".into();
+    spouse.last_name = "Morgan".into();
+    name_accepted_income_documents(&mut draft);
     let mut session = Interview::new(TEST_USER, draft);
     let mut dividends = Vec::new();
     for (owner, amount) in [(Owner::Taxpayer, 200_200), (Owner::Spouse, 199_800)] {
-        let page = Div1099 {
-            more: DivMore {
-                section199a: amount,
-                ..Default::default()
-            },
-            answers: DivAnswers {
-                reit_eligible: Some(true),
-                after_death: None,
-            },
+        let page = {
+            let mut source = crate::DividendSource::printed(dividend_document(Div1099 {
+             section199a: amount,
+
             ..native_div1099(alloc::format!("Actual {owner:?} qualifying REIT"), amount, 0)
+            }));
+            source.reit_eligible = Some(true.into());
+            // The household's printed names go on the paper before its answers
+            // are attached to it.
+            let mut paper = IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(source.form.clone()),
+            };
+            paper.set_printed_names(&accepted_document_names(&session.draft, owner));
+            let IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(form),
+            } = paper
+            else {
+                unreachable!()
+            };
+            source.form = form;
+            dividend_document(source)
         };
-        let mut item = document(0, IncomeDocument::Div1099(page));
-        item.owner = owner;
+        let mut item = document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(page),
+            },
+        );
+        item.owner = crate::DocumentOwner::from(owner);
+        item.document.set_printed_names(&accepted_document_names(&session.draft, owner));
         dividends.push(item);
     }
-    let request = save_topic(&session.draft, TaxSection::InterestDividends, dividends);
+    let request = save_documents(&mut session, dividends);
     accepted(&exchange(&mut session, request, "ptp-injured-real-reit-save", false));
     let mut sources = Vec::new();
     for (owner, raw) in [(Owner::Taxpayer, 10_050), (Owner::Spouse, -10_050)] {
@@ -178,18 +230,20 @@ fn current_ptp_signed_sources_reach_actual_joint_injured_owner_columns() {
         page.ordinary = raw;
         let PartnerQbi::Statement { income, .. } = &mut page.qbi else { unreachable!() };
         *income = raw;
-        let mut item = document(0, IncomeDocument::K1Partnership(page));
-        item.owner = owner;
+        let mut item =
+            document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) });
+        item.owner = crate::DocumentOwner::from(owner);
+        item.document.set_printed_names(&accepted_document_names(&session.draft, owner));
         sources.push(item);
     }
-    let request = save_topic(&session.draft, TaxSection::PassThrough, sources);
+    let request = save_documents(&mut session, sources);
     let estimated = exchange(
         &mut session,
         credit_estimate_documents_from_save(&request),
         "ptp-injured-real-sources-estimate",
         true,
     );
-    let Reply::Response(P::IncomeRunningEstimate { estimate: display, .. }) = estimated else {
+    let Reply::Response(P::Review { estimate: display, .. }) = estimated else {
         panic!("actual injured candidate estimate")
     };
     accepted(&exchange(&mut session, request, "ptp-injured-real-sources-save", false));
@@ -214,21 +268,26 @@ fn current_ptp_signed_sources_reach_actual_joint_injured_owner_columns() {
         ).unwrap()).unwrap();
     }
     let saved = session.draft.clone();
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
-    assert_eq!(page_documents(&reopened).len(), 2);
-    assert_eq!(page_documents(&reopened)[0].owner, Owner::Taxpayer);
-    assert_eq!(page_documents(&reopened)[1].owner, Owner::Spouse);
-    for item in page_documents(&reopened) {
+    let reopened = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
+    let rows = &documents.common.k1.documents;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].owner, crate::DocumentOwner::Yours);
+    assert_eq!(rows[1].owner, crate::DocumentOwner::Spouses);
+    for item in rows {
         assert!(item.id > 0);
     }
     accepted(&exchange(&mut session, reopened, "ptp-injured-real-sources-resave", false));
     assert_eq!(session.draft, saved);
     let mut cold = restart(saved.clone());
-    let reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let reopened = open_document_center(&mut cold);
     accepted(&exchange(&mut cold, reopened, "ptp-injured-real-sources-cold-resave", false));
     assert_eq!(cold.draft, saved);
     assert_eq!(estimate(&cold.draft), result);
-    assert_eq!(display, crate::interview::estimate_text(&result));
+    assert_eq!(
+        display,
+        crate::interview::estimate_text(&result)
+    );
     assert_eq!(value(&result, "agi"), 510_700);
     assert_eq!(value(&result, "qbi_taxable_income"), 478_500);
     assert_eq!(value(&result, "qbi_reit_ptp"), 4000);

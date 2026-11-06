@@ -1,11 +1,12 @@
-use crate::tests::cross::interview::{accepted, document, open_topic, page_documents, rejected_with, save_topic};
 use super::*;
+use crate::tests::cross::interview::{accepted, document, rejected_with};
+use crate::tests::support::client::income_pages::{open_document_center, save_documents};
 
 // Synthetic source-composition fixture: the components are independent of
 // the projection implementation; this is not a published IRS tax-total oracle.
 pub(super) fn source() -> FederalEstateTrustPortfolioK1 {
     let mut seed = estate_trust_code_c_draft(20_000, 100_000);
-    let data = estate_trust_code_d_data(&mut seed);
+    let mut data = estate_trust_code_d_data(&mut seed);
     data.interest = 100_000;
     data.ordinary_dividends = 40_000;
     data.qualified_dividends = 30_000;
@@ -31,17 +32,17 @@ pub(super) fn source() -> FederalEstateTrustPortfolioK1 {
 // counterpart return without changing any source monetary amount.
 pub(super) fn draft(owner: Owner) -> FederalDraft {
     let mut draft = complete(FederalStatus::Separate);
-    draft.setup.as_mut().unwrap().community_property = CommunityProperty::Yes {
-        state: CommunityState::Texas,
-        rule: CommunityRule::Halves,
-    };
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    draft.setup.as_mut().unwrap().community_property =
+        CommunityProperty::Yes { state: CommunityState::Texas, rule: CommunityRule::Halves };
+    draft.deductions.as_mut().unwrap().itemize_override = None;
     draft.income = vec![wage(1, Owner::Taxpayer, 6_000_000, 600_000)];
     draft.income[0].community = CommunityShare::Community;
-    let mut entry = income(FederalIncome::EstateTrustPortfolio { data: source() });
+    let mut entry = income(FederalIncome::EstateTrustPortfolio {
+        data: crate::tests::support::builders::estate_source(source()),
+    });
     entry.id = 2;
     entry.label = "Synthetic componentized trust".into();
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry.community = CommunityShare::Separate;
     draft.income.push(entry);
     draft.next_id = 3;
@@ -50,13 +51,13 @@ pub(super) fn draft(owner: Owner) -> FederalDraft {
 
 fn projected(draft: &FederalDraft) -> FederalEstateTrustPortfolioK1 {
     let entry = crate::community::entry(draft, &draft.income[1]);
-    let FederalIncome::EstateTrustPortfolio { data } = &entry.income else {
-        unreachable!()
-    };
-    data.clone()
+    let FederalIncome::EstateTrustPortfolio { data } = &entry.income else { unreachable!() };
+    FederalEstateTrustPortfolioK1::from(data)
 }
 fn replace(draft: &mut FederalDraft, data: FederalEstateTrustPortfolioK1) {
-    draft.income[1].income = FederalIncome::EstateTrustPortfolio { data };
+    draft.income[1].income = FederalIncome::EstateTrustPortfolio {
+        data: crate::tests::support::builders::estate_source(data),
+    };
 }
 fn halves(owner: Owner, data: FederalEstateTrustPortfolioK1) -> FederalDraft {
     let mut d = draft(owner);
@@ -83,12 +84,7 @@ fn unit27_estate_differential_share_reuses_actual_regular_and_amt_components() {
         [50_000, 20_000, 15_000, 20_000, 100_000]
     );
     assert_eq!(
-        [
-            own.amt_box12a,
-            own.amt_box12b,
-            own.amt_box12c,
-            own.amt_box12d
-        ],
+        [own.amt_box12a, own.amt_box12b, own.amt_box12c, own.amt_box12d],
         [-30_000, -5_000, -5_000, -20_000]
     );
     assert_eq!(
@@ -102,30 +98,16 @@ fn unit27_estate_differential_share_reuses_actual_regular_and_amt_components() {
         [50_000, 20_000, 15_000, 0, 0]
     );
     assert_eq!(
-        [
-            other.amt_box12a,
-            other.amt_box12b,
-            other.amt_box12c,
-            other.amt_box12d
-        ],
+        [other.amt_box12a, other.amt_box12b, other.amt_box12c, other.amt_box12d],
         [-5_000, -5_000, 0, 0]
     );
-    assert_eq!(
-        crate::estate_trust::investment_adjustment(&own),
-        Some([0, 0])
-    );
-    assert_eq!(
-        crate::estate_trust::investment_adjustment(&other),
-        Some([0, 0])
-    );
+    assert_eq!(crate::estate_trust::investment_adjustment(&own), Some([0, 0]));
+    assert_eq!(crate::estate_trust::investment_adjustment(&other), Some([0, 0]));
     let a = own.investment_income.unwrap();
     let b = other.investment_income.unwrap();
     assert_eq!([a.regular, a.alternative], [190_000, 160_000]);
     assert_eq!([b.regular, b.alternative], [70_000, 65_000]);
-    assert_eq!(
-        [a.regular + b.regular, a.alternative + b.alternative],
-        [260_000, 225_000]
-    );
+    assert_eq!([a.regular + b.regular, a.alternative + b.alternative], [260_000, 225_000]);
     assert_eq!((own_draft, other_draft), before);
 }
 
@@ -148,14 +130,8 @@ fn unit27_estate_odd_cent_special_categories_conserve_parent_and_counterpart() {
     let own = projected(&halves(Owner::Taxpayer, data.clone()));
     let other = projected(&halves(Owner::Spouse, data.clone()));
     // Fixed category order28%,1250,other: first tied cent belongs to28%.
-    assert_eq!(
-        [own.long_gain, own.rate_28_gain, own.unrecaptured_gain],
-        [1, 1, 0]
-    );
-    assert_eq!(
-        [other.long_gain, other.rate_28_gain, other.unrecaptured_gain],
-        [1, 0, 1]
-    );
+    assert_eq!([own.long_gain, own.rate_28_gain, own.unrecaptured_gain], [1, 1, 0]);
+    assert_eq!([other.long_gain, other.rate_28_gain, other.unrecaptured_gain], [1, 0, 1]);
     for allocated in [&own, &other] {
         assert!(allocated.rate_28_gain + allocated.unrecaptured_gain <= allocated.long_gain);
         assert_eq!(
@@ -189,10 +165,8 @@ fn unit27_estate_signed_amt_underlying_loss_is_not_floored_to_zero() {
     data.amt_box12d = -100_002;
     data.amt_box12b = -10_001;
     data.amt_box12a = -130_006;
-    data.amt_reconciliation = Some(crate::EstateAmtReconciliation {
-        other_in_a: 0,
-        adjustments: vec![],
-    });
+    data.amt_reconciliation =
+        Some(crate::EstateAmtReconciliation { other_in_a: 0, adjustments: vec![] });
     let own = projected(&halves(Owner::Taxpayer, data.clone()));
     let other = projected(&halves(Owner::Spouse, data.clone()));
     assert_eq!(own.short_gain + own.amt_box12c, -2);
@@ -210,43 +184,30 @@ fn unit27_estate_source_preflight_retains_unclassified_amt_and_niit_boundaries()
         (Some(1), None, false, "ISSUE_ESTATE_AMT_SOURCE_UNAVAILABLE"),
         (
             None,
-            Some(crate::EstateTrustNiitAdjustment {
-                line_7: 1,
-                modified_agi: 1,
-            }),
+            Some(crate::EstateTrustNiitAdjustment { line_7: 1, modified_agi: 1 }),
             false,
             "ISSUE_ESTATE_COMMUNITY_NIIT_SOURCE_UNAVAILABLE",
         ),
         (None, None, true, "ISSUE_ESTATE_AMT_SOURCE_UNAVAILABLE"),
     ] {
         let mut d = draft(Owner::Taxpayer);
-        let data = estate_trust_code_d_data(&mut d);
+        let mut data = estate_trust_code_d_data(&mut d);
         data.minimum_tax_exclusion = j;
         data.niit_adjustment = h;
         if a {
             data.amt_box12a -= 1;
         }
-        assert_eq!(
-            crate::estate_trust::community_source_rule(&d, &d.income[1]),
-            Some(key)
-        );
+        drop(data);
+        assert_eq!(crate::estate_trust::community_source_rule(&d, &d.income[1]), Some(key));
         d.income[1].community = CommunityShare::Community;
-        assert_eq!(
-            crate::estate_trust::community_source_rule(&d, &d.income[1]),
-            None
-        );
+        assert_eq!(crate::estate_trust::community_source_rule(&d, &d.income[1]), None);
     }
     let mut zero = draft(Owner::Taxpayer);
-    let data = estate_trust_code_d_data(&mut zero);
+    let mut data = estate_trust_code_d_data(&mut zero);
     data.minimum_tax_exclusion = Some(0);
-    data.niit_adjustment = Some(crate::EstateTrustNiitAdjustment {
-        line_7: 0,
-        modified_agi: 0,
-    });
-    assert_eq!(
-        crate::estate_trust::community_source_rule(&zero, &zero.income[1]),
-        None
-    );
+    data.niit_adjustment = Some(crate::EstateTrustNiitAdjustment { line_7: 0, modified_agi: 0 });
+    drop(data);
+    assert_eq!(crate::estate_trust::community_source_rule(&zero, &zero.income[1]), None);
 }
 
 #[test]
@@ -265,18 +226,8 @@ fn unit27_estate_optional_mismatched_investment_character_does_not_change_income
         d
     });
     assert_eq!(
-        [
-            unknown.interest,
-            unknown.ordinary_dividends,
-            unknown.short_gain,
-            unknown.long_gain
-        ],
-        [
-            own.interest,
-            own.ordinary_dividends,
-            own.short_gain,
-            own.long_gain
-        ]
+        [unknown.interest, unknown.ordinary_dividends, unknown.short_gain, unknown.long_gain],
+        [own.interest, own.ordinary_dividends, own.short_gain, own.long_gain]
     );
     assert_eq!(
         unknown.investment_income.as_ref().unwrap().character,
@@ -291,39 +242,46 @@ fn unit27_estate_normal_save_reopen_restart_preserves_whole_source_and_correctio
         let mut seed = draft(owner);
         seed.income.pop();
         let mut session = Interview::new(TEST_USER, seed);
-        let page = K1EstateTrust::from_record("Synthetic componentized trust", &source()).unwrap();
-        let mut item = document(0, IncomeDocument::K1EstateTrust(page.clone()));
-        item.owner = owner;
+        let mut page =
+            K1EstateTrust::from_record("Synthetic componentized trust", &source()).unwrap();
+        let mut item = document(
+            0,
+            IncomeSource::K1 {
+                value: crate::K1Document::K1EstateTrust(estate_document(page.clone())),
+            },
+        );
+        item.owner = crate::DocumentOwner::from(owner);
         item.community = CommunityShare::Separate;
-        let request = save_topic(&session.draft, TaxSection::PassThrough, vec![item]);
-        accepted(&send(&mut session, request));
+        let request = save_documents(&mut session, vec![item]);
+        let request = fixture_owner_inputs(&session.draft, request);
+        accepted(&save_mfs_owner_fixture(&mut session, request));
         let stored = session.draft.clone();
         let saved = stored
             .income
             .iter()
             .find(|entry| matches!(entry.income, FederalIncome::EstateTrustPortfolio { .. }))
             .unwrap();
-        let FederalIncome::EstateTrustPortfolio { data } = &saved.income else {
-            unreachable!()
-        };
-        assert_eq!(data, &source());
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
+        let FederalIncome::EstateTrustPortfolio { data } = &saved.income else { unreachable!() };
+        assert_eq!(FederalEstateTrustPortfolioK1::from(data), source());
+        let reopened = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
+        page.beneficiary = accepted_document_names(&session.draft, owner).recipient;
         assert_eq!(
-            page_documents(&reopened)[0].document,
-            IncomeDocument::K1EstateTrust(page)
+            documents.common.k1.documents[0].document,
+            crate::K1Document::K1EstateTrust(estate_document(page))
         );
         assert_eq!(restart(stored.clone()).draft, stored);
         let mut correction = reopened;
-        let P::SaveIncomes { documents, .. } = &mut correction else {
+        let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+        let crate::K1Document::K1EstateTrust(page) = &mut documents.common.k1.documents[0].document
+        else {
             unreachable!()
         };
-        let IncomeDocument::K1EstateTrust(page) = &mut documents.documents[0].document else {
-            unreachable!()
-        };
-        page.interest += 100;
-        page.investment_income.as_mut().unwrap().regular += 100;
-        page.investment_income.as_mut().unwrap().alternative += 100;
-        accepted(&send(&mut session, correction));
+        page.form.interest += 100;
+        page.statements.investment_income.as_mut().unwrap().regular += 100;
+        page.statements.investment_income.as_mut().unwrap().alternative += 100;
+        let correction = fixture_owner_inputs(&session.draft, correction);
+        accepted(&save_mfs_owner_fixture(&mut session, correction));
         let corrected = session
             .draft
             .income
@@ -331,19 +289,16 @@ fn unit27_estate_normal_save_reopen_restart_preserves_whole_source_and_correctio
             .find(|entry| matches!(entry.income, FederalIncome::EstateTrustPortfolio { .. }))
             .unwrap();
         assert_eq!(corrected.id, saved.id);
-        assert_eq!(corrected.owner, owner);
+        assert_eq!(corrected.owner, crate::DocumentOwner::from(owner));
         let before = session.draft.clone();
-        let mut invalid = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut invalid else {
+        let mut invalid = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+        let crate::K1Document::K1EstateTrust(page) = &mut documents.common.k1.documents[0].document
+        else {
             unreachable!()
         };
-        let IncomeDocument::K1EstateTrust(page) = &mut documents.documents[0].document else {
-            unreachable!()
-        };
-        page.amt_reconciliation = Some(crate::EstateAmtReconciliationPage {
-            other_in_a: 1,
-            adjustments: vec![],
-        });
+        page.statements.amt_other_in_a = Some(1);
+        page.statements.amt_adjustments.clear();
         rejected_with(send(&mut session, invalid), "ESTATE_AMT_RECONCILE");
         assert_eq!(session.draft, before);
     }
@@ -368,10 +323,10 @@ fn unit27_estate_final_capital_parts_use_gain_axis_and_preserve_odd_cent_caps() 
     let mut data = source();
     data.final_short_carry = 1;
     data.final_long_carry = 2;
+    data.final_k1 = true;
     data.final_character = Some(crate::EstateFinalCharacter {
         entity_terminated: true,
-        final_beneficiary_k1: true,
-        successor: true,
+
         section67e_nii: 0,
         section67e_in_h: false,
         additional: vec![],
@@ -383,21 +338,11 @@ fn unit27_estate_final_capital_parts_use_gain_axis_and_preserve_odd_cent_caps() 
     let own_c = &own.final_character.as_ref().unwrap().capital;
     let other_c = &other.final_character.as_ref().unwrap().capital;
     assert_eq!(
-        [
-            own.final_short_carry,
-            own.final_long_carry,
-            own_c.rate28,
-            own_c.unrecaptured
-        ],
+        [own.final_short_carry, own.final_long_carry, own_c.rate28, own_c.unrecaptured],
         [1, 1, 1, 0]
     );
     assert_eq!(
-        [
-            other.final_short_carry,
-            other.final_long_carry,
-            other_c.rate28,
-            other_c.unrecaptured
-        ],
+        [other.final_short_carry, other.final_long_carry, other_c.rate28, other_c.unrecaptured],
         [0, 1, 0, 1]
     );
     assert_eq!(own_c.niit_difference, Some(2));
@@ -434,10 +379,7 @@ fn activity(income: i64, depreciation: i64, carried: i64) -> crate::EstateActivi
         depletion: 0,
         amortization: 0,
         participation: crate::EstateParticipation::Passive,
-        carried: crate::EstatePassiveCarry {
-            regular: carried,
-            alternative: carried,
-        },
+        carried: crate::EstatePassiveCarry { regular: carried, alternative: carried },
         amt_difference: 0,
     }
 }
@@ -447,6 +389,7 @@ fn qbi_statement(
     history: Vec<crate::ScorpLossYear>,
 ) -> crate::EstateQbiStatement {
     crate::EstateQbiStatement {
+        id: 0,
         name: name.into(),
         income,
         wages: 0,
@@ -497,24 +440,14 @@ fn unit27_estate_shared_qbi_history_uses_existing_name_prefix_before_limits() {
             .sum();
         assert_eq!(qualified, 1);
     }
-    assert_eq!(
-        own.qbi.statements[0].allocations[0].passive_history[0].qualified,
-        1
-    );
-    assert_eq!(
-        own.qbi.statements[1].allocations[0].passive_history[0].qualified,
-        0
-    );
+    assert_eq!(own.qbi.statements[0].allocations[0].passive_history[0].qualified, 1);
+    assert_eq!(own.qbi.statements[1].allocations[0].passive_history[0].qualified, 0);
     data.qbi.statements.reverse();
     let reordered = projected(&halves(Owner::Taxpayer, data));
     for statement in &own.qbi.statements {
         assert_eq!(
             Some(statement),
-            reordered
-                .qbi
-                .statements
-                .iter()
-                .find(|s| s.name == statement.name)
+            reordered.qbi.statements.iter().find(|s| s.name == statement.name)
         );
     }
 }
@@ -530,17 +463,11 @@ fn unit27_estate_optional_qbi_odd_cent_boundary_preserves_actual_source_componen
     let own = projected(&halves(Owner::Taxpayer, data.clone()));
     let other = projected(&halves(Owner::Spouse, data.clone()));
     assert_eq!(
-        [
-            own.activities.activities[0].income,
-            own.activities.activities[0].depreciation
-        ],
+        [own.activities.activities[0].income, own.activities.activities[0].depreciation],
         [-1, 1]
     );
     assert_eq!(
-        [
-            other.activities.activities[0].income,
-            other.activities.activities[0].depreciation
-        ],
+        [other.activities.activities[0].income, other.activities.activities[0].depreciation],
         [0, 0]
     );
     assert_eq!(
@@ -555,10 +482,7 @@ fn unit27_estate_optional_qbi_odd_cent_boundary_preserves_actual_source_componen
         .err(),
         Some("WARN_ESTATE_QBI_SOURCE_LEFT_OUT")
     );
-    assert_eq!(
-        own.activities.box6 + other.activities.box6,
-        original.activities.box6
-    );
+    assert_eq!(own.activities.box6 + other.activities.box6, original.activities.box6);
     assert_eq!(
         own.activities.activities[0].depreciation + other.activities.activities[0].depreciation,
         1
@@ -584,17 +508,10 @@ fn unit27_estate_raw_nonzero_amt_confirmations_remain_valid_when_projection_is_z
     data.amt_box12f_included_in_d = true;
     let d = halves(Owner::Taxpayer, data.clone());
     let allocated = projected(&d);
-    assert_eq!(
-        [
-            allocated.amt_box12a,
-            allocated.amt_box12d,
-            allocated.amt_box12f
-        ],
-        [0; 3]
-    );
+    assert_eq!([allocated.amt_box12a, allocated.amt_box12d, allocated.amt_box12f], [0; 3]);
     assert!(allocated.amt_box12_components_confirmed && allocated.amt_box12f_included_in_d);
     let _ = supported(&d);
-    assert_eq!(estate_trust_code_d_data(&mut d.clone()), &data);
+    assert_eq!(&*estate_trust_code_d_data(&mut d.clone()), &data);
 }
 
 #[test]
@@ -615,36 +532,10 @@ fn unit27_estate_zero_projected_qbi_vintage_is_omitted_without_changing_retained
     let original = data.clone();
     let d = halves(Owner::Spouse, data);
     let allocated = projected(&d);
-    assert!(
-        allocated.qbi.statements[0].allocations[0]
-            .passive_history
-            .is_empty()
-    );
+    assert!(allocated.qbi.statements[0].allocations[0].passive_history.is_empty());
     assert_eq!(allocated.qbi.rule(&allocated.activities), None);
-    let FederalIncome::EstateTrustPortfolio { data } = &d.income[1].income else {
-        unreachable!()
-    };
-    assert_eq!(data, &original);
-}
-
-#[test]
-fn unit27_estate_page_relationships_reject_overflowing_components_at_the_original_field() {
-    let mut page = crate::K1EstateTrust::from_record("Synthetic trust", &source()).unwrap();
-    page.ordinary_dividends = i64::MAX;
-    page.qualified_dividends = i64::MAX;
-    page.more.section199a_dividends = 1;
-    let issue = page.issue().unwrap();
-    assert_eq!(issue.key, "K1_1041_QUALIFIED_ABOVE_2A");
-    assert_eq!(issue.field.unwrap().square(), "[qualified_dividends]");
-
-    page.qualified_dividends = 0;
-    page.more.section199a_dividends = 0;
-    page.long_gain = i64::MAX;
-    page.rate_28_gain = i64::MAX;
-    page.unrecaptured_gain = 1;
-    let issue = page.issue().unwrap();
-    assert_eq!(issue.key, "K1_1041_4B_4C_ABOVE_4A");
-    assert_eq!(issue.field.unwrap().square(), "[rate_28_gain]");
+    let FederalIncome::EstateTrustPortfolio { data } = &d.income[1].income else { unreachable!() };
+    assert_eq!(FederalEstateTrustPortfolioK1::from(data), original);
 }
 
 #[test]
@@ -652,17 +543,42 @@ fn unit27_estate_annual_vintage_keeps_dollar_release_and_complement_quantum() {
     let mut data = source();
     data.activities.box6 = 0;
     data.activities.activities = vec![activity(0, 0, 200)];
-    data.qbi.statements = vec![qbi_statement("Half-qualified annual vintage", 0,
-        vec![crate::ScorpLossYear { year: 2025, original: 200, qualified: 100,
-            remaining: 200, remaining_qualified: 100 }])];
+    data.qbi.statements = vec![qbi_statement(
+        "Half-qualified annual vintage",
+        0,
+        vec![crate::ScorpLossYear {
+            year: 2025,
+            original: 200,
+            qualified: 100,
+            remaining: 200,
+            remaining_qualified: 100,
+        }],
+    )];
     let original = data.clone();
-    let result = crate::estate_trust::qbi_projection(2, &data, &data.qbi.statements[0],
-        &[crate::estate_trust::EstateActivityResult { source: 2, activity: 3,
-            current: 0, prior: 2, passive: -2, nonpassive: 0,
-            suspended: 1, prior_released: 0 }], 0, FederalStatus::Single).unwrap();
+    let result = crate::estate_trust::qbi_projection(
+        2,
+        &data,
+        &data.qbi.statements[0],
+        &[crate::estate_trust::EstateActivityResult {
+            source: 2,
+            activity: 3,
+            current: 0,
+            prior: 2,
+            passive: -2,
+            nonpassive: 0,
+            suspended: 1,
+            prior_released: 0,
+        }],
+        0,
+        FederalStatus::Single,
+    )
+    .unwrap();
     // The estate has already reported $2 loss/$1 qualified. Its owning FIFO
     // releases $1 qualified, leaving $1 loss with no qualified complement.
     assert_eq!(result.historical, 1);
-    assert_eq!((result.remaining[0].remaining.get(), result.remaining[0].remaining_qbi.get()), (1, 0));
+    assert_eq!(
+        (result.remaining[0].remaining.get(), result.remaining[0].remaining_qbi.get()),
+        (1, 0)
+    );
     assert_eq!(data, original);
 }

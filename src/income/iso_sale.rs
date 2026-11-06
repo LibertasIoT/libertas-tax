@@ -33,31 +33,37 @@ pub struct IsoSale {
     pub shares: f64,
     /// Exercise price per share (Form 3921 box 3)
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub exercise_price: i64,
     /// Fair market value per share on exercise (Form 3921 box 4)
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub market_price: i64,
     /// Amount paid for the option itself, allocated to these shares
     /// Total option purchase cost for this lot, separate from the exercise price and commissions. Enter zero if nothing was paid for the option. Exclude interest and amounts assigned to other lots.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub option_cost: i64,
     /// Acquisition commissions allocated to these sold shares
     /// Enter zero if none. Exclude selling fees already subtracted from proceeds.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub acquisition_costs: i64,
     /// Net sale proceeds after selling fees
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub proceeds: i64,
     /// Selling fees already subtracted from net proceeds
     /// The compensation limit uses proceeds before these fees; capital gain uses net proceeds. Enter zero if none.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub selling_fees: i64,
     /// This lot's calculated compensation is already included in this filer's W-2 box 1 wages
     /// Keep the original W-2 wages unchanged. Choose false if no W-2 includes the compensation; the App then reports it on Schedule 1 line 8k. Confirm the entire calculated amount is included, resolving incorrect or partial employer reporting first. Qualifying sales and sales with no compensation use false.
@@ -65,11 +71,13 @@ pub struct IsoSale {
     /// Federal income tax withheld on this sale
     /// Include withholding once, not again on another sale entry.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub withholding: i64,
     /// Basis the Form 1099-B printed in box 1e, when it shows one
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub reported_basis: Option<i64>,
     /// Whether the broker reported the basis to the IRS (box 12)
@@ -190,85 +198,44 @@ impl IsoSale {
     }
 }
 
-pub(crate) fn reconcile_wages(d: &crate::FederalDraft, r: &mut crate::FederalResult) {
-    for owner in [crate::Owner::Taxpayer, crate::Owner::Spouse] {
-        let mut reported = 0;
-        let mut wages = 0;
-        for entry in d.income.iter().filter(|entry| entry.owner == owner) {
-            match &entry.income {
-                crate::FederalIncome::EsppSale { data } if data.in_wages => {
-                    reported += data.compensation()
-                }
-                crate::FederalIncome::IsoSale { data } if data.in_wages => {
-                    reported += data.compensation()
-                }
-                crate::FederalIncome::EmployeeStockSale { data }
-                    if data.acquired / 10000 == 2026 =>
-                {
-                    reported += data.compensation()
-                }
-                crate::FederalIncome::Wage { data } => wages += data.wages,
-                _ => {}
-            }
-        }
-        if reported > wages {
-            for entry in d.income.iter().filter(|entry| entry.owner == owner) {
-                let context = crate::interview::income_issue_context(entry);
-                let context = match &entry.income {
-                    crate::FederalIncome::IsoSale { data }
-                        if data.in_wages && data.compensation() > 0 =>
-                    {
-                        context.alternatives(&[
-                            crate::TaxSection::InvestmentSales,
-                            crate::TaxSection::Wages,
-                        ])
-                    }
-                    // Each kind has its Investment sales page, and the W-2 is
-                    // the Wages page's.
-                    crate::FederalIncome::EsppSale { data }
-                        if data.in_wages && data.compensation() > 0 =>
-                    {
-                        context.alternatives(&[
-                            crate::TaxSection::InvestmentSales,
-                            crate::TaxSection::Wages,
-                        ])
-                    }
-                    crate::FederalIncome::EmployeeStockSale { data }
-                        if data.acquired / 10000 == 2026 && data.compensation() > 0 =>
-                    {
-                        context.alternatives(&[
-                            crate::TaxSection::InvestmentSales,
-                            crate::TaxSection::Wages,
-                        ])
-                    }
-                    _ => continue,
-                };
-                crate::issue_localized!(
-                    r,
-                    &context,
-                    "ISO compensation",
-                    "ISSUE_COMBINED_STOCK_COMPENSATION_MARKED_AS_ALREADY_REPORTED_CANNOT_EXCEE_0E5F6C00",
-                    "Combined stock compensation marked as already reported cannot exceed this filer's entered W-2 box 1 wages. Reconcile employer reporting before calculating.",
-                );
-            }
-        }
-    }
-}
-
 /// ISO shares sold
 /// Shares from an incentive stock option, sold in 2026. Enter the sale here with its 1099-B, not again as a 1099-B sale; the App figures the regular and AMT basis from your Form 3921.
 #[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read the 1099-B sale of these incentive stock option shares exactly. Check its tax year against the supplied year; report a mismatch. The statement must show exactly one sale of these shares; if it shows several sales, report an error asking for only this sale. Return the box 1a description, or an empty string when it is blank. The number of shares, box 1c date sold and box 1d proceeds must show values; report a blank one as an error. Return the number of shares with up to six decimals. Return box 1e as reported_basis exactly as printed, or leave it empty when the box is blank, and return box 12 as reporting. Return zero for a clearly blank box 4. Report illegible or conflicting values as errors. Do not return Form 3921 values even when a Form 3921 is supplied, and do not infer selling fees, wage inclusion, option cost, special treatment or other facts absent from the 1099-B. The file may hold several copies of this form, such as Copy B and Copy 2; copies of the same form are one form.",
+    instruction = "Read each printed party block into source_issuer, source_recipient. Copy names, identification numbers and addresses exactly as printed, preserving masking, punctuation and leading zeros; use empty text for absent identity fields. Never infer a recipient from household names. Read the 1099-B sale of these incentive stock option shares exactly. Check its tax year against the supplied year; report a mismatch. The statement must show exactly one sale of these shares; if it shows several sales, report an error asking for only this sale. Return the box 1a description, or an empty string when it is blank. The number of shares, box 1c date sold and box 1d proceeds must show values; report a blank one as an error. Return the number of shares with up to six decimals. Return box 1e as reported_basis exactly as printed, or leave it empty when the box is blank, and return box 12 as reporting. Return zero for a clearly blank box 4. Report illegible or conflicting values as errors. Read granted, exercised, exercise_price and market_price, the Form 3921 boxes 1 to 4 of the exercise these shares came from, from the employer's stock plan record or that Form 3921 supplied with the 1099-B: the option grant date, the exercise date, the exercise price per share and the fair market value per share on the exercise date. When neither is supplied, report an error asking for the stock plan record or Form 3921 of these shares. Do not infer selling fees, wage inclusion, option cost, special treatment or other facts absent from these pages. The file may hold several copies of this form, such as Copy B and Copy 2; copies of the same form are one form. Read the printed calendar year as an integer such as 2026, or zero when blank. Read the account number exactly as printed, or empty text when blank. Read box 1b date acquired as the printed date, VARIOUS, INHERITED or another notation, or null when blank. Read the Form 8949 box letter printed on the statement, or null when none is printed, and box 2 short-term, long-term and ordinary as printed checkboxes (true only when checked).",
     validation = "$.document_facts",
-    doc_type = "application/pdf,image/*"
+    doc_type = "application/pdf,image/*",
+    duplicate_identity = "@.source_issuer.federal_id,@.source_recipient.federal_id,@.description,@.shares,@.sold,@.granted,@.exercised,@.proceeds,@.reported_basis,@.withholding,@.exercise_price,@.market_price",
+    form_date_order = "MonthDayYear"
 )]
 pub struct IsoShareSale {
+    /// Calendar year
+    #[libertas_llm_doc_field]
+    #[libertas_default(0)]
+    pub calendar_year: u32,
+    /// Source document issuer as printed
+    #[libertas_llm_doc_field]
+    pub source_issuer: crate::PrintedParty,
+    /// Source document recipient as printed
+    #[libertas_llm_doc_field]
+    pub source_recipient: crate::PrintedParty,
+    /// Account number
+    #[libertas_llm_doc_field(allow_empty = true)]
+    #[libertas_default("")]
+    pub account_number: String,
     /// 1099-B box 1a description
     #[libertas_llm_doc_field(allow_empty = true)]
     #[libertas_size(min = 0)]
     #[libertas_default("")]
     pub description: String,
+    /// 1b — Date acquired
+    /// [NullText]
+    /// This box is blank
+    /// [SetText]
+    /// The printed date or notation is
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_default($null)]
+    pub box_1b_acquired: Option<crate::BrokerAcquisitionDate>,
     /// 1099-B box 1a number of shares sold
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_number(min = 0.000001, step = 0.000001)]
@@ -292,7 +259,8 @@ pub struct IsoShareSale {
     /// The cost basis printed in box 1e is
     #[libertas_llm_doc_field(blank = $null)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub reported_basis: Option<i64>,
     /// 1099-B box 12 basis reported to the IRS
@@ -300,43 +268,65 @@ pub struct IsoShareSale {
     #[libertas_llm_doc_field]
     #[libertas_default(ReportedToIrs)]
     pub reporting: crate::BasisReporting,
+    /// Applicable checkbox on Form 8949
+    /// [NullText]
+    /// This box is blank
+    /// [SetText]
+    /// The printed code is
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_default($null)]
+    pub form_8949_checkbox: Option<crate::Form1099B8949Checkbox>,
+    /// 2 — Short-term gain or loss
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box_2_short_term: bool,
+    /// 2 — Long-term gain or loss
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box_2_long_term: bool,
+    /// 2 — Ordinary
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box_2_ordinary: bool,
     /// 1099-B box 4 federal income tax withheld
     #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub withholding: i64,
     /// Form 3921 box 1 date option granted
     /// From the Form 3921 for the exercise these shares came from, which may be from an earlier year.
+    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_date_only]
     pub granted: u32,
     /// Form 3921 box 2 date option exercised
+    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_date_only]
     pub exercised: u32,
     /// Form 3921 box 3 exercise price per share
+    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
     // Removal deferred: page construction computes compensation and lot basis through unchecked lot_amount and cost arithmetic before native admission; widening needs the monetary owner.
     #[libertas_number(min = 0, max = 100000000000)]
     pub exercise_price: i64,
     /// Form 3921 box 4 fair market value per share on exercise date
+    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
     // Removal deferred: page construction computes compensation and lot basis through unchecked lot_amount and cost arithmetic before native admission; widening needs the monetary owner.
     #[libertas_number(min = 0, max = 100000000000)]
     pub market_price: i64,
-    /// About this sale
-    pub more: IsoShareSaleMore,
 }
 // Share counts are validated finite quantities (share_units), so equality
 // is reflexive; the income document union needs Eq.
 impl Eq for IsoShareSale {}
 
-/// About this sale
-#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+// The personal facts of one printed ISO sale, asked on Investment sales
+// (the printed sale itself is the Document center's): its fees and special
+// treatment, then, for a sale with compensation, whether the W-2 includes it.
+/// Fees and special treatment for this ISO sale
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct IsoShareSaleMore {
-    /// Your W-2 box 1 includes the compensation from this sale
-    /// Applies only when the sale is within 2 years of the grant or 1 year of the exercise. Choose false if no W-2 includes it; the App then reports it as other income.
-    #[libertas_default(true)]
-    pub in_wages: bool,
     /// Selling fees already subtracted from box 1d
     #[libertas_money("USD", 2)]
     // Removal deferred: page construction computes compensation and lot basis through unchecked lot_amount and cost arithmetic before native admission; widening needs the monetary owner.
@@ -357,21 +347,24 @@ pub struct IsoShareSaleMore {
     #[libertas_default(0)]
     pub option_cost: i64,
     /// Restricted shares, a wash sale, a divestiture certificate or another special treatment
-    #[libertas_default(false)]
+    /// Yes leaves this sale out of the estimate with a notice; that treatment is not supported.
     pub special: bool,
 }
-impl Default for IsoShareSaleMore {
-    fn default() -> Self {
-        Self {
-            in_wages: true,
-            selling_fees: Default::default(),
-            acquisition_costs: Default::default(),
-            option_cost: Default::default(),
-            special: Default::default(),
-        }
-    }
+
+/// Answers for one printed ISO sale
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct IsoSaleAnswers {
+    /// Accepted printed sale identity
+    pub document_id: i64,
+    /// Fees and special treatment, absent until answered
+    /// [NullText]
+    /// Not answered yet
+    pub more: Option<IsoShareSaleMore>,
+    /// Whether W-2 box 1 already includes the compensation, absent until answered
+    /// [NullText]
+    /// Not answered yet
+    pub wage_inclusion: Option<bool>,
 }
-impl Eq for IsoShareSaleMore {}
 
 impl IsoShareSale {
     // The first relationship between this page's fields that fails, by its
@@ -398,44 +391,39 @@ impl IsoShareSale {
         }
         None
     }
-    // The stored sale this page writes. Compensation counts as in the W-2
-    // only when the sale has some (a qualifying sale has none).
-    pub(crate) fn record(&self) -> IsoSale {
-        let IsoShareSaleMore { in_wages, selling_fees, acquisition_costs, option_cost, special } =
-            self.more;
-        let mut sale = IsoSale {
+    // The complete lot from the printed sale and its answers; the W-2
+    // answer is applied by its owner (iso_return::resolve).
+    pub(crate) fn lot(&self, more: &IsoShareSaleMore) -> IsoSale {
+        IsoSale {
             granted: self.granted,
             exercised: self.exercised,
             sold: self.sold,
             shares: self.shares,
             exercise_price: self.exercise_price,
             market_price: self.market_price,
-            option_cost,
-            acquisition_costs,
+            option_cost: more.option_cost,
+            acquisition_costs: more.acquisition_costs,
             proceeds: self.proceeds,
-            selling_fees,
+            selling_fees: more.selling_fees,
             in_wages: false,
             withholding: self.withholding,
             reported_basis: self.reported_basis,
             reporting: self.reporting,
-            confirmed: !special,
-        };
-        sale.in_wages = in_wages && sale.compensation() > 0;
-        sale
+            confirmed: !more.special,
+        }
     }
-    // The reverse of record; None for a stored sale this page could not
-    // have written.
-    pub(crate) fn from_record(label: &str, v: &IsoSale) -> Option<Self> {
-        let special = !v.confirmed;
-        let compensation = v.compensation();
-        let more = IsoShareSaleMore {
-            in_wages: v.in_wages || compensation == 0,
-            selling_fees: v.selling_fees,
-            acquisition_costs: v.acquisition_costs,
-            option_cost: v.option_cost,
-            special,
-        };
-        let page = Self {
+    // The printed sale of a complete lot (its answers are not printed).
+    pub(crate) fn from_record(label: &str, v: &IsoSale) -> Self {
+        Self {
+            calendar_year: Default::default(),
+            account_number: Default::default(),
+            box_1b_acquired: Default::default(),
+            form_8949_checkbox: Default::default(),
+            box_2_short_term: Default::default(),
+            box_2_long_term: Default::default(),
+            box_2_ordinary: Default::default(),
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             description: label.into(),
             shares: v.shares,
             sold: v.sold,
@@ -447,9 +435,7 @@ impl IsoShareSale {
             exercised: v.exercised,
             exercise_price: v.exercise_price,
             market_price: v.market_price,
-            more,
-        };
-        (page.record() == *v).then_some(page)
+        }
     }
     // The entry label: the box 1a description as typed.
     pub(crate) fn label(&self) -> String {

@@ -15,162 +15,15 @@
 //   same election/disclosure owner; unsupported financial allocations remain
 //   unavailable. Estate adapters and broader QBI residuals remain outside this
 //   increment; no parent/activity count substitutes for distinct businesses.
-use crate::{BusinessReceiptContext, CommunityShare, IncomeDocument, Owner, RefundManagement};
+use crate::{CommunityShare, Owner, RefundManagement};
 use alloc::{string::String, vec::Vec};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// Accepted election facts; source group labels alone own membership
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct QbiAggregationFacts {
-    /// Group name
-    #[libertas_key]
-    #[libertas_unique(1)]
-    #[libertas_size(min = 1)]
-    pub name: String,
-    /// The same person or group meets the 50% common-ownership test
-    /// Check the businesses’ ownership, operating and tax-year records.
-    pub common_ownership: bool,
-    /// That ownership exists for most of the year including its last day
-    /// Check the businesses’ ownership, operating and tax-year records.
-    pub majority_year_last_day: bool,
-    /// The businesses report the same tax year, ignoring short years
-    /// Check the businesses’ ownership, operating and tax-year records.
-    pub same_tax_year: bool,
-    /// Products or services are the same or customarily offered together
-    /// Check the businesses’ ownership, operating and tax-year records.
-    pub same_or_customary_products: bool,
-    /// The businesses share facilities or significant centralized elements
-    /// Check the businesses’ ownership, operating and tax-year records.
-    pub shared_facilities_or_elements: bool,
-    /// The businesses operate in coordination or reliance on one another
-    /// Check the businesses’ ownership, operating and tax-year records.
-    pub coordinated_or_interdependent: bool,
-    /// Election and prior-year facts
-    pub election: QbiElectionHistory,
-    /// Retained IRS restriction for the actual businesses, independent of group label
-    pub irs_history: QbiIrsDisaggregationHistory,
-    /// Each actual source in the group
-    #[libertas_size(min = 0)]
-    pub disclosure: Vec<QbiBusinessDisclosure>,
-}
-/// Actual election history; unavailable or unsupported histories are retained source facts
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum QbiElectionHistory {
-    /// First election on a timely original return
-    FirstTimelyOriginalReturn,
-    /// A first election would be made on an amended return
-    FirstOnAmendedReturn,
-    /// Continue the prior election
-    Continuing {
-        /// First elected year
-        // Tax structure: this retained history precedes the 2026 tax year.
-        #[libertas_number(min = 2018, max = 2025)]
-        original_year: u32,
-    },
-    /// Facts changed significantly; eligibility must be retested
-    ChangedFacts {
-        /// First elected year
-        // Tax structure: this retained history precedes the 2026 tax year.
-        #[libertas_number(min = 2018, max = 2025)]
-        original_year: u32,
-        /// What changed
-        #[libertas_size(min = 1)]
-        explanation: String,
-    },
-    /// Election history is unavailable
-    Unavailable,
-}
-/// Retained IRS disaggregation source history, separate from this year's election
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum QbiIrsDisaggregationHistory {
-    /// Source records establish no IRS disaggregation affecting these businesses
-    None,
-    /// Source records establish an IRS disaggregation
-    Disaggregated {
-        /// Tax year of disaggregation
-        // Tax structure: the election history cannot postdate the 2026 return.
-        #[libertas_number(min = 2018, max = 2026)]
-        year: u32,
-    },
-    /// IRS disaggregation history for these businesses is unavailable
-    Unavailable,
-}
-/// Source EIN facts without treating unknown as no EIN applying
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum QbiEntityEin {
-    /// No entity EIN applies to this directly operated business
-    NotApplicable,
-    /// Actual operating entity EIN
-    Known {
-        /// Nine digits of the operating entity EIN
-        // Legal source identifier: EINs contain exactly nine digits.
-        #[libertas_size(min = 9, max = 9)]
-        #[libertas_pattern(r"[0-9]{9}")]
-        number: String,
-    },
-    /// Required EIN information is unavailable
-    Unavailable,
-}
-/// Actual business changes for the annual aggregation disclosure
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum QbiBusinessChanges {
-    /// None of these changes occurred
-    None,
-    /// Business formed
-    Formed {
-        /// Formation date
-        #[libertas_date_only]
-        // Tax structure: this event occurs in the 2026 tax year.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        date: u32,
-    },
-    /// Business acquired
-    Acquired {
-        /// Acquisition date
-        #[libertas_date_only]
-        // Tax structure: this event occurs in the 2026 tax year.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        date: u32,
-    },
-    /// Operations ceased
-    Ceased {
-        /// Date operations ceased
-        #[libertas_date_only]
-        // Tax structure: this event occurs in the 2026 tax year.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        date: u32,
-    },
-    /// Business disposed of
-    Disposed {
-        /// Disposition date
-        #[libertas_date_only]
-        // Tax structure: this event occurs in the 2026 tax year.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        date: u32,
-    },
-    /// More than one change occurred
-    Multiple {
-        /// Identify each actual change and its date
-        #[libertas_size(min = 1)]
-        explanation: String,
-    },
-}
-/// Annual disclosure source facts
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct QbiBusinessDisclosure {
-    /// Actual accepted business or reported-QBI-block reference
-    pub source: QbiAggregationSource,
-    /// Operating entity or business name
-    #[libertas_size(min = 1)]
-    pub entity_name: String,
-    /// Actual EIN applicability or unavailable source information
-    pub ein: QbiEntityEin,
-    /// Business description
-    #[libertas_size(min = 1)]
-    pub business_description: String,
-    /// Changes during 2026
-    pub changes: QbiBusinessChanges,
-}
+use crate::qbi_aggregation_model::text_valid;
+pub use crate::qbi_aggregation_model::{
+    QbiAggregationFacts, QbiAggregationSource, QbiBusinessChanges, QbiBusinessDisclosure,
+    QbiElectionHistory, QbiEntityEin, QbiIrsDisaggregationHistory,
+};
 
 /// Source classification reconstructed from the actual candidate
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -309,29 +162,25 @@ pub struct QbiAggregationPage {
     pub businesses: Option<i64>,
 }
 
-/// Source values read by the existing income estimate calculation
+/// Topic record values read by the existing income estimate calculation
 #[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct IncomeDocumentsEstimateInput {
-    /// Existing accepted receipt context outside the edited topic
-    #[libertas_hidden]
-    #[libertas_read_only]
-    pub receipt_context: BusinessReceiptContext,
-    /// Every edited document, in its original Page order
-    pub documents: Vec<IncomeDocumentEstimateInput>,
+pub struct IncomeRecordsEstimateInput {
+    /// Every edited record, in its original Page order
+    pub documents: Vec<IncomeRecordEstimateInput>,
     /// Every global aggregation facts row, in its original Page order
     pub qbi_aggregations: Vec<QbiAggregationEstimateInput>,
 }
-/// Exact accepted-source fields from IncomeDocumentItem; derived preview fields are excluded
+/// Editable fields from IncomeRecordItem; derived preview fields are excluded
 #[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct IncomeDocumentEstimateInput {
+pub struct IncomeRecordEstimateInput {
     /// Actual accepted identity, or the existing new-row value zero
     #[libertas_hidden]
     #[libertas_read_only]
     pub id: i64,
     /// Whose complete source document is edited
     pub owner: Owner,
-    /// Complete unchanged IncomeDocument union payload
-    pub document: IncomeDocument,
+    /// Complete IncomeRecord payload
+    pub document: crate::IncomeRecord,
     /// Complete existing community or separate source answer
     pub community: CommunityShare,
     /// Actual withholding-fund management source answer
@@ -418,55 +267,6 @@ pub struct QbiAggregationDerived {
     pub businesses: Option<i64>,
 }
 
-/// Actual business or indivisible reported-QBI-block source reference
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum QbiAggregationSource {
-    /// One actual direct business, rental, farm or single-business K-1
-    Income {
-        /// Accepted parent income identity
-        #[libertas_number(min = 1)]
-        document: i64,
-    },
-    /// Actual uniquely named fiduciary section 199A statement
-    EstateStatement {
-        /// Accepted estate/trust K-1 identity
-        #[libertas_number(min = 1)]
-        document: i64,
-        /// Existing source-owned statement name
-        #[libertas_size(min = 1)]
-        statement: String,
-    },
-    /// Actual approved K1RES reported block or business source
-    K1Block {
-        /// Accepted partnership or S-corporation K-1 identity
-        #[libertas_number(min = 1)]
-        document: i64,
-        /// Actual accepted source-owned block identity; never invented from row position
-        #[libertas_number(min = 1)]
-        block: i64,
-    },
-}
-
-impl QbiAggregationSource {
-    // A transport key is never decoded into an accepted source. Save resolves
-    // it against the candidate's genuine typed catalog instead.
-    pub(crate) fn key(&self) -> String {
-        match self {
-            Self::Income { document } => alloc::format!("income:{document}"),
-            Self::EstateStatement { document, statement } => {
-                use core::fmt::Write;
-                let mut key = alloc::format!("estate:{document}:");
-                for byte in statement.as_bytes() {
-                    // Writing to String cannot fail.
-                    write!(key, "{byte:02x}").expect("String formatting");
-                }
-                key
-            }
-            Self::K1Block { document, block } => alloc::format!("k1:{document}:{block}"),
-        }
-    }
-}
-
 pub(crate) struct AggregationSourceView {
     pub member: QbiAggregationMemberChoice,
     // Supplied by the actual source owner. Passive activities and RPE flags
@@ -536,7 +336,7 @@ pub(crate) fn source_views(
                                 group: block.qbi_aggregation_group.clone(),
                                 service,
                                 origin,
-                                owner: entry.owner,
+                                owner: entry.owner.owned(),
                                 label: crate::Message::new(
                                     "LABEL_K1_ACTIVITY_SOURCE",
                                     alloc::vec![crate::MessageArg::Text(block.name.clone())],
@@ -575,6 +375,7 @@ pub(crate) fn source_views(
                     )
                 }
                 crate::FederalIncome::Scorp { data } => {
+                    let data = &crate::ScorpK1::from(data);
                     let ordinary_only = data.rental_facts.real_estate_qbi.is_none()
                         && data.rental_facts.other_qbi.is_none();
                     let single =
@@ -611,74 +412,13 @@ pub(crate) fn source_views(
                     group,
                     service,
                     origin,
-                    owner: entry.owner,
-                    label: crate::interview::income_display_label(entry, draft.dependents())
+                    owner: entry.owner.owned(),
+                    label: crate::income_names::income_display_label(entry, draft.dependents())
                         .encode(),
                 },
             }]
         })
         .collect()
-}
-
-fn text_valid(value: &str) -> bool {
-    !value.is_empty()
-}
-
-impl QbiElectionHistory {
-    fn valid(&self) -> bool {
-        match self {
-            Self::Continuing { original_year } => (2018..=2025).contains(original_year),
-            Self::ChangedFacts { original_year, explanation } => {
-                (2018..=2025).contains(original_year) && text_valid(explanation)
-            }
-            _ => true,
-        }
-    }
-}
-
-impl QbiIrsDisaggregationHistory {
-    fn valid(&self) -> bool {
-        match self {
-            Self::Disaggregated { year } => (2018..=2026).contains(year),
-            _ => true,
-        }
-    }
-
-    fn election_available(&self) -> bool {
-        match self {
-            Self::None => true,
-            Self::Disaggregated { year } => {
-                self.valid() && year.checked_add(3).is_some_and(|end| 2026 > end)
-            }
-            Self::Unavailable => false,
-        }
-    }
-}
-
-impl QbiEntityEin {
-    fn valid(&self) -> bool {
-        match self {
-            Self::Known { number } => {
-                number.len() == 9 && number.bytes().all(|b| b.is_ascii_digit())
-            }
-            _ => true,
-        }
-    }
-}
-
-impl QbiBusinessChanges {
-    fn valid(&self) -> bool {
-        match self {
-            Self::None => true,
-            Self::Multiple { explanation } => text_valid(explanation),
-            Self::Formed { date }
-            | Self::Acquired { date }
-            | Self::Ceased { date }
-            | Self::Disposed { date } => {
-                (20260101..=20261231).contains(date) && crate::federal_rules::valid_date(*date)
-            }
-        }
-    }
 }
 
 pub(crate) fn derived_group(
@@ -883,14 +623,13 @@ pub(crate) fn computation_facts_ready(
         })
 }
 
-impl From<&crate::IncomeDocuments> for IncomeDocumentsEstimateInput {
-    fn from(value: &crate::IncomeDocuments) -> Self {
+impl From<&crate::IncomeRecords> for IncomeRecordsEstimateInput {
+    fn from(value: &crate::IncomeRecords) -> Self {
         Self {
-            receipt_context: value.receipt_context.clone(),
             documents: value
                 .documents
                 .iter()
-                .map(|d| IncomeDocumentEstimateInput {
+                .map(|d| IncomeRecordEstimateInput {
                     id: d.id,
                     owner: d.owner,
                     document: d.document.clone(),
@@ -933,22 +672,21 @@ impl From<&crate::IncomeDocuments> for IncomeDocumentsEstimateInput {
     }
 }
 
-impl From<crate::IncomeDocuments> for IncomeDocumentsEstimateInput {
-    fn from(value: crate::IncomeDocuments) -> Self {
+impl From<crate::IncomeRecords> for IncomeRecordsEstimateInput {
+    fn from(value: crate::IncomeRecords) -> Self {
         Self::from(&value)
     }
 }
 
-impl IncomeDocumentsEstimateInput {
+impl IncomeRecordsEstimateInput {
     // Rebuild only the five source fields consumed by the existing candidate
     // pipeline. Its ordinary owners recompute Page-derived document metadata.
-    pub(crate) fn into_page(self) -> crate::IncomeDocuments {
-        crate::IncomeDocuments {
-            receipt_context: self.receipt_context,
+    pub(crate) fn into_page(self) -> crate::IncomeRecords {
+        crate::IncomeRecords {
             documents: self
                 .documents
                 .into_iter()
-                .map(|d| crate::IncomeDocumentItem {
+                .map(|d| crate::IncomeRecordItem {
                     id: d.id,
                     owner: d.owner,
                     document: d.document,
@@ -1022,7 +760,10 @@ pub(crate) fn reference_rule(draft: &crate::FederalDraft) -> Option<&'static str
 pub(crate) fn uses_facts(draft: &crate::FederalDraft) -> bool {
     draft.screening.as_ref().is_some_and(|v| !v.qbi_aggregations.is_empty())
         || draft.income.iter().any(|entry| match &entry.income {
-            crate::FederalIncome::Scorp { data } => data.qbi_aggregation_group.is_some(),
+            crate::FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                data.qbi_aggregation_group.is_some()
+            }
             crate::FederalIncome::Partnership { data } => data.qbi_aggregation_group.is_some(),
             _ => crate::k1_activity::source(&entry.income).is_some_and(|source| {
                 source.qbi_blocks.iter().any(|block| block.qbi_aggregation_group.is_some())
@@ -1173,8 +914,10 @@ pub(crate) fn history_transition_rule(
 pub(crate) fn accepted_rule(draft: &crate::FederalDraft) -> Option<&'static str> {
     if draft.income.iter().any(|entry| {
         let group = match &entry.income {
-            crate::FederalIncome::Scorp { data } => &data.qbi_aggregation_group,
-            crate::FederalIncome::Partnership { data } => &data.qbi_aggregation_group,
+            crate::FederalIncome::Scorp { data } => {
+                crate::ScorpK1::from(data).qbi_aggregation_group
+            }
+            crate::FederalIncome::Partnership { data } => data.qbi_aggregation_group.clone(),
             _ => {
                 return crate::k1_activity::source(&entry.income).is_some_and(|source| {
                     source.qbi_blocks.iter().any(|block| {

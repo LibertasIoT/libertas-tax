@@ -14,21 +14,16 @@ pub(in crate::tests) fn tip_fica_carryforward(amount: i64) -> EmployerTipFicaCar
 pub(in crate::tests) fn restaurant_tip_credit_draft() -> FederalDraft {
     let mut draft = complete(FederalStatus::Single);
     let mut months =
-        vec![
-            EmployerTipMonth { hours_hundredths: 0, wages_excluding_tips: 0, reported_tips: 0 };
-            12
-        ];
+        vec![EmployerTipMonth { hours: 0.0, wages_excluding_tips: 0, reported_tips: 0 }; 12];
     // The October example in the draft 2026 Form 8846 instructions: 100
     // hours, $375 wages, $450 tips, and a $140 wage shortfall at $5.15/hour.
-    months[9] = EmployerTipMonth {
-        hours_hundredths: 10_000,
-        wages_excluding_tips: 37_500,
-        reported_tips: 45_000,
-    };
+    months[9] =
+        EmployerTipMonth { hours: 100.0, wages_excluding_tips: 37_500, reported_tips: 45_000 };
     add(
         &mut draft,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 10_000_000,
@@ -98,8 +93,8 @@ pub(in crate::tests) fn beauty_tip_credit_draft() -> FederalDraft {
 
 pub(in crate::tests) fn work_deductions(tips: i64, overtime: i64) -> FederalWorkDeductions {
     FederalWorkDeductions {
-        tips_claim: TipsClaim::Yes { w2_tips: tips, form4137_tips: 0, tips_eligible: true },
-        overtime_claim: OvertimeClaim::Yes { overtime, overtime_eligible: true },
+        tips_claim: TipsClaim::Yes { w2_tips: tips, form4137_tips: 0, tips_eligible: Some(true) },
+        overtime_claim: OvertimeClaim::Yes { overtime, overtime_eligible: Some(true) },
     }
 }
 
@@ -114,7 +109,9 @@ pub(in crate::tests) fn wage_with_employee_tips(wages: i64, tips: EmployeeTips) 
     let mut draft = complete(FederalStatus::Single);
     draft.income[0] = wage(1, Owner::Taxpayer, wages * 100, 0);
     if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+        let mut data = crate::tests::support::builders::edit_wage(data);
         data.employee_tips = Some(tips);
+        drop(data);
     }
     draft
 }
@@ -135,6 +132,7 @@ pub(in crate::tests) fn uncollected_wage(
 ) -> FederalDraft {
     let mut draft = wage_with_employee_tips(wages, allocated_employee_tips(0));
     if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+        let mut data = crate::tests::support::builders::edit_wage(data);
         data.employee_tips = None;
         data.uncollected_tax = Some(w2_uncollected(social, medicare, life));
         data.social_tax -= social * 100;
@@ -143,6 +141,7 @@ pub(in crate::tests) fn uncollected_wage(
             data.social_wages -= 1000000;
             data.social_tips = 1000000;
         }
+        drop(data);
     }
     draft
 }
@@ -150,11 +149,14 @@ pub(in crate::tests) fn uncollected_wage(
 pub(in crate::tests) fn omitted_employee_wages(amount: i64) -> FederalIncome {
     FederalIncome::EmployeeWages {
         data: EmployeeWages {
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             wages: amount * 100,
             withholding: 0,
             form1099: true,
-            reason: EmployeeWageReason::SameFirmForms,
-            complete: true,
+            payroll: crate::EmployeePayrollSource::Form8919 {
+                reason: EmployeeWageReason::SameFirmForms,
+            },
         },
     }
 }
@@ -185,10 +187,10 @@ pub(in crate::tests) fn household_employer(amount: i64) -> HouseholdEmployer {
                 starts: 20260101,
                 ends: 20261231,
                 wages: amount * 100,
-                rate: Some(0),
+                rate: Some(0.0),
             }],
             payments: vec![],
-            reduction: Some(0),
+            reduction: Some(0.0),
         }],
         complete: true,
     }
@@ -251,6 +253,12 @@ pub(in crate::tests) fn sick_plan_employer(
     e
 }
 
+pub(in crate::tests) fn income_record_boundary_documents() -> Vec<IncomeDocumentItem> {
+    let mut documents = wage_documents(100, 10_000_000, 0, 0);
+    documents.extend(wage_documents(1, 1_000_000, 0, 0));
+    documents
+}
+
 pub(in crate::tests) fn wage_documents(
     count: usize,
     wages: i64,
@@ -264,7 +272,12 @@ pub(in crate::tests) fn wage_documents(
             wage.social_wages = wages.min(crate::year_constants::SOCIAL_SECURITY_WAGE_BASE_CENTS);
             wage.social_tax = wage.social_wages * 62 / 1000;
             wage.more.care_benefits = care;
-            document(0, IncomeDocument::W2(wage))
+            document(
+                0,
+                IncomeSource::Wage {
+                    value: crate::WageDocument::W2(super::native_income::wage_document(wage)),
+                },
+            )
         })
         .collect()
 }
@@ -277,7 +290,7 @@ pub(in crate::tests) fn source_medicaid(owner: Owner, amount: i64) -> FederalInc
             kind: OtherIncomeKind::MedicaidWaiver { in_your_home: true },
         },
     });
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry
 }
 
@@ -286,13 +299,32 @@ pub(in crate::tests) fn source_statutory_wage(
     owner: Owner,
     target: Option<i64>,
 ) {
-    let FederalIncome::Wage { data } =
-        &mut d.income.iter_mut().find(|e| e.owner == owner).unwrap().income
+    let FederalIncome::Wage { data } = &mut d
+        .income
+        .iter_mut()
+        .find(|e| e.owner == crate::DocumentOwner::from(owner))
+        .unwrap()
+        .income
     else {
         panic!()
     };
+    let mut data = crate::tests::support::builders::edit_wage(data);
     data.statutory_employee = true;
     data.statutory_business = target;
+    drop(data);
+}
+
+pub(in crate::tests) fn statutory_storage_return(linked: bool) -> FederalDraft {
+    let mut draft = complete(FederalStatus::Single);
+    add(&mut draft, income(cash_business(0)));
+    let business_id = draft.income[1].id;
+    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
+    let mut data = crate::tests::support::builders::edit_wage(data);
+    data.wages = 5_000_000;
+    data.medicaid_waiver = 100_000;
+    drop(data);
+    source_statutory_wage(&mut draft, Owner::Taxpayer, linked.then_some(business_id));
+    draft
 }
 
 pub(in crate::tests) fn statutory_multiple_return() -> FederalDraft {
@@ -309,8 +341,10 @@ pub(in crate::tests) fn statutory_multiple_return() -> FederalDraft {
     ] {
         let mut entry = wage(0, owner, amount, 0);
         let FederalIncome::Wage { data } = &mut entry.income else { panic!() };
+        let mut data = crate::tests::support::builders::edit_wage(data);
         data.statutory_employee = true;
         data.statutory_business = target;
+        drop(data);
         add(&mut d, entry);
     }
     let mut c = income(cash_business(0));
@@ -319,7 +353,7 @@ pub(in crate::tests) fn statutory_multiple_return() -> FederalDraft {
     *receipts = 50;
     add(&mut d, c);
     let mut f = income(raised_farm(0, 0));
-    f.owner = Owner::Spouse;
+    f.owner = crate::DocumentOwner::Spouses;
     let FederalIncome::Business { data } = &mut f.income else { panic!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { panic!() };
     let FarmAccounting::Cash { receipts } = &mut data.accounting else { panic!() };
@@ -343,11 +377,16 @@ pub(in crate::tests) fn wage_classification_fixture(
     owner: Owner,
 ) -> FederalDraft {
     let mut draft = injured_return((60_000, 5_000), (20_000, 500), 1_000, allocation());
-    let FederalIncome::Wage { data } =
-        &mut draft.income.iter_mut().find(|entry| entry.owner == owner).unwrap().income
+    let FederalIncome::Wage { data } = &mut draft
+        .income
+        .iter_mut()
+        .find(|entry| entry.owner == crate::DocumentOwner::from(owner))
+        .unwrap()
+        .income
     else {
         panic!()
     };
+    let mut data = crate::tests::support::builders::edit_wage(data);
     match case {
         WageClassificationCase::Deferred => data.deferred_pension = 600_050,
         WageClassificationCase::Inmate => data.inmate_pay = 600_050,
@@ -364,6 +403,7 @@ pub(in crate::tests) fn wage_classification_fixture(
             data.other_box12.push(W2CodeAmount { code: W2Code::II, amount: 50 });
         }
     }
+    drop(data);
     if matches!(case, WageClassificationCase::MedicaidCombined) {
         // The same annual native category combines a real OtherIncome source
         // with the W-2 codeII operand:50c+50c rounds ONCE to1, not twice to2.
@@ -374,7 +414,7 @@ pub(in crate::tests) fn wage_classification_fixture(
                 kind: OtherIncomeKind::MedicaidWaiver { in_your_home: true },
             },
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut draft, entry);
     }
     if !matches!(case, WageClassificationCase::Deferred | WageClassificationCase::Inmate) {
@@ -391,18 +431,26 @@ pub(in crate::tests) fn wage_classification_fixture(
                 },
             },
         });
-        prize.owner = if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+        prize.owner = if owner == Owner::Taxpayer {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
         add(&mut draft, prize);
         let mut nec = income(FederalIncome::Nec1099 {
-            data: FederalForm1099Nec {
+            data: crate::tests::support::builders::nec_source(FederalForm1099Nec {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
+                overtime: 0,
                 compensation: 50,
                 withholding: 0,
                 golden_parachute: 0,
-                belongs: IncomeUse::NotForProfit,
-                business: None,
-            },
+                belongs: Some(IncomeUse::NotForProfit),
+            }),
         });
-        nec.owner = owner;
+        nec.owner = crate::DocumentOwner::from(owner);
+        // Form 1099-NEC has no editable payer-name field.
+        nec.label.clear();
         add(&mut draft, nec);
     }
     draft
@@ -410,8 +458,15 @@ pub(in crate::tests) fn wage_classification_fixture(
 
 pub(in crate::tests) fn non_code_l_wage_fixture(owner: Owner) -> (FederalDraft, i64) {
     let mut original = injured_return((60_000, 5_000), (20_000, 500), 1_000, allocation());
-    let employer = original.income.iter().find(|entry| entry.owner == owner).unwrap().id;
+    let employer = original
+        .income
+        .iter()
+        .find(|entry| entry.owner == crate::DocumentOwner::from(owner))
+        .unwrap()
+        .id;
     original.adjustments.as_mut().unwrap().employee_expenses = vec![EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         leased_vehicles: vec![],
         owner,
@@ -457,11 +512,11 @@ pub(in crate::tests) mod additional_medicare {
                     // Same actual active K1/box14 source shape as k1_items. All
                     // ordinary and SE income is current, no suspended histories.
                     let mut data = ordinary_partner_source(100000, true);
-                    data.regular.basis.opening = 50000000;
+                    data.regular.basis.opening = Some(50000000);
                     data.regular.risk.start =
                         ScorpRiskStart::Detailed { capacity: 50000000, profit: 0, loss: 0 };
                     data.alternative = Some(data.regular.clone());
-                    data.limited_for_se = false;
+                    data.limited_for_se = Some(false);
                     data.reported_se = Some(10000000);
                     data.se_gross = Some(PartnerSeGross::Nonfarm { gross: 10000000 });
                     data.qbi = Some(PartnerQbiStatement {
@@ -483,6 +538,7 @@ pub(in crate::tests) mod additional_medicare {
                     // do not fabricate a withheld amount from the tax calculation.
                     let mut entry = wage(0, owner, 30000000, 0);
                     let FederalIncome::Wage { data } = &mut entry.income else { unreachable!() };
+                    let mut data = crate::tests::support::builders::edit_wage(data);
                     data.social_wages = 0;
                     data.social_tax = 0;
                     data.medicare_wages = 0;
@@ -494,10 +550,11 @@ pub(in crate::tests) mod additional_medicare {
                         medicare: 435000,
                         additional_medicare: 0,
                     };
+                    drop(data);
                     entry
                 }
             };
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             entry
         }
     }
@@ -522,7 +579,7 @@ pub(in crate::tests) mod additional_medicare {
         };
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut entry = income(savings_income(10000, 0));
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut d, entry);
         }
         add(&mut d, source.entry(owner));
@@ -563,14 +620,17 @@ pub(in crate::tests) mod home_employee {
                 // exclusion; the second case has510000 gain less500000 exclusion.
                 let mut page = crate::tests::home::home_sale_page::home(true);
                 if matches!(self, Self::TaxableHome) {
-                    page.proceeds = 73_500_000;
+                    page.form.paper_mut().unwrap().box_2a_total_gross_proceeds = 73_500_000;
                 }
-                let mut entry = income(FederalIncome::HomeSale { data: page.record() });
-                entry.label = page.address;
+                let label = page.form().address;
+                let mut entry = income(FederalIncome::HomeSale { data: page });
+                entry.label = label;
                 entry
             } else {
                 let mut entry = income(FederalIncome::EmployeeWages {
                     data: EmployeeWages {
+                        source_issuer: Default::default(),
+                        source_recipient: Default::default(),
                         wages: if matches!(self, Self::OppositeEmployee) {
                             16_000_000
                         } else {
@@ -578,8 +638,13 @@ pub(in crate::tests) mod home_employee {
                         },
                         withholding: 0,
                         form1099: true,
-                        reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
-                        complete: matches!(self, Self::CoveredEmployee | Self::OppositeEmployee),
+                        payroll: if matches!(self, Self::CoveredEmployee | Self::OppositeEmployee) {
+                            crate::EmployeePayrollSource::Form8919 {
+                                reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
+                            }
+                        } else {
+                            crate::EmployeePayrollSource::Unavailable
+                        },
                     },
                 });
                 entry.label.clear();
@@ -623,11 +688,11 @@ pub(in crate::tests) mod home_employee {
         };
         for holder in [Owner::Taxpayer, Owner::Spouse] {
             let mut entry = income(savings_income(10_000, 0));
-            entry.owner = holder;
+            entry.owner = crate::DocumentOwner::from(holder);
             add(&mut d, entry);
         }
         let mut entry = source.entry();
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
         if reversed {
             d.income.reverse();
@@ -693,14 +758,15 @@ pub(in crate::tests) mod payroll_taxes {
         };
         for holder in [Owner::Taxpayer, Owner::Spouse] {
             let mut item = income(savings_income(10000, 0));
-            item.owner = holder;
+            item.owner = crate::DocumentOwner::from(holder);
             add(&mut d, item);
         }
         for entry in &mut d.income {
             let FederalIncome::Wage { data } = &mut entry.income else {
                 continue;
             };
-            if source.tips() && entry.owner == owner {
+            let mut data = crate::tests::support::builders::edit_wage(data);
+            if source.tips() && entry.owner == crate::DocumentOwner::from(owner) {
                 let mut tips = allocated_employee_tips(5000);
                 tips.coverage = match source {
                     Source::GovernmentTips => TipCoverage::MedicareOnlyGovernment,
@@ -711,8 +777,11 @@ pub(in crate::tests) mod payroll_taxes {
                 // Explicit synthetic occupation fact for the normal editor:
                 // these tips are ineligible for Schedule1-A. Preserve their
                 // full income/payroll amounts and every money oracle.
-                data.work_deductions.tips_claim =
-                    TipsClaim::Yes { w2_tips: 0, form4137_tips: 500000, tips_eligible: false };
+                data.work_deductions.tips_claim = TipsClaim::Yes {
+                    w2_tips: 0,
+                    form4137_tips: 500000,
+                    tips_eligible: Some(false),
+                };
                 if matches!(source, Source::GovernmentTips) {
                     // This employer's government pay is Medicare-only, including
                     // its W2 wage boxes. Federal income/tip-tax figures stay the
@@ -736,7 +805,9 @@ pub(in crate::tests) mod payroll_taxes {
                     };
                 }
             }
-            if matches!(source, Source::Uncollected) && entry.owner == owner {
+            if matches!(source, Source::Uncollected)
+                && entry.owner == crate::DocumentOwner::from(owner)
+            {
                 data.uncollected_tax = Some(W2UncollectedTax {
                     tip_social: 0,
                     tip_medicare: 0,
@@ -749,7 +820,7 @@ pub(in crate::tests) mod payroll_taxes {
             if matches!(source, Source::CentPair) {
                 // Actual opposite-owner source amounts49c+49c. Native one
                 // combined payroll category rounds98c to1, never0+0.
-                let social = if entry.owner == owner { 49 } else { 0 };
+                let social = if entry.owner == crate::DocumentOwner::from(owner) { 49 } else { 0 };
                 let medicare = 49 - social;
                 data.uncollected_tax = Some(W2UncollectedTax {
                     tip_social: 0,
@@ -760,36 +831,44 @@ pub(in crate::tests) mod payroll_taxes {
                 data.social_tax -= social;
                 data.medicare_tax -= medicare;
             }
-            if matches!(source, Source::GoldenW2) && entry.owner == owner {
+            if matches!(source, Source::GoldenW2)
+                && entry.owner == crate::DocumentOwner::from(owner)
+            {
                 data.other_box12.push(W2CodeAmount { code: W2Code::K, amount: 100000 });
             }
+            drop(data);
         }
         if matches!(source, Source::GoldenNec) {
             let mut item = income(FederalIncome::Nec1099 {
-                data: FederalForm1099Nec {
+                data: crate::tests::support::builders::nec_source(FederalForm1099Nec {
+                    cash_tips: 0,
+                    tip_occupation_codes: Default::default(),
+                    overtime: 0,
                     compensation: 2000000,
                     withholding: 0,
                     golden_parachute: 500000,
-                    belongs: IncomeUse::NotForProfit,
-                    business: None,
-                },
+                    belongs: Some(IncomeUse::NotForProfit),
+                }),
             });
             item.label.clear();
-            item.owner = owner;
+            item.owner = crate::DocumentOwner::from(owner);
             add(&mut d, item);
         }
         if matches!(source, Source::SameEmployee) {
             let mut item = income(FederalIncome::EmployeeWages {
                 data: EmployeeWages {
+                    source_issuer: Default::default(),
+                    source_recipient: Default::default(),
                     wages: 16000000,
                     withholding: 0,
                     form1099: true,
-                    reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
-                    complete: true,
+                    payroll: crate::EmployeePayrollSource::Form8919 {
+                        reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
+                    },
                 },
             });
             item.label.clear();
-            item.owner = owner;
+            item.owner = crate::DocumentOwner::from(owner);
             add(&mut d, item);
         }
         if reverse {
@@ -832,15 +911,18 @@ pub(in crate::tests) mod medicare_withholding {
         };
         for holder in [Owner::Taxpayer, Owner::Spouse] {
             let mut entry = income(savings_income(10000, 0));
-            entry.owner = holder;
+            entry.owner = crate::DocumentOwner::from(holder);
             add(&mut d, entry);
         }
         for entry in &mut d.income {
             if let FederalIncome::Wage { data } = &mut entry.income {
-                if railroad && entry.owner != owner {
+                let mut data = crate::tests::support::builders::edit_wage(data);
+                if railroad && entry.owner != crate::DocumentOwner::from(owner) {
                     data.medicare_tax +=
                         if matches!(source, Source::HalfCategories) { 50 } else { 4900 };
-                } else if matches!(source, Source::Uncollected) && entry.owner == owner {
+                } else if matches!(source, Source::Uncollected)
+                    && entry.owner == crate::DocumentOwner::from(owner)
+                {
                     data.medicare_tax -= 1450;
                     data.uncollected_tax = Some(W2UncollectedTax {
                         tip_social: 0,
@@ -850,18 +932,20 @@ pub(in crate::tests) mod medicare_withholding {
                     });
                 } else if matches!(source, Source::SignedOrdinary | Source::ZeroUnderage) {
                     data.medicare_tax += if matches!(source, Source::ZeroUnderage) {
-                        if entry.owner == owner { -1 } else { 0 }
-                    } else if entry.owner == owner {
+                        if entry.owner == crate::DocumentOwner::from(owner) { -1 } else { 0 }
+                    } else if entry.owner == crate::DocumentOwner::from(owner) {
                         150
                     } else {
                         -1
                     };
                 }
+                drop(data);
             }
         }
         if railroad {
             let mut entry = wage(0, owner, 30000000, 0);
             let FederalIncome::Wage { data } = &mut entry.income else { unreachable!() };
+            let mut data = crate::tests::support::builders::edit_wage(data);
             data.social_wages = 0;
             data.social_tax = 0;
             data.medicare_wages = 0;
@@ -877,6 +961,7 @@ pub(in crate::tests) mod medicare_withholding {
                     4900
                 },
             };
+            drop(data);
             add(&mut d, entry);
         }
         if reverse {
@@ -895,6 +980,34 @@ pub(in crate::tests) fn covered_wage(
 ) -> FederalIncomeEntry {
     let mut entry = wage(id, owner, amount, withholding);
     let FederalIncome::Wage { data } = &mut entry.income else { unreachable!() };
+    let mut data = crate::tests::support::builders::edit_wage(data);
     data.retirement_plan = true;
+    drop(data);
     entry
+}
+
+// One actual RRTA source; callers state each component's availability explicitly.
+pub(in crate::tests) fn employee_railroad_source(
+    amounts: [SourceCents; 5],
+) -> EmployeeRailroadSource {
+    let [compensation, tier_1, tier_2, medicare, additional_medicare] = amounts;
+    EmployeeRailroadSource { compensation, tier_1, tier_2, medicare, additional_medicare }
+}
+
+pub(in crate::tests) fn informational_wage_document() -> W2 {
+    let mut form = crate::tests::support::builders::native_income::native_w2(6_000_000);
+    form.state_details.control_number = "00-SYNTHETIC/7".into();
+    form.more.box12 = [
+        (W2Code::C, 101),
+        (W2Code::J, 202),
+        (W2Code::V, 303),
+        (W2Code::Y, 404),
+        (W2Code::DD, 505),
+        (W2Code::GG, 606),
+        (W2Code::HH, 0),
+    ]
+    .into_iter()
+    .map(|(code, amount)| Box12Entry { code, amount })
+    .collect();
+    form
 }

@@ -1,8 +1,9 @@
-use crate::kernel::lines::line;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction};
-use crate::{BusinessSource, FederalDraft, FederalIncome, FederalResult, Owner};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line;
+use crate::{BusinessSource, FederalDraft, FederalIncome, FederalResult};
 
 #[derive(Default)]
 pub(crate) struct BusinessExclusion {
@@ -38,8 +39,9 @@ impl BusinessExclusion {
 // extended_rules::foreign figured on that pay alone.
 
 // Forward the existing invocation operands and its borrowed home context together.
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn exclude_with_section179(
+pub(crate) fn exclude_with_section179_with_claims(
     d: &FederalDraft,
     owner: usize,
     half_by_business: &alloc::collections::BTreeMap<i64, i64>,
@@ -48,13 +50,14 @@ pub(crate) fn exclude_with_section179(
     selected: Option<&crate::Section179PreparedAllocation>,
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<BusinessExclusion, crate::Section179PreparedIssue> {
     let businesses: alloc::vec::Vec<_> = d
         .income
         .iter()
         .filter_map(|entry| match &entry.income {
             FederalIncome::Business { data }
-                if usize::from(entry.owner == Owner::Spouse) == owner =>
+                if usize::from(entry.owner == crate::DocumentOwner::Spouses) == owner =>
             {
                 Some((entry.id, data))
             }
@@ -98,10 +101,17 @@ pub(crate) fn exclude_with_section179(
             continue;
         }
         half_se += half_by_business.get(id).copied().unwrap_or(0);
-        let cost = crate::section179_return::expenses(d, *id, business, selected, home)?;
+        let cost = crate::section179_return::expenses_with_claims(
+            d,
+            *id,
+            business,
+            selected,
+            home,
+            source_claims,
+        )?;
         receipts += business.receipts();
         expenses +=
-            cost - selected.map_or(0, |allocation| allocation.ordinary_risk_adjustment(*id));
+            cost - selected.map_or(0, |allocation| allocation.ordinary_limit_adjustment(*id));
     }
     let receipts = dollars(receipts);
     let expenses = dollars(expenses);
@@ -227,9 +237,11 @@ pub(crate) fn exclude_with_section179(
     let expenses: alloc::vec::Vec<_> = foreign_businesses
         .iter()
         .map(|(id, b)| {
-            crate::section179_return::expenses(d, *id, b, selected, home).map(|expense| {
-                expense - selected.map_or(0, |allocation| allocation.ordinary_risk_adjustment(*id))
-            })
+            crate::section179_return::expenses_with_claims(d, *id, b, selected, home, source_claims)
+                .map(|expense| {
+                    expense
+                        - selected.map_or(0, |allocation| allocation.ordinary_limit_adjustment(*id))
+                })
         })
         .collect::<Result<_, _>>()?;
     let gross = crate::kernel::ratio::allocate_remaining(business_gross, &receipts);

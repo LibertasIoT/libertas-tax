@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::{accepted, open_documents};
 use crate::tests::support::assert::injured_income::ltc_cent_actual_clients::{checked, financial};
 use crate::tests::support::builders::injured_income::ltc_cent_actual_clients::{
     Family, fixture, opposite, source_rows,
@@ -14,13 +14,14 @@ fn unit13_ltc_cent_actual_source_corrections_preserve_native_money() {
                 let mut s = restart(fixture(family, injured, reverse));
                 let before = financial(&s.draft, family);
                 let (_, ids) = source_rows(&s.draft);
-                let mut page = open_topic(&mut s, TaxSection::OtherIncome);
-                let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-                for row in &mut documents.documents {
+                let mut page = open_documents(&mut s);
+                let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+                for row in &mut documents.other.other_income.documents {
                     if ids.iter().any(|source| source.0 == row.id) {
-                        row.owner = opposite(row.owner);
+                        row.owner = crate::DocumentOwner::from(opposite(row.owner.owned()));
                     }
                 }
+                let page = fixture_owner_inputs(&s.draft, page);
                 accepted(&send(&mut s, page));
                 assert_eq!(financial(&s.draft, family).return_lines, before.return_lines);
                 let (_, after) = source_rows(&s.draft);

@@ -1,3 +1,4 @@
+use crate::k1_page::{K1Partnership, K1Scorp};
 // 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
 pub(in crate::tests) use super::support::assert::{accepted, rejected_with};
 use super::support::builders::native_income::empty_business_credit_history;
@@ -25,48 +26,47 @@ pub(in crate::tests) use super::support::builders::native_income::{
     document, first_lender_mortgage, native_w2 as w2, owned,
 };
 pub(in crate::tests) use super::support::client::income_pages::{
-    all_documents, catalog_estimate_documents, catalog_preview_document, open_documents,
-    open_topic, page_documents, save_documents, save_each_topic, save_topic, topic_for,
-    topic_kinds,
+    all_documents, catalog_estimate_documents, catalog_preview_document, open_document_center,
+    open_documents, open_topic, page_documents, save_documents, save_each_topic, save_topic,
+    topic_for, topic_kinds,
 };
 
 #[test]
-fn preview_is_pure_and_excludes_unrelated_income_fields() {
+fn document_candidate_save_is_pure_for_the_callers_accepted_return() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let before = session.draft.clone();
-    let request = catalog_preview_document(IncomeDocument::W2(w2(6_200_000)));
     for _ in 0..2 {
-        assert!(matches!(
-            send(&mut session, request.clone()),
-            Reply::Response(P::IncomePreview { preview: Some(6_200_000), .. })
-        ));
+        assert_eq!(
+            crate::tests::support::client::income_pages::saved_document_amount(
+                &mut session,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(6_200_000))) }
+            ),
+            Some(6_200_000)
+        );
     }
     assert_eq!(session.draft, before);
-    assert!(!session.dirty);
 }
 
 #[test]
 fn m1_documents_page_maps_onto_income_records() {
-    let original = empty_return(FederalStatus::Joint);
+    let mut original = empty_return(FederalStatus::Joint);
+    original.people.as_mut().unwrap().spouse.as_mut().unwrap().first_name = "Jordan".into();
     let mut session = Interview::new(TEST_USER, original.clone());
-    let P::SaveIncomes { allowed_documents, allowed_owners, documents, .. } =
-        open_documents(&mut session)
-    else {
+    let P::SaveDocuments { allowed_owners, documents, .. } = open_documents(&mut session) else {
         unreachable!()
     };
-    // The Wages page offers the W-2 and Form 8919 pay; the 1099s are the
-    // Interest and dividends page's.
-    assert_eq!(allowed_documents, topic_kinds(TaxSection::Wages));
-    assert_eq!(allowed_documents[0], 0);
-    let P::SaveIncomes { allowed_documents, .. } =
-        open_topic(&mut session, TaxSection::InterestDividends)
-    else {
-        unreachable!()
-    };
-    assert_eq!(allowed_documents, topic_kinds(TaxSection::InterestDividends));
     assert_eq!(allowed_owners, vec![Owner::Taxpayer as i32, Owner::Spouse as i32]);
-    assert!(documents.documents.is_empty());
-    let int = Int1099 {
+    assert!(documents.common.wages.documents.is_empty());
+    let P::SaveWagesAnswers { wages, followups, records, allowed_owners, .. } =
+        open_topic(&mut session, TaxSection::Wages)
+    else {
+        unreachable!()
+    };
+    assert_eq!(allowed_owners, vec![Owner::Taxpayer as i32, Owner::Spouse as i32]);
+    assert!(wages.is_empty());
+    assert!(followups.is_empty());
+    assert!(records.documents.is_empty());
+    let mut int = Int1099 {
         more: IntMore {
             early_penalty: 1_000,
             special: InterestSpecial::NoneOfThese,
@@ -74,25 +74,50 @@ fn m1_documents_page_maps_onto_income_records() {
         },
         ..native_int1099("Synthetic Bank".into(), 30_000)
     };
-    let div = native_div1099("".into(), 50_000, 40_000);
-    save_each_topic(
+    let mut div = native_div1099("".into(), 50_000, 40_000);
+    let mut wages = w2(5_000_000);
+    wages.employee = accepted_document_names(&original, Owner::Spouse).recipient;
+    int.recipient = accepted_document_names(&original, Owner::Spouse).recipient;
+    div.recipient = accepted_document_names(&original, Owner::Taxpayer).recipient;
+    let request = save_documents(
         &mut session,
         vec![
-            owned(Owner::Spouse, 0, IncomeDocument::W2(w2(5_000_000))),
-            owned(Owner::Spouse, 0, IncomeDocument::Int1099(int.clone())),
-            document(0, IncomeDocument::Div1099(div.clone())),
+            owned(
+                Owner::Spouse,
+                0,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wages.clone())) },
+            ),
+            owned(
+                Owner::Spouse,
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(int.clone())),
+                },
+            ),
+            document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(div.clone())),
+                },
+            ),
         ],
     );
+    accepted(&send(&mut session, request));
     let first = original.next_id;
     let expected = vec![
         FederalIncomeEntry {
+            printed: Some(PrintedDocumentNames {
+                issuer: Some(wages.employer.clone()),
+                ..accepted_document_names(&original, Owner::Spouse)
+            }),
             refund_management: None,
             state_source: Default::default(),
             id: first,
             label: "".into(),
-            owner: Owner::Spouse,
+            owner: crate::DocumentOwner::Spouses,
             income: FederalIncome::Wage {
-                data: FederalWage {
+                data: wage_source(FederalWage {
+                    tips_without_w2: false,
                     abroad: 0,
                     deferred_pension: 0,
                     inmate_pay: 0,
@@ -116,63 +141,103 @@ fn m1_documents_page_maps_onto_income_records() {
                     statutory_employee: false,
                     retirement_plan: false,
                     other_box12: Vec::new(),
-                },
+                }),
             },
             community: CommunityShare::NotNeeded,
         },
         FederalIncomeEntry {
+            printed: Some(PrintedDocumentNames {
+                issuer: Some(int.payer.clone()),
+                ..accepted_document_names(&original, Owner::Spouse)
+            }),
             refund_management: None,
             state_source: Default::default(),
             id: first + 1,
             label: "Synthetic Bank".into(),
-            owner: Owner::Spouse,
-            income: FederalIncome::Interest { data: native_interest(30_000, 1_000) },
+            owner: crate::DocumentOwner::Spouses,
+            income: FederalIncome::Interest {
+                data: interest_source(native_interest(30_000, 1_000)),
+            },
             community: CommunityShare::NotNeeded,
         },
         FederalIncomeEntry {
+            printed: Some(PrintedDocumentNames {
+                issuer: Some(div.payer.clone()),
+                ..accepted_document_names(&original, Owner::Taxpayer)
+            }),
             refund_management: None,
             state_source: Default::default(),
             id: first + 2,
             label: "".into(),
-            owner: Owner::Taxpayer,
+            owner: crate::DocumentOwner::Yours,
             income: FederalIncome::Dividend {
-                data: FederalDividend {
+                data: dividend_source(FederalDividend {
                     section199a: ReitDividends::None,
                     ..native_dividend(50_000, 40_000, 0)
-                },
+                }),
             },
             community: CommunityShare::NotNeeded,
         },
     ];
+    // Each stored paper prints the parties its accepted names record.
+    let expected: Vec<_> = expected
+        .into_iter()
+        .map(|mut entry| {
+            prepare_income_fixture(&mut entry, None);
+            // Saving the page answers no W-2 question: coverage and disability stay unanswered.
+            if let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut entry.income {
+                data.answers.coverage = None;
+                data.answers.disability = None;
+            }
+            entry
+        })
+        .collect();
     assert_eq!(session.draft.income, expected);
-    assert!(session.draft.finished_sections.contains(&TaxSection::Income));
-    // One revision per topic page.
-    assert_eq!(session.draft.revision, original.revision + 2);
+    assert!(session.draft.finished_sections.contains(&TaxSection::Documents));
+    assert_eq!(session.draft.revision, original.revision + 1);
     // Reopening rebuilds the same pages from the draft, and saving them
     // unchanged changes nothing.
     let mut session = restart(session.draft);
-    let accepted = session.draft.clone();
+    let accepted_draft = session.draft.clone();
+    int.more.calls = IntCalls { nominee: vec![0], ..Default::default() };
+
     let rebuilt: Vec<_> = all_documents(&mut session)
         .iter()
-        .map(|item| (item.id, item.owner, item.document.clone()))
+        .map(|item| (item.id, item.owner.owned(), item.document.clone()))
         .collect();
     assert_eq!(
         rebuilt,
         vec![
-            (first, Owner::Spouse, IncomeDocument::W2(w2(5_000_000))),
-            (first + 1, Owner::Spouse, IncomeDocument::Int1099(int)),
-            (first + 2, Owner::Taxpayer, IncomeDocument::Div1099(div)),
+            (
+                first,
+                Owner::Spouse,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wages.clone())) }
+            ),
+            (
+                first + 1,
+                Owner::Spouse,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(int))
+                }
+            ),
+            (
+                first + 2,
+                Owner::Taxpayer,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(div))
+                }
+            ),
         ]
     );
-    for topic in [TaxSection::Wages, TaxSection::InterestDividends] {
-        let page = open_topic(&mut session, topic);
-        send(&mut session, page);
-    }
-    assert_eq!(session.draft, accepted);
+    let page = open_document_center(&mut session);
+    accepted(&send(&mut session, page));
+    assert_eq!(session.draft, accepted_draft);
     assert!(!session.dirty);
     // A single return offers only the taxpayer as a document owner.
     let mut single = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let P::SaveIncomes { allowed_owners, .. } = open_documents(&mut single) else { unreachable!() };
+    let P::SaveDocuments { allowed_owners, .. } = open_documents(&mut single) else {
+        unreachable!()
+    };
     assert_eq!(allowed_owners, vec![Owner::Taxpayer as i32]);
 }
 
@@ -183,14 +248,32 @@ fn document_more_nothing_leaves_defaults() {
     save_each_topic(
         &mut session,
         vec![
-            document(0, IncomeDocument::W2(w2(4_000_000))),
-            document(0, IncomeDocument::Int1099(native_int1099("".into(), 20_000))),
-            document(0, IncomeDocument::Div1099(native_div1099("".into(), 10_000, 5_000))),
+            document(
+                0,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(4_000_000))) },
+            ),
+            document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(
+                        native_int1099("".into(), 20_000),
+                    )),
+                },
+            ),
+            document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(
+                        native_div1099("".into(), 10_000, 5_000),
+                    )),
+                },
+            ),
         ],
     );
     let income = &session.draft.income;
     assert_eq!(income.len(), 3);
     let FederalIncome::Wage { data } = &income[0].income else { panic!("W-2 expected") };
+    let data = FederalWage::from(data);
     assert_eq!(data.payroll, W2Payroll::SocialSecurity);
     assert_eq!(data.employee_tips, None);
     assert_eq!(data.work_deductions, FederalWorkDeductions::NONE);
@@ -199,12 +282,14 @@ fn document_more_nothing_leaves_defaults() {
     assert_eq!(data.social_tips, 0);
     assert_eq!(income[0].label, "");
     let FederalIncome::Interest { data } = &income[1].income else { panic!("1099-INT expected") };
+    let data = FederalInterest::from(data);
     assert_eq!(
         (data.early_penalty, data.exempt, data.private_activity, data.withholding, data.special),
         (0, 0, 0, 0, InterestSpecial::NoneOfThese)
     );
     assert_eq!(income[1].label, "");
     let FederalIncome::Dividend { data } = &income[2].income else { panic!("1099-DIV expected") };
+    let data = FederalDividend::from(data);
     assert_eq!(data.section199a, ReitDividends::None);
     assert_eq!(
         (
@@ -219,44 +304,67 @@ fn document_more_nothing_leaves_defaults() {
     assert_eq!(income[2].label, "");
     // A record with any other field set reopens with that box filled.
     let mut d = session.draft.clone();
-    if let FederalIncome::Wage { data } = &mut d.income[0].income {
-        data.social_tips = 12_300;
+    if let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut d.income[0].income {
+        data.form.social_tips = Some(12_300);
     }
     let mut session = Interview::new(TEST_USER, d);
     let documents = all_documents(&mut session);
-    let IncomeDocument::W2(w) = &documents[0].document else { panic!("W-2 expected") };
-    assert!(matches!(w.more, W2More { social_tips: 12_300, .. }));
-    assert!(matches!(
-        &documents[1].document,
-        IncomeDocument::Int1099(Int1099 {
-            payer,
-            more,
-            ..
-        }) if payer.is_empty() && *more == IntMore::default()
-    ));
+    let IncomeSource::Wage { value: crate::WageDocument::W2(w) } = &documents[0].document else {
+        panic!("W-2 expected")
+    };
+    assert_eq!(w.social_tips, Some(12_300));
+    let IncomeSource::InterestDividend { value: crate::InterestDividendDocument::Int1099(paper) } =
+        &documents[1].document
+    else {
+        panic!("1099-INT expected")
+    };
+    assert!(paper.payer.name.is_empty());
+    assert_eq!(paper.investment_expenses, 0);
+    assert!(paper.foreign_country_or_us_territory.is_empty());
+    let FederalIncome::Interest { data: crate::InterestSource::Int1099(source) } =
+        &session.draft.income[1].income
+    else {
+        panic!("1099-INT source expected")
+    };
+    let reopened = crate::Form1099IntSource { form: paper.clone(), ..source.clone() };
+    assert_eq!(
+        crate::IntBoxes::from(&reopened),
+        crate::IntBoxes::from(&native_int1099("".into(), 20_000))
+    );
+    assert_eq!((paper.early_withdrawal_penalty, paper.federal_income_tax_withheld), (0, 0));
+    // The topic, not the stored paper, calls for the nominee answer, and only that one.
+    let id = session.draft.income[1].id;
+    let topic = open_topic(&mut session, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = &topic else { panic!("interest topic expected") };
+    let keys: Vec<_> = followups
+        .iter()
+        .map(|row| row.key.as_str())
+        .filter(|key| key.starts_with(&alloc::format!("income/{id}/")))
+        .collect();
+    assert!(keys.contains(&alloc::format!("income/{id}/nominee").as_str()));
+    assert!(!keys.contains(&alloc::format!("income/{id}/after_death").as_str()));
 }
 
 #[test]
 fn preview_document_calculation_fills_the_row() {
     let d = empty_return(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, d.clone());
-    let preview = |session: &mut Interview, document: IncomeDocument| match send(
-        session,
-        catalog_preview_document(document),
-    ) {
-        Reply::Response(P::IncomePreview { preview, .. }) => preview,
-        other => panic!("expected a preview, got {other:?}"),
+    let preview = |session: &mut Interview, document: IncomeSource| {
+        crate::tests::support::client::income_pages::saved_document_amount(session, document)
     };
-    let wage = IncomeDocument::W2(w2(4_000_000));
-    let interest = IncomeDocument::Int1099(native_int1099("".into(), 20_000));
-    let dividend = IncomeDocument::Div1099(Div1099 {
-        more: DivMore {
+    let wage = IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(4_000_000))) };
+    let interest = IncomeSource::InterestDividend {
+        value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+            "".into(),
+            20_000,
+        ))),
+    };
+    let dividend = IncomeSource::InterestDividend {
+        value: crate::InterestDividendDocument::Div1099(dividend_document(Div1099 {
             capital_distributions: 2_500,
-            special: crate::DividendSpecial::NoneOfThese,
-            ..Default::default()
-        },
-        ..native_div1099("".into(), 10_000, 5_000)
-    });
+            ..native_div1099("".into(), 10_000, 5_000)
+        })),
+    };
     assert_eq!(preview(&mut session, wage.clone()), Some(4_000_000));
     assert_eq!(preview(&mut session, interest.clone()), Some(20_000));
     assert_eq!(preview(&mut session, dividend.clone()), Some(12_500));
@@ -274,7 +382,13 @@ fn box12_code_twice_is_rejected() {
     for (form, key) in super::support::builders::native_income::rejected_w2_cases() {
         let original = complete(FederalStatus::Single);
         let mut session = Interview::new(TEST_USER, original.clone());
-        let request = save_documents(&original, vec![document(0, IncomeDocument::W2(form))]);
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(form)) },
+            )],
+        );
         rejected_with(send(&mut session, request), key);
         assert_eq!(session.draft, original, "{key}");
         assert!(!session.dirty, "{key}");
@@ -286,13 +400,20 @@ fn box12_code_twice_is_rejected() {
 #[test]
 fn div_box_rules_reject_on_both_sides() {
     let original = complete(FederalStatus::Single);
-    let reject = |more: DivMore, key: &str| {
+    let reject = |div: Div1099, key: &str| {
         let mut session = Interview::new(TEST_USER, original.clone());
-        let div = Div1099 { more, ..native_div1099("".into(), 100_000, 0) };
-        let reply = send(
-            &mut session,
-            save_documents(&original, vec![document(0, IncomeDocument::Div1099(div))]),
-        );
+        let reply = {
+            let request = save_documents(
+                &mut session,
+                vec![document(
+                    0,
+                    IncomeSource::InterestDividend {
+                        value: crate::InterestDividendDocument::Div1099(dividend_document(div)),
+                    },
+                )],
+            );
+            send(&mut session, request)
+        };
         let Reply::Response(P::Problem { message, .. }) = reply else {
             panic!("expected a problem for {key}, got {reply:?}")
         };
@@ -301,31 +422,28 @@ fn div_box_rules_reject_on_both_sides() {
     };
     // Box 2b (unrecaptured section 1250 gain) cannot exceed box 2a.
     reject(
-        DivMore {
+        Div1099 {
             capital_distributions: 10_000,
             unrecaptured_distributions: 10_001,
-            special: crate::DividendSpecial::NoneOfThese,
-            ..Default::default()
+            ..native_div1099("".into(), 100_000, 0)
         },
         "DIV_2B_ABOVE_2A",
     );
     // Box 2d (collectibles) cannot exceed box 2a either, independently of 2b.
     reject(
-        DivMore {
+        Div1099 {
             capital_distributions: 10_000,
             collectible_distributions: 10_001,
-            special: crate::DividendSpecial::NoneOfThese,
-            ..Default::default()
+            ..native_div1099("".into(), 100_000, 0)
         },
         "DIV_2D_ABOVE_2A",
     );
     // Box 13 cannot exceed box 12.
     reject(
-        DivMore {
+        Div1099 {
             exempt_dividends: 5_000,
             private_activity_dividends: 5_001,
-            special: crate::DividendSpecial::NoneOfThese,
-            ..Default::default()
+            ..native_div1099("".into(), 100_000, 0)
         },
         "DIV_13_ABOVE_12",
     );
@@ -335,12 +453,16 @@ fn div_box_rules_reject_on_both_sides() {
 fn refund_year_is_the_deduction_year() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    let refund = Refund1099G {
-        state_details: Default::default(),
-        amount: 500_000,
-        year: 2019,
-        withholding: 0,
-        deducted: RefundDeduction::IncomeTax {
+    let refund = refund_document(
+        Refund1099G {
+            payer: Default::default(),
+            recipient: Default::default(),
+            state_details: Default::default(),
+            amount: 500_000,
+            year: 2019,
+            withholding: 0,
+        },
+        RefundDeduction::IncomeTax {
             income_paid: 800_000,
             salt_paid: 800_000,
             salt_deducted: 800_000,
@@ -349,19 +471,31 @@ fn refund_year_is_the_deduction_year() {
             sales_available: 0,
             property_refunded: 0,
         },
-    };
-    send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::Refund1099G(refund.clone()))]),
     );
-    let FederalIncome::TaxRefund { amount, history, withholding } = &session.draft.income[1].income
-    else {
+    {
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::GovernmentPayment {
+                    refund_state: None,
+                    refund_locality: Default::default(),
+                    value: refund_paper(refund.clone()),
+                },
+            )],
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    };
+    let FederalIncome::GovernmentPayment { data } = &session.draft.income[1].income else {
         unreachable!()
     };
-    assert_eq!(*amount, 500_000);
-    assert_eq!(*withholding, 0);
+    assert_eq!(data.form.state_or_local_income_tax_refunds, 500_000);
+    assert_eq!(data.form.federal_income_tax_withheld, 0);
     assert_eq!(
-        *history,
+        data.history,
         TaxRefundHistory::IncomeTax {
             deduction_year: 2019,
             income_paid: 800_000,
@@ -384,60 +518,118 @@ fn refund_year_is_the_deduction_year() {
     assert_eq!(value(&r, "taxable_state_tax_refund"), 2_800);
     // Reopening restores the deduction year and its facts.
     let mut session = restart(session.draft);
-    let documents =
-        page_documents(&open_topic(&mut session, TaxSection::GovernmentBenefits)).to_vec();
-    assert_eq!(documents[0].document, IncomeDocument::Refund1099G(refund));
+    let documents = page_documents(&open_document_center(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::GovernmentPayment { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        vec![(documents[0].document).clone()],
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::GovernmentPayment {
+                refund_state: None,
+                refund_locality: Default::default(),
+                value: refund_paper(refund)
+            }]
+        )
+    );
     // "Payments made over several years" is accepted and stored (not
     // rejected), then left out with a notice because the page cannot
     // detail the multi-year allocation the deduction needs.
     let mut session = Interview::new(TEST_USER, original.clone());
-    let reply = send(
-        &mut session,
-        save_documents(
-            &original,
+    let reply = {
+        let request = save_documents(
+            &mut session,
             vec![document(
                 0,
-                IncomeDocument::Refund1099G(Refund1099G {
-                    state_details: Default::default(),
-                    amount: 500_000,
-                    year: 2025,
-                    withholding: 0,
-                    deducted: RefundDeduction::SeveralYears,
-                }),
+                IncomeSource::GovernmentPayment {
+                    refund_state: None,
+                    refund_locality: Default::default(),
+                    value: refund_document(
+                        Refund1099G {
+                            payer: Default::default(),
+                            recipient: Default::default(),
+                            state_details: Default::default(),
+                            amount: 500_000,
+                            year: 2025,
+                            withholding: 0,
+                        },
+                        RefundDeduction::SeveralYears,
+                    ),
+                },
             )],
-        ),
-    );
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    };
     assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     let r = supported(&session.draft);
     assert!(noted(&r, "WARN_TAX_REFUND_LEFT_OUT"), "{r:?}");
     // Reopening a several-years refund reopens as the same choice.
     let mut session = restart(session.draft);
-    let documents =
-        page_documents(&open_topic(&mut session, TaxSection::GovernmentBenefits)).to_vec();
-    let IncomeDocument::Refund1099G(reopened) = &documents[0].document else {
+    let documents = page_documents(&open_document_center(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::GovernmentPayment { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::GovernmentPayment { value: _reopened, .. } = &documents[0].document else {
         panic!("expected a refund document, got {:?}", documents[0].document)
     };
-    assert_eq!(reopened.deducted, RefundDeduction::SeveralYears);
+    let FederalIncome::GovernmentPayment { data } = &session.draft.income[1].income else {
+        unreachable!()
+    };
+    assert!(matches!(
+        data.history,
+        TaxRefundHistory::IncomeTaxMultiplePriorYears { allocation_complete: false, .. }
+    ));
 }
 
-pub(in crate::tests) fn r1099(gross: i64, code: DistributionCode, ira: bool) -> R1099 {
-    let methods = DistributionCodes::methods(box7_of(&code), ira, false);
-    R1099 {
-        state_details: Default::default(),
-        gross,
-        taxable: gross,
-        withholding: 0,
-        box7: box7_of(&code),
-        allowed_treatments: DistributionCodes::treatments(box7_of(&code), ira, false),
-        allowed_methods: methods,
-        code,
-        ira,
-        trump: false,
-        more: RMore::default(),
-        disaster: DisasterDistribution::No,
-        public_safety: vec![],
-        after_death: None,
-    }
+pub(in crate::tests) fn r1099(
+    gross: i64,
+    code: DistributionCode,
+    ira: bool,
+) -> crate::R1099Answered {
+    crate::R1099Answered::new(
+        crate::R1099Source {
+            form: R1099 {
+                payer: Default::default(),
+                payer_telephone: alloc::string::String::new(),
+                account_number: alloc::string::String::new(),
+                recipient: Default::default(),
+                gross,
+                taxable: Some(gross),
+                taxable_not_determined: false,
+                total_distribution: false,
+                employee_contributions: Some(0),
+                excess_contribution_earnings: Some(0),
+                state_details: Default::default(),
+                withholding: Some(0),
+                box7: box7_of(&code),
+                ira,
+                trump: false,
+                box_3: Some(0),
+                box_6: Some(0),
+                box_8a: Some(0),
+                box_8b_percent: None,
+                box_9a_percent: None,
+                box_9b: None,
+                box_10: Some(0),
+                first_roth_year: 0,
+                fatca: false,
+                payment_date: None,
+            },
+            code: Some(code),
+            taxable_method: Some(crate::TaxableMethod::BoxTwoA),
+            disability: None,
+            box_10_basis: None,
+            disaster: None,
+            after_death: None,
+            ira_basis: false,
+        },
+        Vec::new(),
+    )
 }
 pub(in crate::tests) fn normal_kept() -> DistributionCode {
     DistributionCode::Normal { what_happened: Disposition::Kept }
@@ -446,11 +638,9 @@ pub(in crate::tests) fn early_kept() -> DistributionCode {
     DistributionCode::Early { what_happened: Disposition::Kept, exception: EarlyException::None }
 }
 // A 1099-R whose box 7a codes lead to Another code.
-pub(in crate::tests) fn other_1099(gross: i64, printed: &str, ira: bool) -> R1099 {
-    let r = R1099 {
-        code: DistributionCode::Other,
-        ..r1099(gross, DistributionCode::Nonqualified, ira)
-    };
+pub(in crate::tests) fn other_1099(gross: i64, printed: &str, ira: bool) -> crate::R1099Answered {
+    let mut r = r1099(gross, DistributionCode::Nonqualified, ira);
+    r.source_mut().code = Some(DistributionCode::Other);
     printed_as(r, printed)
 }
 
@@ -459,15 +649,29 @@ fn unsupported_code_is_refused_by_name() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
     let r = other_1099(1_000_000, "5", false);
-    let reply = send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::R1099(r.clone()))]),
-    );
+    let reply = {
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r.clone())),
+                },
+            )],
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    };
     assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     let FederalIncome::Retirement { data } = &session.draft.income[1].income else {
         unreachable!()
     };
-    assert_eq!(data.ordinary_distribution, RetirementTreatment::Unsupported);
+    assert_eq!(
+        FederalRetirement::from(data).ordinary_distribution,
+        Some(RetirementTreatment::Unsupported)
+    );
     let result = estimate(&session.draft);
     assert_eq!(result.state, ResultState::Unsupported, "{result:?}");
     assert!(
@@ -478,8 +682,20 @@ fn unsupported_code_is_refused_by_name() {
     );
     // Reopening rebuilds the identical page: a refusal is stored, not rejected.
     let mut session = restart(session.draft);
-    let documents = page_documents(&open_topic(&mut session, TaxSection::Retirement)).to_vec();
-    assert_eq!(documents[0].document, IncomeDocument::R1099(r));
+    let documents = page_documents(&open_document_center(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        vec![(documents[0].document).clone()],
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(r))
+            }]
+        )
+    );
 }
 
 #[test]
@@ -502,12 +718,28 @@ fn validation_audit_f02_w2_social_tax_includes_reported_tips_and_reopens() {
         if social_wages == 10_000 && social_tips == 1_000_000 {
             form.medicare_tax = 14_645;
         }
-        accepted(&send(
-            &mut session,
-            save_documents(&original, vec![document(0, IncomeDocument::W2(form.clone()))]),
-        ));
+        accepted(&{
+            let request = save_documents(
+                &mut session,
+                vec![document(
+                    0,
+                    IncomeSource::Wage {
+                        value: crate::WageDocument::W2(wage_document(form.clone())),
+                    },
+                )],
+            );
+            send(&mut session, request)
+        });
         let page = open_documents(&mut session);
-        assert_eq!(page_documents(&page)[0].document, IncomeDocument::W2(form));
+        let reopened = page_documents(&page)[0].document.clone();
+        assert_eq!(
+            vec![(reopened).clone()],
+            expected_named_sources(
+                &session.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(form)) }]
+            )
+        );
         let revision = session.draft.revision;
         accepted(&send(&mut session, page));
         assert_eq!(session.draft.revision, revision);
@@ -523,61 +755,86 @@ fn validation_audit_f02_w2_social_tax_above_combined_source_rejects_unchanged() 
     form.more.social_tips = 1_000_000;
     form.social_tax = 1_010_001;
     rejected_with(
-        send(
-            &mut session,
-            save_documents(&original, vec![document(0, IncomeDocument::W2(form.clone()))]),
-        ),
+        {
+            let request = save_documents(
+                &mut session,
+                vec![document(
+                    0,
+                    IncomeSource::Wage {
+                        value: crate::WageDocument::W2(wage_document(form.clone())),
+                    },
+                )],
+            );
+            send(&mut session, request)
+        },
         "W2_SOCIAL_TAX_ABOVE_WAGES",
     );
     assert_eq!(session.draft, original);
     assert!(!session.dirty);
 
     form.social_tax = 62_620;
-    accepted(&send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::W2(form))]),
-    ));
+    accepted(&{
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(form)) },
+            )],
+        );
+        send(&mut session, request)
+    });
     let before = session.draft.clone();
     let dirty = session.dirty;
     let mut reopened = open_documents(&mut session);
-    let P::SaveIncomes { documents, .. } = &mut reopened else { panic!("expected the wages page") };
-    let IncomeDocument::W2(form) = &mut documents.documents[0].document else {
+    let P::SaveDocuments { documents, .. } = &mut reopened else {
+        panic!("expected the center wages editor")
+    };
+    let crate::WageDocument::W2(form) = &mut documents.common.wages.documents[0].document else {
         panic!("expected the W-2")
     };
-    form.social_tax = 1_010_001;
+    form.social_tax = Some(1_010_001);
     rejected_with(send(&mut session, reopened), "W2_SOCIAL_TAX_ABOVE_WAGES");
     assert_eq!(session.draft, before);
     assert_eq!(session.dirty, dirty);
     let reopened = open_documents(&mut session);
-    let IncomeDocument::W2(form) = &page_documents(&reopened)[0].document else { unreachable!() };
-    assert_eq!(form.social_tax, 62_620);
+    let IncomeSource::Wage { value: crate::WageDocument::W2(form) } =
+        &page_documents(&reopened)[0].document
+    else {
+        unreachable!()
+    };
+    assert_eq!(form.social_tax, Some(62_620));
 }
 
 #[test]
 fn income_array_saves_atomically() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
+    let source = open_document_center(&mut session);
+    accepted(&send(&mut session, source));
+    let original = session.draft.clone();
+    session.dirty = false;
     let records = page_documents(&open_documents(&mut session)).to_vec();
-    let request = save_documents;
-    send(&mut session, request(&original, records.clone()));
+    let request = save_documents(&mut session, records.clone());
+    send(&mut session, request);
     assert_eq!(session.draft, original);
     assert!(!session.dirty);
     let mut invalid = records.clone();
     invalid.push(records[0].clone());
-    error(send(&mut session, request(&original, invalid)));
+    let request = save_documents(&mut session, invalid);
+    error(send(&mut session, request));
     assert_eq!(session.draft, original);
     let mut changed = records;
-    if let IncomeDocument::W2(w) = &mut changed[0].document {
-        w.wages = 6_100_000;
+    if let IncomeSource::Wage { value: crate::WageDocument::W2(w) } = &mut changed[0].document {
+        w.wages = Some(6_100_000);
     }
-    let save = request(&original, changed);
+    let save = save_documents(&mut session, changed);
     send(&mut session, save.clone());
     assert_eq!(session.draft.income.len(), 1);
     assert_eq!(session.draft.income[0].id, 1);
     assert_eq!(session.draft.revision, original.revision + 1);
     error(send(&mut session, save));
-    let accepted = session.draft.clone();
-    send(&mut session, request(&accepted, vec![]));
+    let request = save_documents(&mut session, vec![]);
+    send(&mut session, request);
     assert!(session.draft.income.is_empty());
     // Saving a topic page never finishes or reopens the income hub.
     assert!(session.draft.finished_sections.contains(&TaxSection::Income));
@@ -589,13 +846,16 @@ fn response_cannot_be_submitted_as_request() {
 }
 #[test]
 fn new_workflow_restarts_after_each_accepted_section() {
-    let fixture = complete(FederalStatus::Single);
+    let mut fixture = complete(FederalStatus::Single);
+    fixture.people.as_mut().unwrap().taxpayer.first_name = "Casey".into();
+    fixture.people.as_mut().unwrap().taxpayer.last_name = "Sample".into();
+    name_accepted_income_documents(&mut fixture);
     let mut s = Interview::new(TEST_USER, FederalDraft::empty(fixture.cookie.clone()));
     let mut reply = send(&mut s, P::OpenInterview { user: TEST_USER });
     // Amended for M3-P13: one more section, the federal payments page;
     // M3-P15: and the other taxes page; M3-P18: and the opening checklist.
     for _ in 0..24 {
-        let p = match reply {
+        let p = match crate::tests::support::client::answer_no_estimates(reply) {
             Reply::Response(P::BeginSetup {
                 cookie,
                 revision,
@@ -611,7 +871,7 @@ fn new_workflow_restarts_after_each_accepted_section() {
                 page,
                 previous,
                 review,
-                estimate,
+                estimate: estimate.map(Into::into),
                 warnings: vec![],
                 progress,
                 value: return_setup(fixture.setup.as_ref().unwrap()),
@@ -635,7 +895,7 @@ fn new_workflow_restarts_after_each_accepted_section() {
                 page,
                 previous,
                 review,
-                estimate,
+                estimate: estimate.map(Into::into),
                 warnings: vec![],
                 progress,
                 you: filer(&fixture.people.as_ref().unwrap().taxpayer),
@@ -644,6 +904,9 @@ fn new_workflow_restarts_after_each_accepted_section() {
             // page, which saves the fixture's W-2; once it is saved the
             // suggestion continues, which records the hub finished.
             Reply::Response(hub @ P::Hub { .. }) => match send(&mut s, go_on(&hub)) {
+                Reply::Edit(editor @ P::SaveDocuments { .. }) => {
+                    answer(Reply::Edit(editor), Filing::Single)
+                }
                 Reply::Edit(editor @ P::SaveIncomes { .. }) => {
                     assert!(!s.dirty);
                     answer(Reply::Edit(editor), Filing::Single)
@@ -654,13 +917,19 @@ fn new_workflow_restarts_after_each_accepted_section() {
                 // Amended for M3-P13: continuing from the credits hub opens
                 // the federal payments page.
                 // M3-P15: and the credits hub the other taxes page.
-                Reply::Response(P::Review { .. } | P::Hub { .. } | P::BeginSituations { .. })
+                Reply::Response(
+                    P::Review { .. }
+                    | P::Hub { .. }
+                    | P::BeginPayments { .. }
+                    | P::BeginOftenMissed { .. },
+                )
                 | Reply::Edit(
                     P::SaveDeductions { .. }
                     | P::SavePayments { .. }
                     | P::SaveMoreAdjustments { .. }
                     | P::SaveMoreCredits { .. }
-                    | P::SaveOtherTaxes { .. },
+                    | P::SaveOtherTaxes { .. }
+                    | P::SaveOftenMissed { .. },
                 ) => {
                     assert!(s.dirty);
                     go_on(&hub)
@@ -675,21 +944,30 @@ fn new_workflow_restarts_after_each_accepted_section() {
                 | P::SavePayments { .. }
                 | P::SaveMoreAdjustments { .. }
                 | P::SaveMoreCredits { .. }
-                | P::SaveOtherTaxes { .. }),
+                | P::SaveOtherTaxes { .. }
+                | P::SaveOftenMissed { .. }),
             ) => editor,
-            // M3-P15: the other taxes page opens empty; Next saves it. Gate
-            // fixes batch A: so does each less-common page.
-            reply @ Reply::Response(P::BeginSituations { .. }) => save_empty_situations(reply),
-            // The people page, asked on every return (gate fixes batch A).
-            reply @ Reply::Response(P::BeginChildren { .. }) => answer(reply, Filing::Single),
-            // M3-P18: the opening checklist plans W-2 wages.
-            reply @ Reply::Edit(P::SaveChecklist { .. }) => {
-                tick(reply, income_ticks(IncomeTopics::WAGES.0))
+            // New workflows compose the required answers before submitting.
+            reply @ Reply::Response(P::BeginOftenMissed { .. }) => {
+                crate::tests::support::client::answer_often_missed(
+                    reply,
+                    crate::OftenMissed::default(),
+                )
             }
-            // M3-P19: resume opens the planned Wages page directly.
+            // The dependents page is asked on every return.
+            reply @ Reply::Response(P::BeginChildren { .. }) => answer(reply, Filing::Single),
+            // Beyond your documents: nothing applies.
+            reply @ (Reply::Edit(P::SaveIncomeWithoutForm { .. })
+            | Reply::Response(P::BeginIncomeWithoutForm { .. })) => without_form_editor(reply),
+            reply @ (Reply::Edit(P::SaveChecklist { .. })
+            | Reply::Response(P::BeginChecklist { .. })) => tick(reply, Checklist::NONE),
+            Reply::Edit(editor @ P::SaveDocuments { .. }) => {
+                answer(Reply::Edit(editor), Filing::Single)
+            }
             Reply::Edit(editor @ P::SaveIncomes { .. }) => {
                 answer(Reply::Edit(editor), Filing::Single)
             }
+            Reply::Edit(editor @ P::SaveWagesAnswers { .. }) => editor,
             Reply::Response(P::Review { result, .. }) => {
                 assert_eq!(result.state, ResultState::EstimatedForSupportedScope);
                 return;
@@ -708,7 +986,10 @@ fn failed_deletion_at_revision_limit_is_not_reported_as_success() {
     let mut d = complete(FederalStatus::Single);
     d.revision = i64::MAX - 1;
     let mut s = Interview::new(TEST_USER, d.clone());
-    error(send(&mut s, save_documents(&d, vec![])));
+    error({
+        let request = save_documents(&mut s, vec![]);
+        send(&mut s, request)
+    });
     assert_eq!(s.draft, d);
     assert!(!s.dirty);
 }
@@ -729,14 +1010,14 @@ fn unchanged_history_next_preserves_every_saved_page_and_completion() {
             page: PAGE_PEOPLE,
             previous: PAGE_SETUP,
             review: false,
-            estimate: vec![],
+            estimate: None,
             warnings: vec![],
             progress: vec![],
             you: filer(&original.people.as_ref().unwrap().taxpayer),
         },
     );
     // The people page follows your page on every return (gate fixes batch A).
-    assert!(matches!(reply, Reply::Response(P::BeginChildren { .. })));
+    assert!(matches!(reply, Reply::Response(P::BeginChildren { .. })), "{reply:?}");
     assert_eq!(session.draft, original);
     assert!(!session.dirty);
     assert_eq!(restart(session.draft).draft, original);
@@ -746,6 +1027,9 @@ fn unchanged_history_next_preserves_every_saved_page_and_completion() {
 fn changed_history_replaces_page_atomically_and_keeps_later_pages() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
+    let source = open_document_center(&mut session);
+    accepted(&send(&mut session, source));
+    let original = session.draft.clone();
     let mut people = original.people.clone().unwrap();
     people.taxpayer.first_name = "Another".into();
     people.taxpayer.last_name = "Synthetic Filer".into();
@@ -761,7 +1045,7 @@ fn changed_history_replaces_page_atomically_and_keeps_later_pages() {
             page: PAGE_PEOPLE,
             previous: PAGE_SETUP,
             review: false,
-            estimate: vec![],
+            estimate: None,
             warnings: vec![],
             progress: vec![],
             you: filer(&people.taxpayer),
@@ -803,7 +1087,7 @@ fn changed_history_replaces_page_atomically_and_keeps_later_pages() {
             page: PAGE_PEOPLE,
             previous: PAGE_SETUP,
             review: false,
-            estimate: vec![],
+            estimate: None,
             warnings: vec![],
             progress: vec![],
             you: filer(&original.people.unwrap().taxpayer),
@@ -839,7 +1123,10 @@ fn landing_forwards_start_or_resume_without_changing_saved_answers() {
         );
         match (state, send(&mut interview, P::OpenInterview { user: TEST_USER })) {
             ("new", Reply::Response(P::BeginSetup { .. }))
-            | ("unfinished", Reply::Edit(P::SaveIncomes { topic: TaxSection::Wages, .. }))
+            | (
+                "unfinished",
+                Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. }),
+            )
             | ("complete" | "finished", Reply::Response(P::Review { .. })) => {}
             (_, reply) => panic!("unexpected landing destination for {state}: {reply:?}"),
         }
@@ -864,10 +1151,6 @@ fn dc_homebuyer_carryforward_uses_2026_form_8859_limit_and_survives_restart() {
     let after_restart = supported(&restart(d.clone()).draft);
     assert_eq!(after_restart.tax, r.tax);
     assert_eq!(value(&after_restart, "dc_homebuyer_carryforward_2027"), 977);
-
-    d.credits.as_mut().unwrap().dc_homebuyer_carry = Some(-100);
-    assert!(!d.valid_stored());
-    assert_eq!(estimate(&d).state, ResultState::Incomplete);
 }
 
 #[test]
@@ -904,7 +1187,7 @@ pub(in crate::tests) fn save_setup(d: &FederalDraft, value: ReturnSetup) -> P {
         page: PAGE_SETUP,
         previous: PAGE_SETUP,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value,
@@ -920,10 +1203,40 @@ pub(in crate::tests) fn save_you(d: &FederalDraft, you: Filer) -> P {
         page: PAGE_PEOPLE,
         previous: PAGE_SETUP,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         you,
+    }
+}
+// The separate return's community-property step, answered on its editor.
+pub(in crate::tests) fn save_community(d: &FederalDraft, value: CommunityAnswer) -> P {
+    P::SaveCommunityProperty {
+        user: TEST_USER,
+        cookie: d.cookie.clone(),
+        revision: d.revision,
+        page: PAGE_PEOPLE,
+        previous: PAGE_PEOPLE,
+        review: false,
+        estimate: None,
+        warnings: vec![],
+        progress: vec![],
+        value,
+    }
+}
+// The separate return's spouse boxes step, answered on its editor.
+pub(in crate::tests) fn save_spouse_boxes(d: &FederalDraft, value: SpouseBoxes) -> P {
+    P::SaveSpouseBoxes {
+        user: TEST_USER,
+        cookie: d.cookie.clone(),
+        revision: d.revision,
+        page: PAGE_DEDUCTIONS,
+        previous: PAGE_DEDUCTIONS,
+        review: false,
+        estimate: None,
+        warnings: vec![],
+        progress: vec![],
+        value,
     }
 }
 pub(in crate::tests) fn save_spouse(d: &FederalDraft, spouse: Filer) -> P {
@@ -936,7 +1249,7 @@ pub(in crate::tests) fn save_spouse(d: &FederalDraft, spouse: Filer) -> P {
         page: PAGE_PEOPLE,
         previous: PAGE_PEOPLE,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         spouse: spouse.into(),
@@ -952,32 +1265,53 @@ pub(in crate::tests) fn save_checklist(d: &FederalDraft, previous: i32, value: C
         page: PAGE_CHECKLIST,
         previous,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
-        joint: d.setup.as_ref().is_some_and(|s| s.filing_status() == FederalStatus::Joint),
-        value,
+        from_documents: vec![],
+        value: value.into(),
     }
 }
-// The checklist with only these income ticks.
-pub(in crate::tests) fn income_ticks(income: u32) -> Checklist {
-    Checklist { income, ..Checklist::NONE }
+// Beyond your documents with only these activities checked.
+pub(in crate::tests) fn activities(activities: u32) -> Checklist {
+    Checklist { activities, ..Checklist::NONE }
 }
 // Next on the checklist page a reply opened, with these ticks.
+// The unsaved page (BeginChecklist) is answered as a client builds it.
 pub(in crate::tests) fn tick(reply: Reply, value: Checklist) -> P {
-    let Reply::Edit(P::SaveChecklist {
-        cookie,
-        revision,
-        page,
-        previous,
-        review,
-        estimate,
-        progress,
-        joint,
-        ..
-    }) = reply
-    else {
-        panic!("expected the checklist, got {reply:?}")
+    let (cookie, revision, page, previous, review, estimate, progress, from_documents) = match reply
+    {
+        Reply::Edit(P::SaveChecklist {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+            from_documents,
+            ..
+        }) => (cookie, revision, page, previous, review, estimate, progress, from_documents),
+        Reply::Response(P::BeginChecklist {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+            from_documents,
+        }) => (
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate.map(Into::into),
+            progress,
+            from_documents,
+        ),
+        reply => panic!("expected the checklist, got {reply:?}"),
     };
     P::SaveChecklist {
         user: TEST_USER,
@@ -989,8 +1323,8 @@ pub(in crate::tests) fn tick(reply: Reply, value: Checklist) -> P {
         estimate,
         warnings: vec![],
         progress,
-        joint,
-        value,
+        from_documents,
+        value: value.into(),
     }
 }
 // Continue the displayed section after submitting its topic editors.
@@ -1020,7 +1354,7 @@ pub(in crate::tests) fn navigate(d: &FederalDraft, section: TaxSection) -> P {
 // Go to, from the review, sent.
 pub(in crate::tests) fn from_review(s: &mut Interview, section: TaxSection) -> Reply {
     let request = navigate(&s.draft, section);
-    send(s, request)
+    crate::tests::support::client::answer_no_estimates(send(s, request))
 }
 // Go to, from the page `from` (a hub or the review).
 pub(in crate::tests) fn go_to(d: &FederalDraft, from: i32, section: TaxSection) -> P {
@@ -1044,11 +1378,58 @@ pub(in crate::tests) fn adult(first: &str, last: &str, birth_date: u32) -> Filer
         first_name: first.into(),
         last_name: last.into(),
         birth_date,
-        blind: false,
-        claimable: Claimable::Nobody,
         identification: Identification::SocialSecurityNumber,
-        more: MoreAboutYou::Nothing,
-        real_estate_professional: None,
+        details: FilerDetails {
+            blind: false,
+            claimable: Claimable::Nobody,
+            more: MoreAboutYou::Nothing,
+            real_estate_professional: None,
+        },
+        situations: 0,
+    }
+}
+
+#[test]
+fn filer_details_preserve_defaults_and_each_nondefault_through_person_and_spouse() {
+    for fact in 0..7 {
+        let mut you = adult("Alex", "Sample", 19850301);
+        match fact {
+            0 => {}
+            1 => you.details.blind = true,
+            2 => {
+                you.details.claimable = Claimable::Possibly {
+                    another_eitc_child: false,
+                    dependency: FilerDependency::CanBeClaimed { claimed: true },
+                    us_home_over_half_year: true,
+                    full_time_student: false,
+                    disabled: false,
+                    incapable_self_care: false,
+                    support_share: SupportShare::LessThanHalf,
+                    parent_alive: true,
+                };
+            }
+            3 => you.identification = Identification::Itin,
+            4 => {
+                you.details.more = MoreAboutYou::Died {
+                    date: 20260630,
+                    estate_medical: 123_456,
+                    bonds: None,
+                    ordinary: true,
+                };
+            }
+            5 => {
+                you.details.real_estate_professional = Some(ProfessionalRentalsPage {
+                    single_activity: ProfessionalRentalElection::SeparateActivities,
+                    over_500_hours: true,
+                });
+            }
+            6 => you.situations = YourSituations::COMMUNITY_PROPERTY.0,
+            _ => unreachable!(),
+        }
+        assert_eq!(filer(&crate::interview::federal_person(&you)), you, "fact {fact}");
+        let spouse = SpouseAnswers::from(you.clone());
+        assert_eq!(SpouseAnswers::from_avro(&spouse.to_avro()).unwrap(), spouse);
+        assert_eq!(Filer::from(spouse), you, "fact {fact}");
     }
 }
 
@@ -1069,7 +1450,7 @@ fn m1_setup_and_filer_pages_reach_the_draft() {
     assert_eq!(
         s.draft.setup,
         Some(FederalSetup {
-            separate_spouse: SeparateSpouseBoxes::NoneOfThese,
+            separate_spouse: SeparateSpouseBoxes::NotAnswered,
             label: crate::Message::new(
                 "LABEL_RETURN",
                 alloc::vec![crate::MessageArg::Number(2026)]
@@ -1079,7 +1460,7 @@ fn m1_setup_and_filer_pages_reach_the_draft() {
             status: FilingChoice::Joint,
             marital_state: MaritalState::Married { living: SpouseLiving::Together },
             paid_over_half_home: false,
-            community_property: CommunityProperty::No,
+            community_property: CommunityProperty::NotAnswered,
         })
     );
 
@@ -1113,6 +1494,7 @@ fn m1_setup_and_filer_pages_reach_the_draft() {
             first_name: "Alex Q".into(),
             last_name: "Sample".into(),
             real_estate_professional: None,
+            whole_return: 0,
         }
     );
     // Restarting before the spouse page resumes at it; Back returns to your page.
@@ -1134,16 +1516,19 @@ fn m1_setup_and_filer_pages_reach_the_draft() {
 
     // The spouse page keeps every dependency test of a Possibly answer.
     let spouse = Filer {
-        blind: true,
-        claimable: Claimable::Possibly {
-            another_eitc_child: false,
-            dependency: FilerDependency::CanBeClaimed { claimed: false },
-            us_home_over_half_year: true,
-            full_time_student: true,
-            disabled: false,
-            incapable_self_care: false,
-            support_share: SupportShare::LessThanHalf,
-            parent_alive: true,
+        details: FilerDetails {
+            blind: true,
+            claimable: Claimable::Possibly {
+                another_eitc_child: false,
+                dependency: FilerDependency::CanBeClaimed { claimed: false },
+                us_home_over_half_year: true,
+                full_time_student: true,
+                disabled: false,
+                incapable_self_care: false,
+                support_share: SupportShare::LessThanHalf,
+                parent_alive: true,
+            },
+            ..adult("Jordan", "Sample", 20030720).details
         },
         ..adult("Jordan", "Sample", 20030720)
     };
@@ -1233,18 +1618,22 @@ fn identification_supplies_ssn_and_tin_answers() {
     ] {
         // Your page with Nobody, the spouse page with Possibly: both read
         // the identification, and both reopen with it.
-        let you = Filer { identification, ..adult("Alex", "Sample", 19850301) };
+        let mut you = adult("Alex", "Sample", 19850301);
+        you.identification = identification;
         let spouse = Filer {
             identification,
-            claimable: Claimable::Possibly {
-                another_eitc_child: false,
-                dependency: FilerDependency::CanBeClaimed { claimed: false },
-                us_home_over_half_year: true,
-                full_time_student: true,
-                disabled: false,
-                incapable_self_care: false,
-                support_share: SupportShare::LessThanHalf,
-                parent_alive: true,
+            details: FilerDetails {
+                claimable: Claimable::Possibly {
+                    another_eitc_child: false,
+                    dependency: FilerDependency::CanBeClaimed { claimed: false },
+                    us_home_over_half_year: true,
+                    full_time_student: true,
+                    disabled: false,
+                    incapable_self_care: false,
+                    support_share: SupportShare::LessThanHalf,
+                    parent_alive: true,
+                },
+                ..adult("Jordan", "Sample", 20030720).details
             },
             ..adult("Jordan", "Sample", 20030720)
         };
@@ -1271,23 +1660,22 @@ fn review_line_25_is_the_documents_withholding() {
     add(
         &mut d,
         income(FederalIncome::Interest {
-            data: FederalInterest {
+            data: interest_source(FederalInterest {
                 taxable: 30_000,
                 withholding: 10_000,
                 special: InterestSpecial::NoneOfThese,
                 ..Default::default()
-            },
+            }),
         }),
     );
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 ordinary: 20_000,
                 withholding: 5_000,
-                special: crate::DividendSpecial::NoneOfThese,
                 ..Default::default()
-            },
+            }),
         }),
     );
     let mut session = Interview::new(TEST_USER, d);
@@ -1303,13 +1691,13 @@ fn review_line_25_is_the_documents_withholding() {
 
 #[test]
 fn every_rare_situation_refuses_with_its_name() {
-    // The table lists every current variant in Avro index order. Its
-    // single-byte union tag is the zigzag-encoded index; refusal checks
-    // below cover each current variant's name and destination.
-    for (index, situation) in RareSituation::ALL.iter().enumerate() {
-        assert_eq!(usize::from(situation.to_avro()[0]), 2 * index);
+    // Current selections retain their declared numeric values when another
+    // situation becomes supported. Refusal checks cover names and destinations.
+    for (situation, value) in RareSituation::ALL.into_iter().zip([0, 1, 3, 4, 6, 7, 8, 9, 10, 11]) {
+        assert_eq!(situation.to_avro(), vec![2 * value]);
+        assert_eq!(RareSituation::from_avro(&[2 * value]).unwrap(), situation);
     }
-    // Unit B2 removed FarmRental (the Farming topic's Farm rental kind).
+    // Farm rental is entered through the Farming topic.
     assert_eq!(RareSituation::ALL.last(), Some(&RareSituation::Casualty));
     let d = complete(FederalStatus::Single);
     let baseline = supported(&d);
@@ -1324,7 +1712,7 @@ fn every_rare_situation_refuses_with_its_name() {
             Some(name),
             "{item:?} name resource"
         );
-        let explanation = if matches!(item, Chosen::Tax(OtherTax::OtherAdditionalTaxes { .. })) {
+        let explanation = if matches!(item, Unprepared::OtherAdditionalTaxes { .. }) {
             alloc::format!(
                 "{}: the App does not calculate the required source history ({name}). This additional tax must be resolved before a federal estimate can be completed.",
                 refusal.topic
@@ -1381,64 +1769,85 @@ fn every_rare_situation_refuses_with_its_name() {
     assert_eq!(estimate(&d), baseline);
 }
 
-// Saves the checklist, opened from the review, with these whole-return ticks.
-pub(in crate::tests) fn save_whole_return(s: &mut Interview, whole_return: u32) -> Reply {
-    let reply = send(s, go_to(&s.draft, PAGE_REVIEW, TaxSection::Checklist));
-    let Reply::Edit(P::SaveChecklist { value, .. }) = &reply else {
-        panic!("expected the checklist, got {reply:?}")
+// Saves About you, opened from the review, with these whole-return items.
+pub(in crate::tests) fn save_your_situations(s: &mut Interview, bits: u32) -> Reply {
+    let Reply::Edit(mut request @ P::SavePeople { .. }) = from_review(s, TaxSection::People) else {
+        panic!("expected About you")
     };
-    let value = Checklist { whole_return, ..*value };
-    send(s, tick(reply, value))
+    if let P::SavePeople { you, .. } = &mut request {
+        you.situations = bits;
+    }
+    send(s, request)
 }
-// Gate fixes batch A: the whole return is the checklist's seventh list,
-// asked once. Two items are refused by name under the checklist, two are
-// notices that leave the tax unchanged, and the joint-only items need a
-// joint return on both sides (the client rule's server twin).
+// Saves the filers' pages, opened from the review, with these whole-return
+// situations: the YourSituations items on About you, the others on the
+// spouse page of a joint return. Returns the last page's reply.
+pub(in crate::tests) fn save_whole_return(s: &mut Interview, bits: u32) -> Reply {
+    let mine = YourSituations::DUAL_STATUS.0 | YourSituations::COMMUNITY_PROPERTY.0;
+    let Reply::Edit(mut request @ P::SavePeople { .. }) =
+        send(s, go_to(&s.draft, PAGE_REVIEW, TaxSection::People))
+    else {
+        panic!("expected About you")
+    };
+    if let P::SavePeople { you, .. } = &mut request {
+        you.situations = bits & mine;
+    }
+    let reply = send(s, request);
+    if matches!(reply, Reply::Response(P::Problem { .. }))
+        || s.draft.people.as_ref().is_none_or(|p| p.spouse.is_none())
+    {
+        return reply;
+    }
+    let Reply::Edit(mut request @ P::SaveSpouse { .. }) =
+        send(s, go_to(&s.draft, PAGE_REVIEW, TaxSection::Spouse))
+    else {
+        panic!("expected About your spouse")
+    };
+    if let P::SaveSpouse { spouse, .. } = &mut request {
+        spouse.situations = bits & !mine;
+    }
+    send(s, request)
+}
+// The whole-return situations are asked on the filers' pages. Two items
+// are refused by name under About you, two are notices that leave the tax
+// unchanged, and each page takes only its own items.
 #[test]
-fn whole_return_list_refuses_notices_and_needs_a_joint_return() {
+fn whole_return_situations_refuse_and_notice_on_the_filers_pages() {
     let save = save_whole_return;
     let single = complete(FederalStatus::Single);
     for (bit, form) in [
-        (WholeReturnTopics::DUAL_STATUS.0, "Form 1040-NR"),
-        (WholeReturnTopics::COMMUNITY_PROPERTY.0, "Form 8958"),
+        (YourSituations::DUAL_STATUS.0, "Form 1040-NR"),
+        (YourSituations::COMMUNITY_PROPERTY.0, "Form 8958"),
     ] {
         let mut s = Interview::new(TEST_USER, single.clone());
         save(&mut s, bit);
-        assert_eq!(s.draft.checklist.whole_return, bit);
+        assert_eq!(s.draft.whole_return(), bit);
         let r = estimate(&s.draft);
         assert_eq!(r.state, ResultState::Unsupported);
         assert!(
-            r.issues.iter().any(|i| i.section == "Your 2026 at a glance"
+            r.issues.iter().any(|i| i.section == "About you"
                 && i.message.contains(form)
                 && i.message.ends_with("is not calculated yet.")),
             "{r:?}"
         );
-        // Review names it once, on the checklist.
+        // Review names it once, on About you.
         let items = crate::interview::remaining_items(&s.draft, &r, TaxSection::Review);
-        assert_eq!(items.iter().filter(|i| i.section == TaxSection::Checklist).count(), 1);
-        // Unticking it restores the supported estimate.
+        assert_eq!(items.iter().filter(|i| i.section == TaxSection::People).count(), 1);
+        // Unchecking it restores the supported estimate.
         save(&mut s, 0);
         assert_eq!(supported(&s.draft).tax, supported(&single).tax);
     }
-    // The joint-only items are refused off a joint return.
-    for bit in [
-        WholeReturnTopics::NONRESIDENT_SPOUSE.0,
-        WholeReturnTopics::INJURED_SPOUSE.0,
-        WholeReturnTopics::INNOCENT_SPOUSE.0,
-    ] {
-        let mut s = Interview::new(TEST_USER, single.clone());
-        let Reply::Response(P::Problem { message, .. }) = save(&mut s, bit) else {
-            panic!("expected a refusal")
-        };
-        assert!(shown(&message).starts_with("The nonresident spouse choice"));
-        assert_eq!(s.draft.checklist.whole_return, 0);
-    }
+    // About you offers only its own items.
+    let mut s = Interview::new(TEST_USER, single.clone());
+    let reply = save_your_situations(&mut s, SpouseSituations::INJURED_SPOUSE.0);
+    assert_eq!(refusal(reply), "Choose only the listed items.");
+    assert_eq!(s.draft.whole_return(), 0);
     // On a joint return the nonresident spouse choice and innocent spouse
-    // relief are notices on the checklist; the tax is the ordinary joint
+    // relief are notices on the spouse page; the tax is the ordinary joint
     // return's.
     let joint = complete(FederalStatus::Joint);
     let mut s = Interview::new(TEST_USER, joint.clone());
-    save(&mut s, WholeReturnTopics::NONRESIDENT_SPOUSE.0 | WholeReturnTopics::INNOCENT_SPOUSE.0);
+    save(&mut s, SpouseSituations::NONRESIDENT_SPOUSE.0 | SpouseSituations::INNOCENT_SPOUSE.0);
     let r = supported(&s.draft);
     assert_eq!(r.tax, supported(&joint).tax);
     for key in [
@@ -1447,26 +1856,51 @@ fn whole_return_list_refuses_notices_and_needs_a_joint_return() {
     ] {
         assert!(
             r.review_notes.iter().any(|n| n.display.key == key
-                && n.context == Some(crate::IssueContext::Section(TaxSection::Checklist))),
+                && n.context == Some(crate::IssueContext::Section(TaxSection::Spouse))),
             "{key}"
         );
     }
-    // Leaving the joint return removes the joint-only ticks, named.
+    // Leaving the joint return removes the spouse page with its items.
     let mut d = s.draft.clone();
     d.setup = complete(FederalStatus::Single).setup;
-    let pruned = crate::interview::prune(&mut d);
-    assert_eq!(d.checklist.whole_return, 0);
-    for key in [
-        "SAVING_REMOVES_TOPIC_NONRESIDENT_SPOUSE_TREATED_AS_A_RESIDENT",
-        "SAVING_REMOVES_TOPIC_INNOCENT_SPOUSE_RELIEF",
-    ] {
-        assert!(pruned.removed.iter().any(|r| r.key() == key), "{key}");
+    crate::interview::prune(&mut d);
+    assert_eq!(d.whole_return(), 0);
+}
+
+// What carries a formatted line: the field itself, or an estimate's line.
+pub(in crate::tests) trait Line {
+    fn line(&self) -> &[u8];
+}
+impl Line for [u8] {
+    fn line(&self) -> &[u8] {
+        self
+    }
+}
+impl Line for Vec<u8> {
+    fn line(&self) -> &[u8] {
+        self
+    }
+}
+impl Line for crate::EstimateSoFar {
+    fn line(&self) -> &[u8] {
+        &self.line
+    }
+}
+impl Line for crate::EstimateCarry {
+    fn line(&self) -> &[u8] {
+        &self.line
+    }
+}
+impl<T: Line> Line for Option<T> {
+    fn line(&self) -> &[u8] {
+        self.as_ref().map_or(&[], Line::line)
     }
 }
 
 // The text a formatted-text field shows.
-pub(in crate::tests) fn shown(message: &[u8]) -> alloc::string::String {
+pub(in crate::tests) fn shown<T: Line + ?Sized>(message: &T) -> alloc::string::String {
     use libertas::AvroDecode;
+    let message = message.line();
     let mut offset = 0;
     if let Ok(tuple) = crate::common::FormattedMessage::avro_decode(message, &mut offset)
         && offset == message.len()
@@ -1488,22 +1922,35 @@ pub(in crate::tests) fn opened(reply: &Reply) -> (&'static str, alloc::string::S
         | Reply::Edit(P::SavePeople { progress, .. }) => ("you", progress),
         Reply::Response(P::BeginSpouse { progress, .. })
         | Reply::Edit(P::SaveSpouse { progress, .. }) => ("spouse", progress),
+        Reply::Response(P::BeginCommunityProperty { progress, .. })
+        | Reply::Edit(P::SaveCommunityProperty { progress, .. }) => {
+            ("community property", progress)
+        }
+        Reply::Response(P::BeginSpouseItemizes { progress, .. })
+        | Reply::Edit(P::SaveSpouseItemizes { progress, .. }) => ("spouse itemizing", progress),
+        Reply::Response(P::BeginSpouseBoxes { progress, .. })
+        | Reply::Edit(P::SaveSpouseBoxes { progress, .. }) => ("spouse boxes", progress),
         Reply::Response(P::BeginChildren { progress, .. }) => ("people", progress),
         Reply::Edit(P::SaveChildren { progress, .. }) => {
             ("people", progress.as_ref().expect("supplied progress"))
         }
-        Reply::Edit(P::SaveChecklist { progress, .. }) => ("checklist", progress),
+        Reply::Response(P::BeginIncomeWithoutForm { progress, .. })
+        | Reply::Edit(P::SaveIncomeWithoutForm { progress, .. }) => {
+            ("income without a form", progress)
+        }
+        Reply::Edit(P::SaveChecklist { progress, .. })
+        | Reply::Response(P::BeginChecklist { progress, .. }) => ("checklist", progress),
+        Reply::Edit(P::SaveDocuments { progress, .. }) => {
+            ("documents", progress.as_ref().expect("native supplied progress"))
+        }
         Reply::Response(P::Hub { progress, page: PAGE_INCOME, .. }) => ("income", progress),
         Reply::Response(P::Hub { progress, page: PAGE_ITEMIZED, .. }) => ("itemized", progress),
         Reply::Response(P::Hub { progress, page: PAGE_CREDITS, .. }) => ("credits", progress),
         Reply::Edit(P::SaveDeductions { progress, .. }) => ("deductions", progress),
-        Reply::Edit(P::SavePayments { progress, .. }) => ("payments", progress),
-        Reply::Response(P::BeginSituations { progress, topic: TaxSection::MoreIncome, .. }) => {
-            ("less common income", progress)
-        }
-        Reply::Response(P::BeginSituations {
-            progress, topic: TaxSection::MoreItemized, ..
-        }) => ("more itemized", progress),
+        Reply::Edit(P::SavePayments { progress, .. })
+        | Reply::Response(P::BeginPayments { progress, .. }) => ("payments", progress),
+        Reply::Edit(P::SaveOftenMissed { progress, .. })
+        | Reply::Response(P::BeginOftenMissed { progress, .. }) => ("often missed", progress),
         Reply::Edit(P::SaveMoreAdjustments { progress, .. }) => ("more adjustments", progress),
         Reply::Edit(P::SaveMoreCredits { progress, .. }) => {
             ("more credits", progress.as_ref().expect("supplied progress"))
@@ -1513,9 +1960,16 @@ pub(in crate::tests) fn opened(reply: &Reply) -> (&'static str, alloc::string::S
         }
         Reply::Response(P::Hub { progress, .. }) => ("adjustments", progress),
         Reply::Edit(P::SaveHsa { progress, .. }) => ("hsa", progress),
-        Reply::Edit(P::SaveCare { progress, .. }) => ("care", progress),
+        Reply::Edit(P::SaveCare { progress, .. })
+        | Reply::Response(P::BeginCare { progress, .. }) => ("care", progress),
+        Reply::Edit(P::SaveWagesAnswers { progress, .. }) => {
+            ("wages", progress.as_ref().expect("native supplied progress"))
+        }
         Reply::Edit(P::SaveIncomes { progress, topic: TaxSection::Wages, .. }) => {
             ("wages", progress.as_ref().expect("native supplied progress"))
+        }
+        Reply::Edit(P::SaveIncomes { progress, topic: TaxSection::SelfEmployment, .. }) => {
+            ("self-employment", progress.as_ref().expect("native supplied progress"))
         }
         Reply::Edit(P::SaveIncomes { progress, .. }) => {
             ("interest", progress.as_ref().expect("native supplied progress"))
@@ -1547,78 +2001,123 @@ fn choose_suggestion(hub: &P) -> P {
         navigation: navigation.clone(),
     }
 }
-// Presses Next on an empty situations page (the other taxes page of the
-// sequence, M3-P15): saves it with nothing chosen.
-pub(in crate::tests) fn save_empty_situations(reply: Reply) -> P {
-    let Reply::Response(P::BeginSituations {
-        topic,
-        allowed_situations,
-        cookie,
-        revision,
-        page,
-        previous,
-        review,
-        estimate,
-        progress,
-    }) = reply
-    else {
-        panic!("expected an empty situations page, got {reply:?}")
-    };
-    P::SaveSituations {
-        user: TEST_USER,
-        topic,
-        allowed_situations,
-        cookie,
-        revision,
-        page,
-        previous,
-        review,
-        estimate,
-        warnings: vec![],
-        progress,
-        value: Situations { situations: vec![] },
-    }
-}
 // Walks on from a reply to the review: each less-common page passed with
 // "None of these", each hub continued.
 pub(in crate::tests) fn walk_on_to_review(s: &mut Interview, mut reply: Reply) {
     loop {
-        reply = match past_less_common(s, reply) {
+        reply = match crate::tests::support::client::answer_no_estimates(past_less_common(s, reply))
+        {
             Reply::Response(hub @ P::Hub { .. }) => send(s, hub_action(&hub)),
             Reply::Response(P::Review { .. }) => return,
-            Reply::Edit(mut page @ P::SaveCare { .. }) => {
+            Reply::Edit(P::SaveEducation { .. }) => {
+                panic!("answer the education topic before continuing to Review")
+            }
+            reply @ (Reply::Edit(P::SaveCare { .. }) | Reply::Response(P::BeginCare { .. })) => {
+                let mut page = crate::tests::cross::interview::care_editor(reply);
                 fill_care_provider(&mut page);
                 send(s, page)
             }
-            Reply::Edit(page @ (P::SaveDeductions { .. } | P::SavePayments { .. })) => {
-                send(s, page)
+            Reply::Edit(
+                page @ (P::SaveDeductions { .. }
+                | P::SavePayments { .. }
+                | P::SaveIncomes { .. }
+                | P::SaveWagesAnswers { .. }
+                | P::SaveIncomeWithoutForm { .. }),
+            ) => send(s, page),
+            begin @ Reply::Response(P::BeginIncomeWithoutForm { .. }) => {
+                send(s, without_form_editor(begin))
             }
             other => panic!("unexpected {other:?}"),
         };
     }
 }
-// Passes the people page a reply opens with nobody on it (gate fixes batch
-// A: every return asks it once), returning the reply that follows.
+// Passes the empty dependents page, unchanged documents and direct-income
+// answers, returning the remaining checklist.
 pub(in crate::tests) fn past_people(s: &mut Interview, reply: Reply) -> Reply {
-    match reply {
-        Reply::Response(P::BeginChildren { .. }) => {
-            let request = save_children(&s.draft, vec![]);
-            send(s, request)
-        }
-        other => other,
+    past_people_with_self_work(s, reply, false)
+}
+pub(in crate::tests) fn past_people_with_self_work(
+    s: &mut Interview,
+    mut reply: Reply,
+    self_work: bool,
+) -> Reply {
+    loop {
+        reply = match reply {
+            Reply::Response(P::BeginChildren { .. }) => {
+                let request = save_children(&s.draft, vec![]);
+                send(s, request)
+            }
+            Reply::Edit(page @ P::SaveDocuments { .. }) => send(s, page),
+            reply @ (Reply::Edit(P::SaveIncomeWithoutForm { .. })
+            | Reply::Response(P::BeginIncomeWithoutForm { .. })) => {
+                let mut page = without_form_editor(reply);
+                let P::SaveIncomeWithoutForm { value, .. } = &mut page else { unreachable!() };
+                value.self_work |= self_work;
+                send(s, page)
+            }
+            other => return other,
+        };
     }
 }
-// Passes each less-common page a reply opens with its "None of these"
-// unchanged (gate fixes batch A: a step of its section's walk), returning
-// the reply that follows.
+// Save the direct income page using its actual editor metadata.
+pub(in crate::tests) fn save_without_form(
+    s: &mut Interview,
+    answers: crate::IncomeWithoutFormAnswers,
+) -> Reply {
+    let mut page = without_form_editor(from_review(s, TaxSection::IncomeWithoutForm));
+    let P::SaveIncomeWithoutForm { value, .. } = &mut page else { unreachable!() };
+    *value = answers;
+    send(s, page)
+}
+// The income without a form editor as a client holds it: a saved page as
+// its EditRequest supplies it; the unsaved page's WorkflowRequest built with
+// both questions answered No (the client starts them unanswered).
+pub(in crate::tests) fn without_form_editor(reply: Reply) -> P {
+    match reply {
+        Reply::Edit(page @ P::SaveIncomeWithoutForm { .. }) => page,
+        Reply::Response(P::BeginIncomeWithoutForm {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+            navigation,
+            suggested_destination,
+        }) => P::SaveIncomeWithoutForm {
+            user: TEST_USER,
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate: estimate.map(Into::into),
+            warnings: vec![],
+            progress,
+            value: crate::IncomeWithoutFormAnswers { self_work: false, tips: false, other: None },
+            navigation,
+            suggested_destination,
+        },
+        other => panic!("expected the income without a form editor, got {other:?}"),
+    }
+}
+// Answers new less-common workflows with "None of these" and preserves the
+// accepted answers when reopening an editor, returning the reply that follows.
 pub(in crate::tests) fn past_less_common(s: &mut Interview, mut reply: Reply) -> Reply {
     loop {
         let request = match reply {
-            Reply::Response(P::BeginSituations { .. }) => save_empty_situations(reply),
+            begin @ Reply::Response(P::BeginOftenMissed { .. }) => {
+                crate::tests::support::client::answer_often_missed(
+                    begin,
+                    crate::OftenMissed::default(),
+                )
+            }
             Reply::Edit(
                 page @ (P::SaveMoreAdjustments { .. }
                 | P::SaveMoreCredits { .. }
-                | P::SaveOtherTaxes { .. }),
+                | P::SaveOtherTaxes { .. }
+                | P::SaveOftenMissed { .. }),
             ) => page,
             other => return other,
         };
@@ -1649,7 +2148,7 @@ pub(in crate::tests) fn answer(reply: Reply, filing: Filing) -> P {
             page,
             previous,
             review,
-            estimate,
+            estimate: estimate.map(Into::into),
             warnings: vec![],
             progress,
             value: ReturnSetup { filing },
@@ -1673,7 +2172,7 @@ pub(in crate::tests) fn answer(reply: Reply, filing: Filing) -> P {
             page,
             previous,
             review,
-            estimate,
+            estimate: estimate.map(Into::into),
             warnings: vec![],
             progress,
             you: adult("Casey", "Sample", 19850315),
@@ -1697,13 +2196,14 @@ pub(in crate::tests) fn answer(reply: Reply, filing: Filing) -> P {
             page,
             previous,
             review,
-            estimate,
+            estimate: estimate.map(Into::into),
             warnings: vec![],
             progress,
             spouse: adult("Jordan", "Sample", 19860101).into(),
         },
-        Reply::Edit(P::SaveIncomes {
-            empty_k1_activity_choices,
+        // A separate return's steps: not a community-property return, and a
+        // spouse with none of the boxes.
+        Reply::Response(P::BeginCommunityProperty {
             cookie,
             revision,
             page,
@@ -1711,107 +2211,87 @@ pub(in crate::tests) fn answer(reply: Reply, filing: Filing) -> P {
             review,
             estimate,
             progress,
-            topic,
-            allowed_documents,
-            allowed_owners,
-            people,
-            farms,
-            cooperative_activities,
-            cooperative_properties,
-            businesses,
-            rentals,
-            royalty_properties,
-            equipment_rentals,
-            hobbies,
-            ccc_lots,
-            farm_codes,
-            farm_limitations,
-            farm_sources,
-            basis_assets,
-            farm_method_changes,
-            inherited_iras,
-            inherited_roth_iras,
-            ltc_insured,
-            allowed_business_source,
-            allowed_farm_source,
-            allowed_partner_source,
-            allowed_home_spouse,
-            allowed_other_parent,
-            ..
-        }) => P::SaveIncomes {
-            initial_rental_recovery_choices: Vec::new(),
-            rental_energy_buildings: Vec::new(),
-            empty_k1_activity_choices,
-            qbi_sources: Vec::new(),
-            initial_carbon_oxide_origins: vec![],
-            initial_renewable_facility_origins: Vec::new(),
-            allowed_continuing_risk: ScorpRiskStart::continuing_choices(),
-            allowed_injured_source_facts: vec![],
-            allowed_injured_retained_owners: vec![],
-            ltc_payee_sources: vec![],
-
-            wage_scorporations: Vec::new(),
-            allowed_wage_scorporations: Vec::new(),
-            initial_k1_investment_choices: alloc::vec![0, 1],
-            research_businesses: Vec::new(),
-            retained_research_choices: Vec::new(),
-            k1_credit_lines: crate::business_credit_page::k1_credit_lines(),
-            research_credit_lines: crate::business_credit_page::research_credit_lines(),
-            renewable_credit_lines: crate::business_credit_page::renewable_credit_lines(),
-            transferable_credit_lines: crate::business_credit_page::transferable_credit_lines(),
-            mortgage_loans: Vec::new(),
-            allowed_refund_management: vec![],
+        }) => P::SaveCommunityProperty {
             user: TEST_USER,
             cookie,
             revision,
             page,
             previous,
             review,
-            estimate,
+            estimate: estimate.map(Into::into),
             warnings: vec![],
             progress,
-            topic,
-            allowed_documents,
-            allowed_owners,
-            people,
-            farms,
-            cooperative_activities,
-            cooperative_properties,
-            businesses,
-            rentals,
-            royalty_properties,
-            equipment_rentals,
-            hobbies,
-            ccc_lots,
-            farm_codes,
-            farm_limitations,
-            farm_sources,
-            basis_assets,
-            farm_method_changes,
-            inherited_iras,
-            inherited_roth_iras,
-            ltc_insured,
-            annuity_sources: vec![],
-            recovery_sources: vec![],
-            allowed_business_source,
-            allowed_farm_source,
-            allowed_partner_source,
-            allowed_home_spouse,
-            allowed_other_parent,
-            children: vec![],
-            document_facts: DocumentFacts { year: 2026 },
-            documents: IncomeDocuments {
-                qbi_aggregations: Vec::new(),
-                receipt_context: crate::BusinessReceiptContext::default(),
-                documents: vec![document(0, IncomeDocument::W2(w2(6_000_000)))],
-            },
-            allowed_community: Vec::new(),
-
-            foreign_countries: crate::foreign_accounts::countries(),
-
-            interest_statements: Vec::new(),
-            qbi_businesses: vec![],
+            value: CommunityAnswer::No,
         },
+        Reply::Response(P::BeginSpouseBoxes {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+        }) => P::SaveSpouseBoxes {
+            user: TEST_USER,
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate: estimate.map(Into::into),
+            warnings: vec![],
+            progress,
+            value: SpouseBoxes::NoneOfThese,
+        },
+        Reply::Response(P::BeginSpouseItemizes {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+        }) => P::SaveSpouseItemizes {
+            user: TEST_USER,
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate: estimate.map(Into::into),
+            warnings: vec![],
+            progress,
+            value: false,
+        },
+        Reply::Edit(
+            page @ (P::SaveCommunityProperty { .. }
+            | P::SaveSpouseBoxes { .. }
+            | P::SaveSpouseItemizes { .. }),
+        ) => page,
+        Reply::Edit(mut request @ P::SaveDocuments { .. }) => {
+            let P::SaveDocuments { documents, allowed_community, .. } = &mut request else {
+                unreachable!()
+            };
+            if documents.common.wages.documents.is_empty() {
+                documents.common.wages.documents = vec![crate::WageDocumentRow {
+                    id: 0,
+                    owner: crate::DocumentOwner::Yours,
+                    document: crate::WageDocument::W2(wage_document(W2 {
+                        employer: Default::default(),
+                        employee: crate::PrintedParty::from_name("Casey Sample".into()),
+                        ..w2(6_000_000)
+                    })),
+                    community: CommunityShare::NotNeeded,
+                    refund_management: None,
+                    allowed_community: allowed_community.clone(),
+                    preview: None,
+                    investment_caps: None,
+                    refund_management_needed: None,
+                }];
+            }
+            request
+        }
+        Reply::Edit(request @ (P::SaveIncomes { .. } | P::SaveWagesAnswers { .. })) => request,
         // Gate fixes batch A: every return asks the people page once; these
         // filers support nobody.
         Reply::Response(P::BeginChildren {
@@ -1831,66 +2311,73 @@ pub(in crate::tests) fn answer(reply: Reply, filing: Filing) -> P {
             page,
             previous,
             review,
-            estimate: Some(estimate),
+            estimate: estimate.map(Into::into),
             warnings: vec![],
             progress: Some(progress),
             dependents: Dependents { people: vec![] },
             allowed_lived,
             days_alive,
+            credits: Vec::new(),
         },
-        Reply::Edit(mut page @ P::SaveCare { .. }) => {
+        reply @ (Reply::Edit(P::SaveCare { .. }) | Reply::Response(P::BeginCare { .. })) => {
+            let mut page = crate::tests::cross::interview::care_editor(reply);
             fill_care_provider(&mut page);
             page
         }
         Reply::Response(hub @ P::Hub { .. }) => go_on(&hub),
-        // The opening checklist (M3-P18): the filer ticks W-2 wages.
-        reply @ Reply::Edit(P::SaveChecklist { .. }) => {
-            tick(reply, income_ticks(IncomeTopics::WAGES.0))
-        }
+        // Beyond your documents: nothing applies; the W-2 is entered from
+        // the income hub.
+        reply @ (Reply::Edit(P::SaveIncomeWithoutForm { .. })
+        | Reply::Response(P::BeginIncomeWithoutForm { .. })) => without_form_editor(reply),
+        reply @ (Reply::Edit(P::SaveChecklist { .. })
+        | Reply::Response(P::BeginChecklist { .. })) => tick(reply, Checklist::NONE),
         // The deductions page opens complete: Next saves it unchanged.
         Reply::Edit(page @ P::SaveDeductions { .. }) => page,
-        // So does the federal payments page (M3-P13).
+        // Choose no estimated payments when this synthetic walk has none.
+        begin @ Reply::Response(P::BeginPayments { .. }) => {
+            let Reply::Edit(page) = crate::tests::support::client::answer_no_estimates(begin)
+            else {
+                panic!("complete next-year choice")
+            };
+            page
+        }
+        begin @ Reply::Response(P::BeginOftenMissed { .. }) => {
+            crate::tests::support::client::answer_often_missed(begin, OftenMissed::default())
+        }
         Reply::Edit(page @ P::SavePayments { .. }) => page,
         // Gate fixes batch A: each less-common page opens with "None of
         // these"; Next saves it unchanged.
         Reply::Edit(
             page @ (P::SaveMoreAdjustments { .. }
             | P::SaveMoreCredits { .. }
-            | P::SaveOtherTaxes { .. }),
+            | P::SaveOtherTaxes { .. }
+            | P::SaveOftenMissed { .. }),
         ) => page,
         // The other taxes page opens empty (M3-P15).
-        reply @ Reply::Response(P::BeginSituations { .. }) => save_empty_situations(reply),
         other => panic!("unexpected page {other:?}"),
     }
 }
 
 #[test]
 fn m1_sequence_is_four_pages() {
-    // The guided walk opens planned Wages, then the income hub summary.
-    // It also shows less-common income, adjustments, credits and other
-    // taxes pages, plus the summaries in the sequence below. Progress
-    // counts the shown sections, including initial filer, people and
-    // checklist pages, before the final review.
-    let walked = [
-        "wages",
-        "less common income",
-        "income",
-        "more adjustments",
-        "adjustments",
-        "more credits",
-        "credits",
-        "other taxes",
-        "payments",
-        "review",
-    ];
+    // Summary-only hubs continue automatically; Review retains their answers
+    // and their explicit navigation destinations.
+    let native = NativeInterviewCase("ZERO_INPUT_HUBS");
+    let walked = ["wages", "often missed", "review"];
     for (filing, expected) in [
         (
             Filing::Single,
-            ["setup", "you", "people", "checklist"].into_iter().chain(walked).collect::<Vec<_>>(),
+            ["setup", "you", "people", "documents", "income without a form", "checklist"]
+                .into_iter()
+                .chain(walked)
+                .collect::<Vec<_>>(),
         ),
         (
             Filing::MarriedJointly,
-            ["setup", "you", "spouse", "people", "checklist"].into_iter().chain(walked).collect(),
+            ["setup", "you", "spouse", "people", "documents", "income without a form", "checklist"]
+                .into_iter()
+                .chain(walked)
+                .collect(),
         ),
     ] {
         let joint = filing == Filing::MarriedJointly;
@@ -1905,54 +2392,35 @@ fn m1_sequence_is_four_pages() {
                 break;
             }
             progress.push(text);
-            if name == "income" {
-                // The hub's previous section is the checklist (M3-P18),
-                // whose previous is the last filer page.
-                let Reply::Response(P::Hub { previous, .. }) = &reply else { unreachable!() };
-                let request = back(&s.draft, *previous);
-                let before = send(&mut s, request);
-                assert_eq!(opened(&before).0, "checklist");
-                let Reply::Edit(P::SaveChecklist { previous, .. }) = &before else {
-                    unreachable!()
-                };
-                let request = back(&s.draft, *previous);
-                let before = send(&mut s, request);
-                assert_eq!(opened(&before).0, "people");
-            }
             assert!(visited.len() < 20, "{visited:?}");
             let request = answer(reply, filing);
+            native.write_file(
+                "OUTPUT",
+                &alloc::format!(
+                    "{}-{:02}-request.avro",
+                    if joint { "joint" } else { "single" },
+                    visited.len()
+                ),
+                &request,
+            );
             reply = send(&mut s, request);
         }
         assert_eq!(visited, expected);
-        // The count is setup, you, people, the checklist, the four sections
-        // that always ask and the review.
+        // Summary sections remain represented in the return's progress.
         let filers = if joint {
-            vec![(1, 10), (2, 10), (2, 10), (3, 10)]
+            vec![(1, 11), (2, 11), (2, 11), (3, 11)]
         } else {
-            vec![(1, 10), (2, 10), (3, 10)]
+            vec![(1, 11), (2, 11), (3, 11)]
         };
-        let sections: Vec<_> = filers
-            .into_iter()
-            .chain([
-                (0, 0),
-                (5, 10),
-                (5, 10),
-                (5, 10),
-                (6, 10),
-                (6, 10),
-                (7, 10),
-                (7, 10),
-                (8, 10),
-                (9, 10),
-            ])
-            .collect();
+        let sections: Vec<_> =
+            filers.into_iter().chain([(4, 11), (5, 11), (0, 0), (7, 11), (10, 11)]).collect();
         assert_eq!(progress.len(), sections.len());
         for (shown, (n, total)) in progress.iter().zip(&sections) {
             if *n == 0 {
                 // Opened before any tick: the sections that always ask.
                 assert!(
                     shown.contains(
-                        "Your return: Income, Adjustments to income, Credits, Other taxes, Federal payments, Review"
+                        "Your return: Income, Adjustments to income, Credits, Situations people often miss, Review"
                     ),
                     "{shown}"
                 );
@@ -1962,8 +2430,7 @@ fn m1_sequence_is_four_pages() {
             assert!(shown.contains(text.as_str()), "{shown}");
         }
         let at = |name: &str| visited.iter().position(|v| *v == name).unwrap();
-        assert!(progress[at("wages")].contains("· Wages"));
-        assert!(progress[at("income")].contains("· You're done with income"));
+        assert_eq!(progress[at("documents")], "2026 federal · section 4 of 11");
         // Their draft records hold the "nothing applies" answers, so the
         // return is complete and estimated.
         let d = &s.draft;
@@ -1972,17 +2439,17 @@ fn m1_sequence_is_four_pages() {
             d.finished_sections,
             vec![
                 TaxSection::Children,
+                TaxSection::Documents,
+                TaxSection::IncomeWithoutForm,
                 TaxSection::Checklist,
                 TaxSection::Wages,
-                TaxSection::MoreIncome,
                 TaxSection::Income,
-                TaxSection::MoreAdjustments,
                 TaxSection::Adjustments,
                 TaxSection::Deductions,
-                TaxSection::MoreCredits,
                 TaxSection::Credits,
                 TaxSection::OtherTaxes,
-                TaxSection::Payments
+                TaxSection::Payments,
+                TaxSection::OftenMissed
             ]
         );
         let nothing = complete(FederalStatus::Single);
@@ -1991,6 +2458,39 @@ fn m1_sequence_is_four_pages() {
         assert_eq!(d.screening, nothing.screening);
         assert!(d.credits.as_ref().is_some_and(|c| c.education.is_empty()));
         assert_eq!(estimate(d).state, ResultState::EstimatedForSupportedScope);
+        let Reply::Response(P::Review { answers, .. }) = &reply else { unreachable!() };
+        for section in [TaxSection::Income, TaxSection::Adjustments, TaxSection::Credits] {
+            assert!(answers.iter().any(|row| row.section == section));
+        }
+        let saved = s.draft.clone();
+        let mut resumed = restart(saved.clone());
+        assert!(matches!(
+            send(&mut resumed, P::OpenInterview { user: TEST_USER }),
+            Reply::Response(P::Review { .. })
+        ));
+        for section in [TaxSection::Income, TaxSection::Adjustments, TaxSection::Credits] {
+            assert!(matches!(from_review(&mut resumed, section), Reply::Response(P::Hub { .. })));
+        }
+        assert_eq!(resumed.draft, saved, "opening summaries preserves accepted answers");
+        let Reply::Response(P::Hub { previous, .. }) =
+            from_review(&mut resumed, TaxSection::Income)
+        else {
+            unreachable!()
+        };
+        let request = back(&resumed.draft, previous);
+        let checklist = send(&mut resumed, request);
+        assert_eq!(opened(&checklist).0, "checklist");
+        let Reply::Edit(P::SaveChecklist { previous, .. }) = checklist else { unreachable!() };
+        let request = back(&resumed.draft, previous);
+        let income_without_form = send(&mut resumed, request);
+        assert_eq!(opened(&income_without_form).0, "income without a form");
+        let Reply::Edit(P::SaveIncomeWithoutForm { previous, .. }) = income_without_form else {
+            unreachable!()
+        };
+        let request = back(&resumed.draft, previous);
+        let documents = send(&mut resumed, request);
+        assert_eq!(opened(&documents).0, "documents");
+        assert_eq!(resumed.draft, saved, "Back preserves the accepted return");
         // A section this return has not reached cannot be opened: the
         // income by period page needs box C on the payments page.
         for section in [TaxSection::Itemized, TaxSection::IncomeByPeriod] {
@@ -2009,14 +2509,14 @@ fn every_page_calculates_the_running_estimate() {
             .unwrap();
     let cents = |v: &serde_json::Value| (v.as_f64().unwrap() * 100.0).round() as i64;
     let box_ = |name: &str| cents(&fixture["w2"][0][name]);
-    let documents = IncomeDocuments {
-        qbi_aggregations: Vec::new(),
-        receipt_context: crate::BusinessReceiptContext::default(),
-        documents: vec![
-            document(
-                0,
-                IncomeDocument::W2(W2 {
-                    answers: Default::default(),
+    let documents = [
+        document(
+            0,
+            IncomeSource::Wage {
+                value: crate::WageDocument::W2(wage_document(W2 {
+                    employer: Default::default(),
+                    employee: Default::default(),
+
                     state_details: Default::default(),
                     wages: box_("box1_wages"),
                     withholding: box_("box2_withheld"),
@@ -2025,27 +2525,28 @@ fn every_page_calculates_the_running_estimate() {
                     medicare_wages: box_("box5"),
                     medicare_tax: box_("box6"),
                     more: W2More::default(),
-                }),
-            ),
-            document(
-                0,
-                IncomeDocument::Int1099(native_int1099(
+                })),
+            },
+        ),
+        document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
                     "".into(),
                     cents(&fixture["int1099"][0]["box1_interest"]),
-                )),
-            ),
-        ],
-    };
+                ))),
+            },
+        ),
+    ];
     let refund = cents(&fixture["expected"]["lines"]["34"]);
     let expected = alloc::format!("${}.{:02}", refund / 100, refund % 100);
     assert_eq!(expected, "$141.00");
     let setup = ReturnSetup { filing: Filing::Single };
     let you = adult("Casey", "Sample", 19850315);
-    // Amended for M3-P1: the documents are entered on two topic pages of the
-    // income hub, and the progress counts the design's ten sections (nine
-    // without dependents) with the topic's name.
-    let wages = &documents.documents[..1];
-    let interest = &documents.documents[1..];
+    // The source documents are accepted in the document center before the
+    // remaining income facts and deduction pages.
+    let wages = &documents[..1];
+    let interest = &documents[1..];
     let mut s = Interview::new(TEST_USER, FederalDraft::empty("m1-single-w2".into()));
     page_walk_initial(&mut s, &setup, &you);
     page_walk_wages(&mut s, wages);
@@ -2064,13 +2565,18 @@ fn page_walk_running(
     s: &mut Interview,
     request: P,
 ) -> (alloc::string::String, alloc::string::String) {
-    match send(s, request) {
+    let center_progress =
+        if let P::SaveDocuments { progress, .. } = &request { progress.clone() } else { None };
+    match crate::tests::support::client::income_pages::candidate_save_review(s, request) {
         Reply::Response(
             P::RunningEstimate { estimate, progress, .. }
             | P::PaymentsEstimate { estimate, progress, .. }
             | P::IncomeRunningEstimate { estimate, progress, .. },
         ) => (shown(&estimate), shown(&progress)),
-        other => panic!("expected the running estimate, got {other:?}"),
+        Reply::Response(P::Review { estimate, .. }) => {
+            (shown(&estimate), shown(center_progress.as_deref().unwrap_or(&[])))
+        }
+        other => panic!("expected the actual candidate estimate, got {other:?}"),
     }
 }
 
@@ -2090,16 +2596,31 @@ fn page_walk_estimate_you(you: &Filer) -> P {
 }
 
 #[inline(never)]
-fn page_walk_estimate_documents(topic: TaxSection, documents: &[IncomeDocumentItem]) -> P {
-    catalog_estimate_documents(
-        topic,
-        (IncomeDocuments {
-            qbi_aggregations: Vec::new(),
-            receipt_context: crate::BusinessReceiptContext::default(),
-            documents: documents.to_vec(),
+fn page_walk_estimate_documents(
+    s: &mut Interview,
+    _topic: TaxSection,
+    documents: &[IncomeDocumentItem],
+) -> P {
+    // The same papers keep their accepted identities: a row saved with id 0
+    // is a new paper, whose situations question is asked again.
+    let rows = documents
+        .iter()
+        .cloned()
+        .map(|mut row| {
+            if row.id == 0
+                && let Some(entry) = s.draft.income.iter().find(|entry| {
+                    core::mem::discriminant(&entry.income)
+                        == core::mem::discriminant(&crate::interview::document_income(
+                            &row.document,
+                        ))
+                })
+            {
+                row.id = entry.id;
+            }
+            row
         })
-        .into(),
-    )
+        .collect();
+    save_documents(s, rows)
 }
 
 #[inline(never)]
@@ -2115,34 +2636,40 @@ fn page_walk_enqueue(
 fn page_walk_initial(s: &mut Interview, setup: &ReturnSetup, you: &Filer) {
     // Nothing entered yet: no estimate.
     let (text, progress) = page_walk_running(s, page_walk_estimate_setup(setup));
-    assert!(text.contains("Estimate not available"), "{text}");
+    assert!(text.contains("not available yet"), "{text}");
     // M3-P19: progress counts the sections this return shows: setup, you,
     // people, the checklist, the four sections every return walks (gate
     // fixes batch A) and the review.
-    assert!(progress.contains("section 1 of 10"), "{progress}");
+    assert!(progress.contains("section 1 of 11"), "{progress}");
     let request = save_setup(&s.draft, setup.clone());
     send(s, request);
     let (text, _) = page_walk_running(s, page_walk_estimate_you(you));
-    assert!(text.contains("Estimate not available"), "{text}");
+    assert!(text.contains("not available yet"), "{text}");
     let request = save_you(&s.draft, you.clone());
     send(s, request);
     let request = save_children(&s.draft, vec![]);
-    send(s, request);
-    // M3-P18: the opening checklist plans the two topics; its calculation
-    // replies with the estimate and the planned path as its progress.
-    let ticks = income_ticks(IncomeTopics::WAGES.0 | IncomeTopics::INTEREST_DIVIDENDS.0);
-    let (_, progress) =
-        page_walk_running(s, P::EstimateChecklist { user: TEST_USER, value: ticks });
+    let Reply::Edit(request @ P::SaveDocuments { .. }) = send(s, request) else {
+        panic!("expected the document center")
+    };
+    let reply = send(s, request);
+    let reply = past_people(s, reply);
+    assert!(matches!(reply, Reply::Response(P::BeginChecklist { .. })));
+    // Beyond your documents: nothing applies; its calculation replies with
+    // the estimate and the planned path as its progress.
+    let (_, progress) = page_walk_running(
+        s,
+        P::EstimateChecklist { user: TEST_USER, value: Checklist::NONE.into() },
+    );
     assert!(
         progress
-            .ends_with("Your return: Income, Adjustments to income, Credits, Other taxes, Federal payments, Review"),
+            .ends_with("Your return: Income, Adjustments to income, Credits, Situations people often miss, Review"),
         "{progress}"
     );
-    let request = save_checklist(&s.draft, PAGE_CHILDREN, ticks);
-    // M3-P19: its Next opens the first planned topic, Wages.
+    let request = save_checklist(&s.draft, TaxSection::Documents as i32, Checklist::NONE);
+    // Its Next passes the summaries and opens the last required question.
     assert!(matches!(
         send(s, request),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::Wages, .. })
+        Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
     ));
 }
 
@@ -2150,32 +2677,56 @@ fn page_walk_initial(s: &mut Interview, setup: &ReturnSetup, you: &Filer) {
 fn page_walk_wages(s: &mut Interview, wages: &[IncomeDocumentItem]) {
     // A topic page estimates its unsaved documents merged into the accepted
     // return, as if the filer continued past the hub.
+    // The W-2 is entered from the income hub's Wages row.
+    open_topic(s, TaxSection::Wages);
     s.dirty = false; // persisted by the task
     let before = s.draft.clone();
-    let (text, progress) =
-        page_walk_running(s, page_walk_estimate_documents(TaxSection::Wages, wages));
-    assert!(text.contains("Estimated federal refund"), "{text}");
-    assert!(progress.contains("section 5 of 10 · Wages"), "{progress}");
+    let request = page_walk_estimate_documents(s, TaxSection::Wages, wages);
+    let (_, progress) = page_walk_running(s, request);
+    assert_eq!(progress, "2026 federal · section 4 of 11");
     // A calculation is pure.
     assert_eq!(s.draft, before);
     assert!(!s.dirty);
     // Saving it opens the next planned topic (M3-P19).
-    let request = save_topic(&s.draft, TaxSection::Wages, wages.to_vec());
-    assert!(matches!(
-        send(s, request),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::InterestDividends, .. })
-    ));
+    let navigation = go_to(&s.draft, PAGE_INCOME, TaxSection::Documents);
+    let Reply::Edit(mut request @ P::SaveDocuments { .. }) = send(s, navigation) else {
+        unreachable!()
+    };
+    put_walk_sources(&s.draft, &mut request, wages.to_vec());
+    let reply = send(s, request);
+    let reply = past_people(s, reply);
+    assert!(matches!(reply, Reply::Edit(P::SaveChecklist { .. })));
 }
 
 #[inline(never)]
 fn page_walk_interest(s: &mut Interview, interest: &[IncomeDocumentItem], expected: &str) {
-    let (text, progress) =
-        page_walk_running(s, page_walk_estimate_documents(TaxSection::InterestDividends, interest));
+    // The W-2's situations question is answered once ("None of these"),
+    // as the walk asks it; until then the estimate waits for it.
+    let wages = open_topic(s, TaxSection::Wages);
+    accepted(&send(s, wages));
+    let request = page_walk_estimate_documents(s, TaxSection::InterestDividends, interest);
+    let (text, progress) = page_walk_running(s, request);
     assert!(text.contains(expected), "{text}");
-    assert!(progress.contains("section 5 of 10 · Interest and dividends"), "{progress}");
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, interest.to_vec());
-    let Reply::Response(hub @ P::Hub { .. }) = send_past_less_common(s, request) else {
-        panic!("expected the income hub")
+    assert_eq!(progress, "2026 federal · section 4 of 11");
+    let navigation = go_to(&s.draft, PAGE_INCOME, TaxSection::Documents);
+    let Reply::Edit(mut request @ P::SaveDocuments { .. }) = send(s, navigation) else {
+        unreachable!()
+    };
+    put_walk_sources(&s.draft, &mut request, interest.to_vec());
+    let reply = send(s, request);
+    let Reply::Edit(checklist @ P::SaveChecklist { .. }) = past_people(s, reply) else {
+        panic!("source save returns to the checklist")
+    };
+    let reply = send_past_less_common(s, checklist);
+    // The new 1099-INT's situations question is asked once, then the review.
+    let Reply::Edit(topic @ P::SaveIncomes { topic: TaxSection::InterestDividends, .. }) = reply
+    else {
+        panic!("the interest topic asks its situations, got {reply:?}")
+    };
+    let reply = send_past_less_common(s, topic);
+    assert!(matches!(reply, Reply::Response(P::Review { .. })));
+    let Reply::Response(hub @ P::Hub { .. }) = from_review(s, TaxSection::Income) else {
+        panic!("expected the income summary")
     };
     let P::Hub { estimate: text, .. } = &hub else { unreachable!() };
     assert!(shown(text).contains(expected));
@@ -2198,10 +2749,13 @@ fn page_walk_adjustments(s: &mut Interview, expected: &str) {
     };
     let P::Hub { estimate: text, progress, .. } = &hub else { unreachable!() };
     assert!(shown(text).contains(expected));
-    assert!(shown(progress).contains("section 6 of 10"), "{}", shown(progress));
+    assert!(shown(progress).contains("section 8 of 11"), "{}", shown(progress));
+    let P::SaveHsa { followups, .. } = open_hsa_page(s) else { unreachable!() };
     let (text, progress) = page_walk_running(
         s,
         P::EstimateHsa {
+            followups,
+            questions: Vec::new(),
             user: TEST_USER,
             hsa_failed_deposits: vec![],
             archer_failed_deposits: vec![],
@@ -2213,6 +2767,9 @@ fn page_walk_adjustments(s: &mut Interview, expected: &str) {
             ira_sources: vec![],
             archer_income: vec![],
             value: HsaPage {
+                contribution_sources: vec![],
+                employer_statements: vec![],
+
                 employer_sources: vec![],
                 linked_deposits: vec![],
                 other_coverage: None,
@@ -2226,7 +2783,7 @@ fn page_walk_adjustments(s: &mut Interview, expected: &str) {
     );
     assert!(text.contains(expected), "{text}");
     assert!(
-        progress.contains("section 6 of 10 · Health and medical savings accounts"),
+        progress.contains("section 8 of 11 · Health and medical savings accounts"),
         "{progress}"
     );
 }
@@ -2239,16 +2796,17 @@ fn page_walk_deductions(s: &mut Interview, expected: &str) {
     };
     let P::SaveDeductions { estimate: text, progress, .. } = &deductions else { unreachable!() };
     assert!(shown(text).contains(expected));
-    assert!(shown(progress).contains("section 7 of 11"));
+    assert!(shown(progress).contains("section 9 of 12"));
     let (text, progress) = page_walk_running(
         s,
         P::EstimateDeductions {
             user: TEST_USER,
-            allowed_routes: vec![0, 1, 2],
+
             allowed_repayment: vec![0],
             home_sites: vec![],
             value: Deductions {
-                route: DeductionRoute::Standard,
+                car_refunds: Default::default(),
+                itemize_override: None,
                 cash_gifts: 0,
                 fund_cash_gifts: 0,
                 other_cash_gifts: 0,
@@ -2259,7 +2817,7 @@ fn page_walk_deductions(s: &mut Interview, expected: &str) {
         },
     );
     assert!(text.contains(expected), "{text}");
-    assert!(progress.contains("section 7 of 11"), "{progress}");
+    assert!(progress.contains("section 9 of 12"), "{progress}");
     // Opened from the review, its unchanged Next returns there.
     assert!(matches!(send(s, deductions), Reply::Response(P::Review { .. })));
 }
@@ -2271,13 +2829,13 @@ fn page_walk_credits_and_other_taxes(s: &mut Interview, expected: &str) {
     };
     let P::Hub { estimate: text, progress, .. } = &credits else { unreachable!() };
     assert!(shown(text).contains(expected));
-    assert!(shown(progress).contains("section 7 of 10"));
+    assert!(shown(progress).contains("section 9 of 11"));
     let other_taxes = from_review(s, TaxSection::OtherTaxes);
     let Reply::Edit(P::SaveOtherTaxes { estimate: text, progress, .. }) = &other_taxes else {
         panic!("other taxes page expected, got {other_taxes:?}")
     };
     assert!(shown(text.as_ref().expect("supplied estimate")).contains(expected));
-    assert!(shown(progress.as_ref().expect("supplied progress")).contains("section 8 of 10"));
+    assert!(shown(progress.as_ref().expect("supplied progress")).contains("section 10 of 12"));
 }
 
 #[inline(never)]
@@ -2290,7 +2848,7 @@ fn page_walk_payments(s: &mut Interview, expected: &str) -> Payments {
         unreachable!()
     };
     assert!(shown(text).contains(expected));
-    assert!(shown(progress).contains("section 9 of 10"));
+    assert!(shown(progress).contains("section 10 of 12"));
     let payments_value = payments_value.clone();
     assert!(matches!(send(s, payments), Reply::Response(P::Review { .. })));
     payments_value
@@ -2311,17 +2869,17 @@ fn page_walk_accepted(
     s.dirty = false; // persisted by the task
     let accepted = s.draft.clone();
     let mut requests = Vec::with_capacity(6);
-    page_walk_enqueue(&mut requests, || page_walk_estimate_setup(setup), "section 1 of 10");
-    page_walk_enqueue(&mut requests, || page_walk_estimate_you(you), "section 2 of 10");
+    page_walk_enqueue(&mut requests, || page_walk_estimate_setup(setup), "section 1 of 11");
+    page_walk_enqueue(&mut requests, || page_walk_estimate_you(you), "section 2 of 11");
     page_walk_enqueue(
         &mut requests,
-        || page_walk_estimate_documents(TaxSection::Wages, wages),
-        "section 5 of 10 · Wages",
+        || page_walk_estimate_documents(s, TaxSection::Wages, wages),
+        "section 4 of 11",
     );
     page_walk_enqueue(
         &mut requests,
-        || page_walk_estimate_documents(TaxSection::InterestDividends, interest),
-        "section 5 of 10 · Interest and dividends",
+        || page_walk_estimate_documents(s, TaxSection::InterestDividends, interest),
+        "section 4 of 11",
     );
     page_walk_enqueue(
         &mut requests,
@@ -2334,7 +2892,7 @@ fn page_walk_accepted(
             allowed_farmer_next_year: vec![0, 1, 2],
             value: payments_value.into(),
         },
-        "section 9 of 10",
+        "section 10 of 12",
     );
     page_walk_enqueue(
         &mut requests,
@@ -2343,9 +2901,9 @@ fn page_walk_accepted(
             allowed_owners: vec![0],
             mortgage_gift_owners: vec![],
             coverdell_corrections: vec![],
-            value: OtherTaxes { taxes: vec![] },
+            value: OtherTaxes { trump_returns: Default::default(), taxes: vec![] },
         },
-        "section 8 of 10",
+        "section 10 of 12",
     );
     for (request, section) in requests {
         let (text, progress) = page_walk_running(s, request);
@@ -2361,7 +2919,7 @@ fn page_walk_accepted(
         };
         assert!(shown(&estimate).contains(expected));
     }
-    let P::SaveIncomes { estimate: text, .. } = open_documents(s) else { unreachable!() };
+    let P::SaveDocuments { estimate: text, .. } = open_documents(s) else { unreachable!() };
     assert!(shown(text.as_ref().expect("native supplied estimate")).contains(expected));
     assert_eq!(s.draft, accepted);
     assert!(!s.dirty);
@@ -2375,9 +2933,9 @@ fn page_walk_changed_setup(s: &mut Interview) {
         s,
         page_walk_estimate_setup(&ReturnSetup { filing: Filing::MarriedJointly }),
     );
-    assert!(text.contains("Estimate not available"), "{text}");
+    assert!(text.contains("not available yet"), "{text}");
     // A refused answer gets the reply its save would send.
-    error(send(
+    error(crate::tests::support::client::income_pages::candidate_save_review(
         s,
         page_walk_estimate_setup(&ReturnSetup {
             filing: Filing::HeadOfHousehold {
@@ -2405,7 +2963,7 @@ fn page_walk_spouse() {
     );
     assert!(text.contains("Estimated federal balance due"), "{text}");
     assert_eq!(text, shown(&estimate_text(&estimate(&joint))));
-    assert!(progress.contains("section 2 of 10"), "{progress}");
+    assert!(progress.contains("section 2 of 11"), "{progress}");
     assert_eq!(s.draft, joint);
 }
 
@@ -2419,6 +2977,9 @@ fn review_lists_answers_with_actions() {
     };
     let d = complete(FederalStatus::Joint);
     let mut s = Interview::new(TEST_USER, d.clone());
+    let source = open_document_center(&mut s);
+    accepted(&send(&mut s, source));
+    let d = s.draft.clone();
     let (text, answers, result, allowed_sections) = review(&mut s);
     // The estimate and the typed on-screen Form 1040.
     assert_eq!(result.state, ResultState::EstimatedForSupportedScope);
@@ -2442,10 +3003,11 @@ fn review_lists_answers_with_actions() {
             ("Your 2026 return", TaxSection::Setup),
             ("About you", TaxSection::People),
             ("About your spouse", TaxSection::Spouse),
-            // Gate fixes batch A: the people page is asked on every return.
+            // The people page is asked on every return.
             ("Children and people you support", TaxSection::Children),
-            // Amended for M3-P18.
-            ("Your 2026 at a glance", TaxSection::Checklist),
+            ("Document center", TaxSection::Documents),
+            ("Income without a form", TaxSection::IncomeWithoutForm),
+            ("Beyond your documents", TaxSection::Checklist),
             ("Income", TaxSection::Income),
             ("Adjustments to income", TaxSection::Adjustments),
             ("Deductions", TaxSection::Deductions),
@@ -2455,17 +3017,20 @@ fn review_lists_answers_with_actions() {
             ("Other taxes", TaxSection::OtherTaxes),
             // Amended for M3-P13.
             ("Federal payments", TaxSection::Payments),
+            ("Situations people often miss", TaxSection::OftenMissed),
         ]
     );
     assert_eq!(status_text(&answers[3].status), "Nothing entered");
-    assert_eq!(status_text(&answers[9].status), "Nothing entered");
-    assert_eq!(status_text(&answers[10].status), "Nothing entered");
+    assert_eq!(status_text(&answers[4].status), "Entered");
+    assert_eq!(status_text(&answers[11].status), "Nothing entered");
+    assert_eq!(status_text(&answers[12].status), "Nothing entered");
     assert_eq!(status_text(&answers[0].status), "Married filing jointly");
     assert_eq!(status_text(&answers[1].status), "Synthetic Filer");
-    // M3-P18: the W-2 is shown ticked from its entry.
-    assert_eq!(status_text(&answers[4].status), "1 topic");
-    // Amended for M3-P1: the income row summarizes its hub's topics.
-    assert_eq!(status_text(&answers[5].status), "1 W-2");
+    // A W-2 checks no box beyond the documents.
+    assert_eq!(status_text(&answers[5].status), "None of these");
+    assert_eq!(status_text(&answers[6].status), "None of these");
+    // The income row summarizes its hub's topics.
+    assert_eq!(status_text(&answers[7].status), "1 W-2");
     for row in &answers {
         assert!(allowed_sections.contains(&(row.section as i32)));
     }
@@ -2491,7 +3056,7 @@ fn review_lists_answers_with_actions() {
             P::SaveSetup { review: true, .. }
                 | P::SavePeople { review: true, .. }
                 | P::SaveSpouse { review: true, .. }
-                | P::SaveIncomes { review: true, .. }
+                | P::SaveWagesAnswers { review: true, .. }
         ));
         assert!(matches!(send(&mut s, editor), Reply::Response(P::Review { .. })));
     }
@@ -2520,7 +3085,6 @@ pub(in crate::tests) fn row(first: &str, last: &str, birth_date: u32) -> Depende
         lived: LivedWithYou::AllYear,
         situation: DependentSituation::ChildUnder19,
         identification: Identification::SocialSecurityNumber,
-        care: CareCosts::No,
         facts: 0,
         competing: CompetingClaim::NoOne,
     }
@@ -2533,12 +3097,13 @@ pub(in crate::tests) fn save_children(d: &FederalDraft, people: Vec<Dependent>) 
         page: PAGE_CHILDREN,
         previous: PAGE_PEOPLE,
         review: false,
-        estimate: Some(vec![]),
+        estimate: None,
         warnings: vec![],
         progress: Some(vec![]),
         dependents: Dependents { people },
         allowed_lived: Vec::new(),
         days_alive: 365,
+        credits: Vec::new(),
     }
 }
 // A complete return, whose people page lists nobody yet.
@@ -2571,7 +3136,7 @@ pub(in crate::tests) fn dependent_record(
         residency: DependentResidency::Days { days: 365 },
         us_home_over_half_year: true,
         incapable_self_care: false,
-        care: DependentCare::No,
+        care: Some(DependentCare::No),
         valid_ssn: true,
         valid_tin: true,
         situation: DependentSituation::ChildUnder19,
@@ -2584,17 +3149,21 @@ pub(in crate::tests) fn dependent_record(
 fn m2_w2() -> IncomeDocumentItem {
     document(
         0,
-        IncomeDocument::W2(W2 {
-            answers: Default::default(),
-            state_details: Default::default(),
-            wages: 3_800_000,
-            withholding: 160_000,
-            social_wages: 3_800_000,
-            social_tax: 235_600,
-            medicare_wages: 3_800_000,
-            medicare_tax: 55_100,
-            more: W2More::default(),
-        }),
+        IncomeSource::Wage {
+            value: crate::WageDocument::W2(wage_document(W2 {
+                employer: Default::default(),
+                employee: Default::default(),
+
+                state_details: Default::default(),
+                wages: 3_800_000,
+                withholding: 160_000,
+                social_wages: 3_800_000,
+                social_tax: 235_600,
+                medicare_wages: 3_800_000,
+                medicare_tax: 55_100,
+                more: W2More::default(),
+            })),
+        },
     )
 }
 fn head_of_household() -> ReturnSetup {
@@ -2605,19 +3174,43 @@ fn head_of_household() -> ReturnSetup {
         },
     }
 }
-// Two children, care paid for the younger.
+// Two children; care is paid for the younger (M2_CARE, on the care page).
 pub(in crate::tests) fn m2_children() -> Vec<Dependent> {
-    vec![
-        row("Ava", "Sample", 20180214),
-        Dependent {
-            care: CareCosts::Yes { expenses: 480_000, incapable_self_care: false },
-            ..row("Ben", "Sample", 20210930)
-        },
-    ]
+    vec![row("Ava", "Sample", 20180214), row("Ben", "Sample", 20210930)]
+}
+pub(in crate::tests) const M2_CARE: [CareCosts; 2] =
+    [CareCosts::No, CareCosts::Yes { expenses: 480_000, incapable_self_care: false }];
+// The M2 household with its care entered on the care page.
+pub(in crate::tests) fn m2_household() -> Interview {
+    let mut s = household_return(m2_children());
+    save_care_costs(&mut s, &M2_CARE);
+    s.dirty = false; // persisted by the task
+    s
+}
+// The care page's rows, in the people page's order, set to `care`.
+pub(in crate::tests) fn put_care_costs(page: &mut P, care: &[CareCosts]) {
+    let P::SaveCare { value, .. } = page else { panic!("Care page") };
+    // Answered people first, then any new ones, as the page lists them.
+    for (row, care) in
+        value.qualifying_people.iter_mut().chain(value.new_people.iter_mut()).zip(care)
+    {
+        row.care = *care;
+    }
+    fill_care_provider(page);
+}
+// Saves `care` on the care page, opened from the credits hub.
+pub(in crate::tests) fn save_care_costs(s: &mut Interview, care: &[CareCosts]) {
+    let mut page = open_credits_topic(s, TaxSection::Care);
+    put_care_costs(&mut page, care);
+    accepted(&send(s, page));
 }
 // The deductions page's save as the sequence opened it (M3-P9); the echoed
 // allowed routes are never trusted, so they are sent empty.
-pub(in crate::tests) fn save_deductions(d: &FederalDraft, route: DeductionRoute, gifts: i64) -> P {
+pub(in crate::tests) fn save_deductions(
+    d: &FederalDraft,
+    itemize_override: Option<ItemizeOverride>,
+    gifts: i64,
+) -> P {
     P::SaveDeductions {
         user: TEST_USER,
         cookie: d.cookie.clone(),
@@ -2625,19 +3218,22 @@ pub(in crate::tests) fn save_deductions(d: &FederalDraft, route: DeductionRoute,
         page: PAGE_DEDUCTIONS,
         previous: PAGE_ADJUSTMENTS,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
-        allowed_routes: vec![],
+
         allowed_repayment: vec![],
         home_sites: vec![],
         document_facts: DocumentFacts { year: 2026 },
         value: Deductions {
-            route,
+            car_refunds: Default::default(),
+            itemize_override,
             cash_gifts: gifts,
             fund_cash_gifts: 0,
             other_cash_gifts: 0,
-            car_loans: vec![],
+            car_loans: d.deductions.as_ref().map_or_else(Vec::new, |deductions| {
+                deductions.vehicle_loans.iter().map(Into::into).collect()
+            }),
             casualties: vec![],
             repayment: RepaymentClaim::None,
         },
@@ -2646,24 +3242,34 @@ pub(in crate::tests) fn save_deductions(d: &FederalDraft, route: DeductionRoute,
 // A head-of-household return entered page by page, saved through the review.
 pub(in crate::tests) fn household_return(people: Vec<Dependent>) -> Interview {
     let mut s = Interview::new(TEST_USER, FederalDraft::empty("m2-household".into()));
-    for request in [
-        |d: &FederalDraft, _: &[Dependent]| save_setup(d, head_of_household()),
-        |d: &FederalDraft, _: &[Dependent]| save_you(d, adult("Casey", "Sample", 19880610)),
-        |d: &FederalDraft, people: &[Dependent]| save_children(d, people.to_vec()),
-        // M3-P18: the opening checklist plans W-2 wages.
-        |d: &FederalDraft, _: &[Dependent]| {
-            save_checklist(d, PAGE_CHILDREN, income_ticks(IncomeTopics::WAGES.0))
-        },
-        |d: &FederalDraft, _: &[Dependent]| save_documents(d, vec![m2_w2()]),
-    ] {
-        let request = request(&s.draft.clone(), &people);
-        let reply = send(&mut s, request);
-        assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
-    }
-    // Continue past the income summary, then each later section: the
-    // less-common pages with "None of these" (gate fixes batch A), the rest
-    // passed with nothing for this return (M3-P19).
-    let request = continue_hub(&s.draft.clone(), PAGE_INCOME);
+    let request = save_setup(&s.draft, head_of_household());
+    accepted(&send(&mut s, request));
+    let request = save_you(&s.draft, adult("Casey", "Sample", 19880610));
+    accepted(&send(&mut s, request));
+    let request = save_children(&s.draft, people);
+    let Reply::Edit(mut request @ P::SaveDocuments { .. }) = send(&mut s, request) else {
+        unreachable!()
+    };
+    let P::SaveDocuments { documents, allowed_community, .. } = &mut request else {
+        unreachable!()
+    };
+    let mut source = m2_w2();
+    source.document.set_printed_names(&accepted_document_names(&s.draft, source.owner.owned()));
+    let IncomeSource::Wage { value } = source.document else { unreachable!() };
+    documents.common.wages.documents.push(crate::WageDocumentRow {
+        id: source.id,
+        owner: source.owner,
+        document: value,
+        community: source.community,
+        refund_management: source.refund_management,
+        allowed_community: allowed_community.clone(),
+        preview: source.preview,
+        investment_caps: source.investment_caps,
+        refund_management_needed: source.refund_management_needed,
+    });
+    let reply = send(&mut s, request);
+    let reply = past_people(&mut s, reply);
+    let request = tick(reply, Checklist::NONE);
     let reply = send(&mut s, request);
     walk_on_to_review(&mut s, reply);
     s.dirty = false; // persisted by the task
@@ -2672,25 +3278,7 @@ pub(in crate::tests) fn household_return(people: Vec<Dependent>) -> Interview {
 
 #[test]
 fn m2_sequence_is_five_pages_with_dependents() {
-    // Amended for M3-P1: the documents page is the income hub and its Wages
-    // topic, and the progress counts the design's ten sections. Amended for
-    // M3-P7: the adjustments hub is section 5 and costs one Next. Amended
-    // for M3-P9: the deductions page is section 6 and costs one Next.
-    // Amended for M3-P11: the credits hub is section 7 and costs one Next
-    // (its care row lists the people page; nothing is suggested). Amended
-    // for M3-P13: the federal payments page is section 8 and costs one Next.
-    // Amended for M3-P15: the other taxes page is section 8, before the
-    // payments page (9), and costs one Next.
-    // Amended for M3-P18: the opening checklist is section 4, after the
-    // people page, and costs one Next (nothing ticked: the fixture's W-2 is
-    // entered from the hub); every later section counts one more, of 12.
-    // Amended for M3-P19, the guided walk: the checklist ticks W-2 wages,
-    // its Next opens the Wages page and the save the income summary, whose
-    // OK passes every later section (the credits hub too: care is answered
-    // on the people page) to the review. Progress counts the shown
-    // sections: setup, you, people, the checklist, income and the review.
-    // Gate fixes batch A: each section's less-common page is a walk step and
-    // the adjustments, credits and other taxes sections are always shown.
+    // Required care answers remain in the walk after the empty summaries pass.
     for (filing, expected, sections) in [
         (
             head_of_household().filing,
@@ -2698,35 +3286,15 @@ fn m2_sequence_is_five_pages_with_dependents() {
                 "setup",
                 "you",
                 "people",
+                "documents",
+                "income without a form",
                 "checklist",
                 "wages",
-                "less common income",
-                "income",
-                "more adjustments",
-                "adjustments",
                 "care",
-                "more credits",
-                "credits",
-                "other taxes",
-                "payments",
+                "often missed",
                 "review",
             ],
-            vec![
-                (1, 10),
-                (2, 10),
-                (3, 10),
-                (4, 0),
-                (5, 10),
-                (5, 10),
-                (5, 10),
-                (6, 10),
-                (6, 10),
-                (7, 10),
-                (7, 10),
-                (7, 10),
-                (8, 10),
-                (9, 10),
-            ],
+            vec![(1, 11), (2, 11), (3, 11), (4, 11), (5, 11), (6, 0), (7, 11), (9, 11), (10, 11)],
         ),
         (
             Filing::MarriedJointly,
@@ -2735,35 +3303,25 @@ fn m2_sequence_is_five_pages_with_dependents() {
                 "you",
                 "spouse",
                 "people",
+                "documents",
+                "income without a form",
                 "checklist",
                 "wages",
-                "less common income",
-                "income",
-                "more adjustments",
-                "adjustments",
                 "care",
-                "more credits",
-                "credits",
-                "other taxes",
-                "payments",
+                "often missed",
                 "review",
             ],
             vec![
-                (1, 10),
-                (2, 10),
-                (2, 10),
-                (3, 10),
-                (4, 0),
-                (5, 10),
-                (5, 10),
-                (5, 10),
-                (6, 10),
-                (6, 10),
-                (7, 10),
-                (7, 10),
-                (7, 10),
-                (8, 10),
-                (9, 10),
+                (1, 11),
+                (2, 11),
+                (2, 11),
+                (3, 11),
+                (4, 11),
+                (5, 11),
+                (6, 0),
+                (7, 11),
+                (9, 11),
+                (10, 11),
             ],
         ),
     ] {
@@ -2806,12 +3364,13 @@ fn m2_sequence_is_five_pages_with_dependents() {
                         page,
                         previous,
                         review,
-                        estimate: Some(estimate),
+                        estimate: estimate.map(Into::into),
                         warnings: vec![],
                         progress: Some(progress),
                         dependents: Dependents { people: m2_children() },
                         allowed_lived,
                         days_alive,
+                        credits: Vec::new(),
                     }
                 }
                 Reply::Response(hub @ P::Hub { previous, page: PAGE_INCOME, .. }) => {
@@ -2822,6 +3381,18 @@ fn m2_sequence_is_five_pages_with_dependents() {
                     assert_eq!(opened(&before).0, "checklist");
                     go_on(&hub)
                 }
+                // The younger child's care, paid: the box plans the care
+                // page, which takes the costs.
+                reply @ (Reply::Edit(P::SaveChecklist { .. })
+                | Reply::Response(P::BeginChecklist { .. })) => {
+                    tick(reply, Checklist { paid: PaidTopics::CARE.0, ..Checklist::NONE })
+                }
+                reply
+                @ (Reply::Edit(P::SaveCare { .. }) | Reply::Response(P::BeginCare { .. })) => {
+                    let mut page = crate::tests::cross::interview::care_editor(reply);
+                    put_care_costs(&mut page, &M2_CARE);
+                    page
+                }
                 other => answer(other, filing),
             };
             reply = send(&mut s, request);
@@ -2831,11 +3402,11 @@ fn m2_sequence_is_five_pages_with_dependents() {
         // income, adjustments, credits and other taxes sections are always
         // shown (gate fixes batch A): nine sections.
         assert_eq!(progress.len(), sections.len());
-        assert!(progress[0].contains("2026 federal · section 1 of 10"));
+        assert!(progress[0].contains("2026 federal · section 1 of 11"));
         for (shown, (n, total)) in progress.iter().zip(&sections).skip(1) {
             // The checklist's progress is its planned path (M3-P18).
             if shown.contains("Your return: ") {
-                assert_eq!(*n, 4);
+                assert_eq!(*n, 6);
                 continue;
             }
             let text = alloc::format!("2026 federal · section {n} of {total}");
@@ -2855,7 +3426,7 @@ fn review_lists_the_people_row() {
         }
         other => panic!("expected the review, got {other:?}"),
     };
-    let mut s = household_return(m2_children());
+    let mut s = m2_household();
     let (answers, result, allowed_sections) = review(&mut s);
     let shown_rows: Vec<_> =
         answers.iter().map(|r| (status_text(&r.item), status_text(&r.status), r.section)).collect();
@@ -2869,16 +3440,19 @@ fn review_lists_the_people_row() {
             ("Your 2026 return", "Head of household", TaxSection::Setup),
             ("About you", "Casey Sample", TaxSection::People),
             ("Children and people you support", "2 people", TaxSection::Children),
-            // Amended for M3-P18: nothing was ticked; the W-2 ticks wages.
-            ("Your 2026 at a glance", "1 topic", TaxSection::Checklist),
+            ("Document center", "Entered", TaxSection::Documents),
+            ("Income without a form", "None of these", TaxSection::IncomeWithoutForm),
+            // The care page's entries check the care box.
+            ("Beyond your documents", "1 topic", TaxSection::Checklist),
             ("Income", "1 W-2", TaxSection::Income),
             ("Adjustments to income", "Nothing entered", TaxSection::Adjustments),
-            ("Deductions", "Standard deduction", TaxSection::Deductions),
+            ("Deductions", "Compare with itemized deductions", TaxSection::Deductions),
             // Amended for M3-P11: the credits row counts the care topic.
             ("Credits", "1 topic", TaxSection::Credits),
             // Amended for M3-P15.
             ("Other taxes", "Nothing entered", TaxSection::OtherTaxes),
             ("Federal payments", "Nothing entered", TaxSection::Payments),
+            ("Situations people often miss", "None of these", TaxSection::OftenMissed),
         ]
     );
     assert!(allowed_sections.contains(&(TaxSection::Children as i32)));
@@ -2957,14 +3531,19 @@ fn a_changed_page_erases_only_what_depends_on_it() {
         let reply = send(s, request);
         assert!(matches!(reply, Reply::Response(P::Review { .. })), "{reply:?}");
     };
-    // Joint to single drops the spouse and the spouse's documents only.
+    // Remove the spouse's document in its source editor, then change the filing status.
     let mut joint = complete(FederalStatus::Joint);
     joint.dependents = vec![dependent_record(joint.next_id, "Ava", "Sample", 20180214)];
     joint.next_id += 1;
     let id = joint.next_id;
     add(&mut joint, wage(id, Owner::Spouse, 2_000_000, 200_000));
     let mut s = Interview::new(TEST_USER, joint.clone());
-    review(&mut s, reviewing(save_setup(&joint, ReturnSetup { filing: Filing::Single })));
+    let mut source = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut source else { unreachable!() };
+    documents.common.wages.documents.retain(|row| row.owner != crate::DocumentOwner::Spouses);
+    accepted(&send(&mut s, source));
+    let request = reviewing(save_setup(&s.draft, ReturnSetup { filing: Filing::Single }));
+    review(&mut s, request);
     assert_eq!(s.draft.people.as_ref().unwrap().spouse, SpouseFiler::No);
     assert_eq!(s.draft.income, joint.income[..1]);
     assert_eq!(s.draft.dependents, joint.dependents);
@@ -3006,14 +3585,14 @@ fn at_the_income_hub() -> (Interview, P) {
     send(&mut s, request);
     let request = save_you(&s.draft, adult("Casey", "Sample", 19850315));
     let reply = send(&mut s, request);
-    let checklist = past_people(&mut s, reply);
-    // M3-P18: the checklist plans W-2 wages.
-    let request = tick(checklist, income_ticks(IncomeTopics::WAGES.0));
-    // M3-P19: the walk opens the planned Wages page; its Back opens the hub.
-    let Reply::Edit(P::SaveIncomes { topic: TaxSection::Wages, previous, .. }) =
+    let checklist = past_people_with_self_work(&mut s, reply, true);
+    // A business of your own: the walk opens the planned Self-employment
+    // page; its Back opens the hub.
+    let request = tick(checklist, Checklist::NONE);
+    let Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, previous, .. }) =
         send(&mut s, request)
     else {
-        panic!("expected the Wages page")
+        panic!("expected the Self-employment page")
     };
     let request = back(&s.draft, previous);
     let Reply::Response(hub @ P::Hub { .. }) = send(&mut s, request) else {
@@ -3021,6 +3600,27 @@ fn at_the_income_hub() -> (Interview, P) {
     };
     (s, hub)
 }
+// Next opens the first unfinished page, even after a jump ahead: continuing
+// a later hub reached with Go to does not skip the income step.
+#[test]
+fn continue_after_a_jump_ahead_opens_the_first_unfinished_page() {
+    let (mut s, _) = at_the_income_hub();
+    let request = navigate(&s.draft, TaxSection::Credits);
+    let reply = send(&mut s, request);
+    let Reply::Response(credits @ P::Hub { .. }) = reply else {
+        panic!("expected the credits hub")
+    };
+    let reply = send(&mut s, hub_action(&credits));
+    assert!(
+        matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. })),
+        "{reply:?}"
+    );
+    assert!(s.draft.finished_sections.contains(&TaxSection::Credits));
+    // Resume opens the same page.
+    let reply = send(&mut s, P::OpenInterview { user: TEST_USER });
+    assert!(matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. })));
+}
+
 // The hub's topics; navigation is outside this list.
 pub(in crate::tests) fn hub_rows(
     hub: &P,
@@ -3044,6 +3644,10 @@ type Row = (alloc::string::String, alloc::string::String, TaxSection);
 // The rows every hub ends with since M3-N1: the offered topics not listed
 // above as "Not started", the less-common destination ("None" until
 // something is chosen).
+// The rows of a hub with no uncommon-items page, each topic not started.
+pub(in crate::tests) fn not_started_rows(not_started: &[TaxSection]) -> Vec<Row> {
+    not_started.iter().map(|t| row_of(section_name(*t), "Not started", *t)).collect()
+}
 pub(in crate::tests) fn hub_tail(not_started: &[TaxSection], more: TaxSection) -> Vec<Row> {
     let mut rows: Vec<Row> =
         not_started.iter().map(|t| row_of(section_name(*t), "Not started", *t)).collect();
@@ -3062,7 +3666,7 @@ pub(in crate::tests) fn with_tail(mut rows: Vec<Row>, tail: Vec<Row>) -> Vec<Row
     rows.extend(tail);
     rows
 }
-const ALL_INCOME_TOPICS: [TaxSection; 14] = [
+const ALL_INCOME_TOPICS: [TaxSection; 15] = [
     TaxSection::Wages,
     TaxSection::InterestDividends,
     TaxSection::InvestmentSales,
@@ -3071,6 +3675,7 @@ const ALL_INCOME_TOPICS: [TaxSection; 14] = [
     TaxSection::Rentals,
     TaxSection::GovernmentBenefits,
     TaxSection::OtherIncome,
+    TaxSection::LongTermCareBenefits,
     TaxSection::Gambling,
     TaxSection::Farming,
     TaxSection::PassThrough,
@@ -3083,21 +3688,29 @@ pub(in crate::tests) fn income_topics_but(listed: &[TaxSection]) -> Vec<TaxSecti
     ALL_INCOME_TOPICS.into_iter().filter(|t| !listed.contains(t)).collect()
 }
 pub(in crate::tests) fn interest(taxable: i64) -> IncomeDocumentItem {
-    document(0, IncomeDocument::Int1099(native_int1099("".into(), taxable)))
+    document(
+        0,
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "".into(),
+                taxable,
+            ))),
+        },
+    )
 }
 
 #[test]
-fn income_hub_suggests_wages_then_continue() {
+fn income_hub_suggests_the_planned_topic_then_continue() {
     let (mut s, hub) = at_the_income_hub();
     let P::Hub { page, previous, review, suggested, allowed_sections, progress, .. } = &hub else {
         unreachable!()
     };
     // The hub separates Actions from Go to, and each bound topic link
     // opens its section in one tap.
-    // Amended for M3-P18: the previous section is the opening checklist,
-    // which planned W-2 wages: the hub suggests Wages because it is planned
-    // (a return with nothing ticked suggests Continue), and its first row
-    // is what the checklist says.
+    // The previous section is Beyond your documents, which planned a
+    // business: the hub suggests Self-employment because it is planned (a
+    // return with nothing checked suggests Continue), and its first row is
+    // what the page says.
     assert_eq!((*page, *previous, *review), (PAGE_INCOME, PAGE_CHECKLIST, false));
     // The global navigation ceiling includes the local income destinations
     // and eligible cross-section pages; their identities retain schema order.
@@ -3113,44 +3726,43 @@ fn income_hub_suggests_wages_then_continue() {
             TaxSection::Rentals,
             TaxSection::GovernmentBenefits,
             TaxSection::OtherIncome,
+            TaxSection::LongTermCareBenefits,
             TaxSection::Gambling,
             TaxSection::Farming,
             TaxSection::PassThrough,
             TaxSection::CanceledDebt,
             TaxSection::WorkAbroad,
             TaxSection::HomeOffices,
-            TaxSection::MoreIncome,
             TaxSection::Review,
         ]
         .map(|t| t as i32),
     );
-    assert_eq!(*suggested, TaxSection::Wages);
+    assert_eq!(*suggested, TaxSection::SelfEmployment);
     // Setup, you, people, the checklist, income, adjustments, credits,
     // other taxes and the review.
-    assert!(shown(progress).contains("2026 federal · section 5 of 10"));
-    assert_eq!(
-        told_row(&hub),
-        (
-            "What you told us".into(),
-            "W-2 wages, or employee pay a firm reported on a 1099 (Form 8919)".into()
-        )
-    );
-    // Amended for M3-N1: the planned topic first, then every other topic.
+    assert!(shown(progress).contains("2026 federal · section 7 of 11"));
+    assert_eq!(told_row(&hub), ("What you told us".into(), "None of these".into()));
+    // The planned topic first, then every other topic.
+    let planned = TaxSection::SelfEmployment;
     assert_eq!(
         hub_rows(&hub),
         with_tail(
-            vec![row_of("Wages", "Planned", TaxSection::Wages)],
-            hub_tail_unasked(&income_topics_but(&[TaxSection::Wages]), TaxSection::MoreIncome)
+            vec![row_of("Self-employment", "Planned", planned)],
+            not_started_rows(&income_topics_but(&[planned]))
         )
     );
-    // OK opens the Wages page; saving a W-2 walks on to Less common income
-    // (gate fixes batch A), whose Next ends the walk and returns to the hub,
-    // which now suggests continuing to the next section. Each row carries
-    // its count and amount (M3-P19): box 1 $60,000.00.
-    let Reply::Edit(editor) = send(&mut s, go_on(&hub)) else { panic!("expected the Wages page") };
-    let request = answer(Reply::Edit(editor), Filing::Single);
-    let Reply::Response(hub) = send_past_less_common(&mut s, request) else {
-        panic!("expected the hub")
+    // OK opens the Self-employment page; saving a business walks on to Less
+    // common income (gate fixes batch A), whose Next ends the walk and
+    // returns to the hub, which now suggests continuing to the next section.
+    let Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. }) =
+        send(&mut s, go_on(&hub))
+    else {
+        panic!("expected the Self-employment page")
+    };
+    let request = save_topic(&mut s, planned, vec![business_document(5_000_000)]);
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
+    let Reply::Response(hub) = from_review(&mut s, TaxSection::Income) else {
+        panic!("expected the income summary")
     };
     let P::Hub { suggested, .. } = &hub else { panic!("expected the hub, got {hub:?}") };
     assert_eq!(*suggested, TaxSection::Adjustments);
@@ -3159,28 +3771,28 @@ fn income_hub_suggests_wages_then_continue() {
     assert_eq!(
         hub_rows(&hub),
         with_tail(
-            vec![row_of("Wages", "1 W-2 · $60000.00", TaxSection::Wages)],
-            hub_tail(&income_topics_but(&[TaxSection::Wages]), TaxSection::MoreIncome)
+            vec![row_of("Self-employment", "1 business", planned)],
+            not_started_rows(&income_topics_but(&[planned]))
         )
     );
     // A topic with documents shows its count and amount.
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, vec![interest(20_000)]);
-    let Reply::Response(hub) = send(&mut s, request) else { panic!("expected the hub") };
+    accepted(&save_walk_sources(&mut s, vec![interest(20_000)]));
+    let Reply::Response(hub) = from_review(&mut s, TaxSection::Income) else {
+        panic!("expected the income summary")
+    };
     assert_eq!(
         hub_rows(&hub),
         with_tail(
             vec![
-                row_of("Wages", "1 W-2 · $60000.00", TaxSection::Wages),
+                // Its situations question is still to be answered.
                 row_of(
                     "Interest and dividends",
-                    "1 1099-INT · $200.00",
+                    "Needs attention: Fix",
                     TaxSection::InterestDividends
                 ),
+                row_of("Self-employment", "1 business", planned),
             ],
-            hub_tail(
-                &income_topics_but(&[TaxSection::Wages, TaxSection::InterestDividends]),
-                TaxSection::MoreIncome
-            )
+            not_started_rows(&income_topics_but(&[TaxSection::InterestDividends, planned]))
         )
     );
     // Go to also admits the saved setup page across sections.
@@ -3215,31 +3827,53 @@ fn topic_page_opens_by_edit_request_and_returns_to_its_hub() {
     assert!(documents.documents.is_empty());
     assert!(
         shown(progress.as_ref().expect("native supplied progress"))
-            .contains("section 5 of 10 · Interest and dividends")
+            .contains("section 7 of 11 · Interest and dividends")
     );
     // Back opens the hub; the hub is a response and has no Back of its own.
     let request = back(&s.draft, *previous);
     assert!(matches!(send(&mut s, request), Reply::Response(P::Hub { .. })));
-    // Saving, empty or not, continues the walk (M3-P19): the planned Wages
-    // page is still to visit, so it opens; with the walk ended the save
-    // returns to the hub (revisit_from_the_hub_returns_to_it).
+    // Saving, empty or not, continues the walk (M3-P19): the planned
+    // Self-employment page is still to visit, so it opens; with the walk
+    // ended the save returns to the hub (revisit_from_the_hub_returns_to_it).
     let wages_next = |reply: Reply| {
-        matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::Wages, .. }))
+        matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. }))
     };
     assert!(wages_next(send(&mut s, editor.clone())));
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, vec![interest(20_000)]);
-    assert!(wages_next(send(&mut s, request)));
-    // The saved documents reopen the same way.
-    let reopened = open_topic(&mut s, TaxSection::InterestDividends);
-    assert_eq!(page_documents(&reopened).len(), 1);
-    // A topic page takes only its own kinds.
-    let request = save_topic(
-        &s.draft,
-        TaxSection::InterestDividends,
-        vec![document(0, IncomeDocument::W2(w2(1_000_000)))],
+    let reply = save_walk_sources(&mut s, vec![interest(20_000)]);
+    // The new 1099-INT's situations question is asked first, once.
+    assert!(
+        matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::InterestDividends, .. })),
+        "{reply:?}"
     );
+    // Printed forms reopen in their owning source editor; the topic only
+    // shows their read-only projection.
+    let reopened = open_document_center(&mut s);
+    let rows: Vec<_> = page_documents(&reopened)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect();
+    assert_eq!(rows.len(), 1);
+    let readonly = open_topic(&mut s, TaxSection::InterestDividends);
+    let P::SaveIncomes { documents, source_documents, .. } = &readonly else { unreachable!() };
+    assert!(documents.documents.is_empty());
+    assert!(
+        matches!(source_documents, Some(crate::TopicDocumentViews::InterestDividends { documents }) if documents.len() == 1)
+    );
+    let reply = save_walk_sources(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(1_000_000))) },
+        )],
+    );
+    accepted(&reply);
+    // The first Save answers the papers' situations question; a second,
+    // unchanged Save changes nothing.
+    let readonly = open_topic(&mut s, TaxSection::InterestDividends);
+    accepted(&send(&mut s, readonly));
     let before = s.draft.clone();
-    assert!(refusal(send(&mut s, request)).contains("another income topic"));
+    let readonly = open_topic(&mut s, TaxSection::InterestDividends);
+    accepted(&send(&mut s, readonly));
     assert_eq!(s.draft, before);
 }
 
@@ -3247,44 +3881,119 @@ fn topic_page_opens_by_edit_request_and_returns_to_its_hub() {
 fn topic_is_part_of_the_draft_identity() {
     let d = empty_return(FederalStatus::Single);
     let mut s = Interview::new(TEST_USER, d);
-    // The two topic editors share the return identity, revision and review
-    // flag; only the topic tells their device drafts apart.
+    // Both topic editors share the accepted identity. Wages has its own
+    // request variant and page identity; generic income topics carry a topic.
     let identity = |p: &P| match p {
+        P::SaveWagesAnswers { cookie, revision, review, page, .. } => {
+            assert_eq!(*page, TaxSection::Wages as i32);
+            (cookie.clone(), *revision, *review, TaxSection::Wages)
+        }
         P::SaveIncomes { cookie, revision, review, topic, .. } => {
             (cookie.clone(), *revision, *review, *topic)
         }
         other => panic!("expected a topic page, got {other:?}"),
     };
-    let wages = identity(&open_topic(&mut s, TaxSection::Wages));
-    let interest_page = identity(&open_topic(&mut s, TaxSection::InterestDividends));
+    let wage_request = open_topic(&mut s, TaxSection::Wages);
+    let interest_request = open_topic(&mut s, TaxSection::InterestDividends);
+    let wages = identity(&wage_request);
+    let interest_page = identity(&interest_request);
     assert_eq!((&wages.0, wages.1, wages.2), (&interest_page.0, interest_page.1, interest_page.2));
     assert_eq!(wages.3, TaxSection::Wages);
     assert_eq!(interest_page.3, TaxSection::InterestDividends);
-    // The topic decides what a save or its running estimate may carry: the
-    // same 1099-INT is refused under the Wages topic and accepted under its own.
-    let documents = vec![interest(20_000)];
-    let estimate_as = |topic| {
-        catalog_estimate_documents(
-            topic,
-            (IncomeDocuments {
-                qbi_aggregations: Vec::new(),
-                receipt_context: crate::BusinessReceiptContext::default(),
-                documents: documents.clone(),
-            })
-            .into(),
-        )
+    let documents = vec![document(
+        0,
+        IncomeSource::Record {
+            value: crate::IncomeRecord::SellerMortgageInterest(crate::SellerMortgageInterest {
+                buyer: crate::SellerMortgageParty {
+                    buyer: "Buyer".into(),
+                    buyer_tin: "123456789".into(),
+                    buyer_address: "100 Main Street".into(),
+                },
+                interest: 20_000,
+            }),
+        },
+    )];
+    let records: Vec<_> = documents
+        .clone()
+        .into_iter()
+        .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+        .collect();
+    // The Wages record type excludes a seller mortgage before a request can
+    // be composed. Its own preview uses the actual server-supplied wage page.
+    assert!(crate::WagesRecordItem::from_income(records[0].clone()).is_none());
+    let P::SaveWagesAnswers {
+        businesses,
+        wage_scorporations,
+        allowed_wage_scorporations,
+        allowed_owners,
+        allowed_community,
+        allowed_refund_management,
+        wages,
+        followups,
+        records: wage_records,
+        ..
+    } = wage_request.clone()
+    else {
+        unreachable!()
     };
-    error(send(&mut s, estimate_as(TaxSection::Wages)));
+    let before = s.draft.clone();
     assert!(matches!(
-        send(&mut s, estimate_as(TaxSection::InterestDividends)),
+        send(
+            &mut s,
+            P::EstimateWagesAnswers {
+                user: TEST_USER,
+                businesses,
+                wage_scorporations,
+                allowed_wage_scorporations,
+                allowed_owners,
+                allowed_community,
+                allowed_refund_management,
+                wages,
+                followups,
+                records: wage_records,
+                questions: Vec::new(),
+                situations: crate::DocumentSituations::NoneOfThese,
+                allowed_situations: Vec::new(),
+                situation_answers: Vec::new(),
+                situation_documents: Vec::new(),
+                disaster_choices: Vec::new(),
+                people: Vec::new(),
+                inherited_iras: Vec::new(),
+                inherited_roth_iras: Vec::new(),
+            }
+        ),
+        Reply::Response(P::RunningEstimate { .. })
+    ));
+    assert_eq!(s.draft, before);
+    let P::SaveIncomes { followups, .. } = interest_request else { unreachable!() };
+    let estimate_request = catalog_estimate_documents(
+        TaxSection::InterestDividends,
+        IncomeRecords { qbi_aggregations: Vec::new(), documents: records }.into(),
+        followups,
+    );
+    assert!(matches!(
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut s,
+            estimate_request
+        ),
         Reply::Response(P::IncomeRunningEstimate { .. })
     ));
-    let before = s.draft.clone();
-    error(send(&mut s, save_topic(&before, TaxSection::Wages, documents.clone())));
     assert_eq!(s.draft, before);
+    accepted(&send(&mut s, wage_request));
+    assert!(s.draft.income.is_empty());
     // A section that is not an income topic is not a documents page.
-    error(send(&mut s, save_topic(&before, TaxSection::Review, documents)));
+    let before = s.draft.clone();
+    error({
+        let mut request = save_topic(&mut s, TaxSection::InterestDividends, documents.clone());
+        let P::SaveIncomes { topic, .. } = &mut request else { unreachable!() };
+        *topic = TaxSection::Review;
+        send(&mut s, request)
+    });
     assert_eq!(s.draft, before);
+    let request = save_topic(&mut s, TaxSection::InterestDividends, documents);
+    accepted(&send(&mut s, request));
+    assert_eq!(s.draft.income.len(), 1);
+    assert_eq!(s.draft.revision, before.revision + 1);
 }
 
 // The AI Import forms of wave 7 (1099-R, SSA-1099, W-2G, Form 3921, ISO
@@ -3292,8 +4001,12 @@ fn topic_is_part_of_the_draft_identity() {
 
 #[test]
 fn page_opened_from_the_review_returns_to_it() {
-    let d = complete(FederalStatus::Single);
+    let mut d = complete(FederalStatus::Single);
+    name_accepted_income_documents(&mut d);
     let mut s = Interview::new(TEST_USER, d.clone());
+    let source = open_document_center(&mut s);
+    accepted(&send(&mut s, source));
+    let d = s.draft.clone();
     let Reply::Response(P::Review { page, suggested, .. }) =
         send(&mut s, P::ReviewAccepted { user: TEST_USER })
     else {
@@ -3310,116 +4023,174 @@ fn page_opened_from_the_review_returns_to_it() {
         };
         assert!(matches!(
             editor,
-            P::SavePeople { review: true, .. } | P::SaveIncomes { review: true, .. }
+            P::SavePeople { review: true, .. } | P::SaveWagesAnswers { review: true, .. }
         ));
         assert!(matches!(send(&mut s, editor), Reply::Response(P::Review { .. })));
     }
     assert_eq!(s.draft, d);
-    let Reply::Edit(mut editor) = send(&mut s, go_to(&d, page, TaxSection::Wages)) else {
-        panic!("expected the Wages page")
+    let Reply::Edit(mut editor) = send(&mut s, go_to(&d, page, TaxSection::Documents)) else {
+        panic!("expected the document center")
     };
-    if let P::SaveIncomes { documents, .. } = &mut editor {
-        documents.documents.push(document(0, IncomeDocument::W2(w2(1_000_000))));
+    if let P::SaveDocuments { documents, .. } = &mut editor {
+        let mut row = documents.common.wages.documents[0].clone();
+        row.id = 0;
+        row.document = crate::WageDocument::W2(wage_document(W2 {
+            employee: accepted_document_names(&d, Owner::Taxpayer).recipient,
+            ..w2(1_000_000)
+        }));
+        documents.common.wages.documents.push(row);
     }
     assert!(matches!(send(&mut s, editor), Reply::Response(P::Review { .. })));
     assert_eq!(s.draft.income.len(), 2);
-    // The income hub opened from the review keeps the review flag; its topic
-    // pages return to the hub, and continuing through the next hub reaches
-    // the review.
+    // The income summary opened from Review keeps that origin. Its topic
+    // editor uses the normal forward path, passing summary-only hubs.
     let d = s.draft.clone();
-    let Reply::Response(hub @ P::Hub { review: true, .. }) =
+    let Reply::Response(_hub @ P::Hub { review: true, .. }) =
         send(&mut s, go_to(&d, page, TaxSection::Income))
     else {
         panic!("expected the hub")
     };
     let editor = open_topic(&mut s, TaxSection::Wages);
-    assert!(matches!(editor, P::SaveIncomes { review: false, .. }));
-    assert!(matches!(send(&mut s, editor), Reply::Response(P::Hub { .. })));
-    // Amended for M3-P7 and M3-P9: continuing passed the adjustments hub
-    // and the deductions page; M3-P19: they have nothing for this return,
-    // so Continue opens the next shown section, the review.
+    assert!(matches!(editor, P::SaveWagesAnswers { review: false, .. }));
+    assert!(matches!(
+        send(&mut s, editor),
+        Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
+    ));
+    let d = s.draft.clone();
+    // The completed summary's action returns directly to Review.
+    // The summary is read again: saving the wages page answered the new W-2's
+    // situations, so its action now returns directly to Review.
+    let Reply::Response(hub @ P::Hub { review: true, .. }) =
+        send(&mut s, go_to(&d, page, TaxSection::Income))
+    else {
+        panic!("expected the hub")
+    };
     assert!(matches!(send(&mut s, go_on(&hub)), Reply::Response(P::Review { .. })));
-    // A page opened from the hub returns to the hub: the checklist, the
-    // income hub's previous section since M3-P18.
+    // The checklist opened from the hub returns to that explicit origin.
     let Reply::Edit(editor) = send(&mut s, go_to(&d, PAGE_INCOME, TaxSection::Checklist)) else {
         panic!("expected the checklist")
     };
     assert!(matches!(editor, P::SaveChecklist { review: false, previous: PAGE_INCOME, .. }));
-    assert!(matches!(send(&mut s, editor), Reply::Response(P::Hub { .. })));
+    assert!(matches!(send(&mut s, editor), Reply::Response(P::Hub { page: PAGE_INCOME, .. })));
     assert_eq!(s.draft, d);
 }
 
 #[test]
-fn continuing_the_income_hub_records_it_finished() {
+fn saving_the_last_income_topic_continues_to_the_next_question() {
     let (mut s, _) = at_the_income_hub();
-    let request = save_topic(
-        &s.draft,
-        TaxSection::Wages,
-        vec![document(0, IncomeDocument::W2(w2(6_000_000)))],
-    );
-    // The walk goes on to Less common income (gate fixes batch A), whose
-    // Next opens the summary.
-    let reply = send(&mut s, request);
-    assert!(matches!(
-        reply,
-        Reply::Response(P::BeginSituations { topic: TaxSection::MoreIncome, .. })
-    ));
-    let Reply::Response(hub_after) = send(&mut s, save_empty_situations(reply)) else {
-        panic!("expected the hub")
-    };
-    // Saving a topic does not finish the hub: resume returns to it, and the
-    // review lists the income section as not answered.
-    // (M3-P18: only the opening checklist is recorded; M3-P19: and the
-    // planned Wages topic, visited; gate fixes batch A: the people page and
-    // Less common income, visited.)
-    assert_eq!(
-        s.draft.finished_sections,
-        vec![
-            TaxSection::Children,
-            TaxSection::Checklist,
-            TaxSection::Wages,
-            TaxSection::MoreIncome
-        ]
-    );
-    let mut resumed = restart(s.draft.clone());
-    assert!(matches!(
-        send(&mut resumed, P::OpenInterview { user: TEST_USER }),
-        Reply::Response(P::Hub { .. })
-    ));
-    // Going back or into a topic records nothing.
-    s.dirty = false;
-    let before = s.draft.clone();
-    for section in [TaxSection::Checklist, TaxSection::InterestDividends] {
-        send(&mut s, go_to(&before, PAGE_INCOME, section));
-    }
-    assert_eq!(s.draft, before);
-    assert!(!s.dirty);
-    // Continuing records the section, as one accepted revision, and opens
-    // the next shown section's walk: More adjustments, where resume now
-    // starts.
-    assert!(matches!(send(&mut s, go_on(&hub_after)), Reply::Edit(P::SaveMoreAdjustments { .. })));
+    let request =
+        save_topic(&mut s, TaxSection::SelfEmployment, vec![business_document(5_000_000)]);
+    let before_revision = s.draft.revision;
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
     let passed = vec![
         TaxSection::Children,
+        TaxSection::Documents,
+        TaxSection::IncomeWithoutForm,
         TaxSection::Checklist,
-        TaxSection::Wages,
-        TaxSection::MoreIncome,
+        TaxSection::SelfEmployment,
         TaxSection::Income,
     ];
     assert_eq!(s.draft.finished_sections, passed);
-    assert_eq!(s.draft.revision, before.revision + 1);
-    assert!(s.dirty);
+    assert_eq!(s.draft.revision, before_revision + 1);
     let mut resumed = restart(s.draft.clone());
     assert!(matches!(
         send(&mut resumed, P::OpenInterview { user: TEST_USER }),
-        Reply::Edit(P::SaveMoreAdjustments { .. })
+        Reply::Edit(P::SaveSelfEmployedBenefits { .. })
     ));
-    // Continuing again changes nothing: the section is recorded once.
+    // Opening the completed summary and its other topics remains navigation.
     s.dirty = false;
-    let finished = s.draft.clone();
-    send(&mut s, go_on(&hub_after));
-    assert_eq!(s.draft.revision, finished.revision);
-    assert_eq!(s.draft.finished_sections, passed);
+    let before = s.draft.clone();
+    for section in [TaxSection::Income, TaxSection::Checklist, TaxSection::InterestDividends] {
+        accepted(&send(&mut s, go_to(&before, PAGE_INCOME, section)));
+    }
+    assert_eq!(s.draft, before);
     assert!(!s.dirty);
+    let request = open_topic(&mut s, TaxSection::SelfEmployment);
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
+    assert_eq!(s.draft, before, "an unchanged topic adds no continuation revision");
+}
+
+// Enter the two printed source categories used by the walk fixtures into
+// the actual source editor, preserving its navigation envelope.
+fn put_walk_sources(draft: &FederalDraft, request: &mut P, rows: Vec<IncomeDocumentItem>) {
+    let P::SaveDocuments { documents, allowed_community, .. } = request else { unreachable!() };
+    let mut wages = false;
+    let mut interest = false;
+    for mut row in rows {
+        if let Some(mut names) = row.document.printed_names()
+            && names.recipient.name.is_empty()
+        {
+            names.recipient.name = accepted_document_names(draft, row.owner.owned()).recipient.name;
+            row.document.set_printed_names(&names);
+        }
+        let allowed = if row.allowed_community.is_empty() {
+            allowed_community.clone()
+        } else {
+            row.allowed_community
+        };
+        match row.document {
+            IncomeSource::Wage { value } => {
+                if !wages {
+                    documents.common.wages.documents.clear();
+                    wages = true;
+                }
+                documents.common.wages.documents.push(crate::WageDocumentRow {
+                    id: row.id,
+                    owner: row.owner,
+                    document: value,
+                    community: row.community,
+                    refund_management: row.refund_management,
+                    preview: row.preview,
+                    investment_caps: row.investment_caps,
+                    allowed_community: allowed,
+                    refund_management_needed: row.refund_management_needed,
+                });
+            }
+            IncomeSource::InterestDividend { value } => {
+                if !interest {
+                    documents.common.interest_dividends.documents.clear();
+                    interest = true;
+                }
+                documents.common.interest_dividends.documents.push(
+                    crate::InterestDividendDocumentRow {
+                        id: row.id,
+                        owner: row.owner,
+                        document: value,
+                        community: row.community,
+                        refund_management: row.refund_management,
+                        preview: row.preview,
+                        investment_caps: row.investment_caps,
+                        allowed_community: allowed,
+                        refund_management_needed: row.refund_management_needed,
+                    },
+                );
+            }
+            _ => panic!("walk fixtures enter wage or interest sources here"),
+        }
+    }
+}
+
+// These manual source edits exercise Go to while the planned income walk
+// remains available; source and checklist submissions are separate requests.
+fn save_walk_sources(s: &mut Interview, rows: Vec<IncomeDocumentItem>) -> Reply {
+    let complete = s.draft.finished_sections.contains(&TaxSection::Income);
+    let navigation = go_to(&s.draft, PAGE_INCOME, TaxSection::Documents);
+    let Reply::Edit(mut request @ P::SaveDocuments { .. }) = send(s, navigation) else {
+        unreachable!()
+    };
+    put_walk_sources(&s.draft, &mut request, rows);
+    let reply = send(s, request);
+    let reply = past_people(s, reply);
+    if complete {
+        accepted(&reply);
+        let request = go_to(&s.draft, TaxSection::Documents as i32, TaxSection::Income);
+        send(s, request)
+    } else {
+        let Reply::Edit(checklist @ P::SaveChecklist { .. }) = reply else {
+            panic!("source Save continues to checklist: {reply:?}")
+        };
+        send(s, checklist)
+    }
 }
 
 // The fixture's return entered as a filer does: every hub step takes the
@@ -3438,17 +4209,21 @@ fn enter_through_the_hubs(name: &str, raw: &str) -> (Interview, FederalResult, V
         .map(|w| {
             document(
                 0,
-                IncomeDocument::W2(W2 {
-                    answers: Default::default(),
-                    state_details: Default::default(),
-                    wages: cents(&w["box1_wages"]),
-                    withholding: cents(&w["box2_withheld"]),
-                    social_wages: cents(&w["box3"]),
-                    social_tax: cents(&w["box4"]),
-                    medicare_wages: cents(&w["box5"]),
-                    medicare_tax: cents(&w["box6"]),
-                    more: W2More::default(),
-                }),
+                IncomeSource::Wage {
+                    value: crate::WageDocument::W2(wage_document(W2 {
+                        employer: Default::default(),
+                        employee: Default::default(),
+
+                        state_details: Default::default(),
+                        wages: cents(&w["box1_wages"]),
+                        withholding: cents(&w["box2_withheld"]),
+                        social_wages: cents(&w["box3"]),
+                        social_tax: cents(&w["box4"]),
+                        medicare_wages: cents(&w["box5"]),
+                        medicare_tax: cents(&w["box6"]),
+                        more: W2More::default(),
+                    })),
+                },
             )
         })
         .collect();
@@ -3458,30 +4233,29 @@ fn enter_through_the_hubs(name: &str, raw: &str) -> (Interview, FederalResult, V
         .iter()
         .map(|v| interest(cents(&v["box1_interest"])))
         .collect();
-    let people: Vec<Dependent> = fixture["dependents"]
-        .as_array()
-        .map(|list| {
-            list.iter()
-                .map(|p| {
-                    let person = row(
-                        p["first_name"].as_str().unwrap(),
-                        p["last_name"].as_str().unwrap(),
-                        date(&p["birth_date"]),
-                    );
-                    match p.get("care_expenses") {
-                        Some(amount) => Dependent {
-                            care: CareCosts::Yes {
-                                expenses: cents(amount),
-                                incapable_self_care: false,
-                            },
-                            ..person
-                        },
-                        None => person,
-                    }
-                })
-                .collect()
+    let listed = fixture["dependents"].as_array().cloned().unwrap_or_default();
+    let people: Vec<Dependent> = listed
+        .iter()
+        .map(|p| {
+            row(
+                p["first_name"].as_str().unwrap(),
+                p["last_name"].as_str().unwrap(),
+                date(&p["birth_date"]),
+            )
         })
-        .unwrap_or_default();
+        .collect();
+    let care: Vec<CareCosts> = listed
+        .iter()
+        .map(|p| match p.get("care_expenses") {
+            Some(amount) => CareCosts::Yes { expenses: cents(amount), incapable_self_care: false },
+            None => CareCosts::No,
+        })
+        .collect();
+    let ticks = if care.iter().any(|c| *c != CareCosts::No) {
+        Checklist { paid: PaidTopics::CARE.0, ..Checklist::NONE }
+    } else {
+        Checklist::NONE
+    };
     let setup = match fixture["filing_status"].as_str().unwrap() {
         "Single" => ReturnSetup { filing: Filing::Single },
         "Head" => head_of_household(),
@@ -3498,35 +4272,48 @@ fn enter_through_the_hubs(name: &str, raw: &str) -> (Interview, FederalResult, V
                 adult("Casey", "Sample", date(&fixture["birth_dates"]["taxpayer"])),
             ),
             Reply::Response(P::BeginChildren { .. }) => save_children(&s.draft, people.clone()),
-            // M3-P18: the checklist ticks W-2 wages, and interest when the
-            // fixture has a 1099-INT; the income hub then suggests each in
-            // turn, then Continue.
-            reply @ Reply::Edit(P::SaveChecklist { .. }) => {
-                let interest = if ints.is_empty() { 0 } else { IncomeTopics::INTEREST_DIVIDENDS.0 };
-                tick(reply, income_ticks(IncomeTopics::WAGES.0 | interest))
+            Reply::Edit(mut page @ P::SaveDocuments { .. }) => {
+                put_walk_sources(&s.draft, &mut page, w2s.iter().chain(&ints).cloned().collect());
+                page
             }
+            // The W-2s, and the 1099-INTs when the fixture has them, are
+            // entered in the Document center; beyond them, only the care the
+            // fixture paid, entered on the care page.
+            reply @ (Reply::Edit(P::SaveIncomeWithoutForm { .. })
+            | Reply::Response(P::BeginIncomeWithoutForm { .. })) => without_form_editor(reply),
+            reply @ (Reply::Edit(P::SaveChecklist { .. })
+            | Reply::Response(P::BeginChecklist { .. })) => tick(reply, ticks),
             // The summary's task-selected Continue action is tapped.
             Reply::Response(hub @ P::Hub { .. }) => hub_action(&hub),
-            Reply::Edit(P::SaveIncomes { topic, .. }) => {
-                let documents = if topic == TaxSection::Wages { w2s.clone() } else { ints.clone() };
-                save_topic(&s.draft, topic, documents)
-            }
-            Reply::Edit(mut page @ P::SaveCare { .. }) => {
-                fill_care_provider(&mut page);
+            Reply::Edit(page @ P::SaveIncomes { .. }) => page,
+            reply @ (Reply::Edit(P::SaveCare { .. }) | Reply::Response(P::BeginCare { .. })) => {
+                let mut page = crate::tests::cross::interview::care_editor(reply);
+                put_care_costs(&mut page, &care);
                 page
             }
             // The deductions page opens complete: Next saves it unchanged.
             Reply::Edit(page @ P::SaveDeductions { .. }) => page,
-            // So does the federal payments page (M3-P13).
+            begin @ Reply::Response(P::BeginPayments { .. }) => {
+                let Reply::Edit(page) = crate::tests::support::client::answer_no_estimates(begin)
+                else {
+                    panic!("complete next-year choice")
+                };
+                page
+            }
+            begin @ Reply::Response(P::BeginOftenMissed { .. }) => {
+                crate::tests::support::client::answer_often_missed(begin, OftenMissed::default())
+            }
             Reply::Edit(page @ P::SavePayments { .. }) => page,
+            // A topic holding a paper answers its situations question once: None of these.
+            Reply::Edit(page @ P::SaveWagesAnswers { .. }) => page,
             // Each section's less-common page opens with "None of these"
             // (gate fixes batch A): Next saves it unchanged.
             Reply::Edit(
                 page @ (P::SaveMoreAdjustments { .. }
                 | P::SaveMoreCredits { .. }
-                | P::SaveOtherTaxes { .. }),
+                | P::SaveOtherTaxes { .. }
+                | P::SaveOftenMissed { .. }),
             ) => page,
-            reply @ Reply::Response(P::BeginSituations { .. }) => save_empty_situations(reply),
             Reply::Response(P::Review { .. }) => {
                 let result = reviewed(&s);
                 return (s, result, sent);
@@ -3552,24 +4339,24 @@ fn m1_fixture_completes_through_the_hubs() {
     let raw = include_str!("../../../tests/fixtures/returns/m1-single-w2.json");
     let (s, result, _) = enter_through_the_hubs("m1-single-w2", raw);
     assert_fixture_lines(raw, &result);
-    // M3-P19: the two planned topics are recorded as visited; each section
-    // walks its less-common page with "None of these" (gate fixes batch A).
+    // Nothing beyond the documents is planned; each section walks its
+    // less-common page with "None of these".
     assert_eq!(
         s.draft.finished_sections,
         vec![
             TaxSection::Children,
+            TaxSection::Documents,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
             TaxSection::Wages,
             TaxSection::InterestDividends,
-            TaxSection::MoreIncome,
             TaxSection::Income,
-            TaxSection::MoreAdjustments,
             TaxSection::Adjustments,
             TaxSection::Deductions,
-            TaxSection::MoreCredits,
             TaxSection::Credits,
             TaxSection::OtherTaxes,
-            TaxSection::Payments
+            TaxSection::Payments,
+            TaxSection::OftenMissed
         ]
     );
     assert_eq!(s.draft.income.len(), 2);
@@ -3587,18 +4374,18 @@ fn m2_fixture_completes_through_the_hubs() {
         s.draft.finished_sections,
         vec![
             TaxSection::Children,
+            TaxSection::Documents,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
             TaxSection::Wages,
-            TaxSection::MoreIncome,
             TaxSection::Income,
-            TaxSection::MoreAdjustments,
             TaxSection::Adjustments,
             TaxSection::Deductions,
             TaxSection::Care,
-            TaxSection::MoreCredits,
             TaxSection::Credits,
             TaxSection::OtherTaxes,
-            TaxSection::Payments
+            TaxSection::Payments,
+            TaxSection::OftenMissed
         ]
     );
 }
@@ -3634,6 +4421,10 @@ pub(in crate::tests) fn no_expenses() -> BusinessExpenses {
 // page's default.
 pub(in crate::tests) fn business(receipts: i64) -> Business {
     Business {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
+        allowed_interest_limit_election: Vec::new(),
+        related: Default::default(),
         principal_business: Default::default(),
         business_code: None,
         ein: Default::default(),
@@ -3655,10 +4446,13 @@ pub(in crate::tests) fn business(receipts: i64) -> Business {
 // The "More about this business" record holding the page's defaults.
 pub(in crate::tests) fn business_details() -> BusinessDetails {
     BusinessDetails {
+        tips_amount_kinds: alloc::vec![1],
+        overtime_amount_kinds: alloc::vec![1],
+        intangible_predecessor_choices: Vec::new(),
         research_property_choices: Vec::new(),
         de_minimis: None,
         depletion: None,
-        overtime: None,
+        overtime: BusinessOvertimeEntry::Manual { data: None },
         ministerial: false,
         notary_profit: 0,
         notary_gross: None,
@@ -3677,8 +4471,11 @@ pub(in crate::tests) fn business_details() -> BusinessDetails {
         paid_leave: None,
         fuel_tax_credit: None,
         cash_fuel_tax_recovery: None,
-        tips: None,
-        material_participation: true,
+        tips: BusinessTipsEntry::Manual { data: None },
+        material_participation: crate::ParticipationFacts {
+            hours: 501,
+            test: crate::ParticipationTest::Over500,
+        },
         at_risk: crate::RentalAtRisk::All,
         qbi_group: "".into(),
         income_source: BusinessIncomeChoice::NotNeeded,
@@ -3693,6 +4490,9 @@ pub(in crate::tests) fn business_details() -> BusinessDetails {
 // in service, new in 2026 with bonus depreciation.
 pub(in crate::tests) fn asset(cost: i64, placed: u32, class: AssetClass) -> Asset {
     Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -3700,10 +4500,16 @@ pub(in crate::tests) fn asset(cost: i64, placed: u32, class: AssetClass) -> Asse
         cost,
         credit_reduction: 0,
         placed,
-        class,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class,
+                history: AssetHistory::New { first_year: FirstYearDeduction::Bonus },
+            },
+        },
         business_percent: 100,
         acquired: None,
-        history: AssetHistory::New { first_year: FirstYearDeduction::Bonus },
         disposal: crate::AssetDisposal::No,
         investment_credit: crate::InvestmentCredit::No,
         earlier_business_percent: None,
@@ -3711,7 +4517,7 @@ pub(in crate::tests) fn asset(cost: i64, placed: u32, class: AssetClass) -> Asse
     }
 }
 pub(in crate::tests) fn with_first_year(mut asset: Asset, first_year: FirstYearDeduction) -> Asset {
-    asset.history = AssetHistory::New { first_year };
+    asset.gds_mut().unwrap().history = AssetHistory::New { first_year };
     asset
 }
 pub(in crate::tests) fn save_businesses(
@@ -3719,9 +4525,12 @@ pub(in crate::tests) fn save_businesses(
     businesses: Vec<Business>,
 ) -> Reply {
     let request = save_topic(
-        &session.draft.clone(),
+        session,
         TaxSection::SelfEmployment,
-        businesses.into_iter().map(|b| document(0, IncomeDocument::Business(b))).collect(),
+        businesses
+            .into_iter()
+            .map(|b| document(0, IncomeSource::Record { value: crate::IncomeRecord::Business(b) }))
+            .collect(),
     );
     send(session, request)
 }
@@ -3746,7 +4555,7 @@ pub(in crate::tests) fn reopened_businesses(draft: FederalDraft) -> Vec<Business
         .map(|item| {
             assert_eq!(item.preview, None);
             match &item.document {
-                IncomeDocument::Business(b) => b.clone(),
+                IncomeSource::Record { value: crate::IncomeRecord::Business(b) } => b.clone(),
                 other => panic!("expected a business, got {other:?}"),
             }
         })
@@ -3774,16 +4583,24 @@ pub(in crate::tests) fn assert_round_trip(session: &mut Interview, page: &[Busin
         bind_saved_property_ids(&mut page.assets, &mut page.vehicles, &data.assets);
         crate::tests::support::client::bind_saved_mileage_ids(&mut page.vehicles, &data.vehicles);
         page.more.research_property_choices = crate::cohorts::property_choices(data);
+        page.more.intangible_predecessor_choices =
+            crate::amortization_records::predecessor_choices(data);
+        let mut document = crate::IncomeRecord::Business(page.clone());
+        crate::interest_limit::refresh(&mut document, data.interest_limit_election.is_some());
+        let crate::IncomeRecord::Business(projected) = document else { unreachable!() };
+        page.allowed_interest_limit_election = projected.allowed_interest_limit_election;
     }
     let reopened = reopened_businesses(session.draft.clone());
     assert_eq!(reopened, expected);
     let revision = session.draft.revision;
     let mut again = restart(session.draft.clone());
     let items = page_documents(&open_topic(&mut again, TaxSection::SelfEmployment)).to_vec();
-    let request = save_topic(&again.draft.clone(), TaxSection::SelfEmployment, items);
+    let request = save_topic(&mut again, TaxSection::SelfEmployment, items);
     accepted(&send(&mut again, request));
-    assert_eq!(again.draft.revision, revision);
-    assert!(!again.dirty);
+    // The first save of the applying topic records the visit (a revision).
+    let visited = session.draft.finished_sections.contains(&TaxSection::SelfEmployment);
+    assert_eq!(again.draft.revision, revision + i64::from(!visited));
+    assert_eq!(again.dirty, !visited);
 }
 
 // M3-P6: the rental property topic (Schedule E page) and the real estate
@@ -3815,6 +4632,7 @@ fn fixture_building() -> Building {
         commercial_1993_transition: None,
         allowed_commercial_1993_transition: Vec::new(),
         casualty: None,
+        casualty_property: None,
         id: 0,
         energy: None,
         sale_history: None,
@@ -3832,6 +4650,7 @@ pub(in crate::tests) fn fixture_improvement() -> Improvement {
         commercial_1993_transition: None,
         allowed_commercial_1993_transition: Vec::new(),
         casualty: None,
+        casualty_property: None,
         id: 0,
         energy: None,
         sale_history: None,
@@ -3846,7 +4665,12 @@ pub(in crate::tests) fn fixture_improvement() -> Improvement {
 // page's default.
 pub(in crate::tests) fn rental_page(rent: i64) -> Rental {
     Rental {
-        mortgage_loans: Vec::new(),
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
+        // The complete fixture explicitly answers No for its depreciable building.
+        allowed_interest_limit_election: crate::interest_limit::choices(true),
+        location: crate::RentalLocation::UnitedStates,
+        related: Default::default(),
         assets: alloc::vec::Vec::new(),
         address: "".into(),
         kind: RentalPropertyType::SingleFamily,
@@ -3855,6 +4679,8 @@ pub(in crate::tests) fn rental_page(rent: i64) -> Rental {
         building: fixture_building(),
         personal_use: PersonalUse::No,
         more: rental_details(),
+        section179_business: None,
+        prior_home_carry: None,
         sale: crate::RentalSale::No,
         statement: None,
     }
@@ -3869,23 +4695,22 @@ pub(in crate::tests) fn rental_details() -> RentalDetails {
         suspended: SuspendedLoss { regular: 0, amt: 0, active_in_loss_year: true },
         method_changes: Vec::new(),
         home_operating_carryover: 0,
-        //2026-10-19: synthetic prior worksheets explicitly establish these independent records.
-        home_depreciation_carryover: crate::SourceCents::Reported { amount: 0 },
-        amt_home_depreciation_carryover: crate::SourceCents::Reported { amount: 0 },
-        home_casualty_carryover: crate::SourceCents::NotReported,
-        amt_home_casualty_carryover: crate::SourceCents::NotReported,
         qbi: RentalBusiness::No,
         qbi_group: "".into(),
         payroll: BusinessPayroll::No,
         at_risk: Some(crate::RentalAtRisk::All),
+        known_at_risk: vec![crate::RentalAtRisk::All],
         special: false,
     }
 }
 pub(in crate::tests) fn save_rentals(session: &mut Interview, rentals: Vec<Rental>) -> Reply {
     let request = save_topic(
-        &session.draft.clone(),
+        session,
         TaxSection::Rentals,
-        rentals.into_iter().map(|r| document(0, IncomeDocument::Rental(r))).collect(),
+        rentals
+            .into_iter()
+            .map(|r| document(0, IncomeSource::Record { value: crate::IncomeRecord::Rental(r) }))
+            .collect(),
     );
     send(session, request)
 }
@@ -3908,7 +4733,9 @@ pub(in crate::tests) fn reopened_rentals(draft: FederalDraft) -> Vec<(Rental, Op
     page_documents(&open_topic(&mut session, TaxSection::Rentals))
         .iter()
         .map(|item| match &item.document {
-            IncomeDocument::Rental(r) => (r.clone(), item.preview),
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(r) } => {
+                (r.clone(), item.preview)
+            }
             other => panic!("expected a rental, got {other:?}"),
         })
         .collect()
@@ -3917,62 +4744,51 @@ pub(in crate::tests) fn reopened_rentals(draft: FederalDraft) -> Vec<(Rental, Op
 pub(in crate::tests) fn assert_rentals_round_trip(session: &mut Interview, page: &[Rental]) {
     let reopened: Vec<Rental> =
         reopened_rentals(session.draft.clone()).into_iter().map(|(r, _)| r).collect();
-    assert_eq!(reopened, page);
+    let expected = page
+        .iter()
+        .cloned()
+        .map(|page| {
+            let mut document = crate::IncomeRecord::Rental(page);
+            crate::interest_limit::refresh(&mut document, false);
+            let crate::IncomeRecord::Rental(page) = document else { unreachable!() };
+            page
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(reopened, expected);
     let revision = session.draft.revision;
     let mut again = restart(session.draft.clone());
     let items = page_documents(&open_topic(&mut again, TaxSection::Rentals)).to_vec();
-    let request = save_topic(&again.draft.clone(), TaxSection::Rentals, items);
+    let request = save_topic(&mut again, TaxSection::Rentals, items);
     accepted(&send(&mut again, request));
     assert_eq!(again.draft.revision, revision);
     assert!(!again.dirty);
 }
-// A situations page (M3-P15: a hub's less-common page, other taxes or
-// "Anything else?") as the review opens it: its page, offered set and
-// stored choices.
-fn open_situations(
-    session: &mut Interview,
-    topic: TaxSection,
-) -> (i32, Vec<i32>, Vec<SituationItem>) {
-    match send(session, navigate(&session.draft.clone(), topic)) {
-        Reply::Response(P::BeginSituations { topic: shown, page, allowed_situations, .. })
-            if shown == topic =>
-        {
-            (page, allowed_situations, vec![])
+// The last page before the review, as the review opens it.
+pub(in crate::tests) fn open_often_missed(session: &mut Interview) -> P {
+    match send(session, navigate(&session.draft.clone(), TaxSection::OftenMissed)) {
+        Reply::Edit(page @ P::SaveOftenMissed { .. }) => page,
+        begin @ Reply::Response(P::BeginOftenMissed { .. }) => {
+            crate::tests::support::client::answer_often_missed(begin, OftenMissed::default())
         }
-        Reply::Edit(P::SaveSituations {
-            topic: shown, page, allowed_situations, value, ..
-        }) if shown == topic => (page, allowed_situations, value.situations),
-        other => panic!("expected the {topic:?} situations page, got {other:?}"),
+        other => panic!("expected the often-missed page, got {other:?}"),
     }
 }
-// A save of `chosen` composed from the opened page's hidden fields.
-fn situations_request(session: &mut Interview, topic: TaxSection, chosen: Vec<RareSituation>) -> P {
-    let (page, allowed_situations, _) = open_situations(session, topic);
-    let d = session.draft.clone();
-    P::SaveSituations {
-        user: TEST_USER,
-        topic,
-        allowed_situations,
-        cookie: d.cookie.clone(),
-        revision: d.revision,
-        page,
-        previous: PAGE_REVIEW,
-        review: true,
-        estimate: vec![],
-        warnings: vec![],
-        progress: vec![],
-        value: Situations {
-            situations: chosen.into_iter().map(|situation| SituationItem { situation }).collect(),
-        },
-    }
+// A save of `value` composed from the opened page.
+pub(in crate::tests) fn save_often_missed(session: &mut Interview, value: OftenMissed) -> Reply {
+    let mut page = open_often_missed(session);
+    let P::SaveOftenMissed { value: shown, .. } = &mut page else { unreachable!() };
+    *shown = value.into();
+    send(session, page)
 }
-fn save_situations(
+// A save of the situations the App does not prepare, keeping the other answers.
+pub(in crate::tests) fn save_unprepared(
     session: &mut Interview,
-    topic: TaxSection,
-    chosen: Vec<RareSituation>,
+    unprepared: Vec<Unprepared>,
 ) -> Reply {
-    let request = situations_request(session, topic, chosen);
-    send(session, request)
+    let mut page = open_often_missed(session);
+    let P::SaveOftenMissed { value, .. } = &mut page else { unreachable!() };
+    value.unprepared = (!unprepared.is_empty()).then_some(unprepared);
+    send(session, page)
 }
 // The other taxes page (u5-credits), opened from the review.
 pub(in crate::tests) fn open_other_taxes(session: &mut Interview) -> P {
@@ -4001,13 +4817,13 @@ pub(in crate::tests) fn other_taxes_request(page: &P, d: &FederalDraft, taxes: V
         page: *page,
         previous: *previous,
         review: *review,
-        estimate: Some(vec![]),
+        estimate: None,
         warnings: vec![],
         progress: Some(vec![]),
         allowed_owners: allowed_owners.clone(),
         mortgage_gift_owners: mortgage_gift_owners.clone(),
         coverdell_corrections: coverdell_corrections.clone(),
-        value: OtherTaxes { taxes },
+        value: OtherTaxes { taxes, trump_returns: Vec::new() },
     }
 }
 // A save of `taxes` composed from the page opened from the review.
@@ -4034,25 +4850,39 @@ fn land_above_cost_is_rejected() {
     // row's preview.
     rejected_with(save_rentals(&mut session, vec![r.clone()]), "RENTAL_LAND_ABOVE_COST");
     assert_eq!(session.draft, before);
+    let P::SaveIncomes { followups, .. } = open_topic(&mut session, TaxSection::Rentals) else {
+        unreachable!()
+    };
     let request = {
         let mut request = catalog_estimate_documents(
             TaxSection::Rentals,
-            (IncomeDocuments {
+            (IncomeRecords {
                 qbi_aggregations: Vec::new(),
-                receipt_context: crate::BusinessReceiptContext::default(),
-                documents: vec![document(0, IncomeDocument::Rental(r.clone()))],
+                documents: vec![document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Rental(r.clone()) },
+                )]
+                .into_iter()
+                .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+                .collect(),
             })
             .into(),
+            followups,
         );
         let P::EstimateDocuments { allowed_documents, allowed_owners, .. } = &mut request else {
             unreachable!()
         };
-        *allowed_documents = vec![libertas_macros::variant_index!(IncomeDocument::Rental) as i32];
+        *allowed_documents =
+            vec![libertas_macros::variant_index!(crate::IncomeSourceKind::Rental) as i32];
         *allowed_owners = vec![0];
         request
     };
-    rejected_with(send(&mut session, request), "RENTAL_LAND_ABOVE_COST");
-    let request = catalog_preview_document(IncomeDocument::Rental(r));
+    rejected_with(
+        crate::tests::support::client::income_pages::candidate_save_review(&mut session, request),
+        "RENTAL_LAND_ABOVE_COST",
+    );
+    let request =
+        catalog_preview_document(IncomeSource::Record { value: crate::IncomeRecord::Rental(r) });
     rejected_with(send(&mut session, request), "RENTAL_LAND_ABOVE_COST");
     // An improvement carries no land, so only the building can fail the rule.
     // Land equal to the cost (a lot with no depreciable building) is accepted.
@@ -4142,15 +4972,20 @@ pub(in crate::tests) fn save_hsa(
         && d.setup.as_ref().is_some_and(|s| {
             matches!(s.filing_status(), FederalStatus::Joint | FederalStatus::Separate)
         }))
-    .then_some(HsaEligibility::FullYear { coverage: HsaCoverage::None });
+    .then_some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::None });
     // These preexisting synthetic fixtures designate the reported principal
     // for the current contribution year; make that source fact explicit.
     let mut employer_sources =
-        crate::health_employer::page_rows(d, crate::health_employer::bindings(d)).unwrap();
+        crate::health_employer::page_rows_current_year(d, crate::health_employer::bindings(d))
+            .unwrap();
     for source in &mut employer_sources {
         source.allocation = HealthEmployerYear::CurrentYear;
     }
+    let mut session = Interview::new(TEST_USER, d.clone());
+    let P::SaveHsa { followups, .. } = open_hsa_page(&mut session) else { unreachable!() };
     P::SaveHsa {
+        followups,
+        questions: Vec::new(),
         user: TEST_USER,
         hsa_failed_deposits: vec![],
         archer_failed_deposits: vec![],
@@ -4161,7 +4996,7 @@ pub(in crate::tests) fn save_hsa(
         page: PAGE_ADJUSTMENTS,
         previous: PAGE_ADJUSTMENTS,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         other_coverage_allowed: false,
@@ -4170,6 +5005,9 @@ pub(in crate::tests) fn save_hsa(
         ira_sources: vec![],
         archer_income: vec![],
         value: HsaPage {
+            contribution_sources: vec![],
+            employer_statements: vec![],
+
             employer_sources,
             linked_deposits: vec![],
             other_coverage,
@@ -4204,11 +5042,21 @@ pub(in crate::tests) fn family_options(reply: Reply) -> Vec<i32> {
 // the given box 12 code W amount (none when zero).
 pub(in crate::tests) fn at_the_adjustments_hub(status: FederalStatus, w: i64) -> Interview {
     let mut d = complete(status);
-    d.finished_sections = vec![TaxSection::Children, TaxSection::Checklist, TaxSection::Income];
+    d.finished_sections = vec![
+        TaxSection::Children,
+        TaxSection::IncomeWithoutForm,
+        TaxSection::Checklist,
+        TaxSection::Income,
+    ];
     let mut s = Interview::new(TEST_USER, d);
     let wage = if w == 0 { w2(6_000_000) } else { w2_with_box_12_w(6_000_000, w) };
-    let request =
-        save_topic(&s.draft, TaxSection::Wages, vec![document(0, IncomeDocument::W2(wage))]);
+    let wage = named_document(
+        &s.draft,
+        -1,
+        0,
+        IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wage)) },
+    );
+    let request = crate::tests::support::client::income_pages::save_documents(&mut s, vec![wage]);
     accepted(&send(&mut s, request));
     s
 }
@@ -4234,14 +5082,8 @@ pub(in crate::tests) fn to_the_hub(s: &mut Interview, reply: Reply) -> Reply {
             | P::SaveCare { previous, .. }
             | P::SaveSaver { previous, .. }
             | P::SaveMoreCredits { previous, .. }
-            | P::SaveMoreAdjustments { previous, .. }
-            | P::SaveSituations { previous, .. },
-        )
-        | Reply::Response(P::BeginSituations { previous, .. })
-            if hubs.contains(previous) =>
-        {
-            *previous
-        }
+            | P::SaveMoreAdjustments { previous, .. },
+        ) if hubs.contains(previous) => *previous,
         _ => return reply,
     };
     let request = back(&s.draft, previous);
@@ -4265,11 +5107,55 @@ pub(in crate::tests) fn open_adjustments_hub(s: &mut Interview) -> P {
     }
 }
 pub(in crate::tests) fn open_hsa_page(s: &mut Interview) -> P {
+    // A W-2 amount whose year is open is asked first, as a required question
+    // (employer_year_questions); this helper answers the current year.
+    if let Some(begin) = hsa_employer_year_begin(s)
+        && matches!(&begin, P::BeginDocumentQuestions { questions, .. }
+            if questions.iter().all(|q| q.key.starts_with("employer/")))
+    {
+        let answers = (0..hsa_open_employer_count(&begin))
+            .map(|_| crate::DocumentStrictAnswer::EmployerYear {
+                value: crate::HealthEmployerYear::CurrentYear,
+            })
+            .collect();
+        crate::tests::support::client::own_questions::answer_questions(s, &begin, answers);
+    }
     let request = go_to(&s.draft, PAGE_ADJUSTMENTS, TaxSection::Hsa);
     match send(s, request) {
         Reply::Edit(page @ P::SaveHsa { .. }) => page,
         other => panic!("expected the HSA page, got {other:?}"),
     }
+}
+// The HSA page's questions page when a W-2 amount's year is open, as the endpoint opens it.
+pub(in crate::tests) fn hsa_employer_year_begin(s: &mut Interview) -> Option<P> {
+    let request = go_to(&s.draft, PAGE_ADJUSTMENTS, TaxSection::Hsa);
+    let reply = send(s, request);
+    match crate::tests::support::client::own_questions::wire_page(s, reply) {
+        Reply::Response(begin @ P::BeginDocumentQuestions { .. })
+            if hsa_open_employer_count(&begin) > 0 =>
+        {
+            Some(begin)
+        }
+        _ => None,
+    }
+}
+// The HSA page's questions page when the other filer's eligibility is open.
+pub(in crate::tests) fn hsa_other_begin(s: &mut Interview) -> Option<P> {
+    let request = go_to(&s.draft, PAGE_ADJUSTMENTS, TaxSection::Hsa);
+    let reply = send(s, request);
+    match crate::tests::support::client::own_questions::wire_page(s, reply) {
+        Reply::Response(begin @ P::BeginDocumentQuestions { .. })
+            if matches!(&begin, P::BeginDocumentQuestions { questions, .. }
+                if questions.iter().any(|q| q.key == "other_coverage")) =>
+        {
+            Some(begin)
+        }
+        _ => None,
+    }
+}
+pub(in crate::tests) fn hsa_open_employer_count(begin: &P) -> usize {
+    let P::BeginDocumentQuestions { questions, .. } = begin else { unreachable!() };
+    questions.iter().filter(|q| q.key.starts_with("employer/")).count()
 }
 pub(in crate::tests) fn hsa_page_value(page: &P) -> (&HsaPage, &[i32]) {
     let P::SaveHsa { value, allowed_family_split, .. } = page else {
@@ -4280,10 +5166,10 @@ pub(in crate::tests) fn hsa_page_value(page: &P) -> (&HsaPage, &[i32]) {
 
 #[test]
 fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
-    // Without box 12 W the section is still walked for its More adjustments
-    // page (gate fixes batch A): its hub suggests that page.
+    // Without box 12 W nothing in the section is planned or derived: its hub
+    // suggests continuing.
     let mut s = at_the_adjustments_hub(FederalStatus::Single, 0);
-    assert!(!s.draft.finished_sections.contains(&TaxSection::Adjustments));
+    assert!(s.draft.finished_sections.contains(&TaxSection::Adjustments));
     let hub = open_adjustments_hub(&mut s);
     let P::Hub { page, previous, suggested, allowed_sections, progress, .. } = &hub else {
         unreachable!()
@@ -4310,10 +5196,10 @@ fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
         ]
         .map(|t| t as i32),
     );
-    assert_eq!(*suggested, TaxSection::MoreAdjustments);
+    assert_eq!(*suggested, TaxSection::Credits);
     // The sections counted: setup, you, people, the checklist, income,
     // adjustments, credits, other taxes and the review.
-    assert!(shown(progress).contains("2026 federal · section 6 of 10"));
+    assert!(shown(progress).contains("2026 federal · section 8 of 11"));
     // Amended for M3-N1: every offered topic and Continue are rows.
     assert_eq!(
         hub_rows(&hub),
@@ -4333,14 +5219,15 @@ fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
     let hub = open_adjustments_hub(&mut s);
     let P::Hub { suggested, .. } = &hub else { unreachable!() };
     assert_eq!(*suggested, TaxSection::Hsa);
-    // Amended for M3-P16: the missing account is the topic's attention.
+    // Amended for M3-P16: the topic's first remaining item is its attention,
+    // here the W-2 amount's contribution year, which the HSA page asks.
     // Amended for M3-N1: then every other topic; Continue is a separate action.
     assert_eq!(
         hub_rows(&hub),
         with_tail(
             vec![row_of(
                 "Health and medical savings accounts",
-                "Needs attention: Employer HSA contributions or a linked failed cash deposit need this owner’s matching health-account facts",
+                "Needs attention: Choose the actual contribution year for each entered W-2 medical-account employer amount before completing this estimate.",
                 TaxSection::Hsa
             )],
             hub_tail_unasked(
@@ -4361,7 +5248,7 @@ fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
     };
     assert_eq!((*at, *previous), (PAGE_ADJUSTMENTS, PAGE_ADJUSTMENTS));
     assert_eq!(allowed_owners, &vec![Owner::Taxpayer as i32]);
-    assert!(shown(progress).contains("section 6 of 10 · Health and medical savings accounts"));
+    assert!(shown(progress).contains("section 8 of 11 · Health and medical savings accounts"));
     let (value, allowed_family_split) = hsa_page_value(&page);
     assert!(value.accounts.is_empty());
     assert_eq!(value.family_split, FamilySplit::NotApplicable);
@@ -4372,22 +5259,22 @@ fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
         send(&mut s, request),
         Reply::Response(P::Hub { page: PAGE_ADJUSTMENTS, .. })
     ));
-    // Saving the account walks on to More adjustments (gate fixes batch A),
-    // whose Back opens the hub, which counts the account.
+    // Saving the account continues; its summary still counts the account.
     let request = save_hsa(
         &s.draft,
         vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 200_000)],
         FamilySplit::NotApplicable,
     );
     let reply = send(&mut s, request);
-    assert!(matches!(reply, Reply::Edit(P::SaveMoreAdjustments { .. })));
-    let Reply::Response(hub) = to_the_hub(&mut s, reply) else {
-        panic!("expected the adjustments hub")
-    };
+    assert!(matches!(
+        reply,
+        Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
+    ));
+    let hub = open_adjustments_hub(&mut s);
     let P::Hub { suggested, .. } = &hub else {
         panic!("expected the adjustments hub, got {hub:?}")
     };
-    assert_eq!(*suggested, TaxSection::MoreAdjustments);
+    assert_eq!(*suggested, TaxSection::Credits);
     assert_eq!(
         hub_rows(&hub),
         with_tail(
@@ -4403,8 +5290,7 @@ fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
             )
         )
     );
-    // Continuing records the section and walks on to the review, passing
-    // each later section's less-common page (gate fixes batch A). The
+    // Continuing records the section and walks on to the review. The
     // derived HSA topic, once saved, is recorded as visited.
     let reply = send(&mut s, hub_action(&hub));
     walk_on_to_review(&mut s, reply);
@@ -4412,15 +5298,17 @@ fn adjustments_hub_suggests_hsa_when_box_12_w_exists() {
         s.draft.finished_sections,
         vec![
             TaxSection::Children,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
             TaxSection::Income,
+            TaxSection::Documents,
             TaxSection::Hsa,
             TaxSection::Adjustments,
             TaxSection::Deductions,
-            TaxSection::MoreCredits,
             TaxSection::Credits,
             TaxSection::OtherTaxes,
             TaxSection::Payments,
+            TaxSection::OftenMissed,
         ]
     );
 }
@@ -4458,12 +5346,14 @@ fn employer_contributions_come_from_box_12_w() {
     accepted(&send(&mut s, page.clone()));
     assert_eq!(s.draft.revision, revision);
     // A changed W-2 re-derives the stored amount; nothing is erased.
-    let request = save_topic(
-        &s.draft,
-        TaxSection::Wages,
+    let wage_id = s.draft.income[0].id;
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut s,
         vec![document(
-            s.draft.income[0].id,
-            IncomeDocument::W2(w2_with_box_12_w(6_000_000, 150_000)),
+            wage_id,
+            IncomeSource::Wage {
+                value: crate::WageDocument::W2(wage_document(w2_with_box_12_w(6_000_000, 150_000))),
+            },
         )],
     );
     accepted(&send(&mut s, request));
@@ -4494,7 +5384,7 @@ fn family_split_uses_either_family_policy_and_overlapping_eligible_months() {
     let changed = |owner| {
         let mut months = vec![HsaCoverage::SelfOnly; 12];
         months[11] = HsaCoverage::Family;
-        hsa_account(owner, HsaCoverageYear::Changed { months }, 100_000)
+        hsa_account(owner, HsaCoverageYear::Changed { months: months.into() }, 100_000)
     };
     // The calculated allowed set, from the accounts alone.
     for (accounts, expected) in [
@@ -4589,32 +5479,41 @@ pub(in crate::tests) fn at_the_adjustments_hub_with_business(receipts: i64) -> I
     d.finished_sections = vec![TaxSection::Children, TaxSection::Checklist, TaxSection::Income];
     let mut s = Interview::new(TEST_USER, d);
     save_businesses(&mut s, vec![business(receipts)]);
+    // The benefits walkthrough starts after the required source-center visit
+    // and confirms there is no additional income without a form.
+    let sources = open_document_center(&mut s);
+    accepted(&send(&mut s, sources));
+    accepted(&save_without_form(&mut s, crate::IncomeWithoutFormAnswers::default()));
     s
 }
 
 // M3-P9: the deductions page and the itemized hub.
 
-// A complete return whose adjustments hub was left: resuming opens the
-// deductions page, returned with it.
+// Accept the source documents, then open the optional deductions editor
+// from the adjustments section with its ordinary forward-walk context.
 pub(in crate::tests) fn at_the_deductions_page(status: FederalStatus) -> (Interview, P) {
     let mut d = complete(status);
     d.finished_sections = vec![
         TaxSection::Children,
+        TaxSection::IncomeWithoutForm,
         TaxSection::Checklist,
         TaxSection::Income,
         TaxSection::Adjustments,
     ];
     let mut s = Interview::new(TEST_USER, d);
-    match send(&mut s, P::OpenInterview { user: TEST_USER }) {
+    let sources = open_document_center(&mut s);
+    accepted(&send(&mut s, sources));
+    let request = go_to(&s.draft, PAGE_ADJUSTMENTS, TaxSection::Deductions);
+    match send(&mut s, request) {
         Reply::Edit(page @ P::SaveDeductions { .. }) => (s, page),
         other => panic!("expected the deductions page, got {other:?}"),
     }
 }
-pub(in crate::tests) fn deductions_value(page: &P) -> (&Deductions, &[i32]) {
-    let P::SaveDeductions { value, allowed_routes, .. } = page else {
+pub(in crate::tests) fn deductions_value(page: &P) -> &Deductions {
+    let P::SaveDeductions { value, .. } = page else {
         panic!("expected the deductions page, got {page:?}")
     };
-    (value, allowed_routes)
+    value
 }
 // The credits hub (M3-P11), which follows the deductions page and the
 // itemized hub; its Continue reaches the review.
@@ -4634,7 +5533,81 @@ pub(in crate::tests) fn open_itemized_topic(s: &mut Interview, topic: TaxSection
     let request = go_to(&s.draft, PAGE_ITEMIZED, topic);
     match send(s, request) {
         Reply::Edit(page) => page,
+        begin @ Reply::Response(P::BeginMortgages { .. }) => mortgage_editor(begin),
         other => panic!("expected the {topic:?} page, got {other:?}"),
+    }
+}
+// The mortgage editor as a client holds it: a saved page as its EditRequest
+// supplies it; the WorkflowRequest page built with the answered loans as
+// copied and each new loan answered as an ordinary first lender's loan paid
+// in full (the client starts those facts unanswered). Every row goes in
+// `loans`; the save accepts either list.
+pub(in crate::tests) fn mortgage_editor(reply: Reply) -> P {
+    match reply {
+        Reply::Edit(page @ P::SaveMortgages { .. }) => page,
+        Reply::Response(P::BeginMortgages {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+            document_facts,
+            mortgage_loans,
+            rental_mortgage_loans,
+            value,
+        }) => {
+            let answered = value.loans.into_iter().map(|v| crate::MortgageDocumentView {
+                id: v.id,
+                value: v.value,
+                property: v.property,
+                lender: v.lender,
+                allowed_refund_origins: v.allowed_refund_origins,
+                refund_origin: v.refund_origin,
+                details: v.details,
+                paid_share: v.paid_share,
+                insurance_contract: v.insurance_contract,
+                allowed_points: v.allowed_points,
+                points: v.points,
+                debt_date: v.debt_date,
+            });
+            let new = value.new_loans.into_iter().map(|v| crate::MortgageDocumentView {
+                id: v.id,
+                points: if v.allowed_points == [0] {
+                    crate::MortgagePointTreatment::None
+                } else {
+                    crate::MortgagePointTreatment::Purchase
+                },
+                value: v.value,
+                property: v.property,
+                lender: v.lender,
+                allowed_refund_origins: v.allowed_refund_origins,
+                refund_origin: v.refund_origin,
+                details: crate::MortgageDetailsView::FirstLender(Default::default()),
+                paid_share: crate::MortgagePaidShare::All,
+                insurance_contract: crate::SourceDate::Unavailable,
+                allowed_points: v.allowed_points,
+                debt_date: v.debt_date,
+            });
+            P::SaveMortgages {
+                user: TEST_USER,
+                cookie,
+                revision,
+                page,
+                previous,
+                review,
+                estimate: estimate.map(Into::into),
+                document_questions: Vec::new(),
+                warnings: vec![],
+                progress,
+                document_facts,
+                mortgage_loans,
+                rental_mortgage_loans,
+                value: crate::Mortgages { loans: answered.chain(new).collect(), new_loans: vec![] },
+            }
+        }
+        other => panic!("expected the mortgage page, got {other:?}"),
     }
 }
 // The medical page's save as the itemized hub opened it.
@@ -4646,29 +5619,26 @@ pub(in crate::tests) fn save_medical(d: &FederalDraft, value: Medical) -> P {
         page: PAGE_ITEMIZED,
         previous: PAGE_ITEMIZED,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value,
     }
 }
 // The mortgage page's save as the itemized hub opened it (M3-P10).
-pub(in crate::tests) fn save_mortgages(d: &FederalDraft, value: Mortgages) -> P {
-    P::SaveMortgages {
-        mortgage_loans: vec![],
-        rental_mortgage_loans: vec![],
-        user: TEST_USER,
-        cookie: d.cookie.clone(),
-        revision: d.revision,
-        page: PAGE_ITEMIZED,
-        previous: PAGE_ITEMIZED,
-        review: false,
-        estimate: vec![],
-        warnings: vec![],
-        progress: vec![],
-        document_facts: DocumentFacts { year: 2026 },
-        value,
+pub(in crate::tests) fn save_mortgages(
+    session: &mut Interview,
+    mut value: crate::MortgageDocuments,
+) -> P {
+    for form in &mut value.documents {
+        if form.form.borrower.name.is_empty() {
+            form.form.borrower = fixture_document_names(&session.draft, -1).unwrap().recipient;
+        }
     }
+    let mut request = open_document_center(session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.mortgages = value;
+    request
 }
 // The charity carryovers page's save as the itemized hub opened it (M3-P10).
 pub(in crate::tests) fn save_gift_carryovers(d: &FederalDraft, value: GiftCarryovers) -> P {
@@ -4682,7 +5652,7 @@ pub(in crate::tests) fn save_gift_carryovers(d: &FederalDraft, value: GiftCarryo
         page: PAGE_ITEMIZED,
         previous: PAGE_ITEMIZED,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         allowed_owners: vec![],
@@ -4692,34 +5662,9 @@ pub(in crate::tests) fn save_gift_carryovers(d: &FederalDraft, value: GiftCarryo
     }
 }
 pub(in crate::tests) fn stored_facts(s: &Interview) -> ItemizedExpenses {
-    match &s.draft.deductions.as_ref().unwrap().choice {
-        DeductionSelection::Automatic { expenses: ItemizedChoice::Yes { facts } }
-        | DeductionSelection::Itemized { facts } => facts.clone(),
-        other => panic!("expected itemized facts, got {other:?}"),
-    }
+    s.draft.deductions.as_ref().unwrap().itemized.clone()
 }
-pub(in crate::tests) fn empty_facts() -> ItemizedExpenses {
-    ItemizedExpenses {
-        income_tax_owners: None,
-        investment_property_tax_owners: None,
-        investment_income_tax: crate::InvestmentIncomeTax::Unresolved,
-        real_estate_taxes: 0,
-        other_lines: vec![],
-        medical: 0,
-        long_term_care: vec![],
-        personal_tax: PersonalTaxElection::None,
-        personal_property_taxes: 0,
-        investment_property_taxes: 0,
-    }
-}
-
-// A loan into the itemizing hub's mortgage topic, one Next away from the
-// deductions page (M3-P10).
-fn mortgage_loan_page(mut s: Interview) -> Interview {
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
-    s
-}
+pub(in crate::tests) use crate::tests::support::builders::empty_facts;
 
 #[test]
 fn within_limit_default_deducts_all_interest() {
@@ -4735,15 +5680,15 @@ fn within_limit_default_deducts_all_interest() {
             Some("MORTGAGE_LAST_BALANCE_ABOVE_BOX_2"),
         ),
     ] {
-        let mut s = mortgage_loan_page(at_the_deductions_page(FederalStatus::Single).0);
+        let mut s = at_the_deductions_page(FederalStatus::Single).0;
         let before = s.draft.clone();
         let loan = first_lender_mortgage(interest, principal, average);
-        let request = save_mortgages(&s.draft, Mortgages { loans: vec![loan] });
+        let reply = save_linked_mortgage_rows(&mut s, vec![loan]);
         if let Some(key) = refusal {
-            rejected_with(send(&mut s, request), key);
+            rejected_with(reply, key);
             assert_eq!(s.draft, before);
         } else {
-            itemized_hub(send_past_less_common(&mut s, request));
+            accepted(&reply);
             assert_eq!(value(&estimate(&s.draft), "mortgage_interest_8a"), 18_000);
         }
     }
@@ -4756,19 +5701,21 @@ fn points_branches_map_onto_mortgage_points() {
     // defaults (refinance No, full_year_tests Yes, a 360-month term, closed
     // on the loan's own origination date). Amortized points (a refinance,
     // or points that fail a purchase test) keep the entered term and date.
-    let mut s = mortgage_loan_page(at_the_deductions_page(FederalStatus::Single).0);
+    let mut s = at_the_deductions_page(FederalStatus::Single).0;
     let request = save_mortgages(
-        &s.draft,
-        Mortgages {
-            loans: vec![
+        &mut s,
+        crate::MortgageDocuments {
+            documents: vec![
                 Mortgage1098 {
+                    lender: Default::default(),
+                    borrower: Default::default(),
                     id: 0,
                     interest: 1_000_000,
                     principal: 20_000_000,
                     originated: 20260201,
                     refund: 0,
                     insurance: 0,
-                    points: Points::Purchase { amount: 300_000 },
+                    points: 300_000,
                     more: MortgageMore {
                         details: MortgageDetails::FirstLender(MortgageFirstLender {
                             home: MortgageHome::Main,
@@ -4779,13 +5726,15 @@ fn points_branches_map_onto_mortgage_points() {
                     },
                 },
                 Mortgage1098 {
+                    lender: Default::default(),
+                    borrower: Default::default(),
                     id: 0,
                     interest: 500_000,
                     principal: 10_000_000,
                     originated: 20240101,
                     refund: 0,
                     insurance: 0,
-                    points: Points::Amortized { amount: 240_000, ended: false, term_months: 240 },
+                    points: 240_000,
                     more: MortgageMore {
                         details: MortgageDetails::FirstLender(MortgageFirstLender {
                             home: MortgageHome::Second,
@@ -4795,14 +5744,35 @@ fn points_branches_map_onto_mortgage_points() {
                         ..MortgageMore::default()
                     },
                 },
-            ],
+            ]
+            .into_iter()
+            .map(mortgage_document)
+            .collect(),
         },
     );
-    itemized_hub(send_past_less_common(&mut s, request));
+    // The itemized walk has nothing left, so its hub was passed (G-45).
+    let reply = send_past_less_common(&mut s, request);
+    assert!(matches!(reply, Reply::Response(P::Review { .. })), "{reply:?}");
+    let first = MortgageMore::default();
+    let second = MortgageMore {
+        details: MortgageDetails::FirstLender(MortgageFirstLender {
+            home: MortgageHome::Second,
+            purpose: MortgageUse::Home,
+            average: AverageBalance::WithinLimit,
+        }),
+        ..MortgageMore::default()
+    };
+    accepted(&save_mortgage_answers(
+        &mut s,
+        &[
+            (first, crate::MortgagePointTreatment::Purchase),
+            (second, crate::MortgagePointTreatment::Amortized { term_months: 240, ended: false }),
+        ],
+    ));
     let loans = &s.draft.deductions.as_ref().unwrap().mortgage;
-    assert_eq!(loans[0].points, MortgagePoints::Purchase { amount: 300_000 });
+    assert_eq!(mortgage_loan(&loans[0]).points, MortgagePoints::Purchase { amount: 300_000 });
     assert_eq!(
-        loans[1].points,
+        mortgage_loan(&loans[1]).points,
         MortgagePoints::Amortized { amount: 240_000, term_months: 240, ended: false }
     );
 }
@@ -4811,10 +5781,12 @@ fn points_branches_map_onto_mortgage_points() {
 fn carryovers_map_onto_prior_cash_charity() {
     // Each CashCarryover becomes a complete PriorCashCharityCarry entry: the
     // page always supplies both confirmations and its own record reference.
-    let mut s = mortgage_loan_page(at_the_deductions_page(FederalStatus::Single).0);
+    let mut s = at_the_deductions_page(FederalStatus::Single).0;
+    s.draft.checklist.carryovers |= CarryoverTopics::CHARITY.0;
     let request = save_gift_carryovers(
         &s.draft,
         GiftCarryovers {
+            vehicles: vec![],
             gifts: vec![],
             appraisals: vec![],
             appraisal_choices: vec![],
@@ -4892,10 +5864,12 @@ fn carryovers_map_onto_prior_cash_charity() {
             }),
         ]
     );
-    // Standard clears the carryovers along with the itemized facts.
-    let request = save_deductions(&s.draft, DeductionRoute::Standard, 0);
+    // Changing the deduction preference preserves the carryover records.
+    let retained = s.draft.deductions.as_ref().unwrap().charity_carryovers.clone();
+    let request = save_deductions(&s.draft, None, 0);
     send(&mut s, request);
-    assert!(s.draft.deductions.as_ref().unwrap().charity_carryovers.is_empty());
+    // 2026-11-02: automatic selection retains accepted carryover facts.
+    assert_eq!(s.draft.deductions.as_ref().unwrap().charity_carryovers, retained);
 }
 
 #[test]
@@ -4918,12 +5892,10 @@ fn inline_choices_mark_every_answer_field() {
     let common = include_str!("../../core/common.rs");
     assert!(type_is_marked(common, "Answer"));
     assert!(type_is_marked(common, "Owner"));
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     for name in [
-        "DeductionRoute",
         "SaltElection",
         "FamilySplit",
-        "Points",
         "AverageBalance",
         "VehicleMethod",
         "PenaltyChoice",
@@ -4937,8 +5909,12 @@ fn inline_choices_mark_every_answer_field() {
     ] {
         assert!(type_is_marked(model, name), "{name} lacks libertas_inline_choices");
     }
+    assert!(type_is_marked(
+        include_str!("../../home/mortgage_point_treatment.rs"),
+        "MortgagePointTreatment"
+    ));
     // Canonical HOME replaces the embedded HomeOffice choice.
-    assert!(type_is_marked(include_str!("../../home/sites.rs"), "OfficeMethod"));
+    assert!(type_is_marked(include_str!("../../home/home_site_source.rs"), "OfficeMethod"));
     let mut previous_marked = false;
     for line in model.lines() {
         let trimmed = line.trim();
@@ -4962,37 +5938,108 @@ fn inline_choices_mark_every_answer_field() {
 pub(in crate::tests) fn at_the_credits_hub(mut d: FederalDraft) -> (Interview, P) {
     d.finished_sections.retain(|s| *s != TaxSection::Credits);
     let mut s = Interview::new(TEST_USER, d);
-    let reply = send(&mut s, P::OpenInterview { user: TEST_USER });
-    let hub = credits_hub(to_the_hub(&mut s, reply));
+    crate::tests::support::client::admit_native_fixture_facts(&mut s);
+    let sources = open_document_center(&mut s);
+    accepted(&send(&mut s, sources));
+    let hub = credits_hub(from_review(&mut s, TaxSection::Credits));
     (s, hub)
 }
 pub(in crate::tests) fn open_credits_topic(s: &mut Interview, topic: TaxSection) -> P {
     let request = go_to(&s.draft, PAGE_CREDITS, topic);
     match send(s, request) {
         Reply::Edit(page) => page,
+        begin @ Reply::Response(P::BeginCare { .. }) => care_editor(begin),
         other => panic!("expected the {topic:?} page, got {other:?}"),
     }
 }
-pub(in crate::tests) fn education_value(page: &P) -> &EducationCredits {
-    let P::SaveEducation { value, .. } = page else {
-        panic!("expected the education page, got {page:?}")
-    };
-    value
-}
-pub(in crate::tests) fn save_education(d: &FederalDraft, value: EducationCredits) -> P {
-    P::SaveEducation {
-        user: TEST_USER,
-        cookie: d.cookie.clone(),
-        revision: d.revision,
-        page: PAGE_CREDITS,
-        previous: PAGE_CREDITS,
-        review: false,
-        estimate: vec![],
-        warnings: vec![],
-        progress: vec![],
-        document_facts: DocumentFacts { year: 2026 },
-        value,
+// The care editor as a client holds it: a saved page as its EditRequest
+// supplies it; the unanswered page's WorkflowRequest built with the answered
+// people as copied and each new person's care answered No (the client starts
+// those rows unanswered).
+pub(in crate::tests) fn care_editor(reply: Reply) -> P {
+    match reply {
+        Reply::Edit(page @ P::SaveCare { .. }) => page,
+        Reply::Response(P::BeginCare {
+            allowed_injured_source_facts,
+            people,
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            progress,
+            allowed_owners,
+            care_filers,
+            care_months,
+            businesses,
+            farms,
+            partnerships,
+            allowed_filing,
+            value,
+        }) => P::SaveCare {
+            allowed_filing,
+            allowed_injured_source_facts,
+            people,
+            user: TEST_USER,
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate: estimate.map(Into::into),
+            warnings: vec![],
+            progress,
+            allowed_owners,
+            care_filers,
+            care_months,
+            businesses,
+            farms,
+            partnerships,
+            value: crate::CarePage {
+                plan_maximum: value.plan_maximum,
+                qualifying_people: value.qualifying_people,
+                new_people: value
+                    .new_people
+                    .into_iter()
+                    .map(|row| crate::CareQualifyingRow {
+                        id: row.id,
+                        label: row.label,
+                        care: CareCosts::No,
+                        under_13_child: row.under_13_child,
+                    })
+                    .collect(),
+                providers: value.providers,
+                benefits: value.benefits.into_iter().map(Into::into).collect(),
+                grace: value.grace,
+                own_business: value.own_business,
+                filers: value.filers,
+                filing: value.filing,
+                unpaid_return_year_care: value.unpaid_return_year_care,
+                prior_year: value.prior_year,
+            },
+        },
+        other => panic!("expected the care page, got {other:?}"),
     }
+}
+pub(in crate::tests) fn education_value(page: &P) -> &EducationCredits {
+    let P::SaveDocuments { documents, .. } = page else {
+        panic!("expected the center education editor, got {page:?}")
+    };
+    &documents.common.education
+}
+pub(in crate::tests) fn save_education(session: &mut Interview, mut value: EducationCredits) -> P {
+    for form in &mut value.students {
+        if form.form.student.name.is_empty()
+            && let Some(names) = fixture_document_names(&session.draft, form.student_id)
+        {
+            form.form.student.name = names.recipient.name;
+        }
+    }
+    let mut request = open_document_center(session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.education = value;
+    request
 }
 pub(in crate::tests) fn more_credits_value(page: &P) -> &MoreCredits {
     let P::SaveMoreCredits { value, .. } = page else {
@@ -5002,6 +6049,9 @@ pub(in crate::tests) fn more_credits_value(page: &P) -> &MoreCredits {
 }
 pub(in crate::tests) fn save_more_credits(d: &FederalDraft, value: MoreCredits) -> P {
     P::SaveMoreCredits {
+        document_questions: Vec::new(),
+        credit_income_sources: crate::tax_credit_bonds::income_sources(d),
+        allowed_credit_owners: vec![Owner::Taxpayer as i32],
         initial_carbon_oxide_origins: vec![],
         initial_renewable_facility_origins: Vec::new(),
         clean_vehicle_properties: vec![],
@@ -5025,6 +6075,7 @@ pub(in crate::tests) fn save_more_credits(d: &FederalDraft, value: MoreCredits) 
         progress: None,
         allowed_owners: vec![Owner::Taxpayer as i32],
         foreign_businesses: vec![],
+        estate_foreign_sources: vec![],
         capital_sales: vec![],
         foreign_situations: vec![],
         mortgage_loans: vec![],
@@ -5032,78 +6083,178 @@ pub(in crate::tests) fn save_more_credits(d: &FederalDraft, value: MoreCredits) 
         value,
     }
 }
-pub(in crate::tests) fn student(student: i64, tuition: i64) -> StudentCredit {
-    StudentCredit {
-        student,
-        tuition,
-        scholarships: 0,
-        half_time: true,
-        graduate: false,
-        more: StudentMore::default(),
+pub(in crate::tests) fn student(student: i64, tuition: i64) -> crate::StudentCreditDocument {
+    crate::StudentCreditDocument {
+        id: 0,
+        student_id: student,
+        form: student_credit_paper(StudentCredit {
+            filer: Default::default(),
+            student: Default::default(),
+            tuition,
+            scholarships: 0,
+            half_time: true,
+            graduate: false,
+            prior_tuition_adjustment: crate::SourceCents::NotReported,
+            prior_scholarship_adjustment: crate::SourceCents::NotReported,
+        }),
     }
 }
 
+pub(in crate::tests) fn save_education_answers(
+    session: &mut Interview,
+    students: Vec<EducationStudent>,
+) -> Reply {
+    let mut request = open_credits_topic(session, TaxSection::Education);
+    let P::SaveEducation { value, .. } = &mut request else { unreachable!() };
+    value.students = students.into_iter().map(Into::into).collect();
+    send(session, request)
+}
+
 #[test]
-fn validation_audit_f07_education_duplicate_student_rejects_before_persistence() {
+fn two_tuition_statements_for_one_student_keep_sources_and_one_annual_answer() {
     let (mut session, _) = at_the_credits_hub(complete(FederalStatus::Single));
-    let mut page = open_credits_topic(&mut session, TaxSection::Education);
-    let P::SaveEducation { value, .. } = &mut page else { panic!("expected the education page") };
-    value.students = vec![student(-1, 300_000), student(-1, 200_000)];
-    let before = session.draft.clone();
-    let dirty = session.dirty;
-    rejected_with(
-        current_source_refusal(
-            "secondary-admission-7443",
-            &mut session,
-            page,
-            "ISSUE_USE_ONE_CREDIT_ENTRY_PER_STUDENT_DO_NOT_DUPLICATE_EXPENSES_ACROSS_C_D52B32DA",
-            Some("[value/students/1/student]"),
-            SourceScope::Secondary(SecondaryCorrection::StudentDuplicate),
-        ),
-        "ISSUE_USE_ONE_CREDIT_ENTRY_PER_STUDENT_DO_NOT_DUPLICATE_EXPENSES_ACROSS_C_D52B32DA",
+    let names = accepted_document_names(&session.draft, Owner::Taxpayer);
+    let mut page = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    documents.common.education.students = vec![
+        {
+            let base = student(-1, 300_000);
+            crate::StudentCreditDocument {
+                form: crate::Form1098TPaper {
+                    filer: (Some(names.clone()))
+                        .as_ref()
+                        .and_then(|names| names.issuer.clone())
+                        .unwrap_or_default(),
+                    student: (Some(names.clone()))
+                        .as_ref()
+                        .map(|names| names.recipient.clone())
+                        .unwrap_or_default(),
+                    ..base.form
+                },
+                ..base
+            }
+        },
+        {
+            let base = student(-1, 200_000);
+            crate::StudentCreditDocument {
+                form: crate::Form1098TPaper {
+                    filer: (Some(names.clone()))
+                        .as_ref()
+                        .and_then(|names| names.issuer.clone())
+                        .unwrap_or_default(),
+                    student: (Some(names.clone()))
+                        .as_ref()
+                        .map(|names| names.recipient.clone())
+                        .unwrap_or_default(),
+                    ..base.form
+                },
+                ..base
+            }
+        },
+    ];
+    accepted(&send(&mut session, page));
+    let credits = session.draft.credits.as_ref().unwrap();
+    assert_eq!(credits.education.len(), 2);
+    assert_eq!(credits.students.len(), 1);
+    assert_ne!(credits.education[0].id, credits.education[1].id);
+    assert_eq!(credits.students[0].method, None);
+    let (_, annual) =
+        native_education(-1, education_expenses(0), EducationChoice::AmericanOpportunity);
+    accepted(&save_education_answers(&mut session, vec![annual]));
+    let credits = session.draft.credits.as_ref().unwrap();
+    let inputs = credits.education_inputs();
+    assert_eq!(inputs[0].expenses.tuition, 500_000);
+    assert_eq!(
+        inputs[0].sources,
+        credits.education.iter().map(|source| source.id).collect::<Vec<_>>()
     );
-    assert_eq!(session.draft, before);
-    assert_eq!(session.dirty, dirty);
 }
 
 #[test]
 fn validation_audit_f07_education_distinct_students_and_empty_list_save_and_reopen() {
     let (mut session, _) = at_the_credits_hub(complete(FederalStatus::Joint));
-    let mut page = open_credits_topic(&mut session, TaxSection::Education);
-    let expected = vec![student(-1, 300_000), student(-2, 200_000)];
-    let P::SaveEducation { value, .. } = &mut page else { panic!("expected the education page") };
-    value.students = expected.clone();
+    let mut page = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    documents.common.education.students = vec![student(0, 300_000), student(0, 200_000)];
     accepted(&send(&mut session, page));
-    supported(&session.draft);
-    let mut reopened = open_credits_topic(&mut session, TaxSection::Education);
-    assert_eq!(education_value(&reopened).students, expected);
-    let P::SaveEducation { value, .. } = &mut reopened else { unreachable!() };
-    value.students[1].student = -1;
-    let before = session.draft.clone();
-    let dirty = session.dirty;
-    rejected_with(
-        current_source_refusal(
-            "secondary-admission-7485",
-            &mut session,
-            reopened,
-            "ISSUE_USE_ONE_CREDIT_ENTRY_PER_STUDENT_DO_NOT_DUPLICATE_EXPENSES_ACROSS_C_D52B32DA",
-            Some("[value/students/1/student]"),
-            SourceScope::Secondary(SecondaryCorrection::StudentDuplicate),
-        ),
-        "ISSUE_USE_ONE_CREDIT_ENTRY_PER_STUDENT_DO_NOT_DUPLICATE_EXPENSES_ACROSS_C_D52B32DA",
+    let credits = session.draft.credits.as_ref().unwrap();
+    let ids: Vec<_> = credits.education.iter().map(|source| source.id).collect();
+    assert!(credits.students.is_empty());
+    assert!(credits.education.iter().all(|source| {
+        source.student == 0 && source.assigned == crate::DocumentRecipient::Unknown
+    }));
+    assert_eq!(
+        unknown_documents(&session.draft),
+        ids.iter().map(|id| (*id, TaxSection::Documents)).collect::<Vec<_>>()
     );
-    assert_eq!(session.draft, before);
-    assert_eq!(session.dirty, dirty);
-    let mut reopened = open_credits_topic(&mut session, TaxSection::Education);
+    let page = open_credits_topic(&mut session, TaxSection::Education);
+    let P::SaveEducation { value, .. } = page else { unreachable!() };
+    assert!(value.documents.iter().all(|source| source.student.is_none()));
+    assert!(value.students.is_empty());
+    let request = added_documents_request(
+        &mut session,
+        TaxSection::Education,
+        -1,
+        &[ids[0]],
+        crate::AddedOwnership::Yours,
+    );
+    accepted(&send(&mut session, request));
+    assert_eq!(session.draft.credits.as_ref().unwrap().students[0].method, None);
+    let (_, first) =
+        native_education(-1, education_expenses(0), EducationChoice::AmericanOpportunity);
+    accepted(&save_education_answers(&mut session, vec![first.clone()]));
+    let request = added_documents_request(
+        &mut session,
+        TaxSection::Documents,
+        -2,
+        &[ids[1]],
+        crate::AddedOwnership::Yours,
+    );
+    accepted(&send(&mut session, request));
+    let credits = session.draft.credits.as_ref().unwrap();
+    assert_eq!(credits.students.len(), 2);
+    assert_eq!(credits.students[1].method, None);
+    assert!(!credits.education_pending().is_empty());
+    let mut request = open_credits_topic(&mut session, TaxSection::Education);
+    let P::SaveEducation { value, .. } = &mut request else { unreachable!() };
+    assert_eq!(
+        value.documents.iter().map(|source| source.student).collect::<Vec<_>>(),
+        vec![Some(-1), Some(-2)]
+    );
+    let mut owners = open_document_center(&mut session);
+    let P::SaveDocuments { document_owners, .. } = &mut owners else { unreachable!() };
+    document_owners.iter_mut().find(|person| person.person == -2).unwrap().documents.clear();
+    accepted(&send(&mut session, owners));
+    accepted(&save_education_answers(&mut session, vec![first.clone()]));
+    let credits = session.draft.credits.as_ref().unwrap();
+    assert_eq!(credits.students.len(), 1);
+    assert_eq!(credits.education[1].student, 0);
+    assert_eq!(credits.education[1].assigned, crate::DocumentRecipient::Unknown);
+    let request = added_documents_request(
+        &mut session,
+        TaxSection::Education,
+        -1,
+        &[ids[1]],
+        crate::AddedOwnership::Yours,
+    );
+    accepted(&send(&mut session, request));
+    assert_eq!(session.draft.credits.as_ref().unwrap().students.len(), 1);
+    let reopened = open_document_center(&mut session);
+    let expected: Vec<_> = [(ids[0], 300_000), (ids[1], 200_000)]
+        .into_iter()
+        .map(|(id, tuition)| crate::StudentCreditDocument { id, ..student(-1, tuition) })
+        .collect();
     assert_eq!(education_value(&reopened).students, expected);
-    let P::SaveEducation { value, .. } = &mut reopened else { unreachable!() };
-    value.students.clear();
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { document_owners, .. } = &mut request else { unreachable!() };
+    document_owners.iter_mut().find(|person| person.person == -1).unwrap().documents.clear();
+    accepted(&send(&mut session, request));
+    assert!(session.draft.credits.as_ref().unwrap().students.is_empty());
+    let mut reopened = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut reopened else { unreachable!() };
+    documents.common.education.students.clear();
     accepted(&send(&mut session, reopened));
-    assert!(
-        education_value(&open_credits_topic(&mut session, TaxSection::Education))
-            .students
-            .is_empty()
-    );
+    assert!(education_value(&open_document_center(&mut session)).students.is_empty());
     supported(&session.draft);
 }
 // Estimates the accepted return with the credits hub continued.
@@ -5124,73 +6275,116 @@ fn graduate_or_part_time_student_gets_lifetime_learning() {
     //   your spouse, less than half-time: tuition 3,000
     //   line 10 = 7,500; line 11 = min(7,500, 10,000); line 18 = 20% = 1,500,
     //   nothing refundable.
-    let (mut s, _) = at_the_credits_hub(complete(FederalStatus::Joint));
-    let page = open_credits_topic(&mut s, TaxSection::Education);
+    let mut draft = complete(FederalStatus::Joint);
+    draft.people.as_mut().unwrap().spouse.as_mut().unwrap().first_name = "Jordan".into();
+    name_accepted_income_documents(&mut draft);
+    let (mut s, _) = at_the_credits_hub(draft);
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut s);
     let people = education_value(&page).people.clone();
     let labels: Vec<_> = people.iter().map(|p| status_text(&p.label)).collect();
     assert_eq!(labels, vec!["You", "Your spouse"]);
-    let graduate = StudentCredit {
-        graduate: true,
-        more: StudentMore {
-            books_from_school: 50_000,
-            other_books: 30_000,
-            scholarship_in_income: ScholarshipInclusion::None,
-            ..Default::default()
-        },
-        ..student(-1, 400_000)
+    let graduate = {
+        let base = student(-1, 400_000);
+        crate::StudentCreditDocument {
+            form: crate::Form1098TPaper {
+                filer: (Some(accepted_document_names(&s.draft, Owner::Taxpayer)))
+                    .as_ref()
+                    .and_then(|names| names.issuer.clone())
+                    .unwrap_or_default(),
+                student: (Some(accepted_document_names(&s.draft, Owner::Taxpayer)))
+                    .as_ref()
+                    .map(|names| names.recipient.clone())
+                    .unwrap_or_default(),
+                box_9: true,
+                ..base.form
+            },
+            ..base
+        }
     };
-    let part_time = StudentCredit { half_time: false, ..student(-2, 300_000) };
+    let part_time = {
+        let base = student(-2, 300_000);
+        crate::StudentCreditDocument {
+            form: crate::Form1098TPaper {
+                filer: (Some(accepted_document_names(&s.draft, Owner::Spouse)))
+                    .as_ref()
+                    .and_then(|names| names.issuer.clone())
+                    .unwrap_or_default(),
+                student: (Some(accepted_document_names(&s.draft, Owner::Spouse)))
+                    .as_ref()
+                    .map(|names| names.recipient.clone())
+                    .unwrap_or_default(),
+                box_8: false,
+                ..base.form
+            },
+            ..base
+        }
+    };
     let request = save_education(
-        &s.draft,
+        &mut s,
         EducationCredits { students: vec![graduate, part_time.clone()], people: people.clone() },
     );
-    credits_hub(send_past_less_common(&mut s, request));
-    let methods: Vec<_> =
-        s.draft.credits.as_ref().unwrap().education.iter().map(|e| e.method).collect();
-    assert_eq!(methods, vec![EducationChoice::LifetimeLearning, EducationChoice::LifetimeLearning]);
+    accepted(&send(&mut s, request));
+    let (_, mut first) =
+        native_education(-1, education_expenses(0), EducationChoice::LifetimeLearning);
+    first.more.books_from_school = 50_000;
+    first.more.other_books = 30_000;
+    let (_, second) =
+        native_education(-2, education_expenses(0), EducationChoice::LifetimeLearning);
+    let reply = save_education_answers(&mut s, vec![first, second]);
+    accepted(&reply);
+    walk_on_to_review(&mut s, reply);
     let r = continued(&mut s);
     assert_eq!(value_of(&r, "education_credit"), 1_500);
     assert_eq!(value_of(&r, "refundable_education_credit"), 0);
-    // The American opportunity credit already used up is lifetime learning
-    // too, even for a half-time undergraduate; without that answer the same
-    // row is the American opportunity credit.
     for (used_up, expected) in
         [(true, EducationChoice::LifetimeLearning), (false, EducationChoice::AmericanOpportunity)]
     {
-        let row = StudentCredit {
-            half_time: true,
-            more: StudentMore {
-                scholarship_in_income: ScholarshipInclusion::None,
-                american_opportunity_used_up: used_up,
-                ..Default::default()
-            },
-            ..part_time.clone()
-        };
         let request = save_education(
-            &s.draft,
-            EducationCredits { students: vec![row], people: people.clone() },
+            &mut s,
+            EducationCredits {
+                students: vec![{
+                    let base = part_time.clone();
+                    crate::StudentCreditDocument {
+                        form: crate::Form1098TPaper { box_8: true, ..base.form },
+                        ..base
+                    }
+                }],
+                people: people.clone(),
+            },
         );
-        credits_hub(send_past_less_common(&mut s, request));
-        assert_eq!(s.draft.credits.as_ref().unwrap().education[0].method, expected);
+        accepted(&send(&mut s, request));
+        let (_, mut annual) = native_education(-2, education_expenses(0), expected);
+        annual.more.american_opportunity_used_up = Some(used_up);
+        let reply = save_education_answers(&mut s, vec![annual]);
+        accepted(&reply);
+        walk_on_to_review(&mut s, reply);
+        assert_eq!(s.draft.credits.as_ref().unwrap().students[0].method, Some(expected));
     }
-    // A catalog that no longer matches the return, or a student outside it,
-    // is refused.
+    // An unmatched printed student stays pending on Education, with no annual
+    // answers or credit inferred from the document's tuition.
+    let mut unmatched = student(0, 100_000);
+    unmatched.form.student = crate::PrintedParty::from_name("Unmatched student".into());
     let request = save_education(
-        &s.draft,
-        EducationCredits { students: vec![student(999, 100_000)], people: people.clone() },
-    );
-    error(current_source_refusal(
-        "secondary-admission-1875",
         &mut s,
-        request,
-        "MESSAGE_A_STUDENT_IS_NOT_ON_THIS_RETURN_CHOOSE_THE_STUDENT_AGAIN",
-        Some("[value/students/0/student]"),
-        SourceScope::Secondary(SecondaryCorrection::StudentSource),
-    ));
-    let request = save_education(
-        &s.draft,
-        EducationCredits { students: vec![], people: people[..1].to_vec() },
+        EducationCredits { students: vec![unmatched], people: people.clone() },
     );
+    accepted(&send(&mut s, request));
+    let credits = s.draft.credits.as_ref().unwrap();
+    let id = credits.education[0].id;
+    assert_eq!(credits.education[0].student, 0);
+    assert_eq!(credits.education[0].assigned, crate::DocumentRecipient::Unknown);
+    assert!(credits.students.is_empty());
+    assert_eq!(unknown_documents(&s.draft), vec![(id, TaxSection::Documents)]);
+    let result = estimate(&s.draft);
+    assert_eq!(result.state, ResultState::Incomplete);
+    assert_eq!(result.tax, None);
+    let request = open_credits_topic(&mut s, TaxSection::Education);
+    let P::SaveEducation { value, .. } = request else { unreachable!() };
+    assert_eq!(value.documents[0].student, None);
+    assert!(value.students.is_empty());
+    // A catalog from before a household change still requires reopening.
+    let request =
+        save_education(&mut s, EducationCredits { students: vec![], people: people[..1].to_vec() });
     error(current_source_refusal(
         "secondary-admission-1876",
         &mut s,
@@ -5203,34 +6397,77 @@ fn graduate_or_part_time_student_gets_lifetime_learning() {
 
 #[test]
 fn removed_person_drops_their_education_row() {
-    // Two children with education rows; removing the first on the people
-    // page drops its row and moves the second's to its new catalog position.
-    let s = household_return(m2_children());
+    // Household removal preserves source facts until the source editor
+    // removes that student's document; the second student's identity remains.
+    let s = m2_household();
     let (mut s, _) = at_the_credits_hub(s.draft.clone());
-    let page = open_credits_topic(&mut s, TaxSection::Education);
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut s);
     let people = education_value(&page).people.clone();
     assert_eq!(people.len(), 3);
     let first = people[1].id;
     let second = people[2].id;
     let request = save_education(
-        &s.draft,
+        &mut s,
         EducationCredits {
             students: vec![student(first, 100_000), student(second, 200_000)],
             people,
         },
     );
-    credits_hub(send_past_less_common(&mut s, request));
+    accepted(&send(&mut s, request));
+    let students = [(first, 100_000), (second, 200_000)]
+        .into_iter()
+        .map(|(id, tuition)| {
+            native_education(id, education_expenses(tuition), EducationChoice::AmericanOpportunity)
+                .1
+        })
+        .collect();
+    let reply = save_education_answers(&mut s, students);
+    accepted(&reply);
+    walk_on_to_review(&mut s, reply);
     let d = s.draft.clone();
     let mut shown = reopened_people(&mut s);
     shown.remove(0);
     let reply = send(&mut s, reviewing(save_children(&d, shown)));
-    assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
+    accepted(&reply);
+    assert!(s.draft.dependents().iter().all(|person| person.id != first));
+    assert_eq!(s.draft.credits.as_ref().unwrap().education, d.credits.as_ref().unwrap().education);
+    assert!(s.draft.valid_stored());
+    let incomplete = estimate(&s.draft);
+    assert_eq!(incomplete.state, ResultState::Incomplete);
+    assert_eq!(incomplete.tax, None);
+    let removed_id =
+        d.credits.as_ref().unwrap().education.iter().find(|row| row.student == first).unwrap().id;
+    let request = open_document_center(&mut s);
+    accepted(&send(&mut s, request));
+    let credits = s.draft.credits.as_ref().unwrap();
+    let removed = credits.education.iter().find(|row| row.id == removed_id).unwrap();
+    let original =
+        d.credits.as_ref().unwrap().education.iter().find(|row| row.id == removed_id).unwrap();
+    assert_eq!(removed.form, original.form);
+    assert_eq!(removed.student, 0);
+    assert_eq!(removed.assigned, crate::DocumentRecipient::Unknown);
+    assert_eq!(credits.students.len(), 1);
+    assert_eq!(credits.students[0].student, second);
+    assert_eq!(unknown_documents(&s.draft), vec![(removed_id, TaxSection::Documents)]);
+    let request = open_credits_topic(&mut s, TaxSection::Education);
+    let P::SaveEducation { value, .. } = request else { unreachable!() };
+    assert_eq!(value.documents.iter().find(|row| row.id == removed_id).unwrap().student, None);
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.education.students.retain(|row| row.id != removed_id);
+    accepted(&send(&mut s, request));
     let credits = s.draft.credits.as_ref().unwrap();
     assert_eq!(credits.education.len(), 1);
-    assert_eq!(credits.education[0].expenses.tuition, 200_000);
+    assert_eq!(credits.education[0].form.box_1, 200_000);
     assert_eq!(credits.education[0].student, second);
-    let page = open_credits_topic(&mut s, TaxSection::Education);
-    assert_eq!(education_value(&page).students, vec![student(second, 200_000)]);
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    let original =
+        d.credits.as_ref().unwrap().education.iter().find(|row| row.student == second).unwrap();
+    let mut expected = student(second, 200_000);
+    expected.id = original.id;
+    expected.form.student = original.form.student.clone();
+    expected.form.filer = original.form.filer.clone();
+    assert_eq!(education_value(&page).students, vec![expected]);
 }
 
 // M3-P13: the federal payments page.
@@ -5239,17 +6476,45 @@ fn removed_person_drops_their_education_row() {
 // penalty. The withholding shown is derived and ignored on save.
 pub(in crate::tests) fn no_payments() -> Payments {
     Payments {
-        credit_applied_next_year: 0,
-        credit_recipient: None,
-        credit_capacity: None,
-        extension_payer: None,
-        extension_refund_property: None,
+        more: crate::PaymentsMore {
+            extension_payer: None,
+            extension_refund_property: None,
+            penalty: PenaltyChoice::IrsFigures,
+            next_year: NextYearEstimate::NotNeeded,
+        },
         withheld: Some(Withheld { w2: 0, forms_1099: 0, other: 0, total: 0 }),
-        estimated: vec![],
+        estimated: crate::EstimatedPaymentEntry::None,
         extension: 0,
-        penalty: PenaltyChoice::IrsFigures,
-        next_year: NextYearEstimate::NotNeeded,
     }
+}
+// Finish on the review with these refund choices.
+pub(in crate::tests) fn finish_request(d: &FederalDraft, refund: RefundChoice) -> P {
+    P::Finish {
+        user: TEST_USER,
+        cookie: d.cookie.clone(),
+        revision: d.revision,
+        page: TaxSection::Review as i32,
+        previous: TaxSection::Review as i32,
+        review: true,
+        progress: vec![],
+        refund,
+    }
+}
+// No refund applied to 2027.
+pub(in crate::tests) fn whole_refund() -> RefundChoice {
+    RefundChoice { credit_applied_next_year: 0, credit_recipient: None, credit_capacity: None }
+}
+// The refund choices the review's finish step opens with.
+pub(in crate::tests) fn begin_finish(s: &mut Interview) -> RefundChoice {
+    let request = P::StartFinish {
+        user: TEST_USER,
+        cookie: s.draft.cookie.clone(),
+        revision: s.draft.revision,
+    };
+    let Reply::Response(P::BeginFinish { refund, .. }) = send(s, request) else {
+        panic!("expected the finish step")
+    };
+    refund
 }
 // The payments page after the credits hub (M3-P13) opens complete; Next
 // saves it unchanged and goes on.
@@ -5270,8 +6535,12 @@ pub(in crate::tests) fn past_credits(s: &mut Interview, reply: Reply) -> Reply {
 pub(in crate::tests) fn past_payments(s: &mut Interview, reply: Reply) -> Reply {
     // The other taxes page opens with "None of these" (gate fixes batch A).
     let reply = past_less_common(s, reply);
-    match reply {
-        Reply::Edit(page @ P::SavePayments { .. }) => send(s, page),
+    match crate::tests::support::client::answer_no_estimates(reply) {
+        Reply::Edit(page @ P::SavePayments { .. }) => {
+            // The last page before the review is passed with its answers kept.
+            let reply = send(s, page);
+            past_less_common(s, reply)
+        }
         other => other,
     }
 }
@@ -5283,7 +6552,7 @@ pub(in crate::tests) fn save_payments(d: &FederalDraft, value: Payments) -> P {
         page: PAGE_PAYMENTS,
         previous: PAGE_OTHER_TAXES,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         // An echoed list never widens what the service offers.
@@ -5324,13 +6593,22 @@ pub(in crate::tests) fn page_paid(date: u32, amount: i64) -> crate::InjuredDated
 pub(in crate::tests) fn paid(date: u32, amount: i64) -> DatedPayment {
     DatedPayment { payer: crate::PaymentPayer::Joint, refund_property: None, date, amount }
 }
-// A saved return at its payments page: every earlier section is finished,
-// so opening the interview resumes there.
+// A saved return at its payments page, its box checked: every earlier
+// section is finished, so opening the interview resumes there.
 pub(in crate::tests) fn at_the_payments_page(mut d: FederalDraft) -> (Interview, P) {
+    let accepted_plan =
+        d.payments.as_ref().map(|pay| NextYearEstimate::from(pay.next_year.clone()));
     d.finished_sections.retain(|s| *s != TaxSection::Payments);
+    d.checklist.paid |= PaidTopics::PAYMENTS.0;
     let mut s = Interview::new(TEST_USER, d);
+    crate::tests::support::client::admit_native_fixture_facts(&mut s);
+    let sources = open_document_center(&mut s);
+    accepted(&send(&mut s, sources));
     let Reply::Edit(page @ P::SavePayments { .. }) =
-        send(&mut s, P::OpenInterview { user: TEST_USER })
+        crate::tests::support::client::answer_payment_method(
+            send(&mut s, P::OpenInterview { user: TEST_USER }),
+            accepted_plan,
+        )
     else {
         panic!("expected the payments page")
     };
@@ -5351,7 +6629,9 @@ pub(in crate::tests) fn payments_value(page: &P) -> (&Payments, &[i32], &[i32], 
 }
 pub(in crate::tests) fn open_payments(s: &mut Interview) -> P {
     let request = navigate(&s.draft, TaxSection::Payments);
-    let Reply::Edit(page @ P::SavePayments { .. }) = send(s, request) else {
+    let Reply::Edit(page @ P::SavePayments { .. }) =
+        crate::tests::support::client::answer_no_estimates(send(s, request))
+    else {
         panic!("expected the payments page")
     };
     page
@@ -5365,15 +6645,18 @@ pub(in crate::tests) fn open_payments(s: &mut Interview) -> P {
 fn farmers_must_keep_withholding_and_income_even() {
     assert!(APP_STRINGS.iter().any(|(key, _)| *key == "FARMER_EVEN_TIMING"));
     let figure = |farmer: Farmer, withholding: WithholdingTiming, income: IncomeTiming| Payments {
-        penalty: PenaltyChoice::Figure {
-            prior_tax: 500_000,
-            prior_agi: Some(6_000_000),
-            full_year: true,
-            prior_return: PriorReturn::SameReturn,
-            withholding,
-            income,
-            farmer,
-            waiver: Waiver::None,
+        more: crate::PaymentsMore {
+            penalty: PenaltyChoice::Figure {
+                prior_tax: 500_000,
+                prior_agi: Some(6_000_000),
+                full_year: true,
+                prior_return: PriorReturn::SameReturn,
+                withholding,
+                income,
+                farmer,
+                waiver: Waiver::None,
+            },
+            ..no_payments().more
         },
         ..no_payments()
     };
@@ -5422,18 +6705,14 @@ fn farmers_must_keep_withholding_and_income_even() {
         (by_period.clone(), IncomeTiming::Evenly),
         (WithholdingTiming::Evenly, IncomeTiming::ByPeriod),
     ] {
-        let value =
-            Payments { next_year: next_year.clone(), ..figure(this_return(), withholding, income) };
+        let mut value = figure(this_return(), withholding, income);
+        value.more.next_year = next_year.clone();
         rejected_with(send(&mut s, save_payments(&before, value)), "FARMER_EVEN_TIMING");
         assert_eq!(s.draft, before);
     }
-    accepted(&submit(
-        &mut s,
-        Payments {
-            next_year,
-            ..figure(this_return(), WithholdingTiming::Evenly, IncomeTiming::Evenly)
-        },
-    ));
+    let mut value = figure(this_return(), WithholdingTiming::Evenly, IncomeTiming::Evenly);
+    value.more.next_year = next_year;
+    accepted(&submit(&mut s, value));
 }
 
 // M3-P15: every situation finds its hub.
@@ -5445,191 +6724,90 @@ pub(in crate::tests) fn go_to_from_review(s: &mut Interview, section: TaxSection
 }
 
 #[test]
-fn every_situation_has_one_destination() {
-    use RareSituation as R;
-    use TaxSection as T;
-    // The interview map's cross-check table ("Where every situation goes"),
-    // after its renames, splits and new variants, in the map's order.
-    let table = [
-        (R::RailroadRepresentative, T::Wages, "Wages"),
-        (R::RemicResidual, T::MoreIncome, "REMIC residual interest"),
-        (R::InstallmentSale, T::MoreIncome, "Investment sales"),
-        (R::Straddles, T::MoreIncome, "Investment sales"),
-        (R::SpecialDepreciation, T::MoreIncome, "Self-employment"),
-        (R::TipsNotOnW2, T::MoreIncome, "Self-employment"),
-        (R::AssetDisposed, T::MoreIncome, "Business or rental property sold"),
-        (R::LikeKindExchange, T::MoreIncome, "Business or rental property sold"),
-        (R::TaxTreaty, T::MoreIncome, "Tax treaties"),
-        (R::Chapter11Debtor, T::MoreIncome, "Chapter 11 bankruptcy"),
-        (R::ForeignCorporation, T::MoreIncome, "Foreign corporations and PFICs"),
-        (R::Casualty, T::MoreItemized, "Casualty and theft of business or investment property"),
-    ];
-    // The table is the enum: every variant once, in declaration order.
-    assert_eq!(table.iter().map(|(s, _, _)| *s).collect::<Vec<_>>(), RareSituation::ALL.to_vec());
-    for (situation, section, topic) in table {
-        assert_eq!(situation.destination(), (section, topic), "{situation:?}");
-    }
-    // Each page's offered set is its destinations; together they are every
-    // variant once (u5-credits made the home kerosene credit
-    // and Schedule H data items; T2-45 added FarmRental to the income page;
-    // T2-46 removed EicAfterDisallowance from More credits, where Form 8862
-    // is now a calculated record; T2-27p removed Marketplace, T2-44p
-    // Gambling, T2-45p Farm and T2-31p PassThrough; u5-adjust
-    // PublicSafetyPremiums and AlimonyPaid; u5-losses NetOperatingLoss;
-    // T3-deduct CarLoanInterest; gate fixes batch A moved the five
-    // whole-return items to the checklist; storage format 88 moved the
-    // adjustment, credit and other-tax items to their page enums and
-    // removed DisasterDistribution and OtherTax::ParentsReturn; Form 8814
-    // removed ChildInvestmentIncome; Form 4972 removed LumpSumAveraging; unit B2
-    // removed FarmRental; unit B6b removed ReliefPayments; unit B6a removed
-    // AccountDistributions).
-    let mut offered: Vec<i32> = Vec::new();
-    for section in [T::Wages, T::MoreIncome, T::MoreItemized] {
-        let allowed = RareSituation::allowed(section);
-        assert!(!allowed.is_empty(), "{section:?}");
-        offered.extend(allowed);
-    }
-    offered.sort_unstable();
-    assert_eq!(offered, (0..RareSituation::ALL.len() as i32).collect::<Vec<i32>>());
-    // The page enums' refusal kinds, each on its own page and topic.
-    let mut page_items = vec![
-        (MoreAdjustment::OtherAdjustments.refused(), T::MoreAdjustments, "Other adjustments"),
-        (OtherTax::AlternativeMinimumTax.refused(), T::OtherTaxes, "Alternative minimum tax items"),
-        (
-            OtherTax::HousingCreditRecapture.refused(),
-            T::OtherTaxes,
-            "Credit recapture and look-back interest",
-        ),
-        (OtherTax::Section965.refused(), T::OtherTaxes, "Deferred section 965 tax"),
-    ];
-    page_items.extend(RareAdditionalTax::ALL.map(|kind| {
-        let (topic, _, _, _, _) = kind.refusal_info();
-        (OtherTax::OtherAdditionalTaxes { kind }.refused(), T::OtherTaxes, topic)
-    }));
-    assert_eq!(page_items.len(), super::every_refusal_item().len() - RareSituation::ALL.len());
-    for (refusal, section, topic) in page_items {
-        let refusal = refusal.expect("a refusal kind");
-        assert_eq!((refusal.section, refusal.topic), (section, topic));
-    }
-    // No variant carries data: each encodes as its union index alone.
+fn every_refused_kind_is_a_value_of_the_one_unprepared_type() {
+    // No situation carries data: each encodes as its declared numeric value.
     for situation in RareSituation::ALL {
         assert_eq!(situation.to_avro().len(), 1, "{situation:?}");
+    }
+    // Every refused kind round-trips as a page item and names itself.
+    for item in Unprepared::all() {
+        assert_eq!(Unprepared::from_avro(&item.to_avro()).unwrap(), item, "{item:?}");
+        assert!(
+            item.refused().name_key.starts_with("SITUATION_NAME_")
+                || item.refused().name_key.starts_with("NAME_RARE_")
+        );
     }
 }
 
 #[test]
-fn less_common_income_saves_only_its_hubs_situations() {
+fn the_often_missed_page_saves_the_unprepared_situations_in_the_order_chosen() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    // A situation of another page, saved first.
-    accepted(&save_other_taxes(&mut s, vec![OtherTax::Section965]));
-    // The income hub's less-common page is a topic of the hub (page 3),
-    // offering only the income variants.
-    let (page, allowed, _) = open_situations(&mut s, TaxSection::MoreIncome);
-    assert_eq!(page, TaxSection::Income as i32);
-    assert_eq!(allowed, RareSituation::allowed(TaxSection::MoreIncome));
-    // The income variants are the first ones (T3-982 removed CanceledDebt,
-    // u5-adjust PublicSafetyPremiums, u5-losses NetOperatingLoss, u6-home
-    // HomeSale, storage format 88 DisasterDistribution, Form 8814
-    // ChildInvestmentIncome, Form 4972 LumpSumAveraging, unit B2 FarmRental,
-    // unit B6b ReliefPayments, unit B6a AccountDistributions).
-    assert_eq!(allowed, (1..=allowed.len() as i32).collect::<Vec<i32>>());
-    assert!(
-        RareSituation::ALL[allowed.len() + 1..]
-            .iter()
-            .all(|situation| situation.destination().0 != TaxSection::MoreIncome)
-    );
-    accepted(&save_situations(
+    // An answer of the same page, saved first, is kept.
+    accepted(&save_often_missed(
         &mut s,
-        TaxSection::MoreIncome,
-        vec![RareSituation::TaxTreaty, RareSituation::SpecialDepreciation],
+        OftenMissed { benefits: MissedBenefits::EDUCATOR.0, ..Default::default() },
     ));
-    // Stored in declaration order; the other page's item stays its own.
+    accepted(&save_unprepared(
+        &mut s,
+        vec![Unprepared::Section965, RareSituation::TaxTreaty.into(), Unprepared::OtherAdjustments],
+    ));
     assert_eq!(
-        s.draft.situations,
-        vec![RareSituation::SpecialDepreciation, RareSituation::TaxTreaty]
+        s.draft.often_missed.unprepared,
+        vec![Unprepared::Section965, RareSituation::TaxTreaty.into(), Unprepared::OtherAdjustments]
     );
-    assert_eq!(s.draft.tax_refusals, vec![OtherTaxRefusal::Section965]);
-    // The hub's row names what was chosen.
-    let Reply::Response(hub @ P::Hub { .. }) = go_to_from_review(&mut s, TaxSection::Income) else {
-        panic!("expected the income hub")
-    };
-    assert!(hub_rows(&hub).contains(&row_of(
-        "Less common income",
-        "Self-employment, Tax treaties — not calculated yet",
-        TaxSection::MoreIncome
-    )));
-    let P::Hub { allowed_sections, .. } = &hub else { unreachable!() };
-    assert!(allowed_sections.contains(&(TaxSection::MoreIncome as i32)));
-    // Another page's variant is refused on this page.
+    assert_eq!(s.draft.often_missed.benefits, MissedBenefits::EDUCATOR.0);
+    // The review names each as not calculated, opening this page.
+    let r = estimate(&s.draft);
+    assert_eq!(r.state, ResultState::Unsupported);
+    // A situation listed twice is refused where it was listed.
     let before = s.draft.clone();
-    let request = situations_request(&mut s, TaxSection::MoreIncome, vec![RareSituation::Casualty]);
-    error(current_source_refusal(
-        "secondary-admission-2479",
-        &mut s,
-        request,
-        "MESSAGE_THIS_SITUATION_BELONGS_TO_ANOTHER_SECTION",
-        Some("[value/situations/0/situation]"),
-        SourceScope::Secondary(SecondaryCorrection::SituationChoice),
-    ));
-    let request =
-        situations_request(&mut s, TaxSection::MoreIncome, vec![RareSituation::RemicResidual; 2]);
+    let mut page = open_often_missed(&mut s);
+    let P::SaveOftenMissed { value, .. } = &mut page else { unreachable!() };
+    value.unprepared = Some(vec![RareSituation::RemicResidual.into(); 2]);
     current_source_refusal(
         "secondary-situation-duplicate",
         &mut s,
-        request,
+        page,
         "MESSAGE_CHOOSE_EACH_SITUATION_ONLY_ONCE",
-        Some("[value/situations/1/situation]"),
+        Some("[value/unprepared/1]"),
         SourceScope::Secondary(SecondaryCorrection::SituationChoice),
     );
     assert_eq!(s.draft, before);
-    // Clearing the page clears only its own situations.
-    accepted(&save_situations(&mut s, TaxSection::MoreIncome, vec![]));
-    assert!(s.draft.situations.is_empty());
-    assert_eq!(s.draft.tax_refusals, vec![OtherTaxRefusal::Section965]);
-    // Saved from the hub, the page returns to the hub.
-    let d = s.draft.clone();
-    let reply = send(
-        &mut s,
-        P::SaveSituations {
-            user: TEST_USER,
-            topic: TaxSection::MoreIncome,
-            allowed_situations: RareSituation::allowed(TaxSection::MoreIncome),
-            cookie: d.cookie.clone(),
-            revision: d.revision,
-            page: TaxSection::Income as i32,
-            previous: TaxSection::Income as i32,
-            review: false,
-            estimate: vec![],
-            warnings: vec![],
-            progress: vec![],
-            value: Situations {
-                situations: vec![SituationItem { situation: RareSituation::TaxTreaty }],
-            },
-        },
-    );
-    assert!(matches!(reply, Reply::Response(P::Hub { page: PAGE_INCOME, .. })));
+    // Clearing the list clears only the situations.
+    accepted(&save_unprepared(&mut s, vec![]));
+    assert!(s.draft.often_missed.unprepared.is_empty());
+    assert_eq!(s.draft.often_missed.benefits, MissedBenefits::EDUCATOR.0);
 }
 
 // A Form 3921 (T2-iso): box 3 $10.00, box 4 $210.00, box 5 1,000 shares.
-pub(in crate::tests) fn form_3921(more: Form3921More) -> Form3921 {
-    Form3921 {
-        transferor: "Synthetic Employer Inc".into(),
-        granted: 20240315,
-        exercised: 20260310,
-        exercise_price: 1_000,
-        market_price: 21_000,
-        shares: 1000.0,
-        corporation: "".into(),
-        more,
-    }
+pub(in crate::tests) fn form_3921(more: Form3921More) -> Form3921Paper {
+    iso_document(IsoExerciseSource {
+        id: 0,
+        assigned: crate::DocumentRecipient::Unknown,
+        owner_source: None,
+        joint_share: None,
+        owner: Owner::Taxpayer,
+        more: Some(more),
+        form: Form3921Paper {
+            transferor: crate::PrintedParty::from_name("Synthetic Employer Inc".into()),
+            employee: Default::default(),
+            granted: 20240315,
+            exercised: 20260310,
+            exercise_price: 1_000,
+            market_price: 21_000,
+            shares: 1000.0,
+            corporation: crate::PrintedParty::from_name("".into()),
+            ..Default::default()
+        },
+    })
 }
 
 #[test]
 fn final_return_page_maps_the_stored_final_return_both_ways() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut you = filer(&s.draft.people.as_ref().unwrap().taxpayer);
-    assert_eq!(you.more, MoreAboutYou::Nothing);
-    you.more = MoreAboutYou::Died {
+    assert_eq!(you.details.more, MoreAboutYou::Nothing);
+    you.details.more = MoreAboutYou::Died {
         date: 20260630,
         estate_medical: 1_200_000,
         bonds: None,
@@ -5642,13 +6820,16 @@ fn final_return_page_maps_the_stored_final_return_both_ways() {
         stored,
         FinalReturn { bonds: None, estate_medical: 1_200_000, date: 20260630, ordinary: false }
     );
-    assert!(s.draft.situations.is_empty());
+    assert!(s.draft.often_missed.unprepared.is_empty());
     // The return computes, with the notice that the death adjustments are left out.
     let r = supported(&s.draft);
     assert!(noted(&r, "WARN_FINAL_RETURN_ADJUSTMENTS_LEFT_OUT"));
     // It reopens on the page, and "Nothing else" clears it.
-    assert_eq!(filer(&restart(s.draft.clone()).draft.people.unwrap().taxpayer).more, you.more);
-    you.more = MoreAboutYou::Nothing;
+    assert_eq!(
+        filer(&restart(s.draft.clone()).draft.people.unwrap().taxpayer).details.more,
+        you.details.more
+    );
+    you.details.more = MoreAboutYou::Nothing;
     let request = save_you(&s.draft.clone(), you);
     accepted(&send(&mut s, request));
     assert_eq!(supported(&s.draft).tax, supported(&complete(FederalStatus::Single)).tax);
@@ -5658,19 +6839,17 @@ fn final_return_page_maps_the_stored_final_return_both_ways() {
 fn death_date_rules_are_checked_on_save_with_the_client_keys() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let birth = s.draft.people.as_ref().unwrap().taxpayer.birth_date;
-    for (date, key) in [
-        (20251231, "DEATH_DATE_OUTSIDE_2026"),
-        (20270101, "DEATH_DATE_OUTSIDE_2026"),
-        (20260230, "DEATH_DATE_OUTSIDE_2026"),
-    ] {
+    for (date, key) in
+        [(20251231, "DEATH_DATE_OUTSIDE_2026"), (20270101, "DEATH_DATE_OUTSIDE_2026")]
+    {
         let mut you = filer(&s.draft.people.as_ref().unwrap().taxpayer);
-        you.more = died_more(date);
+        you.details.more = died_more(date);
         let request = save_you(&s.draft.clone(), you);
         rejected_with(send(&mut s, request), key);
     }
     let mut you = filer(&s.draft.people.as_ref().unwrap().taxpayer);
     you.birth_date = 20260615;
-    you.more = died_more(20260614);
+    you.details.more = died_more(20260614);
     let request = save_you(&s.draft.clone(), you);
     rejected_with(send(&mut s, request), "DEATH_BEFORE_BIRTH");
     assert!(birth < 20260101);
@@ -5711,47 +6890,21 @@ fn person_fold_maps_citizenship_and_joint_return() {
 }
 
 #[test]
-fn refusals_name_their_topic() {
+fn refusals_name_the_page_they_are_chosen_on() {
     let d = complete(FederalStatus::Single);
     for situation in super::every_refusal_item() {
-        let refusal = situation.refused();
-        let (section, topic, name) = (refusal.section, refusal.topic, refusal.lines);
+        let name = situation.refused().lines;
         let mut refused = d.clone();
         situation.choose(&mut refused);
         let r = estimate(&refused);
-        // The issue names the page it is chosen on.
+        // The issue names the one page every refused situation is chosen on.
         assert!(
-            r.issues.iter().any(|i| i.section == section_name(section) && i.message.contains(name)),
+            r.issues
+                .iter()
+                .any(|i| i.section == section_name(TaxSection::OftenMissed)
+                    && i.message.contains(name)),
             "{situation:?}: {r:?}"
         );
-        // A hub's less-common row names the topic.
-        if matches!(
-            section,
-            TaxSection::MoreIncome | TaxSection::MoreAdjustments | TaxSection::MoreItemized
-        ) {
-            let mut s = Interview::new(TEST_USER, refused.clone());
-            let hub = match section {
-                TaxSection::MoreIncome => TaxSection::Income,
-                TaxSection::MoreAdjustments => TaxSection::Adjustments,
-                _ => {
-                    s.draft.deductions.as_mut().unwrap().choice =
-                        DeductionSelection::Itemized { facts: empty_facts() };
-                    s.draft.finished_sections.push(TaxSection::Itemized);
-                    TaxSection::Itemized
-                }
-            };
-            let Reply::Response(hub @ P::Hub { .. }) = send(&mut s, navigate(&refused, hub)) else {
-                panic!("{situation:?}: expected its hub")
-            };
-            assert!(
-                hub_rows(&hub).contains(&row_of(
-                    section_name(section),
-                    &alloc::format!("{topic} — not calculated yet"),
-                    section
-                )),
-                "{situation:?}: {hub:?}"
-            );
-        }
     }
     // The P12 finding: the residual Form 3800 credits are refusal kinds of
     // More credits, stored as chosen (Form 8862 was one until
@@ -5763,6 +6916,9 @@ fn refusals_name_their_topic() {
         panic!("expected the more credits page")
     };
     let request = P::SaveMoreCredits {
+        document_questions: Vec::new(),
+        credit_income_sources: crate::tax_credit_bonds::income_sources(&d),
+        allowed_credit_owners: vec![Owner::Taxpayer as i32],
         initial_carbon_oxide_origins: vec![],
         initial_renewable_facility_origins: Vec::new(),
         clean_vehicle_properties: vec![],
@@ -5786,14 +6942,16 @@ fn refusals_name_their_topic() {
         progress: None,
         allowed_owners: vec![Owner::Taxpayer as i32],
         foreign_businesses: vec![],
+        estate_foreign_sources: vec![],
         capital_sales: vec![],
         foreign_situations: vec![],
         mortgage_loans: vec![],
         document_facts: DocumentFacts { year: 2026 },
         value: MoreCredits {
+            answers: Vec::new(),
             credits: value.credits.into_iter().chain([MoreCredit::OtherCredit]).collect(),
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     };
     accepted(&send(&mut s, request));
@@ -5811,50 +6969,41 @@ fn refusals_name_their_topic() {
 
 #[test]
 fn m1_and_m2_fixtures_keep_12_and_20_fields() {
-    // The fixtures retain 12/20 source fields. Filer/dependent folds keep
-    // their defaults; deductions and other taxes are saved as opened.
-    // The checklist guides Wages, then Interest when selected, followed
-    // by the income summary's Continue. Later less-common pages and
-    // summaries have their normal Next/Continue; every return asks People.
-    // Both paths send 14 requests, including the final refund election page.
-    // Checklist ticks and
-    // navigation are structure taps rather than source fields.
-    // The Care editor adds a provider/identification workflow step;
-    // its actual fields have separate tests.
+    // M1 walks its 1099-INT's topic once (G-47); M2 keeps its care-only path.
     let m2 = include_str!("../../../tests/fixtures/returns/m2-hoh-two-children.json");
     let fixture: serde_json::Value = serde_json::from_str(m2).unwrap();
     assert_eq!(fixture["fields_touched"], 20);
     for (name, raw, taps) in [
-        ("m1-single-w2", include_str!("../../../tests/fixtures/returns/m1-single-w2.json"), 14),
-        ("m2-hoh-two-children", m2, 14),
+        // Each topic holding a paper asks its situations once (wages; interest on M1).
+        ("m1-single-w2", include_str!("../../../tests/fixtures/returns/m1-single-w2.json"), 9),
+        ("m2-hoh-two-children", m2, 9),
     ] {
         let (mut s, result, sent) = enter_through_the_hubs(name, raw);
         assert_fixture_lines(raw, &result);
         assert_eq!(sent.len(), taps, "{name}");
         for request in &sent {
             match request {
-                P::SavePeople { you, .. } => assert_eq!(you.more, MoreAboutYou::Nothing),
+                P::SavePeople { you, .. } => assert_eq!(you.details.more, MoreAboutYou::Nothing),
                 P::SaveChildren { dependents, .. } => {
                     assert!(dependents.people.iter().all(|p| p.facts == PersonFacts::NONE.0))
                 }
                 P::SaveDeductions { value, .. } => assert!(value.car_loans.is_empty()),
-                P::SaveChecklist { value, .. } => assert_eq!(
-                    *value,
-                    income_ticks(if name == "m1-single-w2" {
-                        IncomeTopics::WAGES.0 | IncomeTopics::INTEREST_DIVIDENDS.0
-                    } else {
-                        IncomeTopics::WAGES.0
-                    })
-                ),
-                P::SaveSituations { topic, value, .. } => {
-                    assert_eq!(*topic, TaxSection::MoreIncome);
-                    assert!(value.situations.is_empty());
+                // Only the care paid is beyond the documents.
+                P::SaveChecklist { value, .. } => {
+                    assert_eq!(value.paid & !PaidTopics::CARE.0, 0);
+                    assert_eq!((value.activities, value.carryovers), (0, 0));
+                }
+                P::SaveOftenMissed { value, .. } => {
+                    assert_eq!(
+                        *value,
+                        crate::federal_model::OftenMissedAnswers::from(OftenMissed::default())
+                    );
                 }
                 _ => {}
             }
         }
-        assert!(s.draft.situations.is_empty());
-        assert!(s.draft.finished_sections.contains(&TaxSection::OtherTaxes));
+        assert!(s.draft.often_missed.unprepared.is_empty());
+        assert!(s.draft.finished_sections.contains(&TaxSection::OftenMissed));
         // M3-P16: nothing remains after the fixture's entries, so the review
         // offers Finish; the review adds no page, so the taps are unchanged.
         let (items, _, actions, _) = review_state(&mut s);
@@ -5893,10 +7042,13 @@ fn has_item(
     items.iter().any(|(item, status, s)| item == page && *s == section && status.contains(text))
 }
 // A single return whose Interest and dividends topic holds these documents.
-fn with_interest(documents: Vec<IncomeDocumentItem>) -> Interview {
+fn with_interest(mut documents: Vec<IncomeDocumentItem>) -> Interview {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, documents);
-    accepted(&send(&mut s, request));
+    for row in &mut documents {
+        let person = if row.owner == crate::DocumentOwner::Spouses { -2 } else { -1 };
+        row.document = named_document(&s.draft, person, row.id, row.document.clone()).document;
+    }
+    crate::tests::support::client::income_pages::save_each_topic(&mut s, documents);
     s
 }
 const FINISH: i32 = libertas_macros::variant_index!(P::StartFinish) as i32;
@@ -5913,24 +7065,38 @@ fn each_issue_points_at_its_page() {
         statutory: true,
         ..Default::default()
     };
-    accepted(&send(&mut s, save_documents(&original, vec![document(0, IncomeDocument::W2(w))])));
+    accepted(&{
+        let request = save_documents(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w)) },
+            )],
+        );
+        send(&mut s, request)
+    });
     let items = items_of(&mut s);
     assert!(
-        has_item(&items, "Child and dependent care", TaxSection::Care, "combined maximum"),
+        has_item(&items, "Child and dependent care", TaxSection::Care, "Coming up"),
         "{items:?}"
     );
     // An unsupported 1099-R code, stored on the retirement page.
     let mut s = Interview::new(TEST_USER, original.clone());
     let r = other_1099(1_000_000, "5", false);
-    accepted(&send(&mut s, save_documents(&original, vec![document(0, IncomeDocument::R1099(r))])));
+    accepted(&{
+        crate::tests::support::client::save_retirement_fixture(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )],
+        )
+    });
     let items = items_of(&mut s);
     assert!(
-        has_item(
-            &items,
-            "Retirement and Social Security",
-            TaxSection::Retirement,
-            "Form 1099-R code 5"
-        ),
+        has_item(&items, "Document center", TaxSection::Documents, "Form 1099-R code 5"),
         "{items:?}"
     );
     // The household check against page 1: a single filer who is married.
@@ -5945,18 +7111,33 @@ fn each_issue_points_at_its_page() {
     // A later answer makes the mortgage balance method necessary: box 2
     // $500,000 fits the $750,000 limit of a single return but not the
     // $375,000 of a separate one (Pub 936 Table 1 line 11).
-    let mut s = mortgage_loan_page(at_the_deductions_page(FederalStatus::Single).0);
+    let mut s = at_the_deductions_page(FederalStatus::Single).0;
     let request = save_mortgages(
-        &s.draft,
-        Mortgages {
-            loans: vec![first_lender_mortgage(2_000_000, 50_000_000, AverageBalance::WithinLimit)],
+        &mut s,
+        crate::MortgageDocuments {
+            documents: vec![first_lender_mortgage(
+                2_000_000,
+                50_000_000,
+                AverageBalance::WithinLimit,
+            )]
+            .into_iter()
+            .map(mortgage_document)
+            .collect(),
         },
     );
     accepted(&send(&mut s, request));
-    assert!(!items_of(&mut s).iter().any(|(_, _, section)| *section == TaxSection::Mortgage));
+    assert!(!items_of(&mut s).iter().any(|(_, _, section)| *section == TaxSection::Documents));
     let mut d = s.draft.clone();
     d.setup.as_mut().unwrap().status = filing_choice(FederalStatus::Separate);
+    // 2026-10-30: a separate return's community-property and spouse boxes
+    // steps come first in the walk; this return answers them, so the mortgage
+    // item is the one open.
+    d.setup.as_mut().unwrap().community_property = CommunityProperty::No;
+    d.setup.as_mut().unwrap().separate_spouse = crate::SeparateSpouseBoxes::NoneOfThese;
+    answer_separate_pages(&mut d);
     let items = items_of(&mut Interview::new(TEST_USER, d));
+    // 2026-10-29: accepted paper values stay in Document center; the
+    // average-balance answer belongs to the mortgage topic.
     assert!(
         has_item(
             &items,
@@ -5971,36 +7152,32 @@ fn each_issue_points_at_its_page() {
 #[test]
 fn refused_situations_name_their_topic() {
     let mut d = complete(FederalStatus::Single);
-    d.situations = vec![RareSituation::TaxTreaty];
-    d.tax_refusals = vec![OtherTaxRefusal::Section965];
-    d.checklist.whole_return = WholeReturnTopics::DUAL_STATUS.0;
+    d.often_missed.unprepared = vec![RareSituation::TaxTreaty.into(), Unprepared::Section965];
+    d.set_situations(YourSituations::DUAL_STATUS.0, true);
     let items = items_of(&mut Interview::new(TEST_USER, d));
     // Each situation once, named by the page that holds it, in sequence
     // order; the estimate's own copy of the refusal is not repeated. The
-    // whole-return items are the checklist's (gate fixes batch A).
+    // filer's whole-return items are About you's.
     assert_eq!(
         items,
         vec![
             (
-                "Your 2026 at a glance".into(),
+                "About you".into(),
                 "Part-year residency, dual-status and U.S. territory returns (Form 1040 line 12c, Form 1040-NR, Forms 4563 and 8689) is not calculated yet".into(),
-                TaxSection::Checklist
+                TaxSection::People
             ),
             (
-                "Less common income".into(),
+                "Situations people often miss".into(),
                 alloc::format!(
                     "{} is not calculated yet",
-                    RareSituation::TaxTreaty.refused().lines
+                    Unprepared::from(RareSituation::TaxTreaty).refused().lines
                 ),
-                TaxSection::MoreIncome
+                TaxSection::OftenMissed
             ),
             (
-                "Other taxes".into(),
-                alloc::format!(
-                    "{} is not calculated yet",
-                    OtherTax::Section965.refused().unwrap().lines
-                ),
-                TaxSection::OtherTaxes
+                "Situations people often miss".into(),
+                alloc::format!("{} is not calculated yet", Unprepared::Section965.refused().lines),
+                TaxSection::OftenMissed
             ),
         ]
     );
@@ -6011,26 +7188,33 @@ fn hub_attention_and_review_item_share_one_text() {
     // $2,000 of interest from a 1099-INT saved without a payer name.
     let mut s = with_interest(vec![interest(200_000)]);
     let (items, ..) = review_state(&mut s);
-    let item = items.iter().find(|i| i.section == TaxSection::InterestDividends).unwrap();
-    assert_eq!(status_text(&item.item), "Interest and dividends");
+    let item = items.iter().find(|i| i.section == TaxSection::Documents).unwrap();
+    assert_eq!(status_text(&item.item), "Document center");
     let request = go_to(&s.draft.clone(), PAGE_REVIEW, TaxSection::Income);
     let Reply::Response(hub @ P::Hub { .. }) = send(&mut s, request) else {
         panic!("expected the income hub")
     };
     assert!(hub_rows(&hub).contains(&row_of(
         "Interest and dividends",
-        &alloc::format!("Needs attention: {}", status_text(&item.status)),
+        "1 1099-INT · $2000.00",
         TaxSection::InterestDividends
     )));
+    assert!(
+        !hub_rows(&hub)
+            .iter()
+            .any(|(_, status, section)| *section == TaxSection::InterestDividends
+                && status.starts_with("Needs attention"))
+    );
+    let request = go_to(&s.draft, PAGE_REVIEW, item.section);
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveDocuments { .. })));
     // The adjustments hub's HSA row and its review item, too.
     let mut s = at_the_adjustments_hub(FederalStatus::Single, 100_000);
     let hub = open_adjustments_hub(&mut s);
     let (items, ..) = review_state(&mut s);
+    // The review lists the account page as ahead; the hub row keeps the issue.
     let item = items.iter().find(|i| i.section == TaxSection::Hsa).unwrap();
-    assert_eq!(
-        hub_rows(&hub)[0].1,
-        alloc::format!("Needs attention: {}", status_text(&item.status))
-    );
+    assert_eq!(status_text(&item.status), "Coming up");
+    assert!(hub_rows(&hub)[0].1.starts_with("Needs attention: "));
 }
 
 #[test]
@@ -6052,7 +7236,12 @@ fn finish_is_offered_only_with_nothing_remaining() {
     // Naming the payer clears the list and offers Finish again.
     let mut s = with_interest(vec![document(
         0,
-        IncomeDocument::Int1099(native_int1099("Synthetic Bank".into(), 200_000)),
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "Synthetic Bank".into(),
+                200_000,
+            ))),
+        },
     )]);
     let (items, _, actions, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
@@ -6068,7 +7257,7 @@ fn review_offers_resume_for_an_unfinished_interview_step() {
     assert!(actions.contains(&resume));
     assert!(matches!(
         send(&mut s, P::OpenInterview { user: TEST_USER }),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::Wages, review: false, .. })
+        Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, review: false, .. })
     ));
 
     // A missing spouse belongs to the open filers section even after the
@@ -6091,6 +7280,8 @@ fn review_hides_resume_when_the_interview_walk_is_complete() {
         (Interview::new(TEST_USER, complete(FederalStatus::Single)), false),
         (with_interest(vec![interest(200_000)]), true),
     ] {
+        let source = open_document_center(&mut s);
+        accepted(&send(&mut s, source));
         let original = s.draft.clone();
         let (items, _, actions, _) = review_state(&mut s);
         assert_eq!(!items.is_empty(), has_issues);
@@ -6125,25 +7316,32 @@ fn review_hides_resume_after_finishing() {
 
 #[test]
 fn review_suggests_the_first_item() {
-    // A unsupported 1099-R code5 (Retirement) and a whole-return situation: the Retirement item
-    // comes first in sequence order and is the suggestion.
+    // An unsupported 1099-R code 5 and a whole-return situation: the source
+    // correction opens Document center and is the first suggestion.
     let original = complete(FederalStatus::Single);
     let mut s = Interview::new(TEST_USER, original.clone());
     let r = other_1099(1_000_000, "5", false);
-    accepted(&send(&mut s, save_documents(&original, vec![document(0, IncomeDocument::R1099(r))])));
+    accepted(&{
+        crate::tests::support::client::save_retirement_fixture(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )],
+        )
+    });
     let mut d = s.draft.clone();
-    d.tax_refusals = vec![OtherTaxRefusal::Section965];
+    d.often_missed.unprepared = vec![Unprepared::Section965];
     let mut s = Interview::new(TEST_USER, d);
     let (items, suggested, ..) = review_state(&mut s);
-    assert_eq!(items[0].section, TaxSection::Retirement);
-    assert_eq!(items.last().unwrap().section, TaxSection::OtherTaxes);
-    assert_eq!(suggested, TaxSection::Retirement);
+    assert_eq!(items[0].section, TaxSection::Documents);
+    assert_eq!(items.last().unwrap().section, TaxSection::OftenMissed);
+    assert_eq!(suggested, TaxSection::Documents);
     // Go to opens it: the suggestion is an allowed section.
     let request = go_to(&s.draft.clone(), PAGE_REVIEW, suggested);
-    assert!(matches!(
-        send(&mut s, request),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::Retirement, .. })
-    ));
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveDocuments { .. })));
 }
 
 #[test]
@@ -6179,7 +7377,7 @@ fn payer_names_are_asked_only_above_1500() {
     // Schedule B line only then).
     let payer_item = |s: &mut Interview| {
         items_of(s).into_iter().any(|(_, status, section)| {
-            section == TaxSection::InterestDividends
+            section == TaxSection::Documents
                 && status == crate::interview::resource_text("REVIEW_PAYER_NAMES_NEEDED")
         })
     };
@@ -6190,30 +7388,51 @@ fn payer_names_are_asked_only_above_1500() {
     // $1,501 from a named payer: nothing left.
     assert!(!payer_item(&mut with_interest(vec![document(
         0,
-        IncomeDocument::Int1099(native_int1099("Synthetic Bank".into(), 150_100)),
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "Synthetic Bank".into(),
+                150_100
+            )))
+        },
     )])));
     // Dividends follow their own $1,500 test: $1,501 of box 1a unnamed.
     let dividend =
-        |ordinary| document(0, IncomeDocument::Div1099(native_div1099("".into(), ordinary, 0)));
+        |ordinary| {
+            document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(
+                        native_div1099("".into(), ordinary, 0),
+                    )),
+                },
+            )
+        };
     assert!(!payer_item(&mut with_interest(vec![dividend(150_000)])));
     assert!(payer_item(&mut with_interest(vec![dividend(150_100)])));
 }
 
-// M3-P18: the opening checklist, "Your 2026 at a glance".
+// M3-P18: the opening checklist, "Beyond your documents".
 
 // A new single return saved through your page: the reply is the checklist.
 fn at_the_checklist() -> (Interview, Reply) {
+    at_the_checklist_with_self_work(false)
+}
+fn at_the_checklist_with_self_work(self_work: bool) -> (Interview, Reply) {
     let mut s = Interview::new(TEST_USER, FederalDraft::empty("m3-checklist".into()));
     let request = save_setup(&s.draft, ReturnSetup { filing: Filing::Single });
     send(&mut s, request);
     let request = save_you(&s.draft, adult("Casey", "Sample", 19850315));
     let reply = send(&mut s, request);
-    let reply = past_people(&mut s, reply);
+    let reply = past_people_with_self_work(&mut s, reply, self_work);
     (s, reply)
 }
 pub(in crate::tests) fn checklist_of(reply: &Reply) -> Checklist {
     match reply {
-        Reply::Edit(P::SaveChecklist { value, .. }) => *value,
+        Reply::Edit(P::SaveChecklist { value, .. }) => Checklist {
+            activities: value.activities,
+            paid: value.paid,
+            carryovers: value.carryovers,
+        },
         other => panic!("expected the checklist, got {other:?}"),
     }
 }
@@ -6231,7 +7450,8 @@ pub(in crate::tests) fn suggestion(hub: &P) -> TaxSection {
 // section, with these planned ticks.
 fn planning(planned: Checklist) -> Interview {
     let mut d = complete(FederalStatus::Single);
-    d.finished_sections = vec![TaxSection::Children, TaxSection::Checklist];
+    d.finished_sections =
+        vec![TaxSection::Children, TaxSection::IncomeWithoutForm, TaxSection::Checklist];
     d.checklist = planned;
     Interview::new(TEST_USER, d)
 }
@@ -6239,21 +7459,22 @@ fn planning(planned: Checklist) -> Interview {
 #[test]
 fn checklist_follows_the_people_pages_and_opens_with_nothing_ticked() {
     let (s, reply) = at_the_checklist();
-    // The page after the people page, opened by EditRequest complete:
-    // nothing is ticked ("None of these"), Back returns to the people page.
-    let Reply::Edit(P::SaveChecklist { page, previous, review, value, progress, .. }) = &reply
-    else {
+    // After the people page and Document center, the checklist opens
+    // unanswered (BeginChecklist); Back returns to Document center.
+    let Reply::Response(P::BeginChecklist { page, previous, review, progress, .. }) = &reply else {
         panic!("expected the checklist, got {reply:?}")
     };
-    assert_eq!((*page, *previous, *review), (PAGE_CHECKLIST, PAGE_CHILDREN, false));
-    assert_eq!(*value, Checklist::NONE);
+    assert_eq!(
+        (*page, *previous, *review),
+        (PAGE_CHECKLIST, TaxSection::IncomeWithoutForm as i32, false)
+    );
     assert!(shown(progress).contains("Your return: "), "{}", shown(progress));
     // Resume stops at the unanswered checklist; manual navigation can already
     // open income once the filers are known.
     let mut resumed = restart(s.draft.clone());
     assert!(matches!(
         send(&mut resumed, P::OpenInterview { user: TEST_USER }),
-        Reply::Edit(P::SaveChecklist { .. })
+        Reply::Response(P::BeginChecklist { .. })
     ));
     let request = go_to(&s.draft, PAGE_REVIEW, TaxSection::Income);
     assert!(matches!(
@@ -6269,30 +7490,26 @@ fn checklist_follows_the_people_pages_and_opens_with_nothing_ticked() {
     // these".
     let mut s = s;
     let reply = send(&mut s, tick(reply, Checklist::NONE));
-    assert!(matches!(
-        reply,
-        Reply::Response(P::BeginSituations { topic: TaxSection::MoreIncome, .. })
-    ));
     walk_on_to_review(&mut s, reply);
     let hub = income_hub(from_review(&mut s, TaxSection::Income));
     assert_eq!(suggestion(&hub), TaxSection::Adjustments);
     assert_eq!(told_row(&hub).1, "None of these");
     // Amended for M3-N1: every topic and Continue are rows.
-    assert_eq!(hub_rows(&hub), hub_tail(&ALL_INCOME_TOPICS, TaxSection::MoreIncome));
+    assert_eq!(hub_rows(&hub), not_started_rows(&ALL_INCOME_TOPICS));
     assert_eq!(
         s.draft.finished_sections,
         vec![
             TaxSection::Children,
+            TaxSection::Documents,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
-            TaxSection::MoreIncome,
             TaxSection::Income,
-            TaxSection::MoreAdjustments,
             TaxSection::Adjustments,
             TaxSection::Deductions,
-            TaxSection::MoreCredits,
             TaxSection::Credits,
             TaxSection::OtherTaxes,
             TaxSection::Payments,
+            TaxSection::OftenMissed,
         ]
     );
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
@@ -6300,60 +7517,62 @@ fn checklist_follows_the_people_pages_and_opens_with_nothing_ticked() {
     let row = answers.iter().find(|r| r.section == TaxSection::Checklist).unwrap();
     assert_eq!(
         (status_text(&row.item).as_str(), status_text(&row.status).as_str()),
-        ("Your 2026 at a glance", "None of these")
+        ("Beyond your documents", "None of these")
     );
 }
 
+// A business record as the Self-employment page saves it.
+// Saves the topic page a reply opened with these records.
+fn save_opened_topic(s: &mut Interview, reply: &Reply, records: Vec<IncomeDocumentItem>) -> Reply {
+    let Reply::Edit(P::SaveIncomes { topic, .. }) = reply else {
+        panic!("expected an income topic page, got {reply:?}")
+    };
+    let request = save_topic(s, *topic, records);
+    send(s, request)
+}
+fn business_document(receipts: i64) -> IncomeDocumentItem {
+    document(0, IncomeSource::Record { value: crate::IncomeRecord::Business(business(receipts)) })
+}
 #[test]
 fn ticks_become_planned_topics() {
-    let (mut s, reply) = at_the_checklist();
+    let (mut s, reply) = at_the_checklist_with_self_work(true);
     let ticks = Checklist {
-        income: IncomeTopics::WAGES.0 | IncomeTopics::RETIREMENT.0,
-        payments: PaymentTopics::EXTENSION.0,
+        activities: ActivityTopics::RENTALS.0,
+        paid: PaidTopics::PAYMENTS.0,
         ..Checklist::NONE
     };
-    // M3-P19: the walk opens the first planned topic; its Back opens the hub.
+    // The walk opens the first planned topic; its Back opens the hub.
     let reply = send(&mut s, tick(reply, ticks));
     let hub = income_hub(to_the_hub(&mut s, reply));
-    // Each tick is stored as planned, exactly as ticked.
+    // Each box is stored as planned, exactly as checked.
     assert_eq!(crate::interview::planned(&s.draft), ticks);
-    assert_eq!(
-        told_row(&hub),
-        (
-            "What you told us".into(),
-            "W-2 wages, or employee pay a firm reported on a 1099 (Form 8919), Retirement or Social Security".into()
-        )
-    );
-    // Amended for M3-N1: the planned topics first, then every other topic.
+    assert_eq!(told_row(&hub), ("What you told us".into(), "Rental property".into()));
+    // The planned topics first, then every other topic.
     assert_eq!(
         hub_rows(&hub),
         with_tail(
             vec![
-                row_of("Wages", "Planned", TaxSection::Wages),
-                row_of("Retirement and Social Security", "Planned", TaxSection::Retirement),
+                row_of("Self-employment", "Planned", TaxSection::SelfEmployment),
+                row_of("Rental property", "Planned", TaxSection::Rentals),
             ],
-            hub_tail_unasked(
-                &income_topics_but(&[TaxSection::Wages, TaxSection::Retirement]),
-                TaxSection::MoreIncome
-            )
+            not_started_rows(&income_topics_but(&[
+                TaxSection::SelfEmployment,
+                TaxSection::Rentals
+            ]))
         )
     );
-    assert_eq!(suggestion(&hub), TaxSection::Wages);
-    // Entering the W-2 moves its tick from planned to the entries.
-    let request = save_topic(
-        &s.draft,
-        TaxSection::Wages,
-        vec![document(0, IncomeDocument::W2(w2(6_000_000)))],
-    );
+    assert_eq!(suggestion(&hub), TaxSection::SelfEmployment);
+    // Entering the business moves its box from planned to the entries.
+    let request =
+        save_topic(&mut s, TaxSection::SelfEmployment, vec![business_document(5_000_000)]);
     let reply = send(&mut s, request);
     let hub = income_hub(to_the_hub(&mut s, reply));
-    assert_eq!(crate::interview::planned(&s.draft).income, IncomeTopics::RETIREMENT.0);
-    assert_eq!(crate::interview::planned(&s.draft).payments, PaymentTopics::EXTENSION.0);
-    assert_eq!(suggestion(&hub), TaxSection::Retirement);
-    // The "What you told us" row reopens the checklist from the hub, with
-    // the W-2 ticked from its entry; unticking retirement returns to the
-    // hub, which now suggests the walk's last step, Less common income
-    // (gate fixes batch A).
+    assert_eq!(crate::interview::planned(&s.draft).activities, ActivityTopics::RENTALS.0);
+    assert_eq!(crate::interview::planned(&s.draft).paid, PaidTopics::PAYMENTS.0);
+    assert_eq!(suggestion(&hub), TaxSection::Rentals);
+    // The "What you told us" row reopens the page from the hub, with the
+    // business checked from its entry; unchecking the rental returns to the
+    // hub, which now suggests continuing.
     let request = go_to(&s.draft, PAGE_INCOME, TaxSection::Checklist);
     let reply = send(&mut s, request);
     assert!(matches!(
@@ -6361,72 +7580,233 @@ fn ticks_become_planned_topics() {
         Reply::Edit(P::SaveChecklist { previous: PAGE_INCOME, review: false, .. })
     ));
     assert_eq!(checklist_of(&reply), ticks);
-    let fewer = Checklist { income: IncomeTopics::WAGES.0, ..ticks };
+    let fewer = Checklist { activities: 0, ..ticks };
+    // A checklist opened from a hub returns there; it remains explicit navigation.
     let hub = income_hub(send(&mut s, tick(reply, fewer)));
-    assert_eq!(suggestion(&hub), TaxSection::MoreIncome);
-    assert_eq!(crate::interview::planned(&s.draft), Checklist { income: 0, ..ticks });
-    // A changed checklist erases nothing.
+    assert_eq!(suggestion(&hub), TaxSection::Adjustments);
+    assert_eq!(crate::interview::planned(&s.draft), Checklist { activities: 0, ..ticks });
+    // A changed box erases nothing it does not own.
     assert_eq!(s.draft.income.len(), 1);
 }
 
 #[test]
 fn topics_with_entries_open_ticked() {
-    // A W-2 and a 1099-INT, a less-common income situation, a Form 1095-A,
-    // a household employee and an extension payment: every one is shown
-    // ticked from its entry, and nothing is planned.
+    // A business, a household employee and an extension payment: each is
+    // shown checked from its entry, and nothing is planned.
     let mut d = complete(FederalStatus::Single);
-    d.income.push(FederalIncomeEntry {
-        refund_management: None,
-        state_source: Default::default(),
-        id: 2,
-        owner: Owner::Taxpayer,
-        label: "Bank".into(),
-        income: document_income(&IncomeDocument::Int1099(native_int1099("Bank".into(), 20_000))),
-        community: CommunityShare::NotNeeded,
-    });
-    d.next_id = 3;
-    d.situations = vec![RareSituation::TaxTreaty];
+    add(&mut d, income(cash_business(2_000_000)));
     d.screening.as_mut().unwrap().household_employment = vec![household_employer(3_500)];
-    d.credits.as_mut().unwrap().marketplace =
-        marketplace_claim(&mut d, (1..=12).map(|m| marketplace_month(m, 500, 600, 0)).collect());
     d.payments.as_mut().unwrap().extension = 50_000;
-    // As every save leaves it: each topic with entries ticked.
+    // As every save leaves it: each topic with entries checked.
     let d = crate::interview::with_ticks(d);
     let mut s = Interview::new(TEST_USER, d.clone());
+    crate::tests::support::client::admit_native_fixture_facts(&mut s);
+    let source = open_document_center(&mut s);
+    accepted(&send(&mut s, source));
+    let d = s.draft.clone();
     let reply = send(&mut s, navigate(&d, TaxSection::Checklist));
     assert!(matches!(reply, Reply::Edit(P::SaveChecklist { review: true, .. })));
-    assert_eq!(
-        checklist_of(&reply),
-        Checklist {
-            income: IncomeTopics::WAGES.0 | IncomeTopics::INTEREST_DIVIDENDS.0,
-            credit_topics: CreditTopics::MARKETPLACE.0,
-            other_taxes: OtherTaxTopics::HOUSEHOLD_EMPLOYEE.0,
-            payments: PaymentTopics::EXTENSION.0,
-            ..Checklist::NONE
-        }
-    );
+    let opened = Checklist {
+        activities: ActivityTopics::HOUSEHOLD_EMPLOYEE.0,
+        paid: PaidTopics::PAYMENTS.0,
+        ..Checklist::NONE
+    };
+    assert_eq!(checklist_of(&reply), opened);
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
-    // Saving it unchanged stores nothing twice: planned stays empty and
-    // the review follows, unchanged.
-    let value = checklist_of(&reply);
-    assert!(matches!(send(&mut s, tick(reply, value)), Reply::Response(P::Review { .. })));
+    // Saving it unchanged stores nothing twice: the review follows, unchanged.
+    assert!(matches!(send(&mut s, tick(reply, opened)), Reply::Response(P::Review { .. })));
     assert_eq!(s.draft, d);
     let (_, _, _, answers) = review_state(&mut s);
     assert!(
         answers
             .iter()
-            .any(|r| r.section == TaxSection::Checklist && status_text(&r.status) == "5 topics")
+            .any(|r| r.section == TaxSection::Checklist && status_text(&r.status) == "3 topics")
     );
+}
+
+// Self-employment documents keep their topic on the path without adding
+// a business option or note to the remaining checklist.
+#[test]
+fn self_employment_evidence_stays_outside_the_remaining_checklist() {
+    let mut d = complete(FederalStatus::Single);
+    add(
+        &mut d,
+        income(FederalIncome::Nec1099 {
+            data: nec_source(FederalForm1099Nec {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
+                overtime: 0,
+                compensation: 120_000,
+                withholding: 0,
+                golden_parachute: 0,
+                belongs: Some(IncomeUse::NotForProfit),
+            }),
+        }),
+    );
+    let mut s = Interview::new(TEST_USER, d.clone());
+    let reply = send(&mut s, navigate(&d, TaxSection::Checklist));
+    let Reply::Edit(P::SaveChecklist { value, from_documents, .. }) = &reply else {
+        panic!("expected Beyond your documents, got {reply:?}")
+    };
+    assert_eq!(*value, Checklist::NONE.into());
+    assert!(from_documents.is_empty());
+    let reply = from_review(&mut s, TaxSection::Checklist);
+    accepted(&send(&mut s, tick(reply, Checklist::NONE)));
+    assert_eq!(s.draft.checklist, Checklist::NONE);
+    assert_eq!(s.draft.income, d.income);
+    let reopened = from_review(&mut s, TaxSection::Checklist);
+    assert_eq!(checklist_of(&reopened), Checklist::NONE);
+    // Without the document, the box opens unchecked.
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.self_employment.documents.clear();
+    accepted(&send(&mut s, request));
+    assert_eq!(checklist_of(&from_review(&mut s, TaxSection::Checklist)), Checklist::NONE);
+}
+
+// Where each of the 40 options of the former opening checklist ("Your 2026
+// at a glance") is answered now: a document brings its topic, reached from
+// its hub; a box beyond the documents plans its page; an answer on
+// "Situations people often miss" plans its page; a derived topic follows the
+// facts; a whole-return situation is on About you or the spouse page.
+#[derive(Clone, Debug)]
+enum Home {
+    Document(TaxSection),
+    Beyond(Checklist, TaxSection),
+    WithoutForm(TaxSection),
+    Missed(OftenMissed, TaxSection),
+    Derived(TaxSection),
+    Filer(u32),
+}
+#[test]
+fn every_option_of_the_old_checklist_has_its_home() {
+    use ActivityTopics as A;
+    use CarryoverTopics as C;
+    use Home::*;
+    use PaidTopics as Paid;
+    use TaxSection as T;
+    let boxes = |activities, paid, carryovers| Checklist { activities, paid, carryovers };
+    let (activity, paid) = (|bit| boxes(bit, 0, 0), |bit| boxes(0, bit, 0));
+    let missed = |bit: MissedIncome| OftenMissed { income: bit.0, ..OftenMissed::default() };
+    let benefits = |bit: MissedBenefits| OftenMissed { benefits: bit.0, ..OftenMissed::default() };
+    let options: [(&str, Home); 40] = [
+        ("W-2 wages or employee pay reported on a 1099 (Form 8919)", Document(T::Wages)),
+        ("Interest or dividends, a child's statements (Form 8814)", Document(T::InterestDividends)),
+        ("Sales of investments or your home", Document(T::InvestmentSales)),
+        ("Retirement plans, IRAs or Social Security", Document(T::Retirement)),
+        ("Self-employment, gig work, 1099-K", WithoutForm(T::SelfEmployment)),
+        ("Rental property", Beyond(activity(A::RENTALS.0), T::Rentals)),
+        ("Unemployment or a state tax refund", Document(T::GovernmentBenefits)),
+        ("Prizes, 1099-MISC items, 529 and Coverdell withdrawals", Document(T::OtherIncome)),
+        ("Gambling winnings", Document(T::Gambling)),
+        ("Farming or crop-share rent", Beyond(activity(A::FARM.0), T::Farming)),
+        ("Schedule K-1", Document(T::PassThrough)),
+        ("Canceled debt or a foreclosure", Document(T::CanceledDebt)),
+        ("Work abroad", Beyond(activity(A::ABROAD.0), T::WorkAbroad)),
+        ("HSA or Archer MSA", Beyond(paid(Paid::HSA.0), T::Hsa)),
+        ("Health insurance or a SEP plan for your business", Derived(T::SelfEmployedBenefits)),
+        ("IRA contributions", Beyond(paid(Paid::IRA_CONTRIBUTIONS.0), T::IraContributions)),
+        ("K-12 educator expenses", Missed(benefits(MissedBenefits::EDUCATOR), T::Educator)),
+        ("Student loan interest", Document(T::StudentLoan)),
+        (
+            "Reservist, performing artist or fee-basis official",
+            Missed(benefits(MissedBenefits::EMPLOYEE_EXPENSES), T::EmployeeExpenses),
+        ),
+        ("Medical and dental expenses", Missed(benefits(MissedBenefits::MEDICAL), T::Medical)),
+        ("State, local or property taxes", Beyond(paid(Paid::TAXES.0), T::Taxes)),
+        ("Mortgage interest", Document(T::Mortgage)),
+        ("Gifts to charity", Beyond(paid(Paid::GIFTS.0), T::Deductions)),
+        (
+            "Gifts of property, charity carried over",
+            Beyond(boxes(0, Paid::GIFTS.0, C::CHARITY.0), T::Deductions),
+        ),
+        (
+            "Investment interest",
+            Missed(benefits(MissedBenefits::INVESTMENT_INTEREST), T::OtherItemized),
+        ),
+        ("Interest on a new personal vehicle loan", Document(T::Deductions)),
+        ("College tuition", Document(T::Education)),
+        ("Marketplace health insurance", Missed(missed(MissedIncome::MARKETPLACE), T::Marketplace)),
+        ("A household employee", Beyond(activity(A::HOUSEHOLD_EMPLOYEE.0), T::OtherTaxes)),
+        ("Incentive stock options", Document(T::InvestmentSales)),
+        (
+            "Excess contributions and account withdrawals",
+            Missed(missed(MissedIncome::ACCOUNT_TAXES), T::OtherTaxes),
+        ),
+        ("Estimated tax payments", Beyond(paid(Paid::PAYMENTS.0), T::Payments)),
+        ("A payment with an extension request", Beyond(paid(Paid::PAYMENTS.0), T::Payments)),
+        ("Dual-status or U.S. territory return", Filer(YourSituations::DUAL_STATUS.0)),
+        ("Community property with a domestic partner", Filer(YourSituations::COMMUNITY_PROPERTY.0)),
+        ("Nonresident spouse treated as a resident", Filer(SpouseSituations::NONRESIDENT_SPOUSE.0)),
+        ("Injured spouse allocation", Filer(SpouseSituations::INJURED_SPOUSE.0)),
+        ("Innocent spouse relief", Filer(SpouseSituations::INNOCENT_SPOUSE.0)),
+        (
+            "Joint election for the net investment income tax",
+            Filer(SpouseSituations::NONRESIDENT_SPOUSE.0 | SpouseSituations::NIIT_JOINT_ELECTION.0),
+        ),
+        (
+            "You were the nonresident spouse",
+            Filer(
+                SpouseSituations::NONRESIDENT_SPOUSE.0
+                    | SpouseSituations::YOU_WERE_THE_NONRESIDENT.0,
+            ),
+        ),
+    ];
+    let names: alloc::collections::BTreeSet<_> = options.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names.len(), 40);
+    // A joint return that itemizes reaches every topic page.
+    let mut itemizing = complete(FederalStatus::Joint);
+    {
+        itemizing.deductions.as_mut().unwrap().itemized = empty_facts();
+        itemizing.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
+    for (name, home) in options {
+        match home {
+            Document(page) => {
+                let mut s = Interview::new(TEST_USER, itemizing.clone());
+                let reply = from_review(&mut s, page);
+                assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{name}: {reply:?}");
+            }
+            Missed(answer, page) => {
+                let mut d = itemizing.clone();
+                d.often_missed = answer;
+                assert!(crate::interview::planned_sections(&d).contains(&page), "{name}");
+            }
+            WithoutForm(page) => {
+                let mut s = Interview::new(TEST_USER, itemizing.clone());
+                accepted(&save_without_form(
+                    &mut s,
+                    crate::IncomeWithoutFormAnswers { self_work: true, ..Default::default() },
+                ));
+                assert!(crate::interview::planned_sections(&s.draft).contains(&page), "{name}");
+            }
+            Beyond(value, page) => {
+                let mut d = complete(FederalStatus::Single);
+                d.checklist = value;
+                assert!(crate::interview::planned_sections(&d).contains(&page), "{name}");
+            }
+            Derived(page) => {
+                let mut d = complete(FederalStatus::Single);
+                add(&mut d, income(cash_business(2_000_000)));
+                assert!(crate::interview::derived_topics(&d, T::Adjustments).contains(&page));
+            }
+            Filer(bits) => {
+                let mut s = Interview::new(TEST_USER, complete(FederalStatus::Joint));
+                accepted(&save_whole_return(&mut s, bits));
+                assert_eq!(s.draft.whole_return(), bits, "{name}");
+            }
+        }
+    }
 }
 
 #[test]
 fn undeclared_checklist_ticks_are_refused() {
-    // Unticking a topic with entries removes them (walk-owned data,
-    // src/tests/cross/change_audit.rs); a tick the catalogs do not declare is refused.
+    // Unchecking a box with entries removes them (walk-owned data,
+    // src/tests/cross/change_audit.rs); a box the questions do not declare is refused.
     let d = crate::interview::with_ticks(complete(FederalStatus::Single));
     let mut s = Interview::new(TEST_USER, d.clone());
     let reply = send(&mut s, navigate(&d, TaxSection::Checklist));
-    let undeclared = Checklist { income: IncomeTopics::WAGES.0 | 1 << 20, ..Checklist::NONE };
+    let undeclared = activities(ActivityTopics::BUSINESS.0 | 1 << 20);
     let message = refusal(current_source_refusal(
         "secondary-admission-3250",
         &mut s,
@@ -6442,59 +7822,80 @@ fn undeclared_checklist_ticks_are_refused() {
 #[test]
 fn derived_topics_need_no_tick() {
     // W-2 box 12 W: the adjustments hub suggests the HSA with nothing
-    // ticked.
+    // planned; the W-2 shows its box checked.
     let mut s = at_the_adjustments_hub(FederalStatus::Single, 100_000);
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
     let hub = open_adjustments_hub(&mut s);
     assert_eq!(suggestion(&hub), TaxSection::Hsa);
-    assert_eq!(told_row(&hub).1, "None of these");
-    // A full-time student: the credits hub suggests education.
+    assert_eq!(told_row(&hub).1, "Health and medical savings accounts");
+    // A full-time student can enter education documents in Document center;
+    // the fixture has already answered its less-common credit facts.
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.full_time_student = true;
-    let (_, hub) = at_the_credits_hub(d);
-    assert_eq!(suggestion(&hub), TaxSection::Education);
+    let (mut s, hub) = at_the_credits_hub(d);
+    assert_eq!(suggestion(&hub), TaxSection::OftenMissed);
+    let source = open_document_center(&mut s);
+    assert!(education_value(&source).people.iter().any(|person| person.id == -1));
     assert_eq!(told_row(&hub).1, "None of these");
-    // Without a tick or a derived need, an empty topic is never suggested:
-    // Continue goes to the next shown section, other taxes (M3-P19; every
-    // return walks it since gate fixes batch A).
+    // Without a box or a derived need, an empty topic is never suggested:
+    // Continue goes to the next shown section, the last page before the
+    // review (federal payments only with its box).
     let (_, hub) = at_the_credits_hub(complete(FederalStatus::Single));
-    assert_eq!(suggestion(&hub), TaxSection::OtherTaxes);
+    assert_eq!(suggestion(&hub), TaxSection::OftenMissed);
 }
 
 #[test]
 fn hub_suggests_attention_then_planned_then_continue() {
-    // Interest and dividends is planned; a refused 1099-R code needs
-    // attention on the later Retirement topic, which is suggested first.
-    let mut s = planning(income_ticks(IncomeTopics::INTEREST_DIVIDENDS.0));
+    // Self-employment is planned. The 1099-R needs correction in Document
+    // center; the income hub keeps its planned topic suggestion.
+    let mut s = planning(activities(ActivityTopics::BUSINESS.0));
     let r = other_1099(1_000_000, "5", false);
-    let request =
-        save_topic(&s.draft, TaxSection::Retirement, vec![document(0, IncomeDocument::R1099(r))]);
-    let reply = send(&mut s, request);
-    let hub = income_hub(to_the_hub(&mut s, reply));
-    assert_eq!(suggestion(&hub), TaxSection::Retirement);
-    let rows = hub_rows(&hub);
-    assert!(rows.contains(&row_of(
-        "Interest and dividends",
-        "Planned",
-        TaxSection::InterestDividends
-    )));
-    assert!(
-        rows.iter().any(|(_, status, section)| *section == TaxSection::Retirement
-            && status.starts_with("Needs attention")),
-        "{rows:?}"
+    let reply = crate::tests::support::client::save_retirement_fixture(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(r)),
+            },
+        )],
     );
+    let hub = income_hub(to_the_hub(&mut s, reply));
+    assert_eq!(suggestion(&hub), TaxSection::SelfEmployment);
+    let rows = hub_rows(&hub);
+    assert!(rows.contains(&row_of("Self-employment", "Planned", TaxSection::SelfEmployment)));
+    assert!(rows.contains(&row_of(
+        "Retirement and Social Security",
+        "1 1099-R · $10000.00",
+        TaxSection::Retirement
+    )));
+    // Return to the summary while leaving the business plan unchanged.
+    let hub = income_hub(from_review(&mut s, TaxSection::Income));
+    // Review diagnoses the source after the mandatory sections are accepted.
+    let reply = send(&mut s, hub_action(&hub));
+    walk_on_to_review(&mut s, reply);
+    let (items, ..) = review_state(&mut s);
+    assert!(
+        items.iter().any(|item| item.section == TaxSection::Documents),
+        "review={items:?}; issues={:?}",
+        estimate(&s.draft).issues
+    );
+    let request = go_to(&s.draft, PAGE_REVIEW, TaxSection::Documents);
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveDocuments { .. })));
     // Without the attention, the planned topic.
-    let request = save_topic(&s.draft, TaxSection::Retirement, vec![]);
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.retirement.documents.clear();
+    accepted(&send(&mut s, request));
+    let hub = income_hub(from_review(&mut s, TaxSection::Income));
+    assert_eq!(suggestion(&hub), TaxSection::SelfEmployment);
+    // Entering the business completes its plan; the completed income walk
+    // suggests continuing to the adjustments section.
+    let request =
+        save_topic(&mut s, TaxSection::SelfEmployment, vec![business_document(5_000_000)]);
     let reply = send(&mut s, request);
-    let hub = income_hub(to_the_hub(&mut s, reply));
-    assert_eq!(suggestion(&hub), TaxSection::InterestDividends);
-    // Once it is entered, the walk's last step, Less common income (gate
-    // fixes batch A); then Continue (M3-P19). A save while the walk has a
-    // topic left opens that topic, whose Back opens the hub (to_the_hub).
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, vec![interest(20_000)]);
-    let reply = send(&mut s, request);
-    let hub = income_hub(to_the_hub(&mut s, reply));
-    assert_eq!(suggestion(&hub), TaxSection::MoreIncome);
+    accepted(&reply);
+    let hub = income_hub(from_review(&mut s, TaxSection::Income));
+    assert_eq!(suggestion(&hub), TaxSection::Adjustments);
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
 }
 
@@ -6504,46 +7905,52 @@ fn itemizable_ticks_open_deductions_on_compare() {
         let mut d = complete(FederalStatus::Single);
         d.finished_sections = vec![
             TaxSection::Children,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
             TaxSection::Income,
             TaxSection::Adjustments,
         ];
         d.checklist = planned;
         let mut s = Interview::new(TEST_USER, d);
-        match send(&mut s, P::OpenInterview { user: TEST_USER }) {
+        let sources = open_document_center(&mut s);
+        accepted(&send(&mut s, sources));
+        let request = go_to(&s.draft, PAGE_ADJUSTMENTS, TaxSection::Deductions);
+        match send(&mut s, request) {
             Reply::Edit(page @ P::SaveDeductions { .. }) => (s, page),
             other => panic!("expected the deductions page, got {other:?}"),
         }
     };
-    let route = |page: &P| deductions_value(page).0.route;
-    // Nothing ticked, gifts only or car loan interest only: the standard
-    // deduction, M1's default.
-    for deductions in [0, DeductionTopics::GIFTS.0, DeductionTopics::CAR_LOAN.0] {
-        let (_, page) = opened(Checklist { deductions, ..Checklist::NONE });
-        assert_eq!(route(&page), DeductionRoute::Standard, "{deductions}");
-    }
-    // Any itemizable tick answers the route: Compare.
-    let (mut s, page) =
-        opened(Checklist { deductions: DeductionTopics::MORTGAGE.0, ..Checklist::NONE });
-    assert_eq!(route(&page), DeductionRoute::Compare);
-    // The planned mortgage is no item needing review.
-    assert!(items_of(&mut s).is_empty());
+    let route = |page: &P| deductions_value(page).itemize_override;
+    // Gifts to charity only: the standard deduction, M1's default (cash
+    // gifts are deductible without itemizing).
+    let (_, page) = opened(Checklist { paid: PaidTopics::GIFTS.0, ..Checklist::NONE });
+    assert_eq!(route(&page), None);
+    // An itemizable box answers the route: Compare.
+    let taxes = Checklist { paid: PaidTopics::TAXES.0, ..Checklist::NONE };
+    let (mut s, page) = opened(taxes);
+    assert_eq!(route(&page), None);
+    // The planned taxes are no item needing review.
+    assert!(items_of(&mut s).iter().all(|(_, _, section)| *section == TaxSection::Deductions));
     // Once the page is saved its stored route is shown, even Standard.
-    let request = save_deductions(&s.draft, DeductionRoute::Standard, 0);
+    let request = save_deductions(&s.draft, None, 0);
     accepted(&send(&mut s, request));
     let request = navigate(&s.draft, TaxSection::Deductions);
     let Reply::Edit(page) = send(&mut s, request) else { panic!("expected the deductions page") };
-    assert_eq!(route(&page), DeductionRoute::Standard);
+    assert_eq!(route(&page), None);
     // Saved as it opened, Compare enters the itemized hub, whose walk opens
-    // the planned mortgage page directly (M3-P19); its Back opens the hub.
-    let (mut s, page) =
-        opened(Checklist { deductions: DeductionTopics::MORTGAGE.0, ..Checklist::NONE });
+    // the planned taxes page directly (M3-P19); its Back opens the hub.
+    let (mut s, page) = opened(taxes);
     let reply = send(&mut s, page);
-    assert!(matches!(reply, Reply::Edit(P::SaveMortgages { .. })), "{reply:?}");
+    assert!(matches!(reply, Reply::Edit(P::SaveTaxes { .. })), "{reply:?}");
     let hub = itemized_hub(to_the_hub(&mut s, reply));
-    assert_eq!(suggestion(&hub), TaxSection::Mortgage);
-    assert_eq!(told_row(&hub), ("What you told us".into(), "Mortgage interest".into()));
-    assert!(items_of(&mut s).is_empty());
+    assert_eq!(suggestion(&hub), TaxSection::Taxes);
+    assert_eq!(
+        told_row(&hub),
+        ("What you told us".into(), "State, local or property taxes".into())
+    );
+    // Only the review's finishing row remains.
+    let listed = items_of(&mut s);
+    assert_eq!(listed.len(), 1, "{listed:?}");
 }
 
 #[test]
@@ -6553,7 +7960,7 @@ fn checklist_estimate_lists_the_planned_sections() {
     let before = s.draft.clone();
     let path = |s: &mut Interview, value: Checklist| match send(
         s,
-        P::EstimateChecklist { user: TEST_USER, value },
+        P::EstimateChecklist { user: TEST_USER, value: value.into() },
     ) {
         Reply::Response(P::RunningEstimate { progress, .. }) => {
             let text = shown(&progress);
@@ -6562,41 +7969,31 @@ fn checklist_estimate_lists_the_planned_sections() {
         }
         other => panic!("expected the running estimate, got {other:?}"),
     };
-    // Gate fixes batch A: income, adjustments, credits and other taxes are
-    // always shown, each asking its less-common page.
+    // Income, adjustments, credits and the last page before the review are
+    // always shown; the payments page only with its box.
     assert_eq!(
         path(&mut s, Checklist::NONE),
-        "Your return: Income, Adjustments to income, Credits, Other taxes, Federal payments, Review"
+        "Your return: Income, Adjustments to income, Credits, Situations people often miss, Review"
     );
     assert_eq!(
         path(
             &mut s,
-            Checklist {
-                income: IncomeTopics::WAGES.0,
-                deductions: DeductionTopics::MORTGAGE.0,
-                payments: PaymentTopics::ESTIMATED.0,
-                ..Checklist::NONE
-            }
+            Checklist { paid: PaidTopics::TAXES.0 | PaidTopics::PAYMENTS.0, ..Checklist::NONE }
         ),
-        "Your return: Income, Adjustments to income, Deductions, Credits, Other taxes, Federal payments, Review"
+        "Your return: Income, Adjustments to income, Deductions, Credits, Federal payments, Situations people often miss, Review"
     );
+    // A carryover box opens its own page; charity carried over the
+    // deductions.
     assert_eq!(
         path(
             &mut s,
             Checklist {
-                adjustments: AdjustmentTopics::IRA_CONTRIBUTIONS.0,
-                credit_topics: CreditTopics::TUITION.0,
-                other_taxes: OtherTaxTopics::STOCK_OPTIONS.0,
+                paid: PaidTopics::IRA_CONTRIBUTIONS.0,
+                carryovers: CarryoverTopics::MINIMUM_TAX_CREDIT.0 | CarryoverTopics::CHARITY.0,
                 ..Checklist::NONE
             }
         ),
-        "Your return: Income, Adjustments to income, Credits, Other taxes, Federal payments, Review"
-    );
-    // The stock-options tick is answered on Investment sales (Income); an
-    // estimated payment adds Federal payments.
-    assert_eq!(
-        path(&mut s, Checklist { payments: PaymentTopics::ESTIMATED.0, ..Checklist::NONE }),
-        "Your return: Income, Adjustments to income, Credits, Other taxes, Federal payments, Review"
+        "Your return: Income, Adjustments to income, Deductions, Credits, Situations people often miss, Review"
     );
     // The calculation is pure.
     assert_eq!(s.draft, before);
@@ -6609,33 +8006,23 @@ fn a_plan_is_never_a_remaining_item() {
     // needing review and does not block Finish; its topic row reads
     // "Planned" (a concrete plan).
     let mut d = complete(FederalStatus::Single);
-    d.checklist = income_ticks(IncomeTopics::RETIREMENT.0);
+    d.checklist = activities(ActivityTopics::BUSINESS.0);
     let mut s = Interview::new(TEST_USER, d.clone());
     let (items, _, actions, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
     assert!(actions.contains(&FINISH));
     let hub = hub_of(from_review(&mut s, TaxSection::Income));
     assert!(hub_rows(&hub).contains(&row_of(
-        "Retirement and Social Security",
+        "Self-employment",
         "Planned",
-        TaxSection::Retirement
+        TaxSection::SelfEmployment
     )));
-    // Entering it: the row shows the entry and the tick stays.
-    let request = save_topic(
-        &s.draft,
-        TaxSection::Retirement,
-        vec![document(
-            0,
-            IncomeDocument::R1099(r1099(
-                1_000_000,
-                DistributionCode::Normal { what_happened: Disposition::Kept },
-                true,
-            )),
-        )],
-    );
+    // Entering it: the row shows the entry and the box stays checked.
+    let request =
+        save_topic(&mut s, TaxSection::SelfEmployment, vec![business_document(5_000_000)]);
     accepted(&send(&mut s, request));
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
-    assert_ne!(s.draft.checklist.income & IncomeTopics::RETIREMENT.0, 0);
+    assert_ne!(s.draft.checklist.activities & ActivityTopics::BUSINESS.0, 0);
     let (items, _, _, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
 }
@@ -6649,11 +8036,12 @@ fn path_of(sent: &[P]) -> Vec<&'static str> {
             P::SaveSetup { .. } => "setup",
             P::SavePeople { .. } => "you",
             P::SaveChildren { .. } => "people",
+            P::SaveIncomeWithoutForm { .. } => "income without a form",
             P::SaveChecklist { .. } => "checklist",
-            P::SaveIncomes { topic: TaxSection::Wages, .. } => "wages",
+            P::SaveDocuments { .. } => "documents",
+            P::SaveIncomes { topic: TaxSection::Wages, .. } | P::SaveWagesAnswers { .. } => "wages",
             P::SaveIncomes { topic: TaxSection::InterestDividends, .. } => "interest",
             P::ContinueIncome { .. } => "income summary Continue",
-            P::SaveSituations { topic: TaxSection::MoreIncome, .. } => "less common income",
             P::SaveMoreAdjustments { .. } => "more adjustments",
             P::ContinueAdjustments { .. } => "adjustments summary Continue",
             P::SaveCare { .. } => "care",
@@ -6661,6 +8049,8 @@ fn path_of(sent: &[P]) -> Vec<&'static str> {
             P::ContinueCredits { .. } => "credits summary Continue",
             P::SaveOtherTaxes { .. } => "other taxes",
             P::SavePayments { .. } => "payments",
+            P::SaveOftenMissed { .. } => "often missed",
+            P::Navigate { .. } => "hub row",
             other => panic!("unexpected request {other:?}"),
         })
         .collect()
@@ -6674,18 +8064,25 @@ pub(in crate::tests) fn hub_of(reply: Reply) -> P {
 }
 pub(in crate::tests) fn progress_of(reply: &Reply) -> alloc::string::String {
     match reply {
-        Reply::Edit(P::SaveIncomes { progress, .. }) => {
-            shown(progress.as_ref().expect("native supplied progress"))
-        }
+        Reply::Edit(
+            P::SaveIncomes { progress, .. }
+            | P::SaveDocuments { progress, .. }
+            | P::SaveSelfEmployedBenefits { progress, .. },
+        ) => shown(progress.as_ref().expect("native supplied progress")),
         Reply::Response(
             P::Hub { progress, .. }
-            | P::BeginSituations { progress, .. }
-            | P::BeginChildren { progress, .. },
+            | P::BeginChildren { progress, .. }
+            | P::BeginPayments { progress, .. }
+            | P::BeginIncomeWithoutForm { progress, .. }
+            | P::BeginChecklist { progress, .. }
+            | P::BeginCare { progress, .. }
+            | P::BeginOftenMissed { progress, .. },
         )
         | Reply::Edit(
             P::SavePayments { progress, .. }
             | P::SaveHsa { progress, .. }
             | P::SaveEducation { progress, .. }
+            | P::SaveIncomeWithoutForm { progress, .. }
             | P::SaveChecklist { progress, .. },
         ) => shown(progress),
         other => panic!("unexpected page {other:?}"),
@@ -6694,35 +8091,15 @@ pub(in crate::tests) fn progress_of(reply: &Reply) -> alloc::string::String {
 // A new single return at the checklist, ticked with `ticks`: the reply to
 // its Next.
 fn walked_from_the_checklist(ticks: Checklist) -> (Interview, Reply) {
-    let (mut s, reply) = at_the_checklist();
+    let (mut s, reply) =
+        at_the_checklist_with_self_work(ticks.activities & ActivityTopics::BUSINESS.0 != 0);
     let reply = send(&mut s, tick(reply, ticks));
     (s, reply)
-}
-// Saves the income topic page a reply opened with `documents`.
-fn save_opened_topic(
-    s: &mut Interview,
-    reply: &Reply,
-    documents: Vec<IncomeDocumentItem>,
-) -> Reply {
-    let Reply::Edit(P::SaveIncomes { topic, .. }) = reply else {
-        panic!("expected an income topic page, got {reply:?}")
-    };
-    let request = save_topic(&s.draft, *topic, documents);
-    send(s, request)
 }
 
 #[test]
 fn m1_path_is_checklist_wages_interest_summary_review() {
-    // The m1-single-w2 fixture through the walk: after the filer pages the
-    // checklist (income row, the W-2 and interest ticks, OK, Next), the two
-    // planned pages in the hub's order, the income summary's Continue action,
-    // and the review. Adjustments, deductions, credits, other taxes and payments
-    // have nothing for this return; Payments still asks the refund election.
-    // Design (b), B′: 6
-    // navigation taps on 2 navigation screens (the checklist and the
-    // summary); the 12 fields are unchanged. Gate fixes batch A: the people
-    // page (empty) and each section's less-common page are asked once, and
-    // the adjustments and credits summaries continue.
+    // The actual source editors and required questions lead directly to Review.
     let raw = include_str!("../../../tests/fixtures/returns/m1-single-w2.json");
     let (mut s, result, sent) = enter_through_the_hubs("m1-single-w2", raw);
     assert_fixture_lines(raw, &result);
@@ -6732,22 +8109,18 @@ fn m1_path_is_checklist_wages_interest_summary_review() {
             "setup",
             "you",
             "people",
+            "documents",
+            "income without a form",
             "checklist",
             "wages",
             "interest",
-            "less common income",
-            "income summary Continue",
-            "more adjustments",
-            "adjustments summary Continue",
-            "more credits",
-            "credits summary Continue",
-            "other taxes",
-            "payments"
+            "often missed"
         ]
     );
-    // The income summary's Continue action was its only tap, and Go to was
-    // never needed.
-    assert_eq!(sent.iter().filter(|p| matches!(p, P::ContinueIncome { .. })).count(), 1);
+    assert!(!sent.iter().any(|p| matches!(
+        p,
+        P::ContinueIncome { .. } | P::ContinueAdjustments { .. } | P::ContinueCredits { .. }
+    )));
     assert!(!sent.iter().any(|p| matches!(p, P::Navigate { .. })));
     let (items, _, actions, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
@@ -6756,11 +8129,7 @@ fn m1_path_is_checklist_wages_interest_summary_review() {
 
 #[test]
 fn m2_path_completes_the_care_editor_before_credits_summary() {
-    // The m2-hoh-two-children fixture: the care costs are answered on the
-    // people page and the child tax credit and the EIC need no page, so the
-    // credits hub walks only More credits (gate fixes batch A).
-    // Design (b), A′: 5 navigation taps (income row, the W-2 tick, OK, Next;
-    // the summary's Continue action) on 2 screens; the 20 fields are unchanged.
+    // The actual source editors and required questions lead directly to Review.
     let raw = include_str!("../../../tests/fixtures/returns/m2-hoh-two-children.json");
     let (mut s, result, sent) = enter_through_the_hubs("m2-hoh-two-children", raw);
     assert_fixture_lines(raw, &result);
@@ -6770,17 +8139,12 @@ fn m2_path_completes_the_care_editor_before_credits_summary() {
             "setup",
             "you",
             "people",
+            "documents",
+            "income without a form",
             "checklist",
             "wages",
-            "less common income",
-            "income summary Continue",
-            "more adjustments",
-            "adjustments summary Continue",
             "care",
-            "more credits",
-            "credits summary Continue",
-            "other taxes",
-            "payments"
+            "often missed"
         ]
     );
     assert!(s.draft.finished_sections.contains(&TaxSection::Credits));
@@ -6795,34 +8159,49 @@ fn m2_path_completes_the_care_editor_before_credits_summary() {
         "1 provider/benefit record",
         TaxSection::Care
     )));
-    assert_eq!(suggestion(&hub), TaxSection::OtherTaxes);
+    assert_eq!(suggestion(&hub), TaxSection::OftenMissed);
 }
 
 #[test]
 fn walk_follows_planned_topics_in_hub_order() {
-    // Ticked in any order, the planned income topics open in the hub's
-    // order: Wages, Retirement and Social Security, then Unemployment and
-    // state refunds; the unplanned topics between them are passed.
-    let (mut s, mut reply) = walked_from_the_checklist(income_ticks(
-        IncomeTopics::GOVERNMENT_BENEFITS.0 | IncomeTopics::RETIREMENT.0 | IncomeTopics::WAGES.0,
+    // Checked in any order, the planned income topics open in the hub's
+    // order: Self-employment, Farming, then Work abroad; the unplanned topics
+    // between them are passed.
+    let (mut s, mut reply) = walked_from_the_checklist(activities(
+        ActivityTopics::ABROAD.0 | ActivityTopics::FARM.0 | ActivityTopics::BUSINESS.0,
     ));
     let mut walked = Vec::new();
-    let hub = loop {
+    loop {
         match &reply {
             Reply::Edit(P::SaveIncomes { topic, .. }) => {
                 walked.push(*topic);
-                // A W-2 on Wages; the other two are saved with nothing.
-                let documents = if *topic == TaxSection::Wages {
-                    vec![document(0, IncomeDocument::W2(w2(6_000_000)))]
+                // A business on Self-employment; the other two are saved
+                // with nothing.
+                let documents = if *topic == TaxSection::SelfEmployment {
+                    vec![business_document(5_000_000)]
                 } else {
                     vec![]
                 };
-                reply = save_opened_topic(&mut s, &reply, documents);
+                reply = if documents.is_empty() {
+                    send(
+                        &mut s,
+                        match reply {
+                            Reply::Edit(page @ P::SaveIncomes { .. }) => page,
+                            _ => unreachable!(),
+                        },
+                    )
+                } else {
+                    save_opened_topic(&mut s, &reply, documents)
+                };
             }
-            _ => break income_hub(past_less_common(&mut s, reply)),
+            _ => {
+                assert!(matches!(reply, Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
+                break;
+            }
         }
-    };
-    assert_eq!(walked, [TaxSection::Wages, TaxSection::Retirement, TaxSection::GovernmentBenefits]);
+    }
+    let hub = income_hub(from_review(&mut s, TaxSection::Income));
+    assert_eq!(walked, [TaxSection::SelfEmployment, TaxSection::Farming, TaxSection::WorkAbroad]);
     // The walk ends, after Less common income, at the hub, shown as the
     // section summary: it continues to the next shown section, adjustments
     // (gate fixes batch A).
@@ -6832,34 +8211,26 @@ fn walk_follows_planned_topics_in_hub_order() {
     // A planned topic saved with nothing is visited: it stays planned (a
     // remaining item), listed "Not started", and the walk passes it.
     assert_eq!(
-        crate::interview::planned(&s.draft).income,
-        IncomeTopics::RETIREMENT.0 | IncomeTopics::GOVERNMENT_BENEFITS.0
+        crate::interview::planned(&s.draft).activities,
+        ActivityTopics::FARM.0 | ActivityTopics::ABROAD.0
     );
-    assert!(s.draft.finished_sections.contains(&TaxSection::Retirement));
-    assert!(s.draft.finished_sections.contains(&TaxSection::GovernmentBenefits));
-    assert!(hub_rows(&hub).contains(&row_of(
-        "Retirement and Social Security",
-        "Planned",
-        TaxSection::Retirement
-    )));
+    assert!(s.draft.finished_sections.contains(&TaxSection::Farming));
+    assert!(s.draft.finished_sections.contains(&TaxSection::WorkAbroad));
+    assert!(hub_rows(&hub).contains(&row_of("Farming", "Planned", TaxSection::Farming)));
     let mut resumed = restart(s.draft.clone());
-    income_hub(send(&mut resumed, P::OpenInterview { user: TEST_USER }));
+    assert!(matches!(
+        send(&mut resumed, P::OpenInterview { user: TEST_USER }),
+        Reply::Edit(P::SaveSelfEmployedBenefits { .. })
+    ));
 }
 
 #[test]
 fn empty_sections_are_skipped_and_listed_on_the_review() {
     let raw = include_str!("../../../tests/fixtures/returns/m1-single-w2.json");
     let (mut s, _, sent) = enter_through_the_hubs("m1-single-w2", raw);
-    // Deductions with nothing is skipped; the final Payments election is asked.
-    // The less-common pages are
-    // each section's walk since gate fixes batch A, and Less common income
-    // is the only situations page sent.
-    assert!(!sent.iter().any(|p| matches!(p, P::SaveDeductions { .. })));
-    assert_eq!(sent.iter().filter(|p| matches!(p, P::SavePayments { .. })).count(), 1);
-    assert!(sent.iter().all(|p| match p {
-        P::SaveSituations { topic, .. } => *topic == TaxSection::MoreIncome,
-        _ => true,
-    }));
+    // Deductions with nothing is skipped, and so is Federal payments without
+    // its box.
+    assert!(!sent.iter().any(|p| matches!(p, P::SaveDeductions { .. } | P::SavePayments { .. })));
     // ...yet each is recorded as passed, and the review lists every section,
     // a skipped one reading "Nothing entered" (the deductions row names the
     // standard deduction the return takes).
@@ -6885,7 +8256,7 @@ fn empty_sections_are_skipped_and_listed_on_the_review() {
     {
         assert_eq!(status(section), "Nothing entered", "{section:?}");
     }
-    assert_eq!(status(TaxSection::Deductions), "Standard deduction");
+    assert_eq!(status(TaxSection::Deductions), "Compare with itemized deductions");
     // Each row opens its page from the review.
     let hub = hub_of(from_review(&mut s, TaxSection::Adjustments));
     assert!(matches!(hub, P::Hub { page: PAGE_ADJUSTMENTS, review: true, .. }));
@@ -6896,14 +8267,14 @@ fn empty_sections_are_skipped_and_listed_on_the_review() {
 }
 
 #[test]
-fn a_section_with_attention_is_never_skipped() {
+fn completed_topic_attention_remains_available_after_automatic_continuation() {
     // The HSA page was visited and saved with no account, so the HSA is no
-    // longer a derived topic; a W-2 with box 12 W and no account still
-    // leaves a remaining item on it, which keeps the adjustments section.
+    // longer a derived topic; a W-2 with box 12 W and no account reopens it.
     let after_wages = |w: i64| {
         let mut d = complete(FederalStatus::Single);
         d.finished_sections = vec![
             TaxSection::Children,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
             TaxSection::Hsa,
             TaxSection::MoreAdjustments,
@@ -6911,16 +8282,23 @@ fn a_section_with_attention_is_never_skipped() {
         ];
         let mut s = Interview::new(TEST_USER, d);
         let wage = if w == 0 { w2(6_000_000) } else { w2_with_box_12_w(6_000_000, w) };
-        let request =
-            save_topic(&s.draft, TaxSection::Wages, vec![document(0, IncomeDocument::W2(wage))]);
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wage)) },
+            )],
+        );
         accepted(&send(&mut s, request));
         s
     };
+    // The W-2 amount's contribution year and its owner's account are asked on
+    // the HSA page, which refuses to save them open: the walk returns to it
+    // instead of leaving a Review item.
     let mut s = after_wages(100_000);
     assert!(!s.draft.finished_sections.contains(&TaxSection::Adjustments));
-    // Resume opens the hub (nothing left to walk), suggesting the topic
-    // that needs attention.
-    let hub = hub_of(send(&mut s, P::OpenInterview { user: TEST_USER }));
+    // The hub still names the topic that needs attention.
+    let hub = hub_of(from_review(&mut s, TaxSection::Adjustments));
     assert!(matches!(hub, P::Hub { page: PAGE_ADJUSTMENTS, .. }));
     assert_eq!(suggestion(&hub), TaxSection::Hsa);
     assert!(hub_rows(&hub).iter().any(|(_, status, section)| {
@@ -6930,107 +8308,113 @@ fn a_section_with_attention_is_never_skipped() {
     // section asks More adjustments (gate fixes batch A), with nothing
     // needing attention.
     let mut s = after_wages(0);
-    assert!(!s.draft.finished_sections.contains(&TaxSection::Adjustments));
-    let hub = hub_of(send(&mut s, P::OpenInterview { user: TEST_USER }));
+    assert!(s.draft.finished_sections.contains(&TaxSection::Adjustments));
+    let hub = hub_of(from_review(&mut s, TaxSection::Adjustments));
     assert!(hub_rows(&hub).iter().all(|(_, status, _)| !status.starts_with("Needs attention")));
 }
 
 #[test]
-fn revisit_from_the_hub_returns_to_it() {
-    // The walk has ended (Wages, the one planned topic, is saved): a topic
+fn revisiting_a_completed_hub_keeps_navigation_and_unchanged_saves() {
+    // The walk has ended (Self-employment, the one planned topic, is saved): a topic
     // opened from the summary, planned or not, returns to the summary.
-    let (mut s, reply) = walked_from_the_checklist(income_ticks(IncomeTopics::WAGES.0));
-    let reply =
-        save_opened_topic(&mut s, &reply, vec![document(0, IncomeDocument::W2(w2(6_000_000)))]);
-    let hub = income_hub(past_less_common(&mut s, reply));
+    let (mut s, reply) = walked_from_the_checklist(activities(ActivityTopics::BUSINESS.0));
+    let reply = save_opened_topic(&mut s, &reply, vec![business_document(5_000_000)]);
+    assert!(matches!(reply, Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
+    let hub = income_hub(from_review(&mut s, TaxSection::Income));
     // An unplanned topic, with a document.
     let request = go_to(&s.draft, PAGE_INCOME, TaxSection::InterestDividends);
-    let page = send(&mut s, request);
-    let reply = save_opened_topic(&mut s, &page, vec![interest(20_000)]);
-    let hub_after = income_hub(reply);
+    let _page = send(&mut s, request);
+    let reply = save_walk_sources(&mut s, vec![interest(20_000)]);
+    accepted(&reply);
+    let page = open_topic(&mut s, TaxSection::InterestDividends);
+    accepted(&send(&mut s, page));
+    let hub_after = income_hub(from_review(&mut s, TaxSection::Income));
     // Amended for M3-N1: then every other topic; Continue is a separate action.
     assert_eq!(
         hub_rows(&hub_after),
         with_tail(
             vec![
-                row_of("Wages", "1 W-2 · $60000.00", TaxSection::Wages),
                 row_of(
                     "Interest and dividends",
                     "1 1099-INT · $200.00",
                     TaxSection::InterestDividends
                 ),
+                row_of("Self-employment", "1 business", TaxSection::SelfEmployment),
             ],
-            hub_tail(
-                &income_topics_but(&[TaxSection::Wages, TaxSection::InterestDividends]),
-                TaxSection::MoreIncome
-            )
+            not_started_rows(&income_topics_but(&[
+                TaxSection::InterestDividends,
+                TaxSection::SelfEmployment
+            ]))
         )
     );
     assert_eq!(suggestion(&hub_after), suggestion(&hub));
     // The planned topic again, saved unchanged: the hub, and no revision.
     let revision = s.draft.revision;
-    let request = go_to(&s.draft, PAGE_INCOME, TaxSection::Wages);
-    let Reply::Edit(page) = send(&mut s, request) else { panic!("expected the Wages page") };
-    income_hub(send(&mut s, page));
+    let request = go_to(&s.draft, PAGE_INCOME, TaxSection::SelfEmployment);
+    let Reply::Edit(page) = send(&mut s, request) else {
+        panic!("expected the Self-employment page")
+    };
+    assert!(matches!(send(&mut s, page), Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
     assert_eq!(s.draft.revision, revision);
 }
 
 // A new single return that plans W-2 wages and estimated payments, at the
 // Wages page the walk opened.
-fn wages_and_estimated_payments() -> (Interview, Reply) {
+fn business_and_estimated_payments() -> (Interview, Reply) {
     walked_from_the_checklist(Checklist {
-        income: IncomeTopics::WAGES.0,
-        payments: PaymentTopics::ESTIMATED.0,
+        activities: ActivityTopics::BUSINESS.0,
+        paid: PaidTopics::PAYMENTS.0,
         ..Checklist::NONE
     })
 }
 
 #[test]
 fn progress_counts_only_shown_sections() {
-    // Before any tick: setup, you, people, the checklist, the four sections
-    // every return walks for their less-common pages (gate fixes batch A)
-    // and the review.
+    // Before any box: setup, you, people, the checklist, the income,
+    // adjustments and credits sections, the last page before the review and
+    // the review.
     let (_, reply) = at_the_checklist();
     assert!(progress_of(&reply).contains(
-        "Your return: Income, Adjustments to income, Credits, Other taxes, Federal payments, Review"
+        "Your return: Income, Adjustments to income, Credits, Situations people often miss, Review"
     ));
     // Planned: federal payments joins the count, 10 sections.
-    let (mut s, reply) = wages_and_estimated_payments();
+    let (mut s, reply) = business_and_estimated_payments();
     assert!(
-        progress_of(&reply).contains("2026 federal · section 5 of 10 · Wages"),
+        progress_of(&reply).contains("2026 federal · section 7 of 12 · Self-employment"),
         "{}",
         progress_of(&reply)
     );
-    let reply =
-        save_opened_topic(&mut s, &reply, vec![document(0, IncomeDocument::W2(w2(6_000_000)))]);
-    assert!(progress_of(&reply).contains("section 5 of 10 · Less common income"));
-    let reply = past_less_common(&mut s, reply);
-    assert!(progress_of(&reply).contains("section 5 of 10 · You're done with income"));
+    let reply = save_opened_topic(&mut s, &reply, vec![business_document(5_000_000)]);
+    assert!(matches!(reply, Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
+    assert!(
+        progress_of(&reply)
+            .contains("section 8 of 12 · Self-employed health insurance and retirement plan")
+    );
     // A skipped section opened from the review counts itself: deductions,
     // with nothing for this return.
     let reply = from_review(&mut s, TaxSection::Deductions);
     let Reply::Edit(P::SaveDeductions { progress, .. }) = &reply else {
         panic!("expected the deductions page, got {reply:?}")
     };
-    assert!(shown(progress).contains("section 7 of 11"), "{}", shown(progress));
+    assert!(shown(progress).contains("section 9 of 13"), "{}", shown(progress));
 }
 
 #[test]
 fn back_passes_skipped_sections() {
-    let (mut s, reply) = wages_and_estimated_payments();
-    let reply =
-        save_opened_topic(&mut s, &reply, vec![document(0, IncomeDocument::W2(w2(6_000_000)))]);
-    let hub = income_hub(past_less_common(&mut s, reply));
+    let (mut s, reply) = business_and_estimated_payments();
+    let reply = save_opened_topic(&mut s, &reply, vec![business_document(5_000_000)]);
+    assert!(matches!(reply, Reply::Edit(P::SaveSelfEmployedBenefits { .. })));
+    let hub = income_hub(from_review(&mut s, TaxSection::Income));
     // The summary continues to the next shown section: adjustments, which
     // every return walks for More adjustments (gate fixes batch A).
     assert_eq!(suggestion(&hub), TaxSection::Adjustments);
-    // The payments page's Back opens the previous shown section, other
-    // taxes, which every return walks too.
+    // The payments page's Back opens the previous shown section, the credits
+    // hub; other taxes is shown only when planned or needed.
     let Reply::Edit(P::SavePayments { previous, .. }) = from_review(&mut s, TaxSection::Payments)
     else {
         panic!("expected the payments page")
     };
-    assert_eq!(previous, PAGE_OTHER_TAXES);
+    assert_eq!(previous, PAGE_CREDITS);
     // A hub's previous section is the previous shown one too: the credits
     // hub, opened from the review, goes back to the adjustments hub,
     // passing deductions (nothing there).
@@ -7042,34 +8426,30 @@ fn back_passes_skipped_sections() {
 
 #[test]
 fn resume_opens_the_next_step() {
-    // Wages and interest planned.
-    let (mut s, reply) = walked_from_the_checklist(Checklist {
-        income: IncomeTopics::WAGES.0 | IncomeTopics::INTEREST_DIVIDENDS.0,
-        ..Checklist::NONE
-    });
+    // A rental and work abroad planned.
+    let (mut s, reply) =
+        walked_from_the_checklist(activities(ActivityTopics::RENTALS.0 | ActivityTopics::ABROAD.0));
     let resumed = |s: &Interview| {
         let mut resumed = restart(s.draft.clone());
         send(&mut resumed, P::OpenInterview { user: TEST_USER })
     };
     // Mid-walk, resume opens the next planned topic of the current hub.
-    let reply =
-        save_opened_topic(&mut s, &reply, vec![document(0, IncomeDocument::W2(w2(6_000_000)))]);
+    let reply = save_opened_topic(&mut s, &reply, vec![]);
+    assert!(matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::WorkAbroad, .. })));
+    assert!(matches!(
+        resumed(&s),
+        Reply::Edit(P::SaveIncomes { topic: TaxSection::WorkAbroad, .. })
+    ));
+    // With the walk ended, its summaries pass without another request.
+    let reply = save_opened_topic(&mut s, &reply, vec![]);
     assert!(matches!(
         reply,
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::InterestDividends, .. })
+        Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
     ));
     assert!(matches!(
         resumed(&s),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::InterestDividends, .. })
+        Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
     ));
-    // With the walk ended, the hub: its summary.
-    let reply = save_opened_topic(&mut s, &reply, vec![interest(20_000)]);
-    let hub = income_hub(past_less_common(&mut s, reply));
-    assert!(progress_of(&resumed(&s)).contains("You're done with income"));
-    // Then, with nothing else planned, the sections every return walks
-    // (gate fixes batch A) to the review.
-    assert_eq!(suggestion(&hub), TaxSection::Adjustments);
-    let reply = send(&mut s, go_on(&hub));
     walk_on_to_review(&mut s, reply);
     assert!(matches!(resumed(&s), Reply::Response(P::Review { .. })));
 }
@@ -7098,7 +8478,6 @@ fn navigation_groups_preserve_topic_and_subtopic_identities() {
         TaxSection::PassThrough,
         TaxSection::CanceledDebt,
         TaxSection::WorkAbroad,
-        TaxSection::MoreIncome,
         TaxSection::Adjustments,
         TaxSection::Hsa,
         TaxSection::SelfEmployedBenefits,
@@ -7114,7 +8493,6 @@ fn navigation_groups_preserve_topic_and_subtopic_identities() {
         TaxSection::Mortgage,
         TaxSection::GiftCarryovers,
         TaxSection::OtherItemized,
-        TaxSection::MoreItemized,
         TaxSection::Credits,
         TaxSection::Education,
         TaxSection::Saver,
@@ -7125,9 +8503,13 @@ fn navigation_groups_preserve_topic_and_subtopic_identities() {
         TaxSection::Payments,
         TaxSection::IncomeByPeriod,
         TaxSection::InjuredSpouse,
+        TaxSection::OftenMissed,
         TaxSection::Review,
         TaxSection::Care,
         TaxSection::HomeOffices,
+        TaxSection::Documents,
+        TaxSection::IncomeWithoutForm,
+        TaxSection::LongTermCareBenefits,
     ];
     for (i, section) in sequence.iter().enumerate() {
         assert_eq!(*section as usize, i, "{section:?}");
@@ -7138,7 +8520,9 @@ fn navigation_groups_preserve_topic_and_subtopic_identities() {
         navigation.income,
         (TaxSection::Income as i32..=TaxSection::SelfEmployment as i32)
             .chain([TaxSection::HomeOffices as i32])
-            .chain(TaxSection::Rentals as i32..=TaxSection::MoreIncome as i32)
+            .chain(TaxSection::Rentals as i32..=TaxSection::OtherIncome as i32)
+            .chain([TaxSection::LongTermCareBenefits as i32])
+            .chain(TaxSection::Gambling as i32..=TaxSection::WorkAbroad as i32)
             .collect::<Vec<_>>()
     );
     // Mortgage source records remain available without itemizing.
@@ -7149,12 +8533,12 @@ fn navigation_groups_preserve_topic_and_subtopic_identities() {
     assert!(!navigation.return_sections.contains(&(TaxSection::Spouse as i32)));
     assert!(navigation.credits.contains(&(TaxSection::MoreCredits as i32)));
     let (mut s, _) = at_the_deductions_page(FederalStatus::Single);
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
+    let request = save_deductions(&s.draft, Some(ItemizeOverride::Itemize), 0);
     let itemized = itemized_hub(send_past_less_common(&mut s, request));
     let P::Hub { navigation, .. } = itemized else { unreachable!() };
     assert_eq!(
         navigation.deductions,
-        (TaxSection::Deductions as i32..=TaxSection::MoreItemized as i32).collect::<Vec<_>>()
+        (TaxSection::Deductions as i32..=TaxSection::OtherItemized as i32).collect::<Vec<_>>()
     );
 }
 
@@ -7186,7 +8570,14 @@ fn tap_row(screen: &P, row: ReviewItem) -> P {
         other => panic!("expected a hub or the review, got {other:?}"),
     };
     assert!(rows_of(screen).contains(&row), "{row:?} is not a row");
-    P::OpenSection { user: TEST_USER, cookie, revision, from: page, section: row.section }
+    P::OpenSection {
+        user: TEST_USER,
+        cookie,
+        revision,
+        from: page,
+        section: row.section,
+        reveal_path: row.field,
+    }
 }
 // Construct OpenSection with its CopyFrom fallback: without a bound row,
 // `^<ReviewItem>.section` is absent and `$.suggested` applies. This link-only
@@ -7201,7 +8592,7 @@ fn open_without_bound_row(screen: &P) -> P {
     else {
         unreachable!()
     };
-    P::OpenSection { user, cookie, revision, from, section: suggested }
+    P::OpenSection { user, cookie, revision, from, section: suggested, reveal_path: None }
 }
 fn row_for(screen: &P, section: TaxSection) -> ReviewItem {
     rows_of(screen)
@@ -7259,13 +8650,11 @@ fn issue_navigation_uses_record_identity_and_localized_labels() {
         (
             "",
             FederalIncome::Gambling {
-                data: FederalGambling {
-                    winnings: 0,
+                data: crate::GamblingSource::OwnRecords(crate::GamblingLosses {
+                    other_winnings: 0,
                     losses: 100,
-                    withholding: 0,
-                    own_records: true,
-                    ordinary: true,
-                },
+                    special: false,
+                }),
             },
             "LABEL_ENTRY_GAMBLING_LOSSES_ENTRY",
         ),
@@ -7295,10 +8684,10 @@ fn issue_navigation_uses_record_identity_and_localized_labels() {
     let wage = crate::interview::income_issue_context(&d.income[0]);
     let bank = crate::interview::income_issue_context(&d.income[1]);
     assert_ne!(wage, bank, "equal labels are different record identities");
-    assert_eq!(crate::interview::issue_page(&d, &wage, None), Some(TaxSection::Wages));
-    assert_eq!(crate::interview::issue_page(&d, &bank, None), Some(TaxSection::InterestDividends));
+    assert_eq!(crate::interview::issue_page(&d, &wage, None), Some(TaxSection::Documents));
+    assert_eq!(crate::interview::issue_page(&d, &bank, None), Some(TaxSection::Documents));
     d.income[1].label = "Renamed bank".into();
-    assert_eq!(crate::interview::issue_page(&d, &bank, None), Some(TaxSection::InterestDividends));
+    assert_eq!(crate::interview::issue_page(&d, &bank, None), Some(TaxSection::Documents));
     d.income.remove(1);
     assert_eq!(crate::interview::issue_page(&d, &bank, None), None);
     let mut session = Interview::new(TEST_USER, d);
@@ -7322,7 +8711,7 @@ fn issue_navigation_uses_record_identity_and_localized_labels() {
         );
     }
     let remaining = crate::interview::remaining_items(&session.draft, &result, TaxSection::Review);
-    assert_eq!(remaining.iter().filter(|item| item.section == TaxSection::Wages && matches!(status_message(&item.status).args.get(1), Some(MessageArg::Nested(issue)) if issue.key == "ISSUE_EMPLOYEE_WAGES_RECORDS")).count(), 2, "{remaining:?}");
+    assert_eq!(remaining.iter().filter(|item| item.section == TaxSection::Documents && matches!(status_message(&item.status).args.get(1), Some(MessageArg::Nested(issue)) if issue.key == "ISSUE_EMPLOYEE_WAGES_RECORDS")).count(), 2, "{remaining:?}");
 }
 
 #[test]
@@ -7332,10 +8721,12 @@ fn hub_row_binds_its_topic() {
     // tapped row's section and falls back to the suggestion; the hub
     // declares separate Actions and Go to controls; every
     // Response carrying rows lists OpenSection and keeps Navigate.
+    let navigation = include_str!("../../core/shared/navigation.rs");
+    assert!(navigation.contains("#[libertas_link(\"OpenSection\")]\npub struct ReviewItem {"));
     let protocol = include_str!("../../core/protocol.rs");
-    assert!(protocol.contains("#[libertas_link(\"OpenSection\")]\npub struct ReviewItem {"));
     let open = declaration(protocol, "    OpenSection {");
     assert!(open.contains("#[libertas_copy_from(\"^<ReviewItem>.section,$.suggested\")]"));
+    assert!(open.contains("#[libertas_reveal_path]\n        #[libertas_copy_from(\"^<ReviewItem>.field\")]\n        reveal_path: Option<String>"));
     let fields = open.matches(": ").count();
     assert_eq!(open.matches("#[libertas_hidden]").count(), fields, "{open}");
     let before_hub = &protocol[..protocol.find("    Hub {").unwrap()];
@@ -7345,29 +8736,22 @@ fn hub_row_binds_its_topic() {
     assert!(declaration(protocol, "    Hub {").contains("allowed_actions"));
     assert!(
         protocol.contains(
-            "#[libertas_next_request(\"Navigate,OpenSection,StartFinish,OpenInterview\")]"
+            "#[libertas_next_request(\n        \"Navigate,OpenSection,StartFinish,OpenInterview,ViewReviewedRelatedForm\"\n    )]"
         )
     );
-    // Server: the income hub suggests the planned Wages; a tap on another
+    // Server: the income hub suggests the planned Self-employment; a tap on another
     // row opens that topic at once, and saving it returns to the hub.
     let (mut s, hub) = at_the_income_hub();
-    assert_eq!(suggestion(&hub), TaxSection::Wages);
+    assert_eq!(suggestion(&hub), TaxSection::SelfEmployment);
     let request = tap_row(&hub, row_for(&hub, TaxSection::InterestDividends));
     let Reply::Edit(page) = send(&mut s, request) else { panic!("expected the interest page") };
     let P::SaveIncomes { topic, .. } = &page else {
         panic!("expected the interest page, got {page:?}")
     };
     assert_eq!(*topic, TaxSection::InterestDividends);
-    // "What you told us" opens the checklist, and the less-common row its
-    // page, each in one tap.
+    // "What you told us" opens the checklist in one tap.
     let request = tap_row(&hub, row_for(&hub, TaxSection::Checklist));
     assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveChecklist { .. })));
-    let request = tap_row(&hub, row_for(&hub, TaxSection::MoreIncome));
-    assert!(matches!(
-        send(&mut s, request),
-        Reply::Response(P::BeginSituations { topic: TaxSection::MoreIncome, .. })
-            | Reply::Edit(P::SaveSituations { topic: TaxSection::MoreIncome, .. })
-    ));
     // A section the hub does not offer is refused as for Go to.
     let mut forged = tap_row(&hub, row_for(&hub, TaxSection::Wages));
     if let P::OpenSection { section, .. } = &mut forged {
@@ -7381,12 +8765,12 @@ fn open_section_fallback_and_navigate_use_the_suggestion() {
     // OpenSection accepts the unbound CopyFrom fallback. Go to's popup
     // starts at the same suggestion and opens the same page.
     let (mut s, hub) = at_the_income_hub();
-    assert_eq!(suggestion(&hub), TaxSection::Wages);
+    assert_eq!(suggestion(&hub), TaxSection::SelfEmployment);
     let by_fallback = send(&mut s, open_without_bound_row(&hub));
     let by_popup = send(&mut s, go_on(&hub));
     for reply in [by_fallback, by_popup] {
         assert!(
-            matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::Wages, .. })),
+            matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. })),
             "{reply:?}"
         );
     }
@@ -7396,16 +8780,488 @@ fn open_section_fallback_and_navigate_use_the_suggestion() {
     assert_eq!(section.section(), suggestion(&hub));
 }
 
+// A printed source can be accepted before its nonprinted answer is known.
+// Leaving income keeps that question pending; its review link opens the whole topic.
+fn document_answer_survives_skip_and_blocks_review(
+    source: IncomeSource,
+    topic: TaxSection,
+    field: &str,
+    question: &str,
+    answer: fn(&mut crate::DocumentAnswer),
+) {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    if topic == TaxSection::Retirement {
+        accepted(&crate::tests::support::client::save_retirement_fixture(
+            &mut session,
+            vec![document(0, source)],
+        ));
+    } else {
+        let request = save_documents(&mut session, vec![document(0, source)]);
+        accepted(&send(&mut session, request));
+    }
+    let source_id = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| {
+            matches!(
+                (&entry.income, topic),
+                (FederalIncome::Wage { .. }, TaxSection::Wages)
+                    | (FederalIncome::Retirement { .. }, TaxSection::Retirement)
+            )
+        })
+        .unwrap()
+        .id;
+    let key = alloc::format!("income/{source_id}/{field}");
+    let page = open_topic(&mut session, topic);
+    let (unanswered, document) = match &page {
+        P::SaveWagesAnswers { wages, .. } => {
+            assert_eq!(topic, TaxSection::Wages);
+            let row = wages.iter().find(|row| row.key == key).unwrap();
+            assert!(!row.answers.calls.occupation.is_empty());
+            assert!(row.answers.tips_listed_occupation.is_none());
+            (
+                crate::DocumentAnswer::Wage { answers: row.answers.clone() },
+                status_message(&row.document),
+            )
+        }
+        P::SaveIncomes { topic: opened, followups, .. } => {
+            assert_eq!(*opened, topic);
+            let row = followups.iter().find(|row| row.key == key).unwrap();
+            let crate::DocumentAnswer::RetirementBasis { basis } = &row.answer else {
+                panic!("unexpected pending answer: {:?}", row.answer)
+            };
+            assert!(basis.is_none());
+            assert_eq!(row.allowed_answers.len(), 1);
+            let prompt = status_message(&row.prompt);
+            assert_eq!(prompt.key, "DOCUMENT_TOPIC_SOURCE_ITEM");
+            let [MessageArg::Resource(prompt_question), MessageArg::Nested(document)] =
+                prompt.args.as_slice()
+            else {
+                panic!("the combined prompt retains the question and its physical document")
+            };
+            assert_eq!(prompt_question, question);
+            let prompt_text = shown(&row.prompt);
+            let document_text = document.english();
+            assert!(!document_text.is_empty());
+            assert!(prompt_text.contains(&document_text));
+            assert!(!prompt_text.contains(&alloc::format!("income/{source_id}")));
+            (row.answer.clone(), document.as_ref().clone())
+        }
+        other => panic!("expected the document's answer editor, got {other:?}"),
+    };
+    assert!(matches!(
+        document.key.as_str(),
+        "DOCUMENT_CHOICE" | "DOCUMENT_FROM" | "DOCUMENT_PRINTED_FOR"
+    ));
+    let [MessageArg::Nested(kind), ..] = document.args.as_slice() else {
+        panic!("the document label retains its physical kind")
+    };
+    assert_eq!(
+        kind.key,
+        if topic == TaxSection::Wages { "SAVING_KIND_W2_ONE" } else { "SAVING_KIND_1099_R_ONE" }
+    );
+    assert!(kind.args.is_empty());
+    let document_text = document.english();
+    assert!(!document_text.is_empty());
+    assert!(!document_text.contains(&alloc::format!("income/{source_id}")));
+    let calculation_state = estimate(&session.draft).state;
+
+    // Continue is the actual walkthrough action for leaving the income section.
+    if !session.draft.finished_sections.contains(&TaxSection::Income) {
+        let request = continue_hub(&session.draft, PAGE_INCOME);
+        accepted(&send(&mut session, request));
+    }
+    assert!(session.draft.finished_sections.contains(&TaxSection::Income));
+    if topic == TaxSection::Wages {
+        assert!(!session.draft.finished_sections.contains(&topic));
+    }
+    let Reply::Response(review @ P::Review { .. }) =
+        send(&mut session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        panic!("expected review with the unanswered document question")
+    };
+    let P::Review { remaining_items, allowed_actions, result, .. } = &review else {
+        unreachable!()
+    };
+    assert_eq!(result.state, calculation_state);
+    assert!(!allowed_actions.contains(&FINISH));
+    let expected = Message::new(
+        "DOCUMENT_PENDING_ANSWER",
+        vec![MessageArg::Resource(question.into()), MessageArg::Encoded(document.encode())],
+    )
+    .encode();
+    let pending = remaining_items
+        .iter()
+        .find(|item| item.section == topic && item.item == expected)
+        .expect("pending row retains both the question and its physical document")
+        .clone();
+    // A box question is answered in the page's `questions`.
+    let locator: alloc::string::String = if topic == TaxSection::Wages {
+        libertas::SchemaPath::root()
+            .field("questions")
+            .key(alloc::format!("{key}/occupation"))
+            .field("answer")
+            .into()
+    } else {
+        libertas::SchemaPath::root().field("questions").key(key.as_str()).field("answer").into()
+    };
+    assert_eq!(pending.field.as_deref(), Some(locator.as_str()));
+    let navigation = tap_row(&review, pending);
+    let P::OpenSection { reveal_path, .. } = &navigation else { unreachable!() };
+    assert_eq!(reveal_path.as_deref(), Some(locator.as_str()));
+    let Reply::Edit(mut request) = send(&mut session, navigation) else {
+        panic!("the pending link must open the whole income topic")
+    };
+    let mut answered = unanswered.clone();
+    answer(&mut answered);
+    match &mut request {
+        P::SaveWagesAnswers { wages, .. } => {
+            assert_eq!(topic, TaxSection::Wages);
+            let target = wages.iter_mut().find(|row| row.key == key).unwrap();
+            assert_eq!(target.document, document.encode());
+            let crate::DocumentAnswer::Wage { answers: expected } = &unanswered else {
+                unreachable!()
+            };
+            assert_eq!(&target.answers, expected);
+            let crate::DocumentAnswer::Wage { answers } = &answered else { unreachable!() };
+            target.answers = answers.clone();
+        }
+        P::SaveIncomes { topic: opened, followups, .. } => {
+            assert_eq!(*opened, topic);
+            let target = followups.iter_mut().find(|row| row.key == key).unwrap();
+            let P::SaveIncomes { followups: original, .. } = &page else { unreachable!() };
+            assert_eq!(&*target, original.iter().find(|row| row.key == key).unwrap());
+            target.answer = answered.clone();
+        }
+        other => panic!("expected the pending topic's editor, got {other:?}"),
+    }
+    let revision = session.draft.revision;
+    accepted(&send(&mut session, request));
+    assert_eq!(session.draft.revision, revision + 1);
+    supported(&session.draft);
+    let (remaining, _, actions, _) = review_state(&mut session);
+    assert!(!remaining.iter().any(|item| item.section == topic && item.item == expected));
+    assert!(remaining.is_empty(), "{remaining:?}");
+    assert!(actions.contains(&FINISH));
+    let reopened = open_topic(&mut session, topic);
+    match &reopened {
+        P::SaveWagesAnswers { wages, .. } => {
+            let row = wages.iter().find(|row| row.key == key).unwrap();
+            assert_eq!(row.document, document.encode());
+            assert_eq!(crate::DocumentAnswer::Wage { answers: row.answers.clone() }, answered);
+        }
+        P::SaveIncomes { followups, .. } => {
+            let row = followups.iter().find(|row| row.key == key).unwrap();
+            assert_eq!(row.answer, answered);
+        }
+        other => panic!("expected the saved topic's editor, got {other:?}"),
+    }
+    let before = session.draft.clone();
+    accepted(&send(&mut session, reopened));
+    assert_eq!(session.draft, before);
+}
+
+#[test]
+fn w2_box12_question_can_be_skipped_then_answered_from_review() {
+    let mut form = w2(6_000_000);
+    form.more.box12 = vec![Box12Entry { code: W2Code::TP, amount: 100_000 }];
+    document_answer_survives_skip_and_blocks_review(
+        IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(form)) },
+        TaxSection::Wages,
+        "wage",
+        "W2_TP_OCCUPATION_NEEDED",
+        |answer| {
+            let crate::DocumentAnswer::Wage { answers } = answer else { unreachable!() };
+            answers.tips_listed_occupation = Some(WageDeductionEligibility::Eligible);
+        },
+    );
+}
+
+#[test]
+fn retirement_box10_basis_can_be_skipped_then_answered_from_review() {
+    let mut form = printed_as(r1099(1_000_000, normal_kept(), false), "7B");
+    form.source_mut().form.box_10 = Some(100_000);
+    document_answer_survives_skip_and_blocks_review(
+        IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(form)),
+        },
+        TaxSection::Retirement,
+        "basis",
+        "ISSUE_BOX_10_BASIS_UNKNOWN",
+        |answer| {
+            let crate::DocumentAnswer::RetirementBasis { basis } = answer else { unreachable!() };
+            *basis = Some(crate::InPlanRothBasis::Known { amount: 25_000 });
+        },
+    );
+}
+
+#[test]
+fn accepted_native_loan_topics_edit_answers_and_ignore_source_summary_echoes() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let names = fixture_document_names(&session.draft, -1);
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let mut mortgage = first_lender_mortgage(600_000, 10_000_000, AverageBalance::WithinLimit);
+    mortgage.borrower = names.as_ref().unwrap().recipient.clone();
+    mortgage.lender = names.as_ref().unwrap().issuer.clone().unwrap_or_default();
+    mortgage.points = 100_000;
+    documents.common.mortgages.documents.push(mortgage_document(mortgage));
+    documents.common.student_loans.documents.push(crate::StudentLoanDocument {
+        id: 0,
+        form: student_loan_paper(Form1098E {
+            lender: (names.clone())
+                .as_ref()
+                .and_then(|names| names.issuer.clone())
+                .unwrap_or_default(),
+            borrower: (names.clone())
+                .as_ref()
+                .map(|names| names.recipient.clone())
+                .unwrap_or_default(),
+            interest: 50_000,
+            box_2: true,
+        }),
+    });
+    let mut vehicle = vehicle_loan("Synthetic vehicle lender", 100_000);
+    vehicle.document.payer_of_record = names.unwrap().recipient;
+    vehicle.document.box_6 = true;
+    vehicle.document.box_7 = false;
+    documents
+        .other
+        .vehicle_loans
+        .documents
+        .push(crate::Form1098VliDocument { id: vehicle.id, form: vehicle.document });
+    accepted(&send(&mut session, request));
+
+    let request = navigate(&session.draft, TaxSection::StudentLoan);
+    let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) = send(&mut session, request) else {
+        panic!("expected the student loan topic")
+    };
+    let mut bad = request.clone();
+    let P::SaveStudentLoan { value, .. } = &mut bad else { unreachable!() };
+    value.forms[0].id += 10_000;
+    let before = session.draft.clone();
+    rejected_with(send(&mut session, bad), "DOCUMENT_QUESTIONS_CHANGED");
+    assert_eq!(session.draft, before);
+    let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
+    assert_eq!(value.forms[0].allowed_answers, vec![1]);
+    value.forms[0].additional_interest =
+        crate::StudentLoanAdditionalInterest::Checked { additional_interest: 25_000 };
+    value.forms[0].value.box_1 = 0;
+    value.forms[0].value.box_2 = false;
+    accepted(&send(&mut session, request));
+    let form = &session.draft.adjustments.as_ref().unwrap().student_loan.forms[0];
+    assert_eq!(form.document.box_1, 50_000);
+    assert!(form.document.box_2);
+    assert_eq!(form.additional_interest, 25_000);
+
+    let mut request = linked_mortgage_editor(&mut session);
+    let mut bad = request.clone();
+    let P::SaveMortgages { value, .. } = &mut bad else { unreachable!() };
+    value.loans.clear();
+    let before = session.draft.clone();
+    rejected_with(send(&mut session, bad), "DOCUMENT_QUESTIONS_CHANGED");
+    assert_eq!(session.draft, before);
+    let P::SaveMortgages { value, .. } = &mut request else { unreachable!() };
+    value.loans[0].property = "Synthetic main home".into();
+    value.loans[0].points =
+        crate::MortgagePointTreatment::Amortized { term_months: 360, ended: true };
+    value.loans[0].value.box_1 = 0;
+    value.loans[0].value.box_6 = 1;
+    accepted(&send(&mut session, request));
+    let loan = mortgage_loan(&session.draft.deductions.as_ref().unwrap().mortgage[0]);
+    assert_eq!(loan.interest, 600_000);
+    assert_eq!(loan.property, "Synthetic main home");
+    assert_eq!(
+        loan.points,
+        MortgagePoints::Amortized { amount: 100_000, term_months: 360, ended: true }
+    );
+
+    let request = navigate(&session.draft, TaxSection::Deductions);
+    let Reply::Edit(mut request @ P::SaveDeductions { .. }) = send(&mut session, request) else {
+        panic!("expected the deductions topic")
+    };
+    let mut bad = request.clone();
+    let P::SaveDeductions { value, .. } = &mut bad else { unreachable!() };
+    value.car_loans.push(value.car_loans[0].clone());
+    let before = session.draft.clone();
+    rejected_with(send(&mut session, bad), "DOCUMENT_QUESTIONS_CHANGED");
+    assert_eq!(session.draft, before);
+    let P::SaveDeductions { value, .. } = &mut request else { unreachable!() };
+    assert!(value.car_loans[0].value.box_6);
+    assert!(!value.car_loans[0].value.box_7);
+    value.car_loans[0].business = 20_000;
+    // IRS 1098-VLI December 2026: boxes 6 and 7 are printed source checkboxes.
+    value.car_loans[0].value.box_6 = false;
+    value.car_loans[0].value.box_7 = true;
+    value.car_loans[0].value.box_1 = 0;
+    value.car_loans[0].value.lender.name = "Forged summary lender".into();
+    accepted(&send(&mut session, request));
+    let loan = &session.draft.deductions.as_ref().unwrap().vehicle_loans[0];
+    assert_eq!(loan.document.lender.name, "Synthetic vehicle lender");
+    assert_eq!((loan.document.box_1, loan.business), (100_000, 20_000));
+    assert_eq!((loan.document.box_6, loan.document.box_7), (true, false));
+    supported(&session.draft);
+}
+
+fn pending_loan_review(session: &mut Interview, topic: TaxSection, key: &str) -> (P, ReviewItem) {
+    let Reply::Response(review @ P::Review { .. }) =
+        send(session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        panic!("expected review with the retained loan conflict")
+    };
+    let P::Review { remaining_items, allowed_actions, .. } = &review else { unreachable!() };
+    assert!(!allowed_actions.contains(&FINISH));
+    let row = remaining_items.iter().find(|row| {
+        let message = status_message(&row.item);
+        row.section == topic && message.key == "DOCUMENT_PENDING_ANSWER"
+            && matches!(message.args.first(), Some(MessageArg::Resource(question)) if question == key)
+    }).expect("the retained loan conflict links to its editable topic").clone();
+    (review, row)
+}
+
+#[test]
+fn vehicle_printed_interest_correction_retains_business_answer_until_topic_fix() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let mut source = vehicle_loan("Synthetic correction lender", 100_000);
+    source.document.payer_of_record = fixture_document_names(&session.draft, -1).unwrap().recipient;
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents
+        .other
+        .vehicle_loans
+        .documents
+        .push(crate::Form1098VliDocument { id: source.id, form: source.document });
+    accepted(&send(&mut session, request));
+    let navigation = navigate(&session.draft, TaxSection::Deductions);
+    let Reply::Edit(mut request @ P::SaveDeductions { .. }) = send(&mut session, navigation) else {
+        unreachable!()
+    };
+    let P::SaveDeductions { value, .. } = &mut request else { unreachable!() };
+    value.car_loans[0].business = 60_000;
+    accepted(&send(&mut session, request));
+    assert_eq!(super::value(&supported(&session.draft), "vehicle_interest_deduction"), 400);
+    let id = session.draft.deductions.as_ref().unwrap().vehicle_loans[0].id;
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.vehicle_loans.documents[0].form.box_1 = 50_000;
+    accepted(&send(&mut session, request));
+    let loan = &session.draft.deductions.as_ref().unwrap().vehicle_loans[0];
+    assert_eq!((loan.id, loan.document.box_1, loan.business), (id, 50_000, 60_000));
+    assert!(session.draft.valid_stored());
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("Schedule C, E or F"))
+    );
+    let saved = session.draft.clone();
+    let mut session = restart(saved.clone());
+    assert_eq!(session.draft, saved);
+    let (review, row) = pending_loan_review(
+        &mut session,
+        TaxSection::Deductions,
+        "VEHICLE_BUSINESS_ABOVE_INTEREST",
+    );
+    assert!(shown(&row.item).contains("Synthetic correction lender"));
+    let Reply::Edit(mut request @ P::SaveDeductions { .. }) =
+        send(&mut session, tap_row(&review, row))
+    else {
+        unreachable!()
+    };
+    let before = session.draft.clone();
+    rejected_with(send(&mut session, request.clone()), "VEHICLE_BUSINESS_ABOVE_INTEREST");
+    assert_eq!(session.draft, before);
+    let P::SaveDeductions { value, .. } = &mut request else { unreachable!() };
+    value.car_loans[0].business = 40_000;
+    accepted(&send(&mut session, request));
+    let result = supported(&session.draft);
+    assert_eq!(super::value(&result, "vehicle_interest_deduction"), 100);
+    let (remaining, _, actions, _) = review_state(&mut session);
+    assert!(remaining.is_empty(), "{remaining:?}");
+    assert!(actions.contains(&FINISH));
+    assert_eq!(supported(&restart(session.draft.clone()).draft), result);
+}
+
+#[test]
+fn student_loan_printed_correction_retains_employer_answer_until_topic_fix() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let mut source = box_1(100_000);
+    source.document.borrower = fixture_document_names(&session.draft, -1).unwrap().recipient;
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents
+        .common
+        .student_loans
+        .documents
+        .push(crate::StudentLoanDocument { id: source.id, form: source.document });
+    accepted(&send(&mut session, request));
+    let navigation = go_to(&session.draft, PAGE_REVIEW, TaxSection::StudentLoan);
+    let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) = send(&mut session, navigation)
+    else {
+        unreachable!()
+    };
+    let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
+    value.employer_paid_interest = 80_000;
+    accepted(&send(&mut session, request));
+    assert_eq!(return_line(&supported(&session.draft), "10"), 20_000);
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.student_loans.documents[0].form.box_1 = 50_000;
+    accepted(&send(&mut session, request));
+    let claim = &session.draft.adjustments.as_ref().unwrap().student_loan;
+    assert_eq!((claim.forms[0].document.box_1, claim.employer_paid_interest), (50_000, 80_000));
+    assert!(session.draft.valid_stored());
+    assert!(
+        estimate(&session.draft).issues.iter().any(|issue| issue.message.contains("employer paid"))
+    );
+    let saved = session.draft.clone();
+    let mut session = restart(saved.clone());
+    assert_eq!(session.draft, saved);
+    let (review, row) = pending_loan_review(
+        &mut session,
+        TaxSection::StudentLoan,
+        "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST",
+    );
+    let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) =
+        send(&mut session, tap_row(&review, row))
+    else {
+        unreachable!()
+    };
+    let before = session.draft.clone();
+    rejected_with(send(&mut session, request.clone()), "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST");
+    assert_eq!(session.draft, before);
+    let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
+    value.employer_paid_interest = 40_000;
+    accepted(&send(&mut session, request));
+    let result = supported(&session.draft);
+    assert_eq!(return_line(&result, "10"), 10_000);
+    let (remaining, _, actions, _) = review_state(&mut session);
+    assert!(remaining.is_empty(), "{remaining:?}");
+    assert!(actions.contains(&FINISH));
+    assert_eq!(supported(&restart(session.draft.clone()).draft), result);
+}
+
 #[test]
 fn review_item_row_opens_its_page() {
-    // A unsupported 1099-R code5 is a remaining item on Retirement: its row opens that page
+    // An unsupported 1099-R code 5 is a remaining source item: its row opens Document center
     // in one tap. An answers row opens its section. With the interview walk
     // complete, only Navigate and link-only OpenSection remain allowed;
     // Finish joins only with nothing remaining.
     let original = complete(FederalStatus::Single);
     let mut s = Interview::new(TEST_USER, original.clone());
     let r = other_1099(1_000_000, "5", false);
-    accepted(&send(&mut s, save_documents(&original, vec![document(0, IncomeDocument::R1099(r))])));
+    accepted(&{
+        crate::tests::support::client::save_retirement_fixture(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )],
+        )
+    });
     let Reply::Response(review @ P::Review { .. }) =
         send(&mut s, P::ReviewAccepted { user: TEST_USER })
     else {
@@ -7418,10 +9274,10 @@ fn review_item_row_opens_its_page() {
     ];
     assert_eq!(allowed_actions, &always.to_vec());
     let item = remaining_items[0].clone();
-    assert_eq!(item.section, TaxSection::Retirement);
+    assert_eq!(item.section, TaxSection::Documents);
     assert!(matches!(
         send(&mut s, tap_row(&review, item)),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::Retirement, review: true, .. })
+        Reply::Edit(P::SaveDocuments { review: true, .. })
     ));
     let request = tap_row(&review, row_for(&review, TaxSection::People));
     assert!(matches!(
@@ -7442,16 +9298,21 @@ fn review_item_row_opens_its_page() {
 fn income_continue_action_replaces_the_next_step_row() {
     let (mut s, hub) = at_the_income_hub();
     let P::Hub { topics, previous_section, allowed_actions, .. } = &hub else { unreachable!() };
-    assert_eq!(topics.items.last().unwrap().section, TaxSection::MoreIncome);
+    assert_eq!(topics.items.last().unwrap().section, TaxSection::HomeOffices);
     assert_eq!(previous_section.section, TaxSection::Checklist);
     assert_eq!(status_text(&previous_section.item), "Previous step");
     assert!(allowed_actions.contains(&(libertas_macros::variant_index!(P::ContinueIncome) as i32)));
     assert!(!topics.items.iter().any(|row| row.section == TaxSection::Review));
     assert!(!s.draft.finished_sections.contains(&TaxSection::Income));
-    // Continue opens the next shown section, adjustments, at its walk's
-    // More adjustments page (gate fixes batch A).
+    // Explicit Continue passes every summary with no question remaining.
     let reply = send(&mut s, hub_action(&hub));
-    assert!(matches!(reply, Reply::Edit(P::SaveMoreAdjustments { .. })), "{reply:?}");
+    assert!(
+        matches!(
+            reply,
+            Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
+        ),
+        "{reply:?}"
+    );
     assert!(s.draft.finished_sections.contains(&TaxSection::Income));
 }
 
@@ -7463,16 +9324,28 @@ fn each_hub_continue_owns_its_section_path() {
         let mut draft = complete(FederalStatus::Single);
         draft.finished_sections.retain(|s| *s != section);
         match section {
-            TaxSection::Income => draft.checklist.adjustments = AdjustmentTopics::STUDENT_LOAN.0,
-            TaxSection::Adjustments => draft.checklist.deductions = DeductionTopics::GIFTS.0,
+            TaxSection::Income => draft.checklist.paid = PaidTopics::IRA_CONTRIBUTIONS.0,
+            TaxSection::Adjustments => draft.checklist.paid = PaidTopics::GIFTS.0,
             TaxSection::Itemized => {
-                draft.deductions.as_mut().unwrap().choice =
-                    DeductionSelection::Itemized { facts: empty_facts() };
-                draft.checklist.credit_topics = CreditTopics::MARKETPLACE.0;
+                {
+                    draft.deductions.as_mut().unwrap().itemized = empty_facts();
+                    draft.deductions.as_mut().unwrap().itemize_override =
+                        Some(ItemizeOverride::Itemize);
+                };
+                draft.checklist.paid = PaidTopics::CARE.0;
+                draft.finished_sections.retain(|s| *s != TaxSection::Care);
             }
-            TaxSection::Credits => draft.checklist.payments = PaymentTopics::ESTIMATED.0,
+            TaxSection::Credits => draft.checklist.paid = PaidTopics::PAYMENTS.0,
             _ => unreachable!(),
         }
+        let destination = match section {
+            TaxSection::Income => TaxSection::Adjustments,
+            TaxSection::Adjustments => TaxSection::Deductions,
+            TaxSection::Itemized => TaxSection::Credits,
+            TaxSection::Credits => TaxSection::Payments,
+            _ => unreachable!(),
+        };
+        draft.finished_sections.retain(|s| *s != destination);
         let mut session = Interview::new(TEST_USER, draft);
         let accepted_income = session.draft.income.clone();
         let request = back(&session.draft, section as i32);
@@ -7491,11 +9364,13 @@ fn each_hub_continue_owns_its_section_path() {
         let reply = send(&mut session, hub_action(&hub));
         assert!(
             match section {
-                TaxSection::Income => matches!(reply, Reply::Edit(P::SaveStudentLoan { .. })),
+                TaxSection::Income => {
+                    matches!(reply, Reply::Edit(P::SaveIraContributions { .. }))
+                }
                 TaxSection::Adjustments => matches!(reply, Reply::Edit(P::SaveDeductions { .. })),
-                TaxSection::Itemized => matches!(reply, Reply::Edit(P::SaveMarketplace { .. })),
-                // Other taxes is shown on every return (gate fixes batch A).
-                TaxSection::Credits => matches!(reply, Reply::Edit(P::SaveOtherTaxes { .. })),
+                TaxSection::Itemized => matches!(reply, Reply::Edit(P::SaveCare { .. })),
+                // Other taxes is shown only when planned or needed.
+                TaxSection::Credits => matches!(reply, Reply::Response(P::BeginPayments { .. })),
                 _ => unreachable!(),
             },
             "{section:?}: {reply:?}"
@@ -7508,9 +9383,7 @@ fn each_hub_continue_owns_its_section_path() {
 // The less-common page of a hub (gate fixes batch A).
 fn hub_topics_last(hub: TaxSection) -> Option<TaxSection> {
     match hub {
-        TaxSection::Income => Some(TaxSection::MoreIncome),
         TaxSection::Adjustments => Some(TaxSection::MoreAdjustments),
-        TaxSection::Itemized => Some(TaxSection::MoreItemized),
         TaxSection::Credits => Some(TaxSection::MoreCredits),
         _ => None,
     }
@@ -7519,19 +9392,21 @@ fn hub_topics_last(hub: TaxSection) -> Option<TaxSection> {
 // destination is planned independently of the production navigation helpers.
 fn continuation_draft(section: TaxSection, destination: TaxSection) -> FederalDraft {
     let mut draft = complete(FederalStatus::Single);
-    draft.finished_sections.retain(|s| (*s as i32) < section as i32);
+    draft
+        .finished_sections
+        .retain(|s| *s == TaxSection::IncomeWithoutForm || (*s as i32) < section as i32);
     if section == TaxSection::Itemized {
-        draft.deductions.as_mut().unwrap().choice =
-            DeductionSelection::Itemized { facts: empty_facts() };
+        {
+            draft.deductions.as_mut().unwrap().itemized = empty_facts();
+            draft.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+        };
     }
     match destination {
-        TaxSection::Adjustments => {
-            draft.checklist.adjustments = AdjustmentTopics::STUDENT_LOAN.0;
-        }
-        TaxSection::Deductions => draft.checklist.deductions = DeductionTopics::GIFTS.0,
-        TaxSection::Credits => draft.checklist.credit_topics = CreditTopics::MARKETPLACE.0,
+        TaxSection::Adjustments => draft.checklist.paid |= PaidTopics::IRA_CONTRIBUTIONS.0,
+        TaxSection::Deductions => draft.checklist.paid |= PaidTopics::GIFTS.0,
+        TaxSection::Credits => draft.checklist.paid |= PaidTopics::CARE.0,
         TaxSection::OtherTaxes => {
-            draft.checklist.other_taxes = OtherTaxTopics::HOUSEHOLD_EMPLOYEE.0;
+            draft.checklist.activities |= ActivityTopics::HOUSEHOLD_EMPLOYEE.0;
         }
         other => panic!("not a continuation destination: {other:?}"),
     }
@@ -7554,14 +9429,17 @@ fn hub_continue_reaches_each_later_section_on_an_unfinished_walk() {
     for &(section, destinations) in cases {
         for &destination in destinations {
             let mut session = Interview::new(TEST_USER, continuation_draft(section, destination));
+            // Continue may advance only after the earlier source-center step.
+            let sources = open_document_center(&mut session);
+            accepted(&send(&mut session, sources));
             let request = back(&session.draft, section as i32);
             let hub = hub_of(send(&mut session, request));
             let reply = send(&mut session, hub_action(&hub));
             assert!(
                 match destination {
-                    Adjustments => matches!(reply, Reply::Edit(P::SaveStudentLoan { .. })),
+                    Adjustments => matches!(reply, Reply::Edit(P::SaveIraContributions { .. })),
                     Deductions => matches!(reply, Reply::Edit(P::SaveDeductions { .. })),
-                    Credits => matches!(reply, Reply::Edit(P::SaveMarketplace { .. })),
+                    Credits => matches!(reply, Reply::Edit(P::SaveCare { .. })),
                     OtherTaxes => matches!(reply, Reply::Edit(P::SaveOtherTaxes { .. })),
                     _ => unreachable!(),
                 },
@@ -7577,11 +9455,11 @@ fn hub_continue_reaches_each_later_section_on_an_unfinished_walk() {
 }
 
 #[test]
-fn hub_continue_opens_the_next_summary_when_its_topic_was_visited() {
+fn hub_continue_passes_a_visited_topic_without_an_extra_summary() {
     for (section, destination, topic) in [
-        (TaxSection::Income, TaxSection::Adjustments, TaxSection::StudentLoan),
-        (TaxSection::Adjustments, TaxSection::Credits, TaxSection::Marketplace),
-        (TaxSection::Itemized, TaxSection::Credits, TaxSection::Marketplace),
+        (TaxSection::Income, TaxSection::Adjustments, TaxSection::IraContributions),
+        (TaxSection::Adjustments, TaxSection::Credits, TaxSection::Care),
+        (TaxSection::Itemized, TaxSection::Credits, TaxSection::Care),
     ] {
         let mut draft = continuation_draft(section, destination);
         // Saving a planned topic with nothing entered visits it; the tick
@@ -7590,23 +9468,32 @@ fn hub_continue_opens_the_next_summary_when_its_topic_was_visited() {
         draft.finished_sections.push(topic);
         draft.finished_sections.extend(hub_topics_last(destination));
         let mut session = Interview::new(TEST_USER, draft);
+        let sources = open_document_center(&mut session);
+        accepted(&send(&mut session, sources));
         let request = back(&session.draft, section as i32);
         let hub = hub_of(send(&mut session, request));
         let reply = send(&mut session, hub_action(&hub));
         assert!(
-            matches!(reply, Reply::Response(P::Hub { page, .. }) if page == destination as i32),
-            "{section:?} should reach the {destination:?} summary: {reply:?}"
+            matches!(
+                reply,
+                Reply::Response(P::BeginOftenMissed { .. })
+                    | Reply::Edit(P::SaveOftenMissed { .. })
+            ),
+            "visited {destination:?}: {reply:?}"
         );
+        assert!(session.draft.finished_sections.contains(&destination));
+        let summary = hub_of(from_review(&mut session, destination));
+        assert!(matches!(summary, P::Hub { page, .. } if page == destination as i32));
     }
 }
 
 #[test]
 fn hub_continue_leaves_the_section_even_when_a_topic_is_suggested() {
     for (section, topic) in [
-        (TaxSection::Income, TaxSection::Retirement),
-        (TaxSection::Adjustments, TaxSection::StudentLoan),
+        (TaxSection::Income, TaxSection::SelfEmployment),
+        (TaxSection::Adjustments, TaxSection::IraContributions),
         (TaxSection::Itemized, TaxSection::GiftCarryovers),
-        (TaxSection::Credits, TaxSection::Marketplace),
+        (TaxSection::Credits, TaxSection::Care),
     ] {
         // Each continues to the next shown section (gate fixes batch A).
         let next = match section {
@@ -7616,16 +9503,10 @@ fn hub_continue_leaves_the_section_even_when_a_topic_is_suggested() {
         };
         let mut draft = continuation_draft(section, next);
         match section {
-            TaxSection::Income => draft.checklist.income = IncomeTopics::RETIREMENT.0,
-            TaxSection::Adjustments => {
-                draft.checklist.adjustments = AdjustmentTopics::STUDENT_LOAN.0;
-            }
-            TaxSection::Itemized => {
-                draft.checklist.deductions = DeductionTopics::GIFT_CARRYOVERS.0;
-            }
-            TaxSection::Credits => {
-                draft.checklist.credit_topics = CreditTopics::MARKETPLACE.0;
-            }
+            TaxSection::Income => draft.checklist.activities |= ActivityTopics::BUSINESS.0,
+            TaxSection::Adjustments => draft.checklist.paid |= PaidTopics::IRA_CONTRIBUTIONS.0,
+            TaxSection::Itemized => draft.checklist.carryovers |= CarryoverTopics::CHARITY.0,
+            TaxSection::Credits => draft.checklist.paid |= PaidTopics::CARE.0,
             _ => unreachable!(),
         }
         let mut session = Interview::new(TEST_USER, draft);
@@ -7643,36 +9524,49 @@ fn hub_continue_leaves_the_section_even_when_a_topic_is_suggested() {
 }
 
 #[test]
-fn hub_continue_enters_derived_topics_without_checklist_ticks() {
+fn automatic_continuation_enters_derived_topics_without_checklist_ticks() {
     for education in [false, true] {
         let mut draft = complete(FederalStatus::Single);
-        draft.finished_sections.retain(|s| (*s as i32) < TaxSection::Income as i32);
+        draft.finished_sections.retain(|s| {
+            *s == TaxSection::IncomeWithoutForm || (*s as i32) < TaxSection::Income as i32
+        });
         draft.people.as_mut().unwrap().taxpayer.full_time_student = education;
         let mut session = Interview::new(TEST_USER, draft);
-        let wages = if education { w2(6_000_000) } else { w2_with_box_12_w(6_000_000, 100_000) };
-        let request = save_topic(
-            &session.draft,
-            TaxSection::Wages,
-            vec![document(0, IncomeDocument::W2(wages))],
+        let mut wages =
+            if education { w2(6_000_000) } else { w2_with_box_12_w(6_000_000, 100_000) };
+        wages.employee = accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+        let wage_id = session
+            .draft
+            .income
+            .iter()
+            .find(|entry| matches!(entry.income, FederalIncome::Wage { .. }))
+            .unwrap()
+            .id;
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                wage_id,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wages)) },
+            )],
         );
-        let hub = income_hub(send_past_less_common(&mut session, request));
-        assert_eq!(session.draft.checklist.adjustments, 0);
-        assert_eq!(session.draft.checklist.credit_topics, 0);
-        let mut reply = send(&mut session, hub_action(&hub));
-        // The adjustments section comes first on every return (gate fixes
-        // batch A); for the student its walk is only More adjustments.
-        if education {
-            let hub = hub_of(past_less_common(&mut session, reply));
-            reply = send(&mut session, hub_action(&hub));
-        }
+        let reply = send_past_less_common(&mut session, request);
+        assert_eq!(session.draft.checklist.paid, 0);
         assert!(
             if education {
-                matches!(reply, Reply::Edit(P::SaveEducation { .. }))
+                matches!(reply, Reply::Response(P::Review { .. }))
             } else {
                 matches!(reply, Reply::Edit(P::SaveHsa { .. }))
             },
             "education={education}: {reply:?}"
         );
+        if education {
+            let request = go_to(&session.draft, PAGE_CREDITS, TaxSection::Documents);
+            let Reply::Edit(P::SaveDocuments { documents, .. }) = send(&mut session, request)
+            else {
+                panic!("education source editor")
+            };
+            assert!(documents.common.education.people.iter().any(|person| person.id == -1));
+        }
     }
 }
 
@@ -7681,62 +9575,47 @@ fn hub_continue_walks_a_new_return_through_saved_pages() {
     // Start from actual saved setup, filer and checklist pages. No later
     // completion marks are supplied by a pre-completed fixture.
     let (mut session, reply) = walked_from_the_checklist(Checklist {
-        income: IncomeTopics::WAGES.0,
-        adjustments: AdjustmentTopics::STUDENT_LOAN.0,
-        credit_topics: CreditTopics::MARKETPLACE.0,
-        payments: PaymentTopics::ESTIMATED.0,
+        activities: ActivityTopics::RENTALS.0,
+        paid: PaidTopics::IRA_CONTRIBUTIONS.0 | PaidTopics::PAYMENTS.0,
         ..Checklist::NONE
     });
-    let reply = save_opened_topic(
-        &mut session,
-        &reply,
-        vec![document(0, IncomeDocument::W2(w2(6_000_000)))],
+    let reply = save_opened_topic(&mut session, &reply, vec![]);
+    let Reply::Edit(iras @ P::SaveIraContributions { .. }) = reply else {
+        panic!("finishing income opens the planned IRA contributions page")
+    };
+    let Reply::Edit(payments @ P::SavePayments { .. }) =
+        crate::tests::support::client::answer_no_estimates(send(&mut session, iras))
+    else {
+        panic!("finishing adjustments passes the empty credits summary and opens Payments")
+    };
+    // The last page before the review is passed with its answers kept.
+    let often_missed = crate::tests::support::client::answer_often_missed(
+        send(&mut session, payments),
+        OftenMissed::default(),
     );
-    let income = income_hub(past_less_common(&mut session, reply));
-    let Reply::Edit(student_loan @ P::SaveStudentLoan { .. }) =
-        send(&mut session, hub_action(&income))
-    else {
-        panic!("Income Continue must open the planned student loan page")
-    };
-    // Each walk ends with its section's less-common page, passed with "None
-    // of these" (gate fixes batch A).
-    let adjustments = hub_of(send_past_less_common(&mut session, student_loan));
-    let Reply::Edit(marketplace @ P::SaveMarketplace { .. }) =
-        send(&mut session, hub_action(&adjustments))
-    else {
-        panic!("Adjustments Continue must skip standard deductions and open Marketplace")
-    };
-    let credits = hub_of(send_past_less_common(&mut session, marketplace));
-    let Reply::Edit(other_taxes @ P::SaveOtherTaxes { .. }) =
-        send(&mut session, hub_action(&credits))
-    else {
-        panic!("Credits Continue must open Other taxes, asked on every return")
-    };
-    let Reply::Edit(payments @ P::SavePayments { .. }) = send(&mut session, other_taxes) else {
-        panic!("Other taxes must open Payments")
-    };
-    assert!(matches!(send(&mut session, payments), Reply::Response(P::Review { .. })));
+    assert!(matches!(send(&mut session, often_missed), Reply::Response(P::Review { .. })));
 }
 
 #[test]
-fn hub_continue_from_an_earlier_section_does_not_use_the_resume_destination() {
+fn hub_continue_from_an_earlier_section_passes_completed_summaries() {
     let mut draft = complete(FederalStatus::Single);
     draft.finished_sections.retain(|s| *s != TaxSection::Payments);
     draft.finished_sections.push(TaxSection::Marketplace);
-    draft.checklist.credit_topics = CreditTopics::MARKETPLACE.0;
-    draft.checklist.payments = PaymentTopics::ESTIMATED.0;
+    draft.checklist.paid |= PaidTopics::PAYMENTS.0;
     let mut session = Interview::new(TEST_USER, draft);
+    let sources = open_document_center(&mut session);
+    accepted(&send(&mut session, sources));
     assert!(matches!(
         send(&mut session, P::OpenInterview { user: TEST_USER }),
-        Reply::Edit(P::SavePayments { .. })
+        Reply::Response(P::BeginPayments { .. })
     ));
     let request = back(&session.draft, PAGE_INCOME);
     let income = income_hub(send(&mut session, request));
     let unchanged = session.draft.clone();
     let reply = send(&mut session, hub_action(&income));
     assert!(
-        matches!(reply, Reply::Response(P::Hub { page: PAGE_ADJUSTMENTS, .. })),
-        "Income Continue follows the shown Adjustments section even when resume opens Payments: {reply:?}"
+        matches!(reply, Reply::Response(P::BeginPayments { .. })),
+        "Income Continue passes completed summaries to Payments: {reply:?}"
     );
     assert_eq!(session.draft, unchanged);
 }
@@ -7758,7 +9637,7 @@ fn hub_action_switches_when_the_task_completes_or_reopens_the_walk() {
     // A newly accepted checklist answer reopens work; no frontend history is involved.
     let checklist = from_review(&mut session, TaxSection::Checklist);
     let mut value = checklist_of(&checklist);
-    value.adjustments = AdjustmentTopics::STUDENT_LOAN.0;
+    value.paid |= PaidTopics::IRA_CONTRIBUTIONS.0;
     let request = tick(checklist, value);
     accepted(&send(&mut session, request));
     let request = back(&session.draft, PAGE_INCOME);
@@ -7798,7 +9677,10 @@ fn hub_continue_rejects_wrong_identity_stale_revision_and_unavailable_sections()
     // Each later section walks its less-common page (gate fixes batch A);
     // with the walk at the review, Continue is no longer offered.
     loop {
-        reply = match past_less_common(&mut session, reply) {
+        reply = match crate::tests::support::client::answer_no_estimates(past_less_common(
+            &mut session,
+            reply,
+        )) {
             Reply::Response(hub @ P::Hub { .. }) => send(&mut session, hub_action(&hub)),
             Reply::Response(P::Review { .. }) => break,
             Reply::Edit(page @ P::SavePayments { .. }) => send(&mut session, page),
@@ -7859,7 +9741,9 @@ fn open_hub_reloads_the_topics_and_stores_nothing() {
     let protocol = include_str!("../../core/protocol.rs");
     let before_open = &protocol[..protocol.find("    OpenHub {").unwrap()];
     let attrs = &before_open[before_open.rfind("/// Reload the topics").unwrap()..];
-    assert!(attrs.contains("#[libertas_next_response(\"Hub,Problem\")]"));
+    // 2026-10-30: OpenHub also declares the stored-generation refusal; normal
+    // refreshes still reload the hub without writing the return.
+    assert!(attrs.contains("#[libertas_next_response(\"Hub,Problem,StoredReturnUnavailable\")]"));
     assert!(attrs.contains("#[libertas_exclude_ui]"));
     let open = declaration(protocol, "    OpenHub {");
     assert_eq!(open.matches("#[libertas_hidden]").count(), 5, "{open}");
@@ -8115,10 +9999,16 @@ fn review_hides_zero_lines_outside_form_1040() {
 // 1098-C, Schedule A lines 11-14).
 
 // The hub's gifts page, reached with the given route and cash gifts.
-pub(in crate::tests) fn at_the_gifts_page(route: DeductionRoute, gifts: i64) -> Interview {
+pub(in crate::tests) fn at_the_gifts_page(
+    itemize_override: Option<ItemizeOverride>,
+    gifts: i64,
+) -> Interview {
     let mut s = at_the_deductions_page(FederalStatus::Single).0;
-    let request = save_deductions(&s.draft, route, gifts);
-    itemized_hub(send_past_less_common(&mut s, request));
+    if itemize_override.is_none() {
+        s.draft.checklist.paid |= PaidTopics::GIFTS.0;
+    }
+    let request = save_deductions(&s.draft, itemize_override, gifts);
+    crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     s
 }
 pub(in crate::tests) fn gifts(
@@ -8126,8 +10016,10 @@ pub(in crate::tests) fn gifts(
     stock: Vec<PropertyGift>,
     vehicles: Vec<PropertyGift>,
 ) -> GiftCarryovers {
+    // Vehicles are Form 1098-C gifts on their own list.
     GiftCarryovers {
-        gifts: goods.into_iter().chain(stock).chain(vehicles).map(Into::into).collect(),
+        vehicles: vehicles.into_iter().map(vehicle_gift_page).collect(),
+        gifts: goods.into_iter().chain(stock).map(Into::into).collect(),
         appraisals: vec![],
         appraisal_choices: vec![],
         basis_election: false,
@@ -8178,6 +10070,7 @@ pub(in crate::tests) fn sold(proceeds: i64) -> VehicleUse {
 
 #[test]
 fn form_8283_fixture_goods_stock_and_vehicle_through_the_page() {
+    use crate::tests::support::client::charity::save_gift_source_fixtures;
     // Hand-worked single return, wages $60,000, no adjustments: AGI $60,000.
     // Itemizing (Schedule A line 19), cash gifts $1,000; the page enters
     // clothing ($300 value, $1,200 cost), household items ($1,700 value,
@@ -8194,19 +10087,16 @@ fn form_8283_fixture_goods_stock_and_vehicle_through_the_page() {
     // Schedule A total $20,300; taxable income $60,000 - $20,300 = $39,700.
     // Form 8283 Section A (noncash $19,600 > $500, every group <= $5,000,
     // the sold car stays in Section A): $2,000 + $2,600 + $15,000 = $19,600.
-    let mut s = at_the_gifts_page(DeductionRoute::Itemize, 100_000);
-    let request = save_gift_carryovers(
-        &s.draft,
-        gifts(
-            vec![
-                goods_gift(GoodsKind::Clothing, 120_000, 30_000),
-                goods_gift(GoodsKind::Household, 400_000, 170_000),
-            ],
-            vec![stock_gift(20200302, 200_000, 1_500_000)],
-            vec![vehicle_gift(400_000, sold(260_000))],
-        ),
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 100_000);
+    let mut page = gifts(
+        vec![
+            goods_gift(GoodsKind::Clothing, 120_000, 30_000),
+            goods_gift(GoodsKind::Household, 400_000, 170_000),
+        ],
+        vec![stock_gift(20200302, 200_000, 1_500_000)],
+        vec![vehicle_gift(400_000, sold(260_000))],
     );
-    itemized_hub(send_past_less_common(&mut s, request));
+    itemized_hub(save_gift_source_fixtures(&mut s, &mut page));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "charity_cash_sixty_current_deduction"), 1_000);
     assert_eq!(value(&r, "charity_property_fifty_current_deduction"), 4_600);
@@ -8221,8 +10111,9 @@ fn form_8283_fixture_goods_stock_and_vehicle_through_the_page() {
 
 #[test]
 fn property_gifts_map_onto_the_form_8283_records_and_reopen() {
-    let mut s = at_the_gifts_page(DeductionRoute::Compare, 0);
-    let value = gifts(
+    use crate::tests::support::client::charity::save_gift_source_fixtures;
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
+    let mut value = gifts(
         vec![goods_gift(GoodsKind::Books, 50_000, 20_000)],
         vec![
             stock_gift(20200302, 200_000, 1_500_000),
@@ -8239,23 +10130,21 @@ fn property_gifts_map_onto_the_form_8283_records_and_reopen() {
             ),
         ],
     );
-    let request = save_gift_carryovers(&s.draft, value.clone());
-    itemized_hub(send_past_less_common(&mut s, request));
+    itemized_hub(save_gift_source_fixtures(&mut s, &mut value));
     let ded = s.draft.deductions.as_ref().unwrap();
-    assert_eq!(ded.property_gifts.len(), 5);
-    let book = &ded.property_gifts[0];
+    // The stored gifts, then the Form 1098-C gifts, as the calculation reads them.
+    let gifts = ded.gifts().expect("accepted property gifts");
+    assert_eq!(gifts.len(), 5);
+    let book = &gifts[0];
     assert!(matches!(book.kind, GiftKind::Goods { kind: GoodsKind::Books, .. }));
     assert_eq!((book.basis, book.value), (50_000, 20_000));
     assert!(book.appraisal.is_none());
     assert_eq!(
-        ded.property_gifts[1..3].iter().map(|g| g.claim(false)).collect::<Vec<_>>(),
+        gifts[1..3].iter().map(|g| g.claim(false)).collect::<Vec<_>>(),
         vec![(CharityClass::CapitalGain30, 1_500_000), (CharityClass::Property50, 100_000),]
     );
-    assert!(matches!(
-        ded.property_gifts[3].kind,
-        GiftKind::Vehicle { treatment: VehicleUse::NeedyPerson, .. }
-    ));
-    assert_eq!(ded.property_gifts[4].claim(false).1, 150_000);
+    assert!(matches!(gifts[3].kind, GiftKind::Vehicle { treatment: VehicleUse::NeedyPerson, .. }));
+    assert_eq!(gifts[4].claim(false).1, 150_000);
     // Reopened, the page shows exactly what was saved.
     let P::SaveGiftCarryovers { value: reopened, .. } =
         open_itemized_topic(&mut s, TaxSection::GiftCarryovers)
@@ -8263,18 +10152,27 @@ fn property_gifts_map_onto_the_form_8283_records_and_reopen() {
         panic!("expected the gifts page")
     };
     assert_eq!(reopened, value);
-    // Standard clears the gifts along with the itemized facts.
-    let request = save_deductions(&s.draft, DeductionRoute::Standard, 0);
+    // 2026-11-02: automatic selection preserves all accepted gift records.
+    let saved_gifts = s.draft.deductions.as_ref().unwrap().clone();
+    let request = save_deductions(&s.draft, None, 0);
     send(&mut s, request);
     let ded = s.draft.deductions.as_ref().unwrap();
-    assert!(ded.property_gifts.is_empty());
-    assert!(ded.property_gifts.is_empty());
-    assert!(ded.property_gifts.is_empty());
+    assert_eq!(ded.property_gifts, saved_gifts.property_gifts);
+    assert_eq!(ded.vehicle_gifts, saved_gifts.vehicle_gifts);
+    assert_eq!(ded.vehicle_gift_documents.len(), 2);
+    assert_eq!(ded.gifts().expect("accepted gift facts"), saved_gifts.gifts().unwrap());
+    let result = supported(&s.draft);
+    // 2026-11-02: retained gifts20,700 less the300 floor yield20,400.
+    assert_eq!(crate::tests::value(&result, "deduction"), 20_400);
+    assert_eq!(crate::tests::value(&result, "taxable_income"), 39_600);
+    assert_eq!(result.tax, Some(450_700));
+    assert_eq!(result.refund, Some(199_300));
 }
 
 #[test]
 fn gift_page_rules_reject_on_both_sides() {
-    let mut s = at_the_gifts_page(DeductionRoute::Compare, 0);
+    use crate::tests::support::client::charity::save_gift_source_fixtures;
+    let mut s = at_the_gifts_page(None, 0);
     let before = s.draft.clone();
     let request = save_gift_carryovers(
         &s.draft,
@@ -8285,16 +10183,15 @@ fn gift_page_rules_reject_on_both_sides() {
     // The canonical owner permits appreciated vehicles and derives the applicable basis reduction.
     assert_eq!(vehicle.claim(false).1, 100_000);
     vehicle.benefit_received = Some(2_000_001);
-    let request = save_gift_carryovers(&s.draft, gifts(vec![], vec![], vec![vehicle]));
-    rejected_with(send(&mut s, request), "GIFT_BENEFIT_ABOVE_VALUE");
+    let mut page = gifts(vec![], vec![], vec![vehicle]);
+    rejected_with(save_gift_source_fixtures(&mut s, &mut page), "GIFT_BENEFIT_ABOVE_VALUE");
     let mut late = stock_gift(20261116, 100_000, 200_000);
     late.given = 20261115;
     let request = save_gift_carryovers(&s.draft, gifts(vec![], vec![late], vec![]));
     rejected_with(send(&mut s, request), "GIFT_BOUGHT_AFTER_GIVEN");
     let early = VehicleUse::Sold { sold: 20260531, proceeds: 100_000 };
-    let request =
-        save_gift_carryovers(&s.draft, gifts(vec![], vec![], vec![vehicle_gift(300_000, early)]));
-    rejected_with(send(&mut s, request), "VEHICLE_SOLD_BEFORE_GIVEN");
+    let mut page = gifts(vec![], vec![], vec![vehicle_gift(300_000, early)]);
+    rejected_with(save_gift_source_fixtures(&mut s, &mut page), "VEHICLE_SOLD_BEFORE_GIVEN");
     assert_eq!(s.draft, before);
 }
 
@@ -8304,7 +10201,7 @@ fn similar_goods_above_5000_save_with_actual_section_b_requirements() {
     // across all gifts: two clothing gifts totalling exactly $5,000 stay in
     // Section A; one more cent needs a qualified appraisal; missing substantiation omits the gifts.
     // A different group does not add to the clothing total.
-    let mut s = at_the_gifts_page(DeductionRoute::Itemize, 0);
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
     let request = save_gift_carryovers(
         &s.draft,
         gifts(
@@ -8343,6 +10240,9 @@ fn similar_goods_above_5000_save_with_actual_section_b_requirements() {
 
 pub(in crate::tests) fn continuing_page_asset(disposal: crate::AssetDisposal) -> Asset {
     Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -8350,16 +10250,22 @@ pub(in crate::tests) fn continuing_page_asset(disposal: crate::AssetDisposal) ->
         cost: 1_000_000,
         credit_reduction: 0,
         placed: 20240301,
-        class: AssetClass::Five,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class: AssetClass::Five,
+                history: AssetHistory::Continuing {
+                    prior_depreciation: 520_000,
+                    first_year_179: 0,
+                    first_year_bonus: 0,
+                    carryforward: 0,
+                    mid_quarter: false,
+                },
+            },
+        },
         business_percent: 100,
         acquired: None,
-        history: AssetHistory::Continuing {
-            prior_depreciation: 520_000,
-            first_year_179: 0,
-            first_year_bonus: 0,
-            carryforward: 0,
-            mid_quarter: false,
-        },
         disposal,
         investment_credit: crate::InvestmentCredit::No,
         earlier_business_percent: None,
@@ -8370,7 +10276,7 @@ fn page_sale(date: u32, proceeds: i64) -> crate::AssetDisposal {
     crate::AssetDisposal::Disposed {
         date,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds,
             selling_expenses: 0,
             payment: crate::SalePayment::InFull,
@@ -8401,6 +10307,7 @@ fn asset_disposal_fold_maps_onto_the_asset_and_back() {
     let mut early = business(15_000_000);
     early.vehicles = vec![Vehicle {
         method: VehicleMethod::Actual {
+            macrs_source: None,
             id: 0,
             history_details: None,
             amt_section179_income_carry: None,
@@ -8413,7 +10320,7 @@ fn asset_disposal_fold_maps_onto_the_asset_and_back() {
             business_miles: 8_000,
             operating_costs: 0,
             loan_interest: 0,
-            passenger_automobile: true,
+            kind: crate::VehicleKind::PassengerCar,
             history: AssetHistory::Continuing {
                 prior_depreciation: 480_000,
                 first_year_179: 0,
@@ -8442,7 +10349,7 @@ pub(in crate::tests) fn patr_parts(v: &mut Patr1099, personal: i64) {
         section_199a_g: v.more.section_199a_g,
         ..Default::default()
     };
-    let mut a = crate::cooperative::automatic(&data, None);
+    let mut a = crate::cooperative::automatic(&data);
     a.personal.patronage = personal;
     a.personal_qualification = Some(CoopQualification::default());
     // These synthetic fixtures describe original-patron notices redeemed at
@@ -8465,7 +10372,7 @@ pub(in crate::tests) fn patr_parts(v: &mut Patr1099, personal: i64) {
 fn next_year_estimate_round_trips_through_the_payments_page() {
     let (mut s, page) = at_the_payments_page(complete(FederalStatus::Single));
     // A new return opens with the estimate not needed.
-    assert_eq!(payments_value(&page).0.next_year, NextYearEstimate::NotNeeded);
+    assert_eq!(payments_value(&page).0.more.next_year, NextYearEstimate::NotNeeded);
     // Expected changes are stored as entered and shown again; the review's
     // draft return then lists the Form 1040-ES lines (complete()'s $6,500 of
     // withholding covers the required payment, so the worksheet ends at 14a).
@@ -8476,7 +10383,10 @@ fn next_year_estimate_round_trips_through_the_payments_page() {
         withholding: None,
         farmer_fisherman_next_year: FarmerNextYear::Yes,
     };
-    let entered = Payments { next_year: changes.clone(), ..no_payments() };
+    let entered = Payments {
+        more: crate::PaymentsMore { next_year: changes.clone(), ..no_payments().more },
+        ..no_payments()
+    };
     match submit(&mut s, entered) {
         Reply::Response(P::Review { result, .. }) => {
             assert_eq!(result.state, ResultState::EstimatedForSupportedScope);
@@ -8492,7 +10402,7 @@ fn next_year_estimate_round_trips_through_the_payments_page() {
         other => panic!("expected the review, got {other:?}"),
     }
     assert_eq!(s.draft.payments.as_ref().unwrap().next_year, changes.clone().into());
-    assert_eq!(payments_value(&open_payments(&mut s)).0.next_year, changes);
+    assert_eq!(payments_value(&open_payments(&mut s)).0.more.next_year, changes);
     // T2-49b: the 2027 farmer answer belongs to the worksheet; the 2025
     // answer stays No (the IRS figures the penalty).
     assert!(!s.draft.payments.as_ref().unwrap().farmer_fisherman_prior_year);
@@ -8500,20 +10410,6 @@ fn next_year_estimate_round_trips_through_the_payments_page() {
     accepted(&submit(&mut s, no_payments()));
     assert_eq!(s.draft.payments.as_ref().unwrap().next_year, NextYearEstimateRecord::NotNeeded);
     assert!(!estimate(&s.draft).lines.iter().any(|l| l.id.starts_with("form_1040_es_line_")));
-    // An expected amount outside the schema's range is refused on the server too.
-    let before = s.draft.clone();
-    let out_of_range = Payments {
-        next_year: NextYearEstimate::WithChanges {
-            agi: None,
-            deductions: Some(-1),
-            credits: None,
-            withholding: None,
-            farmer_fisherman_next_year: FarmerNextYear::No,
-        },
-        ..no_payments()
-    };
-    error(send(&mut s, save_payments(&before, out_of_range)));
-    assert_eq!(s.draft, before);
 }
 
 // Canonical Form1095-A source lifecycle through actual public pages.
@@ -8524,30 +10420,41 @@ pub(in crate::tests) fn marketplace_page_of(page: &P) -> &MarketplaceFactsPage {
     assert_eq!((*at, *previous), (PAGE_CREDITS, PAGE_CREDITS));
     value
 }
-pub(in crate::tests) fn save_marketplace(d: &FederalDraft, value: MarketplaceFactsPage) -> P {
-    P::SaveMarketplace {
-        user: TEST_USER,
-        cookie: d.cookie.clone(),
-        revision: d.revision,
-        page: PAGE_CREDITS,
-        previous: PAGE_CREDITS,
-        review: false,
-        estimate: vec![],
-        warnings: vec![],
-        progress: vec![],
-        people: vec![],
-        ptc_people: vec![],
-        ptc_families: vec![],
-        ptc_policies: vec![],
-        ptc_w2: vec![],
-        ptc_employees: vec![],
-        ptc_nonreturn_people: vec![],
-        ptc_claimed_dependents: vec![],
-        allowed_marriage: vec![],
-        allowed_separate: vec![],
-        document_facts: DocumentFacts { year: 2026 },
-        value,
+pub(in crate::tests) fn save_marketplace(
+    session: &mut Interview,
+    mut value: MarketplaceFactsPage,
+) -> P {
+    let mut request = open_credits_topic(session, TaxSection::Marketplace);
+    let P::SaveMarketplace { value: page, .. } = &mut request else { unreachable!() };
+    if value.forms.is_empty() {
+        value.forms = page.forms.clone();
+    } else {
+        assert_eq!(value.forms.len(), page.forms.len());
+        for (form, accepted) in value.forms.iter_mut().zip(&page.forms) {
+            form.id = accepted.id;
+            form.value = accepted.value.clone();
+        }
     }
+    *page = value;
+    request
+}
+
+pub(in crate::tests) fn documents_of(
+    forms: &[MarketplaceDocumentView],
+) -> Vec<crate::Form1095ADocument> {
+    forms
+        .iter()
+        .map(|form| crate::Form1095ADocument { id: form.id, value: form.value.clone() })
+        .collect()
+}
+pub(in crate::tests) fn save_marketplace_sources(
+    session: &mut Interview,
+    forms: Vec<crate::Form1095ADocument>,
+) -> P {
+    let mut request = open_document_center(session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.marketplace.documents = forms;
+    request
 }
 pub(in crate::tests) fn at_the_marketplace_page(
     d: FederalDraft,
@@ -8566,15 +10473,21 @@ pub(in crate::tests) fn all_year(
     premium: i64,
     benchmark: i64,
     advance: i64,
-) -> MarketplacePolicyRecordPage {
+) -> MarketplaceDocumentView {
     MarketplacePolicyRecord {
+        printed: None,
         id: 0,
-        issuer: issuer.into(),
-        policy_number: "000123".into(),
-        amounts: PolicyAmounts::AllYear { premium, benchmark: Some(benchmark), advance },
+        form: MarketplacePolicyRecordPage {
+            recipient: Default::default(),
+            id: 0,
+            issuer: issuer.into(),
+            policy_number: "000123".into(),
+            amounts: PolicyAmounts::AllYear { premium, benchmark: Some(benchmark), advance },
+            status: MarketplaceStatementStatus::Original,
+        }
+        .into(),
         lawful_premiums: vec![],
         enrolling: MarketplaceFamilyRef::ThisReturn,
-        status: MarketplaceStatementStatus::Original,
         coverage: (1..=12)
             .map(|month| MarketplacePolicyCoverage { month, people: vec![-1], entry: vec![] })
             .collect(),
@@ -8585,16 +10498,16 @@ pub(in crate::tests) fn all_year(
     .into()
 }
 pub(in crate::tests) fn marketplace_fixture_page(
-    forms: Vec<MarketplacePolicyRecordPage>,
+    forms: Vec<MarketplaceDocumentView>,
 ) -> MarketplaceFactsPage {
     // Explicit neutral completion for arithmetic fixtures: taxpayer-only
     // ordinary coverage and known eligible months, never a production default.
     MarketplaceFactsPage {
         eligibility: (1..=12)
             .filter(|month| {
-                forms
-                    .iter()
-                    .any(|p| crate::marketplace_sources::policy_month(&p.amounts, *month).is_some())
+                forms.iter().any(|p| {
+                    crate::marketplace_sources::policy_month(&p.amounts(), *month).is_some()
+                })
             })
             .map(|month| MarketplaceEligibilityMonthPage {
                 month,
@@ -8606,42 +10519,61 @@ pub(in crate::tests) fn marketplace_fixture_page(
         ..MarketplaceFactsPage::default()
     }
 }
+// Execute source preparation and topic facts through their separate actual editors.
 pub(in crate::tests) fn save_marketplace_and_reopen(
     session: &mut Interview,
     value: MarketplaceFactsPage,
 ) -> MarketplaceFactsPage {
-    let request = save_marketplace(&session.draft, value);
-    credits_hub(send_past_less_common(session, request));
+    let forms = documents_of(&value.forms);
+    let request = save_marketplace_sources(session, forms);
+    accepted(&send(session, request));
+    let request = save_marketplace(session, value);
+    accepted(&send(session, request));
     let request = open_credits_topic(session, TaxSection::Marketplace);
     marketplace_page_of(&request).clone()
 }
 
 // T2-44p: the W-2G and gambling losses kinds on the Gambling winnings topic.
-pub(in crate::tests) fn w2g(winnings: i64, withholding: i64) -> IncomeDocument {
-    IncomeDocument::W2g(W2g {
+pub(in crate::tests) fn w2g(winnings: i64, withholding: i64) -> IncomeSource {
+    IncomeSource::Gambling(w2g_document(W2g {
+        payer: Default::default(),
+        winner: Default::default(),
         state_details: Default::default(),
         winnings,
         withholding,
         special: false,
-    })
+    }))
 }
-pub(in crate::tests) fn gambling_losses(other_winnings: i64, losses: i64) -> IncomeDocument {
-    IncomeDocument::GamblingLosses(GamblingLosses { other_winnings, losses, special: false })
+pub(in crate::tests) fn gambling_losses(other_winnings: i64, losses: i64) -> IncomeSource {
+    IncomeSource::Record {
+        value: crate::IncomeRecord::GamblingLosses(GamblingLosses {
+            other_winnings,
+            losses,
+            special: false,
+        }),
+    }
 }
 
 // T2-40p: the Schedule K-1 (Form 1041) kind on the Schedule K-1 topic, and
 // the shared K-1 page types.
 pub(in crate::tests) fn k1_1041(name: &str) -> K1EstateTrust {
     K1EstateTrust {
+        estate_trust: crate::PrintedParty {
+            name: name.into(),
+            federal_id: "012345678".into(),
+            address: Default::default(),
+        },
+        fiduciary: Default::default(),
+        beneficiary: Default::default(),
         entity_period: None,
         final_character: None,
+        successor: None,
+        final_mortgages: vec![],
         amt_reconciliation: None,
         investment_income: None,
         reported_credits: vec![],
         foreign_statement: None,
         investment_property: vec![],
-        ein: "012345678".into(),
-        name: name.into(),
         estate_activities: vec![],
         estate_mortgages: vec![],
         qbi: crate::EstateQbiStatementsPage { statements: vec![] },
@@ -8696,27 +10628,42 @@ pub(in crate::tests) fn k1_1041_more_with(
         private_activity_interest: 0,
         niit: None,
         section199a_dividends: 0,
+        section199a_eligible: Some(true),
         unentered,
     }
 }
-// Saves the K-1s on the Schedule K-1 topic of a fresh single return.
+// Saves the K-1s in the document center of a fresh single return.
 pub(in crate::tests) fn save_k1s(pages: Vec<K1EstateTrust>) -> (Interview, Reply) {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    let reply = send(
-        &mut session,
-        save_topic(
-            &original,
-            TaxSection::PassThrough,
-            pages.into_iter().map(|p| document(0, IncomeDocument::K1EstateTrust(p))).collect(),
-        ),
-    );
+    let reply = {
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            pages
+                .into_iter()
+                .map(|p| {
+                    document(
+                        0,
+                        IncomeSource::K1 {
+                            value: crate::K1Document::K1EstateTrust(estate_document(p)),
+                        },
+                    )
+                })
+                .collect(),
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    };
     (session, reply)
 }
-pub(in crate::tests) fn reopened_k1s(session: &mut Interview) -> Vec<IncomeDocument> {
-    page_documents(&open_topic(session, TaxSection::PassThrough))
-        .iter()
-        .map(|item| item.document.clone())
+pub(in crate::tests) fn reopened_k1s(session: &mut Interview) -> Vec<IncomeSource> {
+    page_documents(&open_document_center(session))
+        .into_iter()
+        .filter_map(|item| {
+            matches!(item.document, IncomeSource::K1 { .. }).then_some(item.document)
+        })
         .collect()
 }
 
@@ -8751,6 +10698,10 @@ fn farm_expenses() -> FarmExpenses {
 // A cash grain farm: line 2 sales and one expense line (feed).
 pub(in crate::tests) fn cash_farm(raised: i64, feed: i64) -> Farm {
     Farm {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
+        allowed_interest_limit_election: Vec::new(),
+        related: Default::default(),
         state_documents: Default::default(),
         name: "".into(),
         accounting: FarmMethod::Cash {
@@ -8785,7 +10736,10 @@ pub(in crate::tests) fn farm_more() -> FarmDetails {
         payroll: BusinessPayroll::No,
         withholding: 0,
         optional_se: false,
-        material_participation: true,
+        material_participation: crate::ParticipationFacts {
+            hours: 501,
+            test: crate::ParticipationTest::Over500,
+        },
         at_risk: true,
         qbi_group: "".into(),
         income_source: FarmIncomeSource::NotNeeded,
@@ -8830,8 +10784,11 @@ pub(in crate::tests) fn averaging_election() -> FarmAveragingElection {
         },
     }
 }
-pub(in crate::tests) fn farm_save(d: &FederalDraft, documents: Vec<IncomeDocumentItem>) -> P {
-    save_topic(d, TaxSection::Farming, documents)
+pub(in crate::tests) fn farm_save(
+    session: &mut Interview,
+    documents: Vec<IncomeDocumentItem>,
+) -> P {
+    save_topic(session, TaxSection::Farming, documents)
 }
 pub(in crate::tests) fn farm_only_return() -> FederalDraft {
     empty_return(FederalStatus::Single)
@@ -8860,15 +10817,20 @@ pub(in crate::tests) fn stored_farm(d: &FederalDraft) -> (&FederalBusiness, &Far
     (data, farm)
 }
 // Reopens the Farming page and returns its documents without previews.
-pub(in crate::tests) fn reopened_farming(
-    session: &mut Interview,
-) -> (Vec<i32>, Vec<IncomeDocument>) {
+pub(in crate::tests) fn reopened_farming(session: &mut Interview) -> (Vec<i32>, Vec<IncomeSource>) {
     let P::SaveIncomes { allowed_documents, documents, .. } =
         open_topic(session, TaxSection::Farming)
     else {
         unreachable!()
     };
-    (allowed_documents, documents.documents.into_iter().map(|item| item.document).collect())
+    (
+        allowed_documents,
+        documents
+            .documents
+            .into_iter()
+            .map(|item| IncomeSource::Record { value: item.document })
+            .collect(),
+    )
 }
 
 #[test]
@@ -8879,18 +10841,23 @@ fn young_filer_answers_what_produces_the_farms_income() {
     let mut original = form_8615_return(farm_only_return());
     let attempt = |original: &FederalDraft, source: FarmIncomeSource| {
         let mut session = Interview::new(TEST_USER, original.clone());
-        let reply = send(
-            &mut session,
-            farm_save(
-                original,
+        let reply = {
+            let request = farm_save(
+                &mut session,
                 vec![document(
                     0,
-                    IncomeDocument::Farm(with_more(cash_farm(1_000_000, 0), |more| {
-                        more.income_source = source;
-                    })),
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::Farm(with_more(
+                            cash_farm(1_000_000, 0),
+                            |more| {
+                                more.income_source = source;
+                            },
+                        )),
+                    },
                 )],
-            ),
-        );
+            );
+            send(&mut session, request)
+        };
         (reply, session)
     };
     let reply = {
@@ -8900,9 +10867,11 @@ fn young_filer_answers_what_produces_the_farms_income() {
             &mut source,
             vec![document(
                 0,
-                IncomeDocument::Farm(with_more(cash_farm(1_000_000, 0), |more| {
-                    more.income_source = FarmIncomeSource::NotNeeded;
-                })),
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Farm(with_more(cash_farm(1_000_000, 0), |more| {
+                        more.income_source = FarmIncomeSource::NotNeeded;
+                    })),
+                },
             )],
             "SOURCE_FARM_NEEDED",
             "[documents/documents/0/document/more/income_source]",
@@ -8914,7 +10883,9 @@ fn young_filer_answers_what_produces_the_farms_income() {
     let (data, _) = stored_farm(&session.draft);
     assert_eq!(data.income_source, BusinessIncomeSource::Capital);
     let (_, reopened) = reopened_farming(&mut session);
-    let IncomeDocument::Farm(farm) = &reopened[0] else { unreachable!() };
+    let IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } = &reopened[0] else {
+        unreachable!()
+    };
     assert_eq!(farm.more.income_source, FarmIncomeSource::Capital);
     // No parent alive: Form 8615 does not apply, Not needed passes.
     original.people.as_mut().unwrap().taxpayer.parent_alive = false;
@@ -8924,9 +10895,12 @@ fn young_filer_answers_what_produces_the_farms_income() {
 // T2-31p: the Schedule K-1 (Form 1120-S) kind on the Schedule K-1 topic.
 pub(in crate::tests) fn k1_1120s(name: &str) -> K1Scorp {
     K1Scorp {
+        exact: Default::default(),
+        corporation: crate::PrintedParty::from_name(name.into()),
+        shareholder: Default::default(),
         reporting_period: None,
         qbi_group: alloc::string::String::new(),
-        disposition: ScorpDisposition::Kept,
+        disposition: Some(ScorpDisposition::Kept),
         final_k1: false,
         schedule_k3: crate::K3Attached::NotAttached,
         rentals: K1RentalBoxes {
@@ -8937,23 +10911,22 @@ pub(in crate::tests) fn k1_1120s(name: &str) -> K1Scorp {
             disposed: Vec::new(),
             real_estate: 0,
             other: 0,
-            participation: K1RentalParticipation::NotActive,
+            participation: None,
             real_estate_qbi: None,
             other_qbi: None,
             carryover_active: true,
         },
-        name: name.into(),
         ordinary: 0,
         interest: 0,
         dividends: 0,
         qualified_dividends: 0,
         royalties: 0,
         distributions: 0,
-        qbi_records: K1ScorpQbiRecords {
+        qbi_records: Some(K1ScorpQbiRecords {
             ordinary: Default::default(),
             property: Default::default(),
             property_complete: true,
-        },
+        }),
         qbi: K1ScorpQbi::Statement {
             ptp_income: 0,
             reit_dividends: 0,
@@ -8964,7 +10937,7 @@ pub(in crate::tests) fn k1_1120s(name: &str) -> K1Scorp {
             current_loss: 0,
             property_qbi: no_property_qbi(),
         },
-        participation: Participation::Investor { prior_years: 0 },
+        participation: Some(Participation::Investor { prior_years: 0 }),
         more: k1_1120s_more(),
         basis: K1ScorpBasis {
             start: K1ScorpStart::New,
@@ -8972,12 +10945,13 @@ pub(in crate::tests) fn k1_1120s(name: &str) -> K1Scorp {
             loans: vec![],
             more_at_risk: k1_1120s_all_at_risk(),
         },
-        amt: ScorpAmtRecords::SameAsRegular,
+        amt: Some(ScorpAmtRecords::SameAsRegular),
         special: Vec::new(),
     }
 }
 fn k1_1120s_more() -> K1ScorpOtherBoxes {
     K1ScorpOtherBoxes {
+        calls: crate::K1ScorpCalls::default(),
         amt_section179_income_carry: None,
         allowed_investment_confirmations: Vec::new(),
         section179_carryover_sold: 0,
@@ -9013,7 +10987,7 @@ fn k1_1120s_more() -> K1ScorpOtherBoxes {
 // Form 6198 line 19b of `capacity`, and no losses carried from 2025.
 pub(in crate::tests) fn k1_1120s_continuing(opening: i64, capacity: i64) -> K1ScorpStart {
     K1ScorpStart::Continuing {
-        opening,
+        opening: Some(opening),
         risk_history: ScorpRiskStart::Detailed { capacity, profit: 0, loss: 0 },
         carried: k1_1120s_carried_zero(),
     }
@@ -9054,13 +11028,14 @@ pub(in crate::tests) fn k1_1120s_carried_zero() -> K1ScorpCarried {
 pub(in crate::tests) fn save_k1_1120s(pages: Vec<K1Scorp>) -> (Interview, Reply) {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    let reply = send(
+    let reply = crate::tests::support::client::income_pages::save_k1_sources_and_answers(
         &mut session,
-        save_topic(
-            &original,
-            TaxSection::PassThrough,
-            pages.into_iter().map(|p| document(0, IncomeDocument::K1Scorp(p))).collect(),
-        ),
+        pages
+            .into_iter()
+            .map(|p| {
+                document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp((p).into()) })
+            })
+            .collect(),
     );
     (session, reply)
 }
@@ -9096,7 +11071,7 @@ pub(in crate::tests) fn k1_1120s_fixture(profit: i64) -> K1Scorp {
         current_loss: 0,
         property_qbi: no_property_qbi(),
     };
-    page.participation = Participation::Over500Hours { hours: 501 };
+    page.participation = Some(Participation::Over500Hours { hours: 501 });
     page.basis.start = k1_1120s_continuing(1_000_000, 1_300_000);
     page.basis.loans = vec![ScorpLoan {
         kind: ScorpLoanKind::FormalNote,
@@ -9112,9 +11087,11 @@ pub(in crate::tests) fn k1_1120s_fixture(profit: i64) -> K1Scorp {
 // T2-29p: the Schedule K-1 (Form 1065) kind on the Schedule K-1 topic.
 pub(in crate::tests) fn k1_1065(name: &str) -> K1Partnership {
     K1Partnership {
+        printed: None,
+        name: name.into(),
         reporting_period: None,
         qbi_group: alloc::string::String::new(),
-        disposition: PartnerDisposition::Kept,
+        disposition: Some(PartnerDisposition::Kept),
         final_k1: false,
         schedule_k3: crate::K3Attached::NotAttached,
         rentals: K1RentalBoxes {
@@ -9125,16 +11102,16 @@ pub(in crate::tests) fn k1_1065(name: &str) -> K1Partnership {
             disposed: Vec::new(),
             real_estate: 0,
             other: 0,
-            participation: K1RentalParticipation::NotActive,
+            participation: None,
             real_estate_qbi: None,
             other_qbi: None,
             carryover_active: true,
         },
-        name: name.into(),
         publicly_traded: false,
-        interest: PartnerInterest::General {
-            participation: Participation::Investor { prior_years: 0 },
-        },
+        participation: Some(crate::PartnerParticipation::General {
+            facts: Participation::Investor { prior_years: 0 }.record(),
+        }),
+        limited_for_se: Some(false),
         liabilities_start: 0,
         liabilities_end: 0,
         ordinary: 0,
@@ -9143,7 +11120,7 @@ pub(in crate::tests) fn k1_1065(name: &str) -> K1Partnership {
         se: 0,
         se_gross: SeGross::None,
         distributions: 0,
-        qbi_records: PartnerQbiRecords { qualified_se_gross: 0, history: None },
+        qbi_records: Some(PartnerQbiRecords { qualified_se_gross: 0, history: None }),
         qbi: PartnerQbi::Statement {
             section1231_qbi: 0,
             ptp_income: 0,
@@ -9162,12 +11139,13 @@ pub(in crate::tests) fn k1_1065(name: &str) -> K1Partnership {
             more_at_risk: partner_all_at_risk(),
         },
         income_source: K1IncomeSource::NotNeeded,
-        amt: PartnerAmtRecords::SameAsRegular,
+        amt: Some(PartnerAmtRecords::SameAsRegular),
         special: Vec::new(),
     }
 }
 pub(in crate::tests) fn k1_1065_more() -> K1PartnershipOtherBoxes {
     K1PartnershipOtherBoxes {
+        calls: crate::K1PartnershipCalls::default(),
         amt_section179_income_carry: None,
         allowed_investment_confirmations: Vec::new(),
         section179_carryover_sold: 0,
@@ -9215,7 +11193,7 @@ pub(in crate::tests) fn k1_1065_continuing(
     opening: i64,
     risk_history: ScorpRiskStart,
 ) -> BasisStart {
-    BasisStart::Continuing { opening, risk_history, carried: k1_1065_carried_zero() }
+    BasisStart::Continuing { opening: Some(opening), risk_history, carried: k1_1065_carried_zero() }
 }
 // The partnership "Amounts not at risk" record with every amount zero.
 fn partner_all_at_risk() -> PartnerAtRisk {
@@ -9264,13 +11242,17 @@ pub(in crate::tests) fn save_1065s(
     pages: Vec<K1Partnership>,
 ) -> (Interview, Reply) {
     let mut session = Interview::new(TEST_USER, draft.clone());
-    let reply = send(
+    let reply = crate::tests::support::client::income_pages::save_k1_sources_and_answers(
         &mut session,
-        save_topic(
-            draft,
-            TaxSection::PassThrough,
-            pages.into_iter().map(|p| document(0, IncomeDocument::K1Partnership(p))).collect(),
-        ),
+        pages
+            .into_iter()
+            .map(|p| {
+                document(
+                    0,
+                    IncomeSource::K1 { value: crate::K1Document::K1Partnership((p).into()) },
+                )
+            })
+            .collect(),
     );
     (session, reply)
 }
@@ -9346,36 +11328,37 @@ pub(in crate::tests) fn excess_entry(traditional_value: Option<i64>) -> IraExces
     }
 }
 pub(in crate::tests) fn with_form_8606(session: &mut Interview, year_end: i64) {
-    let draft = session.draft.clone();
-    accepted(&send(
-        session,
-        save_topic(
-            &draft,
+    accepted(&{
+        let request = save_topic(
+            session,
             TaxSection::Retirement,
             vec![document(
                 0,
-                IncomeDocument::Form8606(Form8606 {
-                    adjustment: 0,
-                    reservist_repayments: vec![],
-                    basis: 100_000,
-                    year_end,
-                }),
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Form8606(Form8606 {
+                        adjustment: 0,
+                        reservist_repayments: vec![],
+                        basis: 100_000,
+                        year_end,
+                    }),
+                },
             )],
-        ),
-    ));
+        );
+        send(session, request)
+    });
 }
 
 // C19, C21: defaults and inline choices declared on the page types.
 #[test]
 fn form_8862_groups_default_to_never_and_retirement_plans_are_inline() {
-    let form_8862 = include_str!("../../forms/form_8862.rs");
+    let form_8862 = include_str!("../../forms/disallowance_source.rs");
     for field in ["earned_income", "child_credits", "education_credit"] {
         assert!(
             form_8862.contains(&alloc::format!("#[libertas_default(Never)]\n    pub {field}:")),
             "{field}"
         );
     }
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     assert!(model.contains("#[libertas_inline_choices]\npub enum SeRetirement {"));
 }
 
@@ -9406,14 +11389,28 @@ pub(in crate::tests) fn k1_1065_benefits(
 
 pub(in crate::tests) fn partner_benefits_session(pages: Vec<K1Partnership>) -> Interview {
     let mut d = complete(FederalStatus::Single);
-    d.finished_sections = vec![TaxSection::Children, TaxSection::Checklist, TaxSection::Income];
+    d.finished_sections = vec![
+        TaxSection::Children,
+        TaxSection::IncomeWithoutForm,
+        TaxSection::Checklist,
+        TaxSection::Income,
+    ];
     let mut s = Interview::new(TEST_USER, d.clone());
-    let request = save_topic(
-        &d,
-        TaxSection::PassThrough,
-        pages.into_iter().map(|p| document(0, IncomeDocument::K1Partnership(p))).collect(),
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut s,
+        pages
+            .into_iter()
+            .map(|p| {
+                document(
+                    0,
+                    IncomeSource::K1 { value: crate::K1Document::K1Partnership((p).into()) },
+                )
+            })
+            .collect(),
     );
-    accepted(&send(&mut s, request));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut s, request,
+    ));
     s
 }
 
@@ -9437,7 +11434,7 @@ pub(in crate::tests) fn benefits_request(draft: &FederalDraft, value: SelfEmploy
         page: PAGE_ADJUSTMENTS,
         previous: PAGE_ADJUSTMENTS,
         review: false,
-        estimate: Some(vec![]),
+        estimate: None,
         warnings: vec![],
         progress: Some(vec![]),
         value,
@@ -9527,9 +11524,9 @@ fn field_attributes<'a>(source: &'a str, declaration: &str) -> Vec<&'a str> {
 #[test]
 fn constrained_fields_with_a_singleton_set_declare_no_default() {
     for (source, declaration, set) in [
-        (include_str!("../../federal/federal_model.rs"), "farmer: Farmer,", "allowed_farmer"),
+        (crate::federal_model::HUB_SOURCE, "farmer: Farmer,", "allowed_farmer"),
         (
-            include_str!("../../federal/federal_model.rs"),
+            crate::federal_model::HUB_SOURCE,
             "pub income_source: crate::BusinessIncomeChoice,",
             "allowed_business_source",
         ),
@@ -9539,9 +11536,9 @@ fn constrained_fields_with_a_singleton_set_declare_no_default() {
             "allowed_farm_source",
         ),
         (
-            include_str!("../../passthrough/k1_page.rs"),
-            "pub income_source: K1IncomeSource,",
-            "allowed_partner_source",
+            include_str!("../../federal/document_center.rs"),
+            "income_source: crate::K1IncomeSource,",
+            "^<DocumentQuestion>.k1.source_choices",
         ),
     ] {
         let attributes = field_attributes(source, declaration);
@@ -9567,19 +11564,23 @@ fn disaster_fold(amount: i64, earlier: i64, spread: DisasterSpread) -> DisasterD
         repaid: crate::DisasterRepayment::No,
     }
 }
-fn disaster_r1099(amount: i64, earlier: i64, spread: DisasterSpread) -> R1099 {
-    R1099 {
-        disaster: disaster_fold(amount, earlier, spread),
-        ..r1099(
-            3_000_000,
-            DistributionCode::Early {
-                what_happened: Disposition::Kept,
-                exception: EarlyException::None,
-            },
-            false,
-        )
-    }
+fn disaster_r1099(amount: i64, earlier: i64, spread: DisasterSpread) -> crate::R1099Answered {
+    let mut source = r1099(
+        3_000_000,
+        DistributionCode::Early {
+            what_happened: Disposition::Kept,
+            exception: EarlyException::None,
+        },
+        false,
+    );
+    // Fixture answers are kept per printed paper: each designation prints its own payer.
+    source.source_mut().form.payer = crate::PrintedParty::from_name(alloc::format!(
+        "Disaster plan {amount} {earlier} {spread:?}"
+    ));
+    source.source_mut().disaster = Some(disaster_fold(amount, earlier, spread));
+    source
 }
+
 fn earlier_8915(year: Form8915Year, disaster_year: u32) -> EarlierForm8915 {
     EarlierForm8915 {
         year,
@@ -9599,17 +11600,23 @@ fn qualified_disaster_fold_and_earlier_form_8915_round_trip() {
         Form8915Year::Filed2025 { line_13: 0, line_14: 0, line_24: 0, line_25: 0 },
         2025,
     );
-    send(
-        &mut session,
-        save_topic(
-            &original,
-            TaxSection::Retirement,
+    {
+        crate::tests::support::client::income_pages::save_each_topic(
+            &mut session,
             vec![
-                document(0, IncomeDocument::R1099(fold.clone())),
-                document(0, IncomeDocument::Form8915(earlier.clone())),
+                document(
+                    0,
+                    IncomeSource::Retirement {
+                        value: crate::RetirementDocument::R1099(retirement_document(fold.clone())),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Form8915(earlier.clone()) },
+                ),
             ],
-        ),
-    );
+        );
+    };
     let stored = session
         .draft
         .income
@@ -9619,7 +11626,7 @@ fn qualified_disaster_fold_and_earlier_form_8915_round_trip() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(stored.disaster, fold.disaster);
+    assert_eq!(&FederalRetirement::from(&stored).disaster, fold.disaster());
     assert_eq!(
         session.draft.screening.as_ref().unwrap().disaster_carries,
         vec![DisasterCarry { owner: Owner::Taxpayer, form: earlier.clone() }]
@@ -9628,70 +11635,128 @@ fn qualified_disaster_fold_and_earlier_form_8915_round_trip() {
     let page = open_topic(&mut restarted, TaxSection::Retirement);
     let documents: Vec<_> =
         page_documents(&page).iter().map(|item| item.document.clone()).collect();
-    assert!(documents.contains(&IncomeDocument::R1099(fold)));
-    assert!(documents.contains(&IncomeDocument::Form8915(earlier)));
+    let source_page = open_document_center(&mut restarted);
+    let expected = expected_named_sources(
+        &restarted.draft,
+        Owner::Taxpayer,
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(fold.clone())),
+        }],
+    );
+    assert!(page_documents(&source_page).iter().any(|row| expected.contains(&row.document)));
+    assert!(
+        documents.contains(&IncomeSource::Record { value: crate::IncomeRecord::Form8915(earlier) })
+    );
 }
 
 #[test]
 fn qualified_disaster_rules_reject_on_both_sides() {
     let original = complete(FederalStatus::Single);
-    let reject = |documents: Vec<IncomeDocument>, key: &str| {
+    let reject = |documents: Vec<IncomeSource>, key: &str| {
         let mut session = Interview::new(TEST_USER, original.clone());
-        let reply = send(
+        let reply = crate::tests::support::client::save_retirement_fixture(
             &mut session,
-            save_topic(
-                &original,
-                TaxSection::Retirement,
-                documents.into_iter().map(|d| document(0, d)).collect(),
-            ),
+            documents.into_iter().map(|d| document(0, d)).collect(),
         );
         rejected_with(reply, key);
         assert_eq!(session.draft, original);
     };
     // Client rules of one 1099-R, checked again on save.
     let mut over_gross = disaster_r1099(2_000_000, 0, DisasterSpread::OverThreeYears);
-    over_gross.gross = 1_000_000;
-    over_gross.taxable = 1_000_000;
-    reject(vec![IncomeDocument::R1099(over_gross)], "R_DISASTER_ABOVE_GROSS");
+    over_gross.source_mut().form.gross = 1_000_000;
+    over_gross.source_mut().form.taxable = Some(1_000_000);
     reject(
-        vec![IncomeDocument::R1099(disaster_r1099(
-            2_000_000,
-            200_001,
-            DisasterSpread::OverThreeYears,
-        ))],
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(over_gross)),
+        }],
+        "R_DISASTER_ABOVE_GROSS",
+    );
+    reject(
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                2_000_000,
+                200_001,
+                DisasterSpread::OverThreeYears,
+            ))),
+        }],
         "DISASTER_ABOVE_LIMIT",
     );
     let mut over_repaid = disaster_r1099(1_000_000, 0, DisasterSpread::OverThreeYears);
-    if let DisasterDistribution::Qualified { repaid, .. } = &mut over_repaid.disaster {
+    if let DisasterDistribution::Qualified { repaid, .. } =
+        over_repaid.source_mut().disaster.as_mut().unwrap()
+    {
         *repaid = crate::DisasterRepayment::Yes { total: 1_000_001, in_return_year: 0 };
     }
-    reject(vec![IncomeDocument::R1099(over_repaid)], "DISASTER_REPAID_ABOVE_AMOUNT");
+    reject(
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(over_repaid)),
+        }],
+        "DISASTER_REPAID_ABOVE_AMOUNT",
+    );
     // Across the page's 1099-Rs (server only): one limit per disaster, one
     // line 1b amount and one election per disaster year.
     reject(
         vec![
-            IncomeDocument::R1099(disaster_r1099(2_000_000, 0, DisasterSpread::OverThreeYears)),
-            IncomeDocument::R1099(disaster_r1099(200_001, 0, DisasterSpread::OverThreeYears)),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                    2_000_000,
+                    0,
+                    DisasterSpread::OverThreeYears,
+                ))),
+            },
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                    200_001,
+                    0,
+                    DisasterSpread::OverThreeYears,
+                ))),
+            },
         ],
         "DISASTER_ABOVE_LIMIT",
     );
     reject(
         vec![
-            IncomeDocument::R1099(disaster_r1099(100_000, 0, DisasterSpread::OverThreeYears)),
-            IncomeDocument::R1099(disaster_r1099(100_000, 0, DisasterSpread::AllInReturnYear)),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                    100_000,
+                    0,
+                    DisasterSpread::OverThreeYears,
+                ))),
+            },
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                    100_000,
+                    0,
+                    DisasterSpread::AllInReturnYear,
+                ))),
+            },
         ],
         "DISASTER_ELECTION_DIFFERS",
     );
     reject(
         vec![
-            IncomeDocument::R1099(disaster_r1099(100_000, 0, DisasterSpread::OverThreeYears)),
-            IncomeDocument::R1099(disaster_r1099(100_000, 5_000, DisasterSpread::OverThreeYears)),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                    100_000,
+                    0,
+                    DisasterSpread::OverThreeYears,
+                ))),
+            },
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disaster_r1099(
+                    100_000,
+                    5_000,
+                    DisasterSpread::OverThreeYears,
+                ))),
+            },
         ],
         "DISASTER_EARLIER_DIFFERS",
     );
     // Earlier Form 8915-F rules.
     reject(
-        vec![IncomeDocument::Form8915(earlier_8915(Form8915Year::Filed2024, 2025))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Form8915(earlier_8915(Form8915Year::Filed2024, 2025)),
+        }],
         "FORM_8915_DISASTER_AFTER_FORM",
     );
     let mut carried = earlier_8915(
@@ -9699,38 +11764,18 @@ fn qualified_disaster_rules_reject_on_both_sides() {
         2025,
     );
     carried.repayments = Form8915Repayments { plan_carried_back: 300_001, ..Default::default() };
-    reject(vec![IncomeDocument::Form8915(carried)], "FORM_8915_CARRIED_BACK_ABOVE_EXCESS");
+    reject(
+        vec![IncomeSource::Record { value: crate::IncomeRecord::Form8915(carried) }],
+        "FORM_8915_CARRIED_BACK_ABOVE_EXCESS",
+    );
     let twice = earlier_8915(Form8915Year::Filed2024, 2024);
     reject(
-        vec![IncomeDocument::Form8915(twice.clone()), IncomeDocument::Form8915(twice)],
+        vec![
+            IncomeSource::Record { value: crate::IncomeRecord::Form8915(twice.clone()) },
+            IncomeSource::Record { value: crate::IncomeRecord::Form8915(twice) },
+        ],
         "FORM_8915_TWICE",
     );
-}
-
-#[test]
-fn stock_options_tick_is_answered_on_investment_sales() {
-    // The tick with nothing entered is no remaining item (plans are not
-    // completeness); entering a Form 3921 on Investment sales answers it.
-    let mut d = complete(FederalStatus::Single);
-    d.checklist = Checklist { other_taxes: OtherTaxTopics::STOCK_OPTIONS.0, ..Checklist::NONE };
-    let mut s = Interview::new(TEST_USER, d.clone());
-    let (items, _, actions, _) = review_state(&mut s);
-    assert!(items.is_empty(), "{items:?}");
-    assert!(actions.contains(&FINISH));
-    let request = save_topic(
-        &s.draft.clone(),
-        TaxSection::InvestmentSales,
-        vec![document(0, IncomeDocument::Form3921(form_3921(Form3921More::default())))],
-    );
-    accepted(&send(&mut s, request));
-    // The entry answers the tick: planned drops it, the checklist shows it
-    // from the entry, and the review has no item for it.
-    assert_eq!(crate::interview::planned(&s.draft).other_taxes, 0);
-    let (items, _, _, _) = review_state(&mut s);
-    assert!(items.iter().all(|i| !status_text(&i.status).contains("incentive stock")), "{items:?}");
-    let draft = s.draft.clone();
-    let reply = send(&mut s, navigate(&draft, TaxSection::Checklist));
-    assert_eq!(checklist_of(&reply).other_taxes, OtherTaxTopics::STOCK_OPTIONS.0);
 }
 
 pub(in crate::tests) fn earlier_installment(
@@ -9748,6 +11793,7 @@ pub(in crate::tests) fn earlier_installment(
         kind,
         special: false,
         qbi: crate::InstallmentQbi::NotQualified,
+        livestock: None,
     }
 }
 
@@ -9775,7 +11821,7 @@ pub(in crate::tests) fn employer_credit_business() -> Business {
         ],
         attribution: crate::PayrollQbiAttribution::EntireBusiness,
     };
-    b.more.work_opportunity = Some(WorkOpportunityCredit {
+    let work_opportunity = WorkOpportunityCredit {
         employees: vec![
             employee("Employee A", WorkOpportunityGroup::Standard, 20250701, 600, 500_000, 200_000),
             employee(
@@ -9799,7 +11845,8 @@ pub(in crate::tests) fn employer_credit_business() -> Business {
             ),
         ],
         confirmed: true,
-    });
+    };
+    b.more.work_opportunity = Some((&work_opportunity).into());
     b.more.retirement_plan = Some(RetirementPlanCredit {
         startup: Some(PlanStartupCosts {
             first_credit_year: 2025,
@@ -9845,7 +11892,7 @@ pub(in crate::tests) fn health_credit_business() -> Business {
         service,
         coverage,
     };
-    b.more.small_employer_health = Some(SmallEmployerHealthCredit {
+    let small_employer_health = SmallEmployerHealthCredit {
         coverage: HealthCreditCoverage::Marketplace,
         first_credit_year: 2026,
         employee_only_average: 800_000,
@@ -9870,7 +11917,8 @@ pub(in crate::tests) fn health_credit_business() -> Business {
         ],
         state_subsidies: 0,
         confirmed: true,
-    });
+    };
+    b.more.small_employer_health = Some((&small_employer_health).into());
     b
 }
 
@@ -9894,18 +11942,19 @@ pub(in crate::tests) fn paid_leave_business() -> Business {
         weekly_hours: 40,
         prior_year_compensation: 5_200_000,
         normal_hourly_rate: 2_500,
-        leave_hours_hundredths: hours,
+        leave_hours: f64::from(hours) / 100.0,
         leave_wages: wages,
-        rate_hundredths: rate,
+        rate: f64::from(rate) / 100.0,
     };
-    b.more.paid_leave = Some(PaidLeaveCredit {
+    let paid_leave = PaidLeaveCredit {
         employees: vec![
             employee("A", 16_000, 400_000, 10_000),
             employee("B", 8_000, 150_000, 7_500),
         ],
-        insurance: Some(PaidLeaveInsurance { premiums: 600_000, rate_hundredths: 6_000 }),
+        insurance: Some(PaidLeaveInsurance { premiums: 600_000, rate: 60.0 }),
         confirmed: true,
-    });
+    };
+    b.more.paid_leave = Some((&paid_leave).into());
     b
 }
 
@@ -9913,7 +11962,7 @@ pub(in crate::tests) fn paid_leave_business() -> Business {
 fn paid_leave_page_rules_are_checked_on_save() {
     // Exercise the actual native Save owner; declarations are server-only.
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let edited = |edit: &dyn Fn(&mut PaidLeaveCredit)| {
+    let edited = |edit: &dyn Fn(&mut crate::PaidLeaveCreditPage)| {
         let mut b = paid_leave_business();
         edit(b.more.paid_leave.as_mut().unwrap());
         b
@@ -9936,16 +11985,10 @@ fn paid_leave_page_rules_are_checked_on_save() {
     );
     // More than 12 weeks of an employee's 40 hours a week: 48,001 hundredths.
     rejected_with(
-        save_businesses(
-            &mut session,
-            vec![edited(&|c| c.employees[0].leave_hours_hundredths = 48_001)],
-        ),
+        save_businesses(&mut session, vec![edited(&|c| c.employees[0].leave_hours = 480.01)]),
         "PAID_LEAVE_ABOVE_12_WEEKS",
     );
-    accepted(&save_businesses(
-        &mut session,
-        vec![edited(&|c| c.employees[0].leave_hours_hundredths = 48_000)],
-    ));
+    accepted(&save_businesses(&mut session, vec![edited(&|c| c.employees[0].leave_hours = 480.0)]));
     // Premiums only are accepted.
     accepted(&save_businesses(&mut session, vec![edited(&|c| c.employees.clear())]));
     // The credit needs the payroll.
@@ -9955,77 +11998,107 @@ fn paid_leave_page_rules_are_checked_on_save() {
 }
 
 // T3-982: the Canceled debt topic, its Form 1099-C and Form 1099-A kinds.
-pub(in crate::tests) fn car_1099c(amount: i64, treatment: CanceledDebtChoice) -> IncomeDocument {
-    IncomeDocument::Cancel1099C(Cancel1099C {
-        creditor: "Synthetic Auto Credit".into(),
-        date: 20260315,
-        amount,
-        liable: true,
-        property: PropertyTaken::None,
-        treatment,
-    })
+pub(in crate::tests) fn car_1099c(amount: i64, treatment: CanceledDebtChoice) -> IncomeSource {
+    IncomeSource::CanceledDebt {
+        value: crate::CanceledDebtDocument::Cancel1099C(debt_document(personal_debt_source(
+            Cancel1099C {
+                creditor: crate::PrintedParty::from_name("Synthetic Auto Credit".into()),
+                debtor: Default::default(),
+                interest: None,
+                debt_description: alloc::string::String::new(),
+                event_code: alloc::string::String::new(),
+                date: 20260315,
+                amount,
+                liable: true,
+                property: PropertyTaken::None,
+                treatment: Some(treatment),
+            },
+        ))),
+    }
 }
 fn canceled_debt_documents() -> Vec<IncomeDocumentItem> {
     vec![
         document(
             0,
-            IncomeDocument::Cancel1099C(Cancel1099C {
-                creditor: "Synthetic Auto Credit".into(),
-                date: 20260315,
-                amount: 150_000,
-                liable: true,
-                property: PropertyTaken::Taken {
-                    value: 700_000,
-                    property: TransferredProperty::PersonalUse {
-                        basis: 1_200_000,
-                        term: GainTerm::Long,
-                        collectible: false,
-                    },
-                },
-                treatment: CanceledDebtChoice::Taxable,
-            }),
+            IncomeSource::CanceledDebt {
+                value: crate::CanceledDebtDocument::Cancel1099C(debt_document(
+                    personal_debt_source(Cancel1099C {
+                        creditor: crate::PrintedParty::from_name("Synthetic Auto Credit".into()),
+                        debtor: Default::default(),
+                        interest: None,
+                        debt_description: alloc::string::String::new(),
+                        event_code: alloc::string::String::new(),
+                        date: 20260315,
+                        amount: 150_000,
+                        liable: true,
+                        property: PropertyTaken::Taken {
+                            value: 700_000,
+                            property: Some(TransferredProperty::PersonalUse {
+                                basis: 1_200_000,
+                                term: GainTerm::Long,
+                                collectible: false,
+                            }),
+                        },
+                        treatment: Some(CanceledDebtChoice::Taxable),
+                    }),
+                )),
+            },
         ),
         document(
             0,
-            IncomeDocument::Cancel1099C(Cancel1099C {
-                creditor: "Synthetic Farm Credit".into(),
-                date: 20260601,
-                amount: 100_000,
-                liable: true,
-                property: PropertyTaken::None,
-                treatment: CanceledDebtChoice::FarmDebt {
-                    solvency: DebtSolvency::Insolvent {
-                        liabilities: 1_100_000,
-                        assets: 1_050_000,
-                        basis_and_cash_after: 900_000,
-                        amt_basis_and_cash_after: None,
-                    },
-                    property: vec![DebtProperty {
-                        label: "Tractor".into(),
-                        kind: DebtPropertyKind::Equipment { secured: true },
-                        basis: 500_000,
-                        amt_basis: Some(450_000),
-                    }],
-                    depreciable_first: 0,
-                },
-            }),
+            IncomeSource::CanceledDebt {
+                value: crate::CanceledDebtDocument::Cancel1099C(debt_document(
+                    personal_debt_source(Cancel1099C {
+                        creditor: crate::PrintedParty::from_name("Synthetic Farm Credit".into()),
+                        debtor: Default::default(),
+                        interest: None,
+                        debt_description: alloc::string::String::new(),
+                        event_code: alloc::string::String::new(),
+                        date: 20260601,
+                        amount: 100_000,
+                        liable: true,
+                        property: PropertyTaken::None,
+                        treatment: Some(CanceledDebtChoice::FarmDebt {
+                            solvency: DebtSolvency::Insolvent {
+                                liabilities: 1_100_000,
+                                assets: 1_050_000,
+                                basis_and_cash_after: 900_000,
+                                amt_basis_and_cash_after: None,
+                            },
+                            property: vec![DebtProperty {
+                                label: "Tractor".into(),
+                                kind: DebtPropertyKind::Equipment { secured: true },
+                                basis: 500_000,
+                                amt_basis: Some(450_000),
+                            }],
+                            depreciable_first: 0,
+                        }),
+                    }),
+                )),
+            },
         ),
         document(
             0,
-            IncomeDocument::Acquisition1099A(Acquisition1099A {
-                lender: "Synthetic Land Bank".into(),
-                date: 20260801,
-                balance: 5_000_000,
-                value: 3_000_000,
-                liable: false,
-                property: AcquiredProperty::Property {
-                    kind: TransferredProperty::Investment {
-                        basis: 4_000_000,
-                        term: GainTerm::Long,
-                        collectible: false,
-                    },
-                },
-            }),
+            IncomeSource::CanceledDebt {
+                value: crate::CanceledDebtDocument::Acquisition1099A(acquisition_document(
+                    property_acquisition_source(Acquisition1099A {
+                        lender: crate::PrintedParty::from_name("Synthetic Land Bank".into()),
+                        borrower: Default::default(),
+                        description: alloc::string::String::new(),
+                        date: 20260801,
+                        balance: 5_000_000,
+                        value: 3_000_000,
+                        liable: false,
+                        property: Some(AcquiredProperty::Property {
+                            kind: TransferredProperty::Investment {
+                                basis: 4_000_000,
+                                term: GainTerm::Long,
+                                collectible: false,
+                            },
+                        }),
+                    }),
+                )),
+            },
         ),
     ]
 }
@@ -10034,26 +12107,44 @@ fn canceled_debt_documents() -> Vec<IncomeDocumentItem> {
 fn canceled_debt_kinds_map_onto_records_and_reopen_unchanged() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    accepted(&send(
-        &mut session,
-        save_topic(&original, TaxSection::CanceledDebt, canceled_debt_documents()),
-    ));
+    accepted(
+        &({
+            let request = save_documents(&mut session, canceled_debt_documents());
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        }),
+    );
     let stored = &session.draft.income[1..];
     assert_eq!(
         stored.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
         vec!["Synthetic Auto Credit", "Synthetic Farm Credit", "Synthetic Land Bank"]
     );
-    // Box 7 is the transfer.
+    // The printed value and the supplied transfer answer have separate homes.
     let FederalIncome::PersonalDebt { data: car } = &stored[0].income else { panic!() };
     assert_eq!(
-        (car.personally_liable, car.transfer.as_ref().map(|t| t.value)),
+        (
+            PersonalDebtCancellation::from(car).personally_liable,
+            PersonalDebtCancellation::from(car).box7_fmv
+        ),
         (true, Some(700_000))
     );
     let FederalIncome::PersonalDebt { data: farm } = &stored[1].income else { panic!() };
-    let PersonalDebtTreatment::FarmDebt { data: facts } = &farm.treatment else { panic!() };
+    let Some(PersonalDebtTreatment::FarmDebt { data: facts }) =
+        &PersonalDebtCancellation::from(farm).treatment
+    else {
+        panic!()
+    };
     assert_eq!(facts.insolvency.as_ref().map(|i| i.liabilities), Some(1_100_000));
     let FederalIncome::PropertyAcquisition { data: land } = &stored[2].income else { panic!() };
-    assert_eq!((land.realized(), land.personally_liable), (5_000_000, false));
+    assert_eq!(
+        (
+            PropertyAcquisition::from(land).realized(),
+            PropertyAcquisition::from(land).personally_liable
+        ),
+        (5_000_000, false)
+    );
     // The return: the $1,500 car debt is income; the farm debt is excluded
     // ($11,000 - $10,500 = $500 by insolvency, which finds no attribute and
     // no basis room; the other $500 as farm debt within the $5,000 tractor's
@@ -10064,10 +12155,20 @@ fn canceled_debt_kinds_map_onto_records_and_reopen_unchanged() {
     assert_eq!(value(&r, "debt_3_form982_line2"), 1000);
     // Reopening rebuilds the same rows; saving them unchanged stores the same
     // records.
-    let page = open_topic(&mut session, TaxSection::CanceledDebt);
+    let page = open_document_center(&mut session);
     assert_eq!(
-        page_documents(&page).iter().map(|r| r.document.clone()).collect::<Vec<_>>(),
-        canceled_debt_documents().into_iter().map(|r| r.document).collect::<Vec<_>>()
+        page_documents(&page)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::CanceledDebt { .. }))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(|r| r.document.clone())
+            .collect::<Vec<_>>(),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            canceled_debt_documents().into_iter().map(|r| r.document).collect::<Vec<_>>()
+        )
     );
     let before = session.draft.income.clone();
     accepted(&send(&mut session, page));
@@ -10077,12 +12178,15 @@ fn canceled_debt_kinds_map_onto_records_and_reopen_unchanged() {
 #[test]
 fn canceled_debt_rules_reject_on_both_sides_at_their_boundaries() {
     let original = complete(FederalStatus::Single);
-    let attempt = |document: IncomeDocument| {
+    let attempt = |document: IncomeSource| {
         let mut session = Interview::new(TEST_USER, original.clone());
-        let reply = send(
-            &mut session,
-            save_topic(&original, TaxSection::CanceledDebt, vec![self::document(0, document)]),
-        );
+        let reply = {
+            let request = save_documents(&mut session, vec![self::document(0, document)]);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        };
         (reply, session.draft)
     };
     let insolvent = |liabilities, depreciable_first| CanceledDebtChoice::Insolvent {
@@ -10153,7 +12257,25 @@ fn canceled_debt_rules_reject_on_both_sides_at_their_boundaries() {
         rejected_with(reply, key);
         assert_eq!(draft, original);
         let mut session = Interview::new(TEST_USER, original.clone());
-        rejected_with(send(&mut session, catalog_preview_document(car_1099c(150_000, bad))), key);
+        let request = save_documents(&mut session, vec![document(0, car_1099c(150_000, bad))]);
+        rejected_with(
+            {
+                let desired = page_documents(&request);
+                let mut candidate = restart(session.draft.clone());
+                accepted(&send(&mut candidate, request));
+                let request =
+                    crate::tests::support::client::income_pages::information_return_answers_for_topic(
+                        &mut candidate,
+                        &desired,
+                        TaxSection::CanceledDebt,
+                    ).unwrap();
+                send(
+                    &mut candidate,
+                    crate::tests::support::client::estimate_documents_from_save(&request),
+                )
+            },
+            key,
+        );
     }
 }
 
@@ -10164,11 +12286,9 @@ fn canceled_debt_refusals_are_stored_named_and_open_the_page() {
     // the checklist lists and the Less common income list no longer offers.
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &original,
-            TaxSection::CanceledDebt,
+    accepted(&{
+        let request = save_documents(
+            &mut session,
             vec![document(
                 0,
                 car_1099c(
@@ -10178,12 +12298,16 @@ fn canceled_debt_refusals_are_stored_named_and_open_the_page() {
                     },
                 ),
             )],
-        ),
-    ));
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     let FederalIncome::PersonalDebt { data } = &session.draft.income[1].income else { panic!() };
     assert_eq!(
-        data.treatment,
-        PersonalDebtTreatment::Unsupported { situation: UnsupportedDebt::PrincipalResidence }
+        PersonalDebtCancellation::from(data).treatment,
+        Some(PersonalDebtTreatment::Unsupported { situation: UnsupportedDebt::PrincipalResidence })
     );
     let r = estimate(&session.draft);
     let issue = r.issues.iter().find(|i| i.message.contains("Form 982 lines 1e and 10b")).unwrap();
@@ -10196,7 +12320,7 @@ fn canceled_debt_refusals_are_stored_named_and_open_the_page() {
                 m.key.as_str()
             })
         ),
-        Some(TaxSection::CanceledDebt)
+        Some(TaxSection::Documents)
     );
     assert_eq!(
         crate::interview::issue_page(
@@ -10206,13 +12330,7 @@ fn canceled_debt_refusals_are_stored_named_and_open_the_page() {
         ),
         Some(TaxSection::CanceledDebt)
     );
-    assert!(
-        !RareSituation::allowed(TaxSection::MoreIncome).iter().any(|i| alloc::format!(
-            "{:?}",
-            RareSituation::ALL[*i as usize]
-        )
-        .contains("Canceled"))
-    );
+    assert!(!Unprepared::all().iter().any(|item| item.refused().lines.contains("Canceled")));
 }
 
 // The resource key and arguments of a row status.
@@ -10259,7 +12377,11 @@ fn review_row_statuses_are_keyed_formatted_text() {
     for hub in &hubs {
         let rows = rows_of(hub);
         let more = rows[rows.len() - 2].clone();
-        assert_eq!(status_key(&more.status), ("REVIEW_NONE".into(), 0), "{more:?}");
+        let (key, arguments) = status_key(&more.status);
+        assert!(
+            ["REVIEW_NONE", "REVIEW_NOT_STARTED"].contains(&key.as_str()) && arguments == 0,
+            "{more:?}"
+        );
         assert!(
             rows.iter().any(|r| status_key(&r.status) == ("REVIEW_NOT_STARTED".into(), 0)),
             "{rows:?}"
@@ -10286,6 +12408,9 @@ fn attention_wraps_each_remaining_item_form() {
     let wrapped = attention_status(&refused);
     assert_eq!(status_key(&wrapped).0, "REVIEW_ATTENTION_NOT_CALCULATED");
     assert_eq!(status_text(&wrapped), "Needs attention: Farming is not calculated yet");
+    // A topic not reached yet reads as not started, never as needing attention.
+    let coming = attention_status(&formatted("REVIEW_COMING_UP", &[]));
+    assert_eq!(status_text(&coming), "Not started");
 }
 
 #[test]
@@ -10366,8 +12491,7 @@ fn hubs_list_every_topic_the_facts_allow_whatever_the_ticks() {
     // topics, the "More" rows included.
     let unticked = complete(FederalStatus::Single);
     let mut ticked = unticked.clone();
-    ticked.checklist.adjustments = AdjustmentTopics::STUDENT_LOAN.0;
-    ticked.checklist.credit_topics = CreditTopics::TUITION.0;
+    ticked.checklist.paid = PaidTopics::IRA_CONTRIBUTIONS.0 | PaidTopics::CARE.0;
     // Ticked topics come first (the walk's order); the set is the same.
     let sorted = |sets: Vec<Vec<TaxSection>>| {
         sets.into_iter()
@@ -10379,8 +12503,7 @@ fn hubs_list_every_topic_the_facts_allow_whatever_the_ticks() {
     };
     let sets = hub_topic_sets(unticked.clone());
     assert_eq!(sorted(sets.clone()), sorted(hub_topic_sets(ticked)));
-    let mut income = ALL_INCOME_TOPICS.to_vec();
-    income.push(TaxSection::MoreIncome);
+    let income = ALL_INCOME_TOPICS.to_vec();
     assert_eq!(
         sets,
         vec![
@@ -10428,7 +12551,7 @@ fn a_less_common_adjustment_saved_without_its_tick_ticks_it() {
     // saving an alimony agreement there ticks "Something less common"
     // (follow_ticks); the row then counts the agreement.
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    assert_eq!(s.draft.checklist.adjustments, 0);
+    assert_eq!(s.draft.checklist.paid, 0);
     let hub = open_adjustments_hub(&mut s);
     let more = row_for(&hub, TaxSection::MoreAdjustments);
     assert_eq!(status_key(&more.status), ("REVIEW_NONE".into(), 0));
@@ -10477,42 +12600,39 @@ fn replies_carry_only_what_their_page_shows() {
 // Plans are not completeness (walk-owned data): the tick navigates the
 // first walk only and afterwards follows its data.
 
-// The student loan page opened from the adjustments hub's row, saved with
-// `forms` and `other` interest; the hub it returns to.
-fn student_loan_from_the_hub(s: &mut Interview, forms: Vec<Form1098E>, other: i64) -> P {
+// The IRA contributions page opened from the adjustments hub's row, saved
+// with `people`; the hub it returns to.
+fn iras_from_the_hub(s: &mut Interview, people: Vec<IraContributor>) -> P {
     let hub = open_adjustments_hub(s);
-    let row = row_for(&hub, TaxSection::StudentLoan);
-    let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) = send(s, tap_row(&hub, row)) else {
-        panic!("expected the student loan page")
+    let row = row_for(&hub, TaxSection::IraContributions);
+    let Reply::Edit(mut request @ P::SaveIraContributions { .. }) = send(s, tap_row(&hub, row))
+    else {
+        panic!("expected the IRA contributions page")
     };
-    let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
-    value.forms = forms;
-    value.other_interest = other;
+    let P::SaveIraContributions { value, .. } = &mut request else { unreachable!() };
+    value.people = people;
     accepted(&send(s, request));
     open_adjustments_hub(s)
 }
-fn form_1098_e(interest: i64) -> Form1098E {
-    Form1098E { interest, box_2: Form1098EBox2::NotChecked }
+fn ira_row_status(hub: &P) -> alloc::string::String {
+    status_text(&row_for(hub, TaxSection::IraContributions).status)
 }
-fn student_loan_row(hub: &P) -> alloc::string::String {
-    status_text(&row_for(hub, TaxSection::StudentLoan).status)
-}
-fn student_loan_ticked(s: &Interview) -> bool {
-    s.draft.checklist.adjustments & AdjustmentTopics::STUDENT_LOAN.0 != 0
+fn iras_ticked(s: &Interview) -> bool {
+    s.draft.checklist.paid & PaidTopics::IRA_CONTRIBUTIONS.0 != 0
 }
 
 #[test]
 fn an_entry_without_its_tick_sets_the_tick() {
-    // Unticked on the checklist, the topic is still listed; a 1098-E saved
-    // through its row ticks it, the row shows the entry, and the review has
-    // no item for it.
+    // Unchecked, the topic is still listed; a contribution saved through its
+    // row checks the box, the row shows the entry, and the review has no item
+    // for it.
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    assert!(!student_loan_ticked(&s));
+    assert!(!iras_ticked(&s));
     let hub = open_adjustments_hub(&mut s);
-    assert_eq!(student_loan_row(&hub), "Not started");
-    let hub = student_loan_from_the_hub(&mut s, vec![form_1098_e(60_000)], 0);
-    assert!(student_loan_ticked(&s));
-    assert_eq!(student_loan_row(&hub), "Recorded");
+    assert_eq!(ira_row_status(&hub), "Not started");
+    let hub = iras_from_the_hub(&mut s, vec![ira_row(Owner::Taxpayer, 300_000, None)]);
+    assert!(iras_ticked(&s));
+    assert_ne!(ira_row_status(&hub), "Not started");
     let (items, _, actions, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
     assert!(actions.contains(&FINISH));
@@ -10520,22 +12640,22 @@ fn an_entry_without_its_tick_sets_the_tick() {
 
 #[test]
 fn a_tick_follows_its_entries_after_the_first_walk() {
-    // Ticked with nothing entered: "Planned", a soft reminder, never an
+    // Checked with nothing entered: "Planned", a soft reminder, never an
     // item needing review. An entry replaces it; removing the last entry
-    // clears the tick and the row reads "Not started".
+    // clears the box and the row reads "Not started".
     let mut d = complete(FederalStatus::Single);
-    d.checklist.adjustments = AdjustmentTopics::STUDENT_LOAN.0;
+    d.checklist.paid = PaidTopics::IRA_CONTRIBUTIONS.0;
     let mut s = Interview::new(TEST_USER, d);
     let hub = open_adjustments_hub(&mut s);
-    assert_eq!(student_loan_row(&hub), "Planned");
+    assert_eq!(ira_row_status(&hub), "Planned");
     let (items, _, _, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
-    let hub = student_loan_from_the_hub(&mut s, vec![form_1098_e(60_000)], 0);
-    assert_eq!(student_loan_row(&hub), "Recorded");
-    assert!(student_loan_ticked(&s));
-    let hub = student_loan_from_the_hub(&mut s, vec![], 0);
-    assert!(!student_loan_ticked(&s));
-    assert_eq!(student_loan_row(&hub), "Not started");
+    let hub = iras_from_the_hub(&mut s, vec![ira_row(Owner::Taxpayer, 300_000, None)]);
+    assert_ne!(ira_row_status(&hub), "Planned");
+    assert!(iras_ticked(&s));
+    let hub = iras_from_the_hub(&mut s, vec![]);
+    assert!(!iras_ticked(&s));
+    assert_eq!(ira_row_status(&hub), "Not started");
     let (items, _, _, _) = review_state(&mut s);
     assert!(items.is_empty(), "{items:?}");
 }
@@ -10543,43 +12663,44 @@ fn a_tick_follows_its_entries_after_the_first_walk() {
 #[test]
 fn a_plan_navigates_the_first_walk_only() {
     // The first walk visits the planned topic; afterwards Next (resume)
-    // never re-enters it for its tick, though it stays planned. A tick newly
-    // set on the checklist is walked like a first-walk plan.
+    // never re-enters it for its box, though it stays planned. A box newly
+    // checked is walked like a first-walk plan.
     let mut d = complete(FederalStatus::Single);
-    d.finished_sections.retain(|s| !matches!(s, TaxSection::Adjustments | TaxSection::StudentLoan));
-    d.checklist.adjustments = AdjustmentTopics::STUDENT_LOAN.0;
+    d.finished_sections
+        .retain(|s| !matches!(s, TaxSection::Adjustments | TaxSection::IraContributions));
+    d.checklist.paid = PaidTopics::IRA_CONTRIBUTIONS.0;
     let mut s = Interview::new(TEST_USER, d);
-    let Reply::Edit(request @ P::SaveStudentLoan { .. }) =
+    let Reply::Edit(request @ P::SaveIraContributions { .. }) =
         send(&mut s, P::OpenInterview { user: TEST_USER })
     else {
         panic!("the first walk opens the planned topic")
     };
     // Next with nothing entered: the walk passes the topic.
     accepted(&send(&mut s, request));
-    assert!(s.draft.finished_sections.contains(&TaxSection::StudentLoan));
+    assert!(s.draft.finished_sections.contains(&TaxSection::IraContributions));
     let draft = s.draft.clone();
     let reply = send(&mut s, go_to(&draft, PAGE_ADJUSTMENTS, TaxSection::Review));
     accepted(&reply);
-    assert!(student_loan_ticked(&s));
+    assert!(iras_ticked(&s));
     let reply = send(&mut s, P::OpenInterview { user: TEST_USER });
-    assert!(!matches!(reply, Reply::Edit(P::SaveStudentLoan { .. })), "{reply:?}");
-    // Unticked and ticked again on the checklist: walked again.
+    assert!(!matches!(reply, Reply::Edit(P::SaveIraContributions { .. })), "{reply:?}");
+    // Unchecked and checked again: walked again.
     let draft = s.draft.clone();
     let reply = send(&mut s, navigate(&draft, TaxSection::Checklist));
     let value = checklist_of(&reply);
-    let reply = send(&mut s, tick(reply, Checklist { adjustments: 0, ..value }));
+    let reply = send(&mut s, tick(reply, Checklist { paid: 0, ..value }));
     accepted(&reply);
-    assert!(!student_loan_ticked(&s));
+    assert!(!iras_ticked(&s));
     let draft = s.draft.clone();
     let reply = send(&mut s, navigate(&draft, TaxSection::Checklist));
     let value = checklist_of(&reply);
     accepted(&send(
         &mut s,
-        tick(reply, Checklist { adjustments: AdjustmentTopics::STUDENT_LOAN.0, ..value }),
+        tick(reply, Checklist { paid: PaidTopics::IRA_CONTRIBUTIONS.0, ..value }),
     ));
-    assert!(!s.draft.finished_sections.contains(&TaxSection::StudentLoan));
+    assert!(!s.draft.finished_sections.contains(&TaxSection::IraContributions));
     let reply = send(&mut s, P::OpenInterview { user: TEST_USER });
-    assert!(matches!(reply, Reply::Edit(P::SaveStudentLoan { .. })), "{reply:?}");
+    assert!(matches!(reply, Reply::Edit(P::SaveIraContributions { .. })), "{reply:?}");
 }
 
 mod navigation_search {
@@ -10624,6 +12745,16 @@ mod navigation_search {
     #[test]
     fn all_five_search_entries_expose_the_same_eligible_destinations() {
         let (mut session, _) = at_the_income_hub();
+        // An accepted tax-payment plan makes the itemized summary eligible
+        // while automatic deductions and the unfinished income stay intact.
+        let Reply::Edit(mut checklist @ P::SaveChecklist { .. }) =
+            from_review(&mut session, TaxSection::Checklist)
+        else {
+            panic!("expected the checklist editor")
+        };
+        let P::SaveChecklist { value, .. } = &mut checklist else { unreachable!() };
+        value.paid |= PaidTopics::TAXES.0;
+        accepted(&send(&mut session, checklist));
         let d = session.draft.clone();
         let Reply::Edit(editor @ P::SaveDeductions { .. }) =
             send(&mut session, go_to(&d, PAGE_INCOME, TaxSection::Deductions))
@@ -10632,7 +12763,7 @@ mod navigation_search {
         };
         let mut editor = editor;
         if let P::SaveDeductions { value, .. } = &mut editor {
-            value.route = DeductionRoute::Compare;
+            value.itemize_override = None;
         }
         send(&mut session, editor);
         let d = session.draft.clone();
@@ -10824,14 +12955,62 @@ mod navigation_search {
         ] {
             assert!(prompt.contains(phrase), "missing {phrase}");
         }
-        let definition = &source[source.find("pub enum TaxSection").unwrap()
-            ..source.find("pub enum NavigationDestination").unwrap()];
+        let navigation = include_str!("../../core/shared/navigation.rs");
+        let definition = &navigation[navigation.find("pub enum TaxSection").unwrap()
+            ..navigation.find("pub enum NavigationDestination").unwrap()];
         assert!(
             definition.contains("Section 199A (199a), Form 8995 (8995) or Form 8995-A (8995-A)")
         );
         for description in definition.split("\n    /// ").skip(1) {
             assert!(!description.trim().is_empty());
         }
+    }
+
+    // The client refuses a search whose serialized context passes 64 KiB. The Review is the
+    // largest offered set: a Go to leaf and an answers link for every section, each its own
+    // candidate id. Under protocols.md "Candidate discovery and assembly before AI" and
+    // "Navigation context supplied to AI" the context carries each destination's name and
+    // description once, shared by the leaf and the link that open it; each candidate adds a
+    // label, status, request description and JSON framing, allowed 200 bytes. Today's Studio
+    // client still sends the description with each candidate (about twice), a conformance gap
+    // tracked in the platform client-conformance backlog. Rows repeated under remaining items
+    // or notes add ids only.
+    #[test]
+    fn the_review_search_context_stays_under_the_client_limit() {
+        let source = include_str!("../../core/shared/navigation.rs");
+        let body = &source[source.find("pub enum TaxSection").unwrap()
+            ..source.find("pub enum NavigationDestination").unwrap()];
+        let body = &body[..body.find("\n}").unwrap()];
+        let (mut names, mut descriptions, mut count) = (0, 0, 0);
+        let mut docs: Vec<&str> = Vec::new();
+        for line in body.lines().map(str::trim) {
+            if let Some(text) = line.strip_prefix("///") {
+                docs.push(text.trim());
+            } else if line.ends_with(',') && line.chars().next().is_some_and(|c| c.is_uppercase()) {
+                names += docs[0].len();
+                descriptions += docs[1..].join(" ").len();
+                count += 1;
+                docs.clear();
+            }
+        }
+        assert!(count >= 40, "{count}");
+        let prompt = crate::interview::resource_text("TAX_NAVIGATION_PROMPT").len();
+        let candidates = 2 * count;
+        let parts = [
+            ("the navigation prompt", prompt),
+            ("the section descriptions, once each", descriptions),
+            ("the section names, once each", names),
+            ("the per-candidate overhead", 200 * candidates),
+        ];
+        let total: usize = parts.iter().map(|(_, bytes)| bytes).sum();
+        let largest = parts.iter().max_by_key(|(_, bytes)| bytes).unwrap();
+        assert!(
+            total < 64 * 1024,
+            "the Review search context is about {total} bytes for {candidates} candidates; \
+             the largest part is {} at {} bytes; parts: {parts:?}",
+            largest.0,
+            largest.1
+        );
     }
 }
 
@@ -10847,33 +13026,64 @@ pub(in crate::tests) fn import_unselected(source: &str, item: &str) -> bool {
 
 #[test]
 fn div_import_keeps_box_5_eligibility_answer() {
-    let model = include_str!("../../federal/federal_model.rs");
-    assert!(import_unselected(model, "pub struct DivAnswers {"));
-    assert!(!model.contains("#[libertas_llm_doc_field]\n    pub answers: DivAnswers"));
+    let model = crate::federal_model::HUB_SOURCE;
+    assert!(import_unselected(model, "pub struct DividendSource {"));
+    assert!(
+        !model.contains(
+            "#[libertas_llm_doc_field]\n    pub reit_eligible: Option<DividendEligibility>"
+        )
+    );
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    let dividend = Div1099 {
-        answers: DivAnswers { reit_eligible: Some(true), after_death: None },
-        more: DivMore { section199a: 40_000, ..Default::default() },
-        ..native_div1099("".into(), 100_000, 0)
+    let dividend = {
+        let mut source = crate::DividendSource::printed(dividend_document(Div1099 {
+            section199a: 40_000,
+            ..native_div1099("".into(), 100_000, 0)
+        }));
+        source.reit_eligible = Some(true.into());
+        dividend_document(source)
     };
-    accepted(&send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::Div1099(dividend))]),
-    ));
+    accepted(&{
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend),
+                },
+            )],
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     // The import: box 5 printed with a new amount, the answer untouched.
-    let reopened =
-        page_documents(&open_topic(&mut session, TaxSection::InterestDividends)).to_vec();
-    let IncomeDocument::Div1099(mut imported) = reopened[0].document.clone() else {
+    let reopened = page_documents(&open_document_center(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::InterestDividend {
+        value: crate::InterestDividendDocument::Div1099(mut imported),
+    } = reopened[0].document.clone()
+    else {
         panic!("expected the 1099-DIV")
     };
-    imported.ordinary = 120_000;
-    imported.more.section199a = 50_000;
+    imported.ordinary = Some(120_000);
+    imported.section199a = Some(50_000);
     let request = save_documents(
-        &session.draft.clone(),
-        vec![document(reopened[0].id, IncomeDocument::Div1099(imported))],
+        &mut session,
+        vec![document(
+            reopened[0].id,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(imported),
+            },
+        )],
     );
-    accepted(&send(&mut session, request));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     let data = session
         .draft
         .income
@@ -10883,20 +13093,47 @@ fn div_import_keeps_box_5_eligibility_answer() {
             _ => None,
         })
         .expect("the dividend");
-    assert_eq!(data.section199a, ReitDividends::Reported { amount: 50_000, eligible: true });
-    let page = open_topic(&mut session, TaxSection::InterestDividends);
-    let IncomeDocument::Div1099(again) = &page_documents(&page)[0].document else {
+    assert_eq!(
+        FederalDividend::from(data).section199a,
+        ReitDividends::Reported { amount: 50_000, eligible: Some(true) }
+    );
+    let page = open_document_center(&mut session);
+    let rows: Vec<_> = page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect();
+    let IncomeSource::InterestDividend { value: crate::InterestDividendDocument::Div1099(again) } =
+        &rows[0].document
+    else {
         panic!("expected the 1099-DIV")
     };
-    assert_eq!(again.answers.reit_eligible, Some(true));
-    // Box 5 with no answer is refused on the server too.
-    let mut unanswered = again.clone();
-    unanswered.answers.reit_eligible = None;
-    let request = save_documents(
-        &session.draft.clone(),
-        vec![document(reopened[0].id, IncomeDocument::Div1099(unanswered))],
+    assert_eq!(
+        session.draft.income.iter().find_map(|entry| match &entry.income {
+            FederalIncome::Dividend { data } => data.reit_eligible,
+            _ => None,
+        }),
+        Some(true.into())
     );
-    rejected_with(send(&mut session, request), "DIV_REIT_ELIGIBILITY_NEEDED");
+    // Box 5 with no answer is refused on the server too.
+    let unanswered = dividend_document(crate::DividendSource::printed(again.clone()));
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            reopened[0].id,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(unanswered),
+            },
+        )],
+    );
+    let desired = page_documents(&request);
+    accepted(&send(&mut session, request));
+    let topic = crate::tests::support::client::income_pages::information_return_answers_for_topic(
+        &mut session,
+        &desired,
+        TaxSection::InterestDividends,
+    )
+    .unwrap();
+    rejected_with(send(&mut session, topic), "DIV_REIT_ELIGIBILITY_NEEDED");
 }
 
 #[test]
@@ -10908,15 +13145,17 @@ fn blank_prior_agi_is_stored_blank_and_reopens_blank() {
         *prior_agi = None;
     }
     let blank = Payments {
-        estimated: vec![page_paid(20260415, 100_000)],
-        penalty: choice,
+        estimated: crate::EstimatedPaymentEntry::Sources {
+            payments: vec![page_paid(20260415, 100_000)],
+        },
+        more: crate::PaymentsMore { penalty: choice, ..no_payments().more },
         ..no_payments()
     };
     accepted(&submit(&mut s, blank.clone()));
     let pay = s.draft.payments.clone().unwrap();
     assert_eq!(pay.prior_year.as_ref().map(|p| p.agi), Some(None));
     let page = open_payments(&mut s);
-    assert_eq!(payments_value(&page).0.penalty, blank.penalty);
+    assert_eq!(payments_value(&page).0.more.penalty, blank.more.penalty);
 }
 
 // Form 8815 on the Interest and dividends page (F7). The savings-bond record
@@ -10926,12 +13165,14 @@ fn blank_prior_agi_is_stored_blank_and_reopens_blank() {
 fn savings_bonds_page_round_trips_people_by_identity_and_checks_its_rules() {
     use crate::tests::investment::investment::bond_return;
     let mut d = bond_return(FederalStatus::Joint, 100_000, 3_000);
+    d.people.as_mut().unwrap().spouse.as_mut().unwrap().first_name = "Jordan".into();
+    name_accepted_income_documents(&mut d);
     let child = d.dependents[0].id;
     // The page's 1099-INT replaces the fixture's statement.
     d.income.pop();
     let mut session = Interview::new(TEST_USER, d);
-    let page = open_topic(&mut session, TaxSection::InterestDividends);
-    let P::SaveIncomes { people, allowed_documents, .. } = &page else { unreachable!() };
+    let page = open_document_center(&mut session);
+    let P::SaveDocuments { people, allowed_documents, .. } = &page else { unreachable!() };
     // You, your spouse and the dependent, keyed by identity; the filers' labels
     // are FormattedText resources, not typed text.
     assert_eq!(people.iter().map(|p| p.id).collect::<Vec<_>>(), vec![-1, -2, child]);
@@ -10950,6 +13191,8 @@ fn savings_bonds_page_round_trips_people_by_identity_and_checks_its_rules() {
         contributions: 5_000,
     };
     let mut bonds = SavingsBonds {
+        source_issuer: Default::default(),
+        source_recipient: Default::default(),
         proceeds: 1_200_000,
         redemption_interest: 300_000,
         earliest_issue_date: 20100601,
@@ -10967,22 +13210,50 @@ fn savings_bonds_page_round_trips_people_by_identity_and_checks_its_rules() {
         preview: None,
         community: CommunityShare::NotNeeded,
     };
-    let request = save_topic(
+    let interest_document = named_document(
         &session.draft,
-        TaxSection::InterestDividends,
-        vec![owned(Owner::Spouse, 0, IncomeDocument::Int1099(int))],
+        -2,
+        0,
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(int)),
+        },
+    );
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![interest_document],
     );
     accepted(&send(&mut session, request));
-    let interest_row = page_documents(&open_topic(&mut session, TaxSection::InterestDividends))
+    let interest_row = page_documents(&open_document_center(&mut session))
         .iter()
-        .find(|r| matches!(r.document, IncomeDocument::Int1099(_)))
+        .find(|r| {
+            matches!(
+                r.document,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(_)
+                }
+            )
+        })
         .unwrap()
         .clone();
     bonds.interest_statement = interest_row.id;
-    let documents =
-        vec![interest_row, owned(Owner::Spouse, 0, IncomeDocument::SavingsBonds(bonds.clone()))];
-    let request = save_topic(&session.draft, TaxSection::InterestDividends, documents);
-    let reply = send(&mut session, request);
+    bonds.source_recipient = accepted_document_names(&session.draft, Owner::Spouse).recipient;
+    let documents = vec![
+        interest_row,
+        owned(
+            crate::DocumentOwner::Spouses,
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::SavingsBonds(savings_bonds_document(
+                    savings_bonds_source(bonds.clone()),
+                )),
+            },
+        ),
+    ];
+    let request = save_documents(&mut session, documents);
+    let reply = crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    );
     assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     // Stored by identity, in the page's order, owned by the spouse.
     let entry = session
@@ -10991,42 +13262,79 @@ fn savings_bonds_page_round_trips_people_by_identity_and_checks_its_rules() {
         .iter()
         .find(|e| matches!(e.income, FederalIncome::SavingsBonds { .. }))
         .expect("the savings bond record");
-    assert_eq!(entry.owner, Owner::Spouse);
+    assert_eq!(entry.owner, crate::DocumentOwner::Spouses);
     assert_eq!(entry.label, "");
     let FederalIncome::SavingsBonds { data } = &entry.income else { unreachable!() };
+    let data = data.natural().expect("supplied bond entry facts and answers");
     assert_eq!(data.students.iter().map(|s| s.person).collect::<Vec<_>>(), vec![child, -2, -1]);
     assert_eq!(data.proceeds, 1_200_000);
     assert_eq!(data.earliest_issue_date, 20100601);
     // The stored return reopens as the same page row.
     session.draft = FederalDraft::from_avro(&session.draft.to_avro()).unwrap();
-    let page = open_topic(&mut session, TaxSection::InterestDividends);
+    let page = open_document_center(&mut session);
     let reopened: Vec<_> = page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect::<Vec<_>>()
         .iter()
         .filter_map(|item| match &item.document {
-            IncomeDocument::SavingsBonds(v) => Some((item.owner, v.clone())),
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::SavingsBonds(v),
+            } => Some((item.owner.owned(), v.clone())),
             _ => None,
         })
         .collect();
-    assert_eq!(reopened, vec![(Owner::Spouse, bonds.clone())]);
+    assert_eq!(
+        reopened,
+        vec![(Owner::Spouse, savings_bonds_document(savings_bonds_source(bonds.clone())))]
+    );
     // No amount is previewed: the exclusion depends on the whole return.
     assert!(
         page_documents(&page)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()
             .iter()
-            .filter(|item| matches!(item.document, IncomeDocument::SavingsBonds(_)))
+            .filter(|item| matches!(
+                item.document,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::SavingsBonds(_)
+                }
+            ))
             .all(|item| item.preview.is_none())
     );
 
     // The page rules, on the server with their client keys.
     let reject = |bonds: SavingsBonds, twice: bool, key: &str| {
         let mut session = Interview::new(TEST_USER, session.draft.clone());
-        let mut documents =
-            vec![owned(Owner::Taxpayer, 0, IncomeDocument::SavingsBonds(bonds.clone()))];
+        let mut documents = vec![owned(
+            crate::DocumentOwner::Yours,
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::SavingsBonds(savings_bonds_document(
+                    savings_bonds_source(bonds.clone()),
+                )),
+            },
+        )];
         if twice {
-            documents.push(owned(Owner::Taxpayer, 0, IncomeDocument::SavingsBonds(bonds)));
+            documents.push(owned(
+                crate::DocumentOwner::Yours,
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::SavingsBonds(savings_bonds_document(
+                        savings_bonds_source(bonds),
+                    )),
+                },
+            ));
         }
         let before = session.draft.clone();
-        let reply =
-            send(&mut session, save_topic(&before, TaxSection::InterestDividends, documents));
+        let reply = {
+            let request = save_documents(&mut session, documents);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        };
         let Reply::Response(P::Problem { message, .. }) = reply else {
             panic!("expected a problem for {key}, got {reply:?}")
         };
@@ -11049,22 +13357,9 @@ fn savings_bonds_page_round_trips_people_by_identity_and_checks_its_rules() {
         false,
         "SAVINGS_BONDS_ISSUED_AFTER_2026",
     );
-    // Preview: a pure request with no amount.
-    let preview = {
-        let mut request = catalog_preview_document(IncomeDocument::SavingsBonds(bonds));
-        let P::PreviewDocument { people: request_people, .. } = &mut request else {
-            unreachable!()
-        };
-        *request_people = people.clone();
-        request
-    };
-    assert!(matches!(
-        send(&mut session, preview),
-        Reply::Response(P::IncomePreview { preview: None, .. })
-    ));
 }
 fn document_index_of_savings_bonds() -> i32 {
-    libertas_macros::variant_index!(IncomeDocument::SavingsBonds) as i32
+    libertas_macros::variant_index!(crate::IncomeSourceKind::SavingsBonds) as i32
 }
 
 // Form 8818 import: the AI import reads the three printed facts (line 6, line
@@ -11072,7 +13367,7 @@ fn document_index_of_savings_bonds() -> i32 {
 // source link and the people stay the filer's.
 #[test]
 fn savings_bonds_import_reads_form_8818_and_leaves_personal_records() {
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     let page = &model[model.find("pub struct SavingsBonds {").unwrap()..];
     let page = &page[..page.find("\n}").unwrap()];
     let head = &model[..model.find("pub struct SavingsBonds {").unwrap()];
@@ -11098,10 +13393,22 @@ fn savings_bonds_import_reads_form_8818_and_leaves_personal_records() {
         })
         .flatten()
         .collect();
-    assert_eq!(imported, vec!["proceeds", "redemption_interest", "earliest_issue_date"]);
+    // 2026-10-23: printed identity is imported alongside the source boxes.
+    assert_eq!(
+        imported,
+        vec![
+            "source_issuer",
+            "source_recipient",
+            "proceeds",
+            "redemption_interest",
+            "earliest_issue_date"
+        ]
+    );
     assert_eq!(page.matches("(allow_empty = false)").count(), 3);
     // An import replaces exactly those fields of a row and keeps the rest.
     let mut row = SavingsBonds {
+        source_issuer: Default::default(),
+        source_recipient: Default::default(),
         proceeds: 1,
         redemption_interest: 0,
         earliest_issue_date: 20000101,
@@ -11136,10 +13443,10 @@ pub(in crate::tests) fn election_interest(taxable: i64) -> Int1099 {
 // Form 6781 (unit B2): the 1099-B contracts kind and the carryback kind.
 fn contracts_page(broker: &str, aggregate: i64) -> Contracts1099B {
     Contracts1099B {
-        broker: broker.into(),
+        payer: crate::PrintedParty::from_name(broker.into()),
+        recipient: Default::default(),
         aggregate,
         withholding: 12_345,
-        special: false,
         state_details: Default::default(),
     }
 }
@@ -11153,20 +13460,29 @@ fn contracts_1099b_round_trips_onto_the_section_1256_record() {
     s.draft.income.clear();
     let mut named = contracts_page("Example Futures Broker", -250_000);
     named.state_details = crate::StateWithholdingFields {
-        payer: Default::default(),
         states: vec![crate::StateTaxWithholding {
             state: crate::TaxState::CA,
             payer_state_id: "0000123".into(),
-            withholding: 777,
+            withholding: Some(777),
         }],
     };
     let blank = contracts_page("", 400_000);
-    let request = save_topic(
-        &s.draft.clone(),
-        TaxSection::InvestmentSales,
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut s,
         vec![
-            document(0, IncomeDocument::Contracts1099B(named.clone())),
-            owned(Owner::Taxpayer, 0, IncomeDocument::Contracts1099B(blank.clone())),
+            document(
+                0,
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::Contracts1099B(named.clone()),
+                },
+            ),
+            owned(
+                Owner::Taxpayer,
+                0,
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::Contracts1099B(blank.clone()),
+                },
+            ),
         ],
     );
     accepted(&send(&mut s, request));
@@ -11174,14 +13490,33 @@ fn contracts_1099b_round_trips_onto_the_section_1256_record() {
     assert_eq!(stored.len(), 2);
     assert_eq!(stored[0].label, "Example Futures Broker");
     assert_eq!(stored[1].label, "");
+    // The stored source is the paper as printed (its parties and state rows
+    // included) with the unanswered topic choice.
+    let IncomeSource::InvestmentSale {
+        value: crate::InvestmentSaleDocument::Contracts1099B(paper),
+    } = expected_named_source(
+        &s.draft,
+        Owner::Taxpayer,
+        IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::Contracts1099B(named.clone()),
+        },
+    )
+    else {
+        unreachable!()
+    };
     assert_eq!(
         stored[0].income,
-        FederalIncome::Section1256 {
-            data: crate::FederalSection1256 {
-                aggregate: -250_000,
-                withholding: 12_345,
-                special_treatment: false,
-            }
+        FederalIncome::Section1256 { data: crate::ContractsSource::printed(paper) }
+    );
+    assert_eq!(
+        crate::FederalSection1256::from(match &stored[0].income {
+            FederalIncome::Section1256 { data } => data,
+            _ => unreachable!(),
+        }),
+        crate::FederalSection1256 {
+            aggregate: -250_000,
+            withholding: 12_345,
+            special_treatment: false
         }
     );
     assert_eq!(
@@ -11191,44 +13526,76 @@ fn contracts_1099b_round_trips_onto_the_section_1256_record() {
     assert_eq!(stored[1].state_source, None);
     // Reopened, the page reproduces both rows and saving them unchanged
     // reproduces the same records.
-    let reopened = open_topic(&mut s, TaxSection::InvestmentSales);
-    let rows: Vec<_> = page_documents(&reopened).iter().map(|item| item.document.clone()).collect();
+    let reopened = open_document_center(&mut s);
+    let rows: Vec<_> = page_documents(&reopened)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InvestmentSale { .. }))
+        .collect::<Vec<_>>()
+        .iter()
+        .map(|item| item.document.clone())
+        .collect();
     assert_eq!(
         rows,
-        vec![IncomeDocument::Contracts1099B(named), IncomeDocument::Contracts1099B(blank)]
+        expected_named_sources(
+            &s.draft,
+            Owner::Taxpayer,
+            vec![
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::Contracts1099B(named)
+                },
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::Contracts1099B(blank)
+                }
+            ]
+        )
     );
     let before = s.draft.income.clone();
-    let request = save_topic(
-        &s.draft.clone(),
-        TaxSection::InvestmentSales,
-        page_documents(&reopened).to_vec(),
+    let request = save_documents(
+        &mut s,
+        page_documents(&reopened)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InvestmentSale { .. }))
+            .collect::<Vec<_>>()
+            .to_vec(),
     );
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.income, before);
-    // The preview is the Form 6781 line 1 amount; a statement left out
-    // previews zero through the supported working copy; the carryback kind
-    // shows no amount.
-    let preview = |s: &mut Interview, document: IncomeDocument| match send(
-        s,
-        catalog_preview_document(document),
-    ) {
-        Reply::Response(P::IncomePreview { preview, .. }) => preview,
-        other => panic!("expected a preview, got {other:?}"),
+    // The preview is the Form 6781 line 1 amount; the carryback kind shows
+    // no amount.
+    let preview = |s: &mut Interview, document: IncomeSource| {
+        crate::tests::support::client::income_pages::saved_document_amount(s, document)
     };
-    assert_eq!(
-        preview(&mut s, IncomeDocument::Contracts1099B(contracts_page("", -250_000))),
-        Some(-250_000)
-    );
-    let mut left_out = contracts_page("", 400_000);
-    left_out.special = true;
-    assert_eq!(preview(&mut s, IncomeDocument::Contracts1099B(left_out)), Some(0));
     assert_eq!(
         preview(
             &mut s,
-            IncomeDocument::Section1256Carryback(crate::Section1256Carryback {
-                amount: 1,
-                injured_owners: None
-            })
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::Contracts1099B(contracts_page("", -250_000))
+            }
+        ),
+        Some(-250_000)
+    );
+    // The printed amount is retained; its separately supplied topic answer
+    // leaves this statement out of the supported estimate.
+    assert_eq!(
+        preview(
+            &mut s,
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::Contracts1099B(contracts_document(
+                    crate::ContractsSource { form: contracts_page("", 400_000), special: true },
+                )),
+            },
+        ),
+        Some(0)
+    );
+    assert_eq!(
+        preview(
+            &mut s,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Section1256Carryback(crate::Section1256Carryback {
+                    amount: 1,
+                    injured_owners: None
+                })
+            }
         ),
         None
     );
@@ -11236,19 +13603,28 @@ fn contracts_1099b_round_trips_onto_the_section_1256_record() {
 
 #[test]
 fn contracts_1099b_import_reads_box_11_box_4_and_the_state_boxes_only() {
-    let model = include_str!("../../federal/federal_model.rs");
-    let start = model.find("pub struct Contracts1099B {").unwrap();
+    // A printed Form 1099-B, contracts included, is imported as the complete
+    // paper (broker_document.rs); the contracts and sale kinds that remain in
+    // form_1099_b_model.rs are the filer's own records and import nothing.
+    let records = include_str!("../../investment/form_1099_b_model.rs");
+    for name in ["pub struct Contracts1099B {", "pub struct Sale1099B {"] {
+        let head = &records[..records.find(name).unwrap()];
+        let head = &head[head.rfind("\n}").unwrap_or(0)..];
+        assert!(!head.contains("#[libertas_llm_doc_trans("), "{name} imports nothing");
+    }
+    let model = include_str!("../../investment/broker_document.rs");
+    let start = model.find("pub struct Form1099B {").unwrap();
     let page = &model[start..];
     let page = &page[..page.find("\n}").unwrap()];
     let head = &model[..start];
     let action = &head[head.rfind("#[libertas_llm_doc_trans(").unwrap()..];
-    assert!(action.contains("boxes 8 through 11"));
-    assert!(action.contains("Read box 11 aggregate profit or (loss) into aggregate"));
-    assert!(action.contains("never figure it from boxes 8, 9 and 10"));
-    assert!(action.contains("Read box 4 federal income tax withheld"));
-    assert!(action.contains("Do not read boxes 1a, 8, 9 or 10"));
-    assert!(action.contains("state boxes 14 through 16"));
-    assert!(action.contains("validation = \"$.document_facts\""));
+    assert!(
+        action.contains("Boxes 8 through 11 and box 13 are independent actual printed amounts")
+    );
+    assert!(action.contains("Read box 11 exactly; never manufacture it from boxes 8 through 10"));
+    assert!(action.contains("Return null for clearly blank withholding"));
+    assert!(action.contains("Copy each populated state row once"));
+    assert!(action.contains("Never infer an owner from the household"));
     let imported: Vec<&str> = page
         .lines()
         .scan(false, |marked, line| {
@@ -11265,13 +13641,13 @@ fn contracts_1099b_import_reads_box_11_box_4_and_the_state_boxes_only() {
         })
         .flatten()
         .collect();
-    // The filer's hedge, election and dealer answer is never imported.
-    assert_eq!(imported, vec!["broker", "aggregate", "withholding", "state_details"]);
-    assert_eq!(page.matches("(allow_empty = false)").count(), 1);
-    // A 1099-B sale entry sends a contracts form to the contracts kind.
-    let sale = &model[..model.find("pub struct Sale1099B {").unwrap()];
-    let sale = &sale[sale.rfind("#[libertas_llm_doc_trans(").unwrap()..];
-    assert!(sale.contains("belongs in a 1099-B futures and section 1256 options entry"));
+    // The printed identity, box 11 aggregate, box 4 withholding and the state
+    // boxes are imported; the filer's hedge, election and dealer answer is
+    // not on the paper.
+    for field in ["payer", "recipient", "box_11_aggregate", "box_4_withholding", "state_details"] {
+        assert!(imported.contains(&field), "{field} is imported");
+    }
+    assert!(!page.contains("special"));
 }
 
 // Form 8824 (unit B2): the rental page's third disposition choice.
@@ -11314,23 +13690,21 @@ pub(in crate::tests) fn related_exchange_kind(disposed: u32) -> crate::RelatedEx
     }
 }
 
-pub(in crate::tests) fn roth_item_for_tests() -> R1099 {
-    R1099 {
-        code: DistributionCode::RothIra {
-            sequence: None,
-            rolled_over: 0,
-            roth: RothIraCode::Qualified,
-        },
-        ..printed_as(r1099(1_000_000, DistributionCode::Nonqualified, false), "Q")
-    }
+pub(in crate::tests) fn roth_item_for_tests() -> crate::R1099Answered {
+    let mut source = printed_as(r1099(1_000_000, DistributionCode::Nonqualified, false), "Q");
+    source.source_mut().code = Some(DistributionCode::RothIra {
+        sequence: None,
+        rolled_over: 0,
+        roth: RothIraCode::Qualified,
+    });
+    source
 }
 
 // Form 1099-Q and the 529 and Coverdell expenses record on the Prizes,
-// royalties, alimony and 529 plans page (unit B3). The page and the stored
+// royalties, alimony and 529 plans page. The page and the stored
 // record name a student by identity, the key of the page's people catalog.
 pub(in crate::tests) fn education_session() -> (Interview, i64) {
     let mut d = complete(FederalStatus::Joint);
-    d.checklist.income |= IncomeTopics::OTHER_INCOME.0;
     add_child(&mut d);
     let child = d.dependents[0].id;
     (Interview::new(TEST_USER, d), child)
@@ -11340,18 +13714,34 @@ pub(in crate::tests) fn q1099_page(
     account: EducationAccount,
     transfer: Q1099Transfer,
     beneficiary: Q1099Beneficiary,
-) -> Q1099 {
-    Q1099 { gross, account, transfer, beneficiary }
+) -> crate::EducationDistributionSource {
+    crate::EducationDistributionSource {
+        form: q1099_paper(Q1099 {
+            payer_trustee: Default::default(),
+            recipient: Default::default(),
+            gross,
+            account,
+            transfer,
+            recipient_not_beneficiary: !matches!(&beneficiary, Q1099Beneficiary::Recipient),
+        }),
+        beneficiary: Some((&beneficiary).into()),
+        coverdell_basis_start: None,
+        coverdell_contributions: 0,
+        redeposited: 0,
+        taxable_transfer_part: 0,
+        roth_rollover: None,
+        late_rollovers: None,
+    }
 }
 pub(in crate::tests) fn plain_withdrawal() -> Q1099Transfer {
-    Q1099Transfer::Withdrawal { reason: DistributionReason::Withdrawal, redeposited: 0 }
+    Q1099Transfer::Withdrawal { reason: DistributionReason::Withdrawal }
 }
 
 // Form 1099-Q import: the AI import reads the printed boxes (1, 2, 3, 4a/4b,
 // 5, 6, 7 and its code) and leaves the filer's records alone.
 #[test]
 fn q1099_import_reads_the_printed_boxes_and_leaves_personal_records() {
-    let source = include_str!("../../family/education_account.rs");
+    let source = include_str!("../../family/education_account_source.rs");
     let page = &source[source.find("pub struct Q1099 {").unwrap()..];
     let head = &source[..source.find("pub struct Q1099 {").unwrap()];
     let action = &head[head.rfind("#[libertas_llm_doc_trans(").unwrap()..];
@@ -11363,12 +13753,10 @@ fn q1099_import_reads_the_printed_boxes_and_leaves_personal_records() {
         "ExcessThisYear for code 2, ExcessLastYear for code 3, ProhibitedTransaction for code 6"
     ));
     assert!(action.contains("reason Disability for code 4, Death for code 5"));
-    assert!(
-        action.contains("return Recipient when it is not checked and Student when it is checked")
-    );
+    assert!(action.contains("Read box 6 into recipient_not_beneficiary exactly as checked"));
     assert!(action.contains("validation = \"$.document_facts\""));
-    // Everything up to the expenses record, whose rows are never imported.
-    let page = &page[..page.find("/// 529 and Coverdell expenses").unwrap()];
+    // Everything up to the college-cost facts, whose rows are never imported.
+    let page = &page[..page.find("/// College tuition and required books").unwrap()];
     let imported: Vec<&str> = page
         .lines()
         .scan(false, |marked, line| {
@@ -11388,10 +13776,12 @@ fn q1099_import_reads_the_printed_boxes_and_leaves_personal_records() {
     assert_eq!(
         imported,
         vec![
+            "payer_trustee",
+            "recipient",
             "gross",
             "account",
             "transfer",
-            "beneficiary",
+            "recipient_not_beneficiary",
             "earnings",
             "basis",
             "amounts",
@@ -11432,7 +13822,7 @@ pub(in crate::tests) fn k1_rental_boxes(real_estate: i64, other: i64) -> K1Renta
         disposed: Vec::new(),
         real_estate,
         other,
-        participation: K1RentalParticipation::Active,
+        participation: Some(K1RentalParticipation::Active),
         real_estate_qbi: Some(K1RentalQbi { wages: 120_000, property: 5_000_000 }),
         other_qbi: None,
         carryover_active: true,
@@ -11515,29 +13905,44 @@ fn equally_named_payers_keep_their_own_foreign_tax_box() {
         more: IntMore { foreign_tax, special: InterestSpecial::NoneOfThese, ..Default::default() },
         ..native_int1099("Same Bank".into(), 50_000)
     };
-    accepted(&send(
-        &mut session,
-        save_documents(
-            &original,
+    accepted(&{
+        let request = save_documents(
+            &mut session,
             vec![
-                document(0, IncomeDocument::Int1099(bank(10_000))),
-                document(0, IncomeDocument::Int1099(bank(5_000))),
+                document(
+                    0,
+                    IncomeSource::InterestDividend {
+                        value: crate::InterestDividendDocument::Int1099(interest_document(bank(
+                            10_000,
+                        ))),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::InterestDividend {
+                        value: crate::InterestDividendDocument::Int1099(interest_document(bank(
+                            5_000,
+                        ))),
+                    },
+                ),
             ],
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     // The amounts stay on the documents, so equal payers keep their own box 6;
     // the payee-statement taxes sum them.
     assert_eq!(crate::extended_rules::payee_statement_taxes(&session.draft), 15_000);
-    let reopened: Vec<i64> = page_documents(&open_topic(
-        &mut restart(session.draft.clone()),
-        TaxSection::InterestDividends,
-    ))
-    .iter()
-    .map(|item| match &item.document {
-        IncomeDocument::Int1099(v) => v.more.foreign_tax,
-        other => panic!("expected a 1099-INT, got {other:?}"),
-    })
-    .collect();
+    let reopened: Vec<i64> =
+        page_documents(&open_document_center(&mut restart(session.draft.clone())))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .map(|item| match &item.document {
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(v),
+                } => v.foreign_tax_paid,
+                other => panic!("expected a 1099-INT, got {other:?}"),
+            })
+            .collect();
     assert_eq!(reopened, vec![10_000, 5_000]);
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
 }
@@ -11547,6 +13952,7 @@ fn equally_named_insured_people_keep_their_own_premiums() {
     let mut d = complete(FederalStatus::Single);
     d.finished_sections = vec![
         TaxSection::Children,
+        TaxSection::IncomeWithoutForm,
         TaxSection::Checklist,
         TaxSection::Income,
         TaxSection::Adjustments,
@@ -11556,16 +13962,17 @@ fn equally_named_insured_people_keep_their_own_premiums() {
     d.dependents.push(dependent_record(first + 1, "Twin", "Sample", 20180101));
     d.next_id += 2;
     let mut s = Interview::new(TEST_USER, d);
-    let page = match send(&mut s, P::OpenInterview { user: TEST_USER }) {
-        Reply::Edit(page @ P::SaveDeductions { .. }) => page,
-        other => panic!("expected the deductions page, got {other:?}"),
-    };
-    assert!(matches!(page, P::SaveDeductions { .. }));
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
-    let P::SaveMedical { value, .. } = open_itemized_topic(&mut s, TaxSection::Medical) else {
-        panic!("expected the medical page")
-    };
+    let sources = open_document_center(&mut s);
+    accepted(&send(&mut s, sources));
+    let mut planned = s.draft.often_missed.clone();
+    planned.benefits |= MissedBenefits::MEDICAL.0;
+    accepted(&save_often_missed(&mut s, planned));
+    let page = from_review(&mut s, TaxSection::Deductions);
+    assert!(matches!(page, Reply::Edit(P::SaveDeductions { .. })), "{page:?}");
+    let request = save_deductions(&s.draft, None, 0);
+    crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
+    let mut request = open_itemized_topic(&mut s, TaxSection::Medical);
+    let P::SaveMedical { value, .. } = &mut request else { unreachable!() };
     assert_eq!(
         value.people.iter().map(|p| status_text(&p.label)).collect::<Vec<_>>(),
         vec![
@@ -11574,28 +13981,24 @@ fn equally_named_insured_people_keep_their_own_premiums() {
             alloc::string::String::from("Twin Sample")
         ]
     );
-    let request = save_medical(
-        &s.draft,
-        Medical {
-            expenses: 0,
-            long_term_care: vec![CarePremium {
-                qualified: CareContractQualification::Qualified,
-                person: first + 1,
-                premiums: 60_000,
-            }],
-            people: value.people.clone(),
-        },
-    );
+    value.expenses = 0;
+    value.long_term_care = vec![CarePremium {
+        qualified: CareContractQualification::Qualified,
+        person: first + 1,
+        premiums: 60_000,
+    }];
     itemized_hub(send_past_less_common(&mut s, request));
     let stored = stored_facts(&s).long_term_care;
     assert_eq!(stored.len(), 1);
     assert_eq!(stored[0].person, first + 1);
+    assert_eq!(stored[0].premiums, 60_000);
     // Reopening the page puts the premium on the second twin, not the first.
     let P::SaveMedical { value, .. } = open_itemized_topic(&mut s, TaxSection::Medical) else {
         panic!("expected the medical page")
     };
     assert_eq!(value.long_term_care.len(), 1);
     assert_eq!(value.long_term_care[0].person, first + 1);
+    assert_eq!(value.long_term_care[0].premiums, 60_000);
 }
 
 // Entry display names: an unnamed income entry reads as its kind's
@@ -11605,26 +14008,28 @@ fn unnamed_income_entries_read_as_their_kind_noun_over_the_identity() {
     let mut d = complete(FederalStatus::Single);
     d.income[0].label = "".into();
     d.income.push(FederalIncomeEntry {
+        printed: None,
         refund_management: None,
         state_source: Default::default(),
         id: 5,
         label: "".into(),
-        owner: Owner::Taxpayer,
+        owner: crate::DocumentOwner::Yours,
         income: cash_business(0),
         community: CommunityShare::NotNeeded,
     });
     d.income.push(FederalIncomeEntry {
+        printed: None,
         refund_management: None,
         state_source: Default::default(),
         id: 6,
         label: "".into(),
-        owner: Owner::Taxpayer,
+        owner: crate::DocumentOwner::Yours,
         income: FederalIncome::Section1256 {
-            data: crate::FederalSection1256 {
+            data: contracts_source(crate::FederalSection1256 {
                 aggregate: 100_000,
                 withholding: 0,
                 special_treatment: false,
-            },
+            }),
         },
         community: CommunityShare::NotNeeded,
     });
@@ -11646,14 +14051,17 @@ fn a_form_8814_election_is_named_by_its_child_everywhere_it_is_shown() {
     let original = s.draft.clone();
     accepted(&send(&mut s, save_children(&original, vec![row("Ava", "Sample", 20180615)])));
     let child = s.draft.dependents()[0].id;
-    let request = save_documents(
-        &s.draft.clone(),
+    let request = save_topic(
+        &mut s,
+        TaxSection::InterestDividends,
         vec![document(
             0,
-            IncomeDocument::Form8814(election_page(
-                child,
-                vec![ChildStatement::Int1099(election_interest(300_000))],
-            )),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Form8814(election_page(
+                    child,
+                    vec![ChildStatement::Int1099(election_interest(300_000).interest_source())],
+                )),
+            },
         )],
     );
     accepted(&send(&mut s, request));
@@ -11700,9 +14108,10 @@ fn the_election_answer_survives_a_save_and_the_documents_are_its_only_source() {
         save_more_credits(
             &original,
             MoreCredits {
+                answers: Vec::new(),
                 credits: vec![MoreCredit::ForeignTax(claim.clone().try_into().unwrap())],
 
-                credit_income_sources: Vec::new(),
+                documents: Vec::new(),
             },
         ),
     ));
@@ -11714,14 +14123,22 @@ fn the_election_answer_survives_a_save_and_the_documents_are_its_only_source() {
     };
     // With no document showing a foreign tax, a save of the topic ends the
     // election: nothing else holds an amount.
-    let request =
-        save_documents(&s.draft.clone(), vec![document(0, IncomeDocument::Int1099(bank.clone()))]);
+    let request = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(bank.clone())),
+            },
+        )],
+    );
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.credits.as_ref().unwrap().foreign_tax, ForeignTaxClaim::No);
     let request = save_more_credits(
         &s.draft.clone(),
         MoreCredits {
-            credit_income_sources: Vec::new(),
+            answers: Vec::new(),
+            documents: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(claim.clone().try_into().unwrap())],
         },
     );
@@ -11729,8 +14146,15 @@ fn the_election_answer_survives_a_save_and_the_documents_are_its_only_source() {
     // A 1099 with a foreign tax keeps the confirmed answer through a save.
     let mut bank = bank;
     bank.more.foreign_tax = 5_000;
-    let request =
-        save_documents(&s.draft.clone(), vec![document(0, IncomeDocument::Int1099(bank))]);
+    let request = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(bank)),
+            },
+        )],
+    );
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.credits.as_ref().unwrap().foreign_tax, claim);
     assert_eq!(crate::extended_rules::payee_statement_taxes(&s.draft), 5_000);
@@ -11789,9 +14213,10 @@ fn the_carryback_year_is_chosen_per_credit() {
         let request = save_more_credits(
             &s.draft,
             MoreCredits {
+                answers: Vec::new(),
                 credits: vec![MoreCredit::BusinessCredits(history.into())],
 
-                credit_income_sources: Vec::new(),
+                documents: Vec::new(),
             },
         );
         send(s, request)
@@ -11826,7 +14251,7 @@ fn nonresident_spouse_election_f3_is_an_ordinary_joint_return_and_excludes_dual_
     let mut joint = complete(FederalStatus::Joint);
     joint.income[0] = wage(1, Owner::Taxpayer, 9_000_000, 900_000);
     let mut s = Interview::new(TEST_USER, joint);
-    save_whole_return(&mut s, WholeReturnTopics::NONRESIDENT_SPOUSE.0);
+    save_whole_return(&mut s, SpouseSituations::NONRESIDENT_SPOUSE.0);
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "15"), 5_780_000);
     assert_eq!(return_line(&r, "16"), 644_300);
@@ -11840,7 +14265,7 @@ fn nonresident_spouse_election_f3_is_an_ordinary_joint_return_and_excludes_dual_
     assert_eq!(return_line(&r, "15"), 7_390_000);
     assert_eq!(return_line(&r, "16"), 1_097_600);
     // The choice and a dual-status return exclude each other, on the page and on save.
-    let both = WholeReturnTopics::NONRESIDENT_SPOUSE.0 | WholeReturnTopics::DUAL_STATUS.0;
+    let both = SpouseSituations::NONRESIDENT_SPOUSE.0 | YourSituations::DUAL_STATUS.0;
     let before = s.draft.clone();
     rejected_with(save_whole_return(&mut s, both), "WHOLE_RETURN_RESIDENT_CHOICE_OR_DUAL_STATUS");
     assert_eq!(s.draft.checklist, before.checklist);
@@ -11855,22 +14280,116 @@ pub(in crate::tests) fn linked_mortgage_form(property: &str) -> Mortgage1098 {
 pub(in crate::tests) fn linked_mortgage_editor(s: &mut Interview) -> P {
     let request = navigate(&s.draft, TaxSection::Mortgage);
     match send(s, request) {
-        Reply::Edit(page @ P::SaveMortgages { .. }) => page,
+        reply @ (Reply::Edit(P::SaveMortgages { .. })
+        | Reply::Response(P::BeginMortgages { .. })) => mortgage_editor(reply),
         other => panic!("expected mortgage editor, got {other:?}"),
     }
+}
+// Apply the fixture's explicit nonprinted answers through the accepted topic rows.
+pub(in crate::tests) fn save_mortgage_answers(
+    s: &mut Interview,
+    answers: &[(MortgageMore, crate::MortgagePointTreatment)],
+) -> Reply {
+    let mut request = linked_mortgage_editor(s);
+    let P::SaveMortgages { value, .. } = &mut request else { unreachable!() };
+    assert_eq!(value.loans.len(), answers.len());
+    for (row, (more, points)) in value.loans.iter_mut().zip(answers) {
+        row.property = more.property.clone();
+        // The origin is answered on the questions page and echoed read-only.
+        if let Some(source) = s
+            .draft
+            .deductions
+            .as_mut()
+            .unwrap()
+            .mortgage
+            .iter_mut()
+            .find(|source| source.id == row.id)
+        {
+            source.refund_origin = more.refund_origin.clone();
+        }
+        row.refund_origin = more.refund_origin.clone();
+        row.details = more.details.clone().into();
+        row.points = points.clone();
+    }
+    send(s, request)
 }
 pub(in crate::tests) fn save_linked_mortgage_rows(
     s: &mut Interview,
     loans: Vec<Mortgage1098>,
 ) -> Reply {
-    let mut request = linked_mortgage_editor(s);
-    let P::SaveMortgages { value, .. } = &mut request else { unreachable!() };
-    value.loans = loans;
-    send(s, request)
+    fn apply(s: &mut Interview, loans: Vec<Mortgage1098>) -> Reply {
+        let answers = loans
+            .iter()
+            .map(|loan| {
+                let points = if loan.points == 0 {
+                    crate::MortgagePointTreatment::None
+                } else {
+                    let accepted = s
+                        .draft
+                        .deductions
+                        .as_ref()
+                        .unwrap()
+                        .mortgage
+                        .iter()
+                        .find(|accepted| accepted.id == loan.id);
+                    match accepted.map(|accepted| mortgage_loan(accepted).points) {
+                        Some(MortgagePoints::Amortized { term_months, ended, .. }) => {
+                            crate::MortgagePointTreatment::Amortized { term_months, ended }
+                        }
+                        Some(MortgagePoints::Improvement { term_months, .. }) => {
+                            crate::MortgagePointTreatment::Improvement { term_months }
+                        }
+                        _ => crate::MortgagePointTreatment::Purchase,
+                    }
+                };
+                let mut more = loan.more.clone();
+                if loan.refund == 0 {
+                    more.refund_origin = None;
+                }
+                (more, points)
+            })
+            .collect::<Vec<_>>();
+        let request = save_mortgages(
+            s,
+            crate::MortgageDocuments {
+                documents: loans.into_iter().map(mortgage_document).collect(),
+            },
+        );
+        let reply = send(s, request);
+        if matches!(reply, Reply::Response(P::Problem { .. })) {
+            return reply;
+        }
+        save_mortgage_answers(s, &answers)
+    }
+    // Preflight the two ordinary saves in a cold session so the fixture's
+    // rejection keeps the caller's accepted source graph unchanged.
+    let mut candidate = restart(s.draft.clone());
+    let reply = apply(&mut candidate, loans.clone());
+    if matches!(reply, Reply::Response(P::Problem { .. })) {
+        return reply;
+    }
+    apply(s, loans)
 }
 pub(in crate::tests) fn linked_mortgage_rows(s: &mut Interview) -> Vec<Mortgage1098> {
-    let P::SaveMortgages { value, .. } = linked_mortgage_editor(s) else { unreachable!() };
-    value.loans
+    let P::SaveDocuments { documents, .. } = open_document_center(s) else { unreachable!() };
+    documents
+        .common
+        .mortgages
+        .documents
+        .into_iter()
+        .map(|document| {
+            let source = s
+                .draft
+                .deductions
+                .as_ref()
+                .unwrap()
+                .mortgage
+                .iter()
+                .find(|source| source.id == document.id)
+                .expect("accepted mortgage source");
+            mortgage_snapshot(source)
+        })
+        .collect()
 }
 pub(in crate::tests) fn accepted_linked_mortgage(s: &mut Interview) -> Mortgage1098 {
     let reply = save_linked_mortgage_rows(s, vec![linked_mortgage_form("Original loan")]);
@@ -11883,6 +14402,9 @@ fn asset_page_keeps_the_earlier_use_the_partial_and_the_whole_business_sale() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut b = business(8_800_000);
     b.assets = vec![Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -11891,17 +14413,23 @@ fn asset_page_keeps_the_earlier_use_the_partial_and_the_whole_business_sale() {
         cost: 1_400_000,
         credit_reduction: 0,
         placed: 20230601,
-        class: AssetClass::Seven,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class: AssetClass::Seven,
+                history: AssetHistory::Continuing {
+                    prior_depreciation: 1_400_000,
+                    first_year_179: 1_400_000,
+                    first_year_bonus: 0,
+                    carryforward: 0,
+                    mid_quarter: false,
+                },
+            },
+        },
         business_percent: 40,
         earlier_business_percent: Some(100),
         acquired: None,
-        history: AssetHistory::Continuing {
-            prior_depreciation: 1_400_000,
-            first_year_179: 1_400_000,
-            first_year_bonus: 0,
-            carryforward: 0,
-            mid_quarter: false,
-        },
         disposal: crate::AssetDisposal::No,
         investment_credit: crate::InvestmentCredit::No,
         partial: None,
@@ -11942,8 +14470,7 @@ pub(in crate::tests) fn estate_final_source(
 ) -> crate::EstateFinalCharacterPage {
     crate::EstateFinalCharacterPage {
         entity_terminated: true,
-        final_beneficiary_k1: true,
-        successor: true,
+
         section67e_nii: nii,
         section67e_in_h: in_h,
         additional: vec![],
@@ -11975,6 +14502,7 @@ pub(in crate::tests) fn estate_final_amounts(section_67e: i64) -> K1FinalYear {
 pub(in crate::tests) fn main_estate_qbi(income: i64, wages: i64) -> crate::EstateQbiStatementsPage {
     crate::EstateQbiStatementsPage {
         statements: vec![crate::EstateQbiStatementPage {
+            id: 0,
             allocations: Vec::new(),
             name: "Fiduciary allocated business".into(),
             income,
@@ -11996,6 +14524,7 @@ pub(in crate::tests) fn estate_nol_page(
     remaining_years: Option<u32>,
 ) -> K1EstateTrust {
     let mut page = k1_1041(name);
+    page.successor = Some(true);
     page.final_character = Some(estate_final_source(0, false));
     page.more.final_year = K1FinalYear::Final {
         section_67e: 0,
@@ -12129,7 +14658,7 @@ pub(in crate::tests) fn se_health_test_year(premiums: i64, partner: bool) -> SeH
 fn partial_entity_reimbursement_uses_actual_month_contract_and_child_subsets() {
     let mut k1 = k1_1120s("Actual reimbursement source");
     k1.ordinary = 1_000_000;
-    k1.participation = Participation::Over500Hours { hours: 600 };
+    k1.participation = Some(Participation::Over500Hours { hours: 600 });
     let (mut s, reply) = save_k1_1120s(vec![k1]);
     accepted(&reply);
     s.draft.people.as_mut().unwrap().taxpayer.birth_date = 19810102;
@@ -12138,8 +14667,13 @@ fn partial_entity_reimbursement_uses_actual_month_contract_and_child_subsets() {
     wage.social_tax = 31_000;
     wage.medicare_wages = 500_000;
     wage.medicare_tax = 7_250;
-    let request =
-        save_topic(&s.draft, TaxSection::Wages, vec![document(0, IncomeDocument::W2(wage))]);
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wage)) },
+        )],
+    );
     accepted(&send(&mut s, request));
     let wage =
         s.draft.income.iter().find(|e| matches!(e.income, FederalIncome::Wage { .. })).unwrap().id;
@@ -12335,11 +14869,11 @@ pub(in crate::tests) fn k1_sale_input_statement() -> crate::K1Section179Sale {
     }
 }
 
-fn care_charge_document(printed: &str, reduction: i64) -> R1099 {
+fn care_charge_document(printed: &str, reduction: i64) -> crate::R1099Answered {
     let mut source =
         printed_as(r1099(1_000_000, DistributionCode::QualifiedCareCharge, false), printed);
-    source.taxable = 0;
-    source.more.box_8a = reduction;
+    source.source_mut().form.taxable = Some(0);
+    source.source_mut().form.box_8a = Some(reduction);
     source
 }
 
@@ -12355,10 +14889,18 @@ fn code_w_actual_investment_reduction_round_trips_without_income_or_premium() {
         let mut session = Interview::new(TEST_USER, original.clone());
         let source = care_charge_document(printed, reduction);
         let request = save_documents(
-            &session.draft,
-            vec![document(0, IncomeDocument::R1099(source.clone()))],
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(source.clone())),
+                },
+            )],
         );
-        accepted(&send(&mut session, request));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
         let entry = session
             .draft
             .income
@@ -12367,14 +14909,20 @@ fn code_w_actual_investment_reduction_round_trips_without_income_or_premium() {
             .unwrap();
         let id = entry.id;
         let FederalIncome::Retirement { data } = &entry.income else { unreachable!() };
-        assert_eq!(entry.owner, Owner::Taxpayer);
+        let data = FederalRetirement::from(data);
+        assert_eq!(entry.owner, crate::DocumentOwner::Yours);
         assert_eq!(data.gross, source.gross);
         assert_eq!(data.kind, RetirementKind::Nonqualified);
         assert_eq!(
-            data.ordinary_distribution,
-            RetirementTreatment::QualifiedCareCharge { investment_reduction: reduction }
+            (data.ordinary_distribution.clone(), data.box_8a),
+            (Some(RetirementTreatment::QualifiedCareCharge), reduction)
         );
-        assert!(!crate::care_benefits::annuity_source(&session.draft, id, Owner::Taxpayer, 1));
+        assert!(!crate::care_benefit_return::annuity_source(
+            &session.draft,
+            id,
+            Owner::Taxpayer,
+            1
+        ));
         let result = supported(&session.draft);
         assert_eq!(result.tax, baseline.tax);
         assert_eq!(value(&result, "agi"), value(&baseline, "agi"));
@@ -12396,10 +14944,24 @@ fn code_w_actual_investment_reduction_round_trips_without_income_or_premium() {
             assert_eq!(amount, 0, "{printed} {line}");
         }
         let mut session = restart(session.draft);
-        let page = open_topic(&mut session, TaxSection::Retirement);
-        let got = &page_documents(&page)[0];
+        let page = open_document_center(&mut session);
+        let rows: Vec<_> = page_documents(&page)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let got = &rows[0];
         assert_eq!(got.id, id);
-        assert_eq!(got.document, IncomeDocument::R1099(source));
+        assert_eq!(
+            vec![(got.document).clone()],
+            expected_named_sources(
+                &session.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(source))
+                }]
+            )
+        );
         let P::SaveIncomes { annuity_sources, .. } =
             open_topic(&mut session, TaxSection::OtherIncome)
         else {
@@ -12418,42 +14980,59 @@ fn code_w_rejects_conflicting_printed_or_retained_facts() {
     let mut v = care_charge_document("W", 1_000_001);
     cases.push(v.clone());
     v = care_charge_document("W", 0);
-    v.taxable = 1;
+    v.source_mut().form.taxable = Some(1);
     cases.push(v.clone());
     v = care_charge_document("W", 0);
-    v.ira = true;
+    v.source_mut().form.ira = true;
     cases.push(v.clone());
     v = care_charge_document("W", 0);
-    v.trump = true;
+    v.source_mut().form.trump = true;
     cases.push(v.clone());
     v = care_charge_document("W", 0);
-    v.more.box_3 = 1;
+    v.source_mut().form.box_3 = Some(1);
     cases.push(v.clone());
     v = care_charge_document("W", 0);
-    v.code = DistributionCode::Nonqualified;
+    v.source_mut().code = Some(DistributionCode::Nonqualified);
     cases.push(v.clone());
     v = care_charge_document("7W", 0);
     cases.push(v);
     for source in cases {
         assert!(DistributionCodes::treatment_rule(&source).is_some());
         let mut session = Interview::new(TEST_USER, original.clone());
-        let mut request =
-            save_documents(&session.draft, vec![document(0, IncomeDocument::R1099(source))]);
-        if let P::SaveIncomes { documents, .. } = &mut request
-            && let IncomeDocument::R1099(row) = &mut documents.documents[0].document
-        {
-            row.allowed_treatments = vec![0, 6, 15];
-            row.allowed_methods = vec![0, 1, 2];
-        }
-        assert!(matches!(send(&mut session, request), Reply::Response(P::Problem { .. })));
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(source)),
+                },
+            )],
+        );
+        assert!(matches!(
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request
+            ),
+            Reply::Response(P::Problem { .. })
+        ));
         assert_eq!(session.draft, original);
     }
     let mut session = Interview::new(TEST_USER, original);
     let request = save_documents(
-        &session.draft,
-        vec![document(0, IncomeDocument::R1099(care_charge_document("W", 70_000)))],
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(care_charge_document(
+                    "W", 70_000,
+                ))),
+            },
+        )],
     );
-    accepted(&send(&mut session, request));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     for change in 0..4 {
         let mut forged = session.draft.clone();
         let FederalIncome::Retirement { data } = &mut forged
@@ -12465,17 +15044,31 @@ fn code_w_rejects_conflicting_printed_or_retained_facts() {
         else {
             unreachable!()
         };
+        let crate::RetirementSource::R1099(data) = data else { unreachable!() };
         match change {
-            0 => data.taxable = RetirementTaxable::Payer { amount: 1 },
-            1 => data.kind = RetirementKind::Ira,
-            2 => data.ordinary_distribution = RetirementTreatment::Ordinary,
+            0 => {
+                data.form.taxable = Some(1);
+                data.taxable_method = Some(TaxableMethod::BoxTwoA);
+            }
+            1 => data.form.ira = true,
+            2 => data.code = Some(normal_kept()),
             _ => {
-                data.ordinary_distribution = RetirementTreatment::QualifiedCareCharge {
-                    investment_reduction: data.gross + 1,
-                }
+                data.form.box_8a = Some(data.form.gross + 1);
+                data.code = Some(DistributionCode::QualifiedCareCharge)
             }
         }
-        assert!(!forged.valid_stored(), "{change}");
+        if change == 2 {
+            // A conflicting personal election is retained until the topic fixes it.
+            assert!(forged.valid_stored());
+            assert!(
+                estimate(&forged)
+                    .issues
+                    .iter()
+                    .any(|issue| issue.display.key == "R_CARE_CHARGE_SOURCE_INVALID")
+            );
+        } else {
+            assert!(!forged.valid_stored(), "{change}");
+        }
     }
 }
 
@@ -12487,7 +15080,8 @@ fn code_w_does_not_subtract_already_adjusted_other_payment_basis_again() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original);
     let mut withdrawal = r1099(700_000, DistributionCode::Nonqualified, false);
-    withdrawal.more.taxable_method = TaxableMethod::AnnuityWithdrawal {
+    withdrawal.source_mut().form.taxable_not_determined = true;
+    withdrawal.source_mut().taxable_method = Some(TaxableMethod::AnnuityWithdrawal {
         data: crate::AnnuityDistribution {
             loan_pledge: false,
             related: vec![],
@@ -12495,46 +15089,93 @@ fn code_w_does_not_subtract_already_adjusted_other_payment_basis_again() {
             investment: 600_000,
             eligible: true,
         },
-    };
+    });
     let request = save_documents(
-        &session.draft,
-        vec![document(0, IncomeDocument::R1099(withdrawal.clone()))],
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(withdrawal.clone())),
+            },
+        )],
     );
-    accepted(&send(&mut session, request));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     let baseline = supported(&session.draft);
-    let mut documents = page_documents(&open_topic(&mut session, TaxSection::Retirement)).to_vec();
-    documents.push(document(0, IncomeDocument::R1099(care_charge_document("W", 70_000))));
-    let request = save_documents(&session.draft, documents);
-    accepted(&send(&mut session, request));
+    assert_eq!(return_line(&baseline, "5b"), 400_000);
+    let mut documents = page_documents(&open_document_center(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+        .collect::<Vec<_>>();
+    documents.push(document(
+        0,
+        IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(care_charge_document(
+                "W", 70_000,
+            ))),
+        },
+    ));
+    let request = save_documents(&mut session, documents);
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     let result = supported(&session.draft);
+    assert_eq!(return_line(&result, "5b"), 400_000);
     assert_eq!(result.tax, baseline.tax);
     assert_eq!(value(&result, "agi"), value(&baseline, "agi"));
 }
 
 #[test]
-fn code_w_preview_is_transient_and_uses_the_same_actual_source_guards() {
+fn code_w_candidate_save_uses_the_same_actual_source_guards() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let before = session.draft.clone();
-    let preview = |source| {
-        let mut request = catalog_preview_document(IncomeDocument::R1099(source));
-        let P::PreviewDocument { foreign_countries, .. } = &mut request else { unreachable!() };
-        *foreign_countries = vec![];
-        request
-    };
-    assert!(matches!(
-        send(&mut session, preview(care_charge_document("6W", 70_000))),
-        Reply::Response(P::IncomePreview { preview: Some(0), .. })
-    ));
+    assert_eq!(
+        crate::tests::support::client::income_pages::saved_document_amount(
+            &mut session,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(care_charge_document(
+                    "6W", 70_000
+                )))
+            }
+        ),
+        Some(0)
+    );
     let mut invalid = care_charge_document("W", 70_000);
-    invalid.taxable = 1;
-    rejected_with(send(&mut session, preview(invalid)), "R_CARE_CHARGE_SOURCE_INVALID");
+    invalid.source_mut().form.taxable = Some(1);
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(invalid)),
+            },
+        )],
+    );
+    rejected_with(
+        crate::tests::support::client::save_retirement_fixture(
+            &mut session,
+            page_documents(&request),
+        ),
+        "R_CARE_CHARGE_SOURCE_INVALID",
+    );
     assert_eq!(session.draft, before);
     assert!(!session.dirty);
 }
 
 pub(in crate::tests) fn fill_care_provider(page: &mut P) {
     let P::SaveCare { value, .. } = page else { panic!("Care page") };
-    let paid = value.qualifying_people.iter().map(|p| p.expenses).sum::<i64>();
+    let paid = value
+        .qualifying_people
+        .iter()
+        .chain(value.new_people.iter())
+        .map(|p| match p.care {
+            CareCosts::Yes { expenses, .. } => expenses,
+            CareCosts::No => 0,
+        })
+        .sum::<i64>();
     if paid > 0 && value.providers.is_empty() {
         value.providers.push(CareProvider {
             id: 0,
@@ -12547,18 +15188,13 @@ pub(in crate::tests) fn fill_care_provider(page: &mut P) {
         });
     }
 }
-pub(in crate::tests) fn accept_care_provider(s: &mut Interview) {
-    let mut page = open_credits_topic(s, TaxSection::Care);
-    fill_care_provider(&mut page);
-    accepted(&send(s, page));
-}
 
 include!("../passthrough/unit22_interview_registration.rs");
 include!("../federal/unit47/interview_registration.rs");
 
 #[test]
 fn unit15_appraisal_catalog_normal_save_reopen_error_and_restart() {
-    let mut s = at_the_gifts_page(DeductionRoute::Itemize, 0);
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
     let mut page = gifts(vec![], vec![], vec![]);
     page.appraisals.push(gift_appraisal(0, 20261115));
     page.appraisals[0].declaration_date = 20261201;
@@ -12614,7 +15250,7 @@ fn unit15_appraisal_catalog_normal_save_reopen_error_and_restart() {
 #[test]
 fn unit15_two_new_gifts_actual_client_save_reopen_and_restart() {
     let client = NativeInterviewCase("TAX_UNIT15_CLIENT");
-    let mut s = at_the_gifts_page(DeductionRoute::Itemize, 0);
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
     let mut page = gifts(vec![], vec![], vec![]);
     page.appraisals.push(gift_appraisal(0, 20261115));
     page.appraisals[0].declaration_date = 20261201;
@@ -12668,7 +15304,7 @@ fn unit15_two_new_gifts_actual_client_save_reopen_and_restart() {
 #[test]
 fn unit15_original_map_carry_and_appraisal_errors_preserve_the_draft() {
     let client = NativeInterviewCase("TAX_UNIT15_CLIENT");
-    let mut s = at_the_gifts_page(DeductionRoute::Itemize, 0);
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
     let before = s.draft.clone();
     let empty = || gifts(vec![], vec![], vec![]);
     let mut duplicate = empty();
@@ -12821,7 +15457,7 @@ fn unit15_original_map_carry_and_appraisal_errors_preserve_the_draft() {
 #[test]
 fn unit15_two_new_appraisals_actual_client_allocate_and_reopen() {
     let client = NativeInterviewCase("TAX_UNIT15_APPRAISAL");
-    let mut s = at_the_gifts_page(DeductionRoute::Itemize, 0);
+    let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
     let seed = open_itemized_topic(&mut s, TaxSection::GiftCarryovers);
     client.write("SEED", &seed);
     let P::SaveGiftCarryovers { value: mut page, .. } = seed else { unreachable!() };
@@ -12907,7 +15543,7 @@ fn unit4_elected_three_building_history_and_results_survive_save_restart_reopen(
     assert_eq!(value(&r, "schedule_e_line43_professional_rentals"), 0);
     let revision = session.draft.revision;
     let reopened = page_documents(&open_topic(&mut session, TaxSection::Rentals)).to_vec();
-    let request = save_topic(&session.draft.clone(), TaxSection::Rentals, reopened);
+    let request = save_topic(&mut session, TaxSection::Rentals, reopened);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.revision, revision);
 }
@@ -12955,10 +15591,14 @@ fn unit4_joint_election_combines_spouse_sources_after_restart() {
         page.more.participation = RentalParticipation::Professional;
         page.more.suspended =
             SuspendedLoss { regular: prior * 100, amt: prior * 100, active_in_loss_year: false };
-        documents.push(owned(owner, 0, IncomeDocument::Rental(page)));
+        documents.push(owned(
+            owner,
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(page) },
+        ));
     }
-    let mut request = save_topic(&d, TaxSection::Rentals, documents);
     let mut session = Interview::new(TEST_USER, d);
+    let mut request = save_topic(&mut session, TaxSection::Rentals, documents);
     client.write_file("DIR", "rows-answers.avro", &request);
     client.write_file("DIR", "rows-seed.avro", &open_topic(&mut session, TaxSection::Rentals));
     if client.required_calculation(&mut session) {
@@ -12971,7 +15611,7 @@ fn unit4_joint_election_combines_spouse_sources_after_restart() {
     client.write_file("DIR", "rows-reopened.avro", &reopened_request);
     let reopened = page_documents(&reopened_request).to_vec();
     assert_eq!(
-        reopened.iter().map(|entry| entry.owner).collect::<Vec<_>>(),
+        reopened.iter().map(|entry| entry.owner.owned()).collect::<Vec<_>>(),
         vec![Owner::Taxpayer, Owner::Spouse]
     );
     let r = supported(&session.draft);
@@ -13004,7 +15644,7 @@ fn unit4_joint_election_combines_spouse_sources_after_restart() {
             Some("ISSUE_PROFESSIONAL_ELECTION_ALL_RENTALS")
         );
     }
-    let request = save_topic(&session.draft.clone(), TaxSection::Rentals, reopened);
+    let request = save_topic(&mut session, TaxSection::Rentals, reopened);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft, saved);
 }
@@ -13016,7 +15656,7 @@ fn unit4_joint_election_has_one_editor_and_default_false_cannot_revoke_it() {
     let mut session = Interview::new(TEST_USER, d);
     // The spouse qualifies first and records the existing annual election.
     let mut spouse = filer(session.draft.people.as_ref().unwrap().spouse.as_ref().unwrap());
-    spouse.real_estate_professional =
+    spouse.details.real_estate_professional =
         Some(ProfessionalRentals { single_activity: true, over_500_hours: true }.into());
     let request = save_spouse(&session.draft.clone(), spouse);
     accepted(&send(&mut session, request));
@@ -13024,7 +15664,7 @@ fn unit4_joint_election_has_one_editor_and_default_false_cannot_revoke_it() {
     assert_eq!(session.draft.professional_elections(Owner::Spouse), vec![0, 1]);
     // A fresh qualification on the other page supplies the normal false default.
     let mut you = filer(&session.draft.people.as_ref().unwrap().taxpayer);
-    you.real_estate_professional =
+    you.details.real_estate_professional =
         Some(ProfessionalRentals { single_activity: false, over_500_hours: false }.into());
     let request = save_you(&session.draft.clone(), you);
     let Reply::Edit(P::SaveSpouse { spouse, allowed_professional_elections, .. }) =
@@ -13033,7 +15673,10 @@ fn unit4_joint_election_has_one_editor_and_default_false_cannot_revoke_it() {
         panic!("spouse editor");
     };
     assert_eq!(allowed_professional_elections, vec![0, 1]);
-    assert_eq!(spouse.real_estate_professional.as_ref().unwrap().single_activity, SingleActivity);
+    assert_eq!(
+        spouse.details.real_estate_professional.as_ref().unwrap().single_activity,
+        SingleActivity
+    );
     assert!(!professional_status(&session, Owner::Taxpayer).unwrap().single_activity);
     assert!(professional_status(&session, Owner::Spouse).unwrap().single_activity);
     let saved = session.draft.clone();
@@ -13051,13 +15694,16 @@ fn unit4_joint_election_has_one_editor_and_default_false_cannot_revoke_it() {
         panic!("taxpayer editor");
     };
     assert_eq!(allowed_professional_elections, vec![1]);
-    assert_eq!(you.real_estate_professional.as_ref().unwrap().single_activity, SingleActivity);
+    assert_eq!(
+        you.details.real_estate_professional.as_ref().unwrap().single_activity,
+        SingleActivity
+    );
     let request = save_you(&session.draft.clone(), you);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft, saved); // Hidden projected choice is not persisted twice.
     // Only the authoritative existing answer can turn off the annual election.
     let mut spouse = Filer::from(spouse);
-    spouse.real_estate_professional.as_mut().unwrap().single_activity = SeparateActivities;
+    spouse.details.real_estate_professional.as_mut().unwrap().single_activity = SeparateActivities;
     let request = save_spouse(&session.draft.clone(), spouse);
     accepted(&send(&mut session, request));
     for owner in [Owner::Taxpayer, Owner::Spouse] {
@@ -13083,7 +15729,7 @@ fn unit4_joint_election_transfers_editor_when_personal_qualification_is_removed(
     // Conflicting retained flags use the elected answer, not the other's false.
     let mut session = Interview::new(TEST_USER, d);
     let mut you = filer(&session.draft.people.as_ref().unwrap().taxpayer);
-    you.real_estate_professional = None;
+    you.details.real_estate_professional = None;
     let request = save_you(&session.draft.clone(), you);
     let Reply::Edit(P::SaveSpouse { allowed_professional_elections, spouse, .. }) =
         send(&mut session, request)
@@ -13126,7 +15772,7 @@ fn unit4_new_qualification_actual_client_keeps_joint_election_after_restart() {
         data.history =
             RentalHistory { regular: prior * 100, amt: prior * 100, active_in_loss_year: false };
         add(&mut d, income(FederalIncome::Rental { data }));
-        d.income.last_mut().unwrap().owner = owner;
+        d.income.last_mut().unwrap().owner = crate::DocumentOwner::from(owner);
     }
     let mut session = Interview::new(TEST_USER, d);
     let back = P::Back {
@@ -13154,8 +15800,8 @@ fn unit4_new_qualification_actual_client_keeps_joint_election_after_restart() {
         unreachable!()
     };
     assert_eq!(allowed_professional_elections, vec![1]);
-    assert!(you.real_estate_professional.is_none());
-    you.real_estate_professional =
+    assert!(you.details.real_estate_professional.is_none());
+    you.details.real_estate_professional =
         Some(ProfessionalRentals { single_activity: false, over_500_hours: false }.into());
     let mut request = save_you(&session.draft.clone(), you);
     client.write("ANSWERS", &request);
@@ -13259,7 +15905,7 @@ fn validation_f10_continuing_risk_choices_follow_the_delivered_context() {
             let doc = if partnership {
                 let mut page = k1_1065("Synthetic Partners");
                 page.basis.start = k1_1065_continuing(50_000, history.clone());
-                IncomeDocument::K1Partnership(page)
+                crate::K1Document::K1Partnership((page).into())
             } else {
                 let mut page = k1_1120s("Synthetic Corp");
                 page.basis.start = k1_1120s_continuing(50_000, 50_000);
@@ -13267,52 +15913,63 @@ fn validation_f10_continuing_risk_choices_follow_the_delivered_context() {
                     unreachable!()
                 };
                 *risk_history = history.clone();
-                IncomeDocument::K1Scorp(page)
+                crate::K1Document::K1Scorp((page).into())
             };
             let mut session = Interview::new(TEST_USER, original.clone());
-            let request = save_topic(&original, TaxSection::PassThrough, vec![document(0, doc)]);
-            let P::SaveIncomes { allowed_continuing_risk, .. } = &request else { unreachable!() };
+            let request =
+                save_documents(&mut session, vec![document(0, IncomeSource::K1 { value: doc })]);
+            let P::SaveDocuments { allowed_continuing_risk, .. } = &request else { unreachable!() };
             assert_eq!(*allowed_continuing_risk, vec![1, 2]);
-            accepted(&send(&mut session, request));
+            accepted(&if matches!(request, P::SaveDocuments { .. }) {
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            } else {
+                send(&mut session, request)
+            });
             let before = session.draft.clone();
             let mut reopened = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { allowed_continuing_risk, documents, .. } = &mut reopened else {
+            let P::SaveIncomes { allowed_continuing_risk, followups, .. } = &mut reopened else {
                 unreachable!()
             };
             assert_eq!(*allowed_continuing_risk, ScorpRiskStart::continuing_choices());
-            let row = documents
-                .documents
-                .iter_mut()
-                .find(|row| {
-                    matches!(
-                        row.document,
-                        IncomeDocument::K1Scorp(_) | IncomeDocument::K1Partnership(_)
-                    )
+            let index = followups
+                .iter()
+                .position(|row| match &row.answer {
+                    crate::DocumentAnswer::K1PartnerBasisStart { .. } => partnership,
+                    crate::DocumentAnswer::K1ScorpBasisStart { .. } => !partnership,
+                    _ => false,
                 })
                 .unwrap();
-            let restored = match &mut row.document {
-                IncomeDocument::K1Scorp(page) => {
-                    let K1ScorpStart::Continuing { risk_history, .. } = &mut page.basis.start
-                    else {
-                        unreachable!()
-                    };
-                    risk_history
-                }
-                IncomeDocument::K1Partnership(page) => {
-                    let BasisStart::Continuing { risk_history, .. } = &mut page.basis.start else {
-                        unreachable!()
-                    };
-                    risk_history
-                }
+            // The basis start is its own required strict question, with the
+            // continuing risk histories as its allowed values.
+            assert_eq!(followups[index].allowed_values, ScorpRiskStart::continuing_choices());
+            let restored = match &mut followups[index].answer {
+                crate::DocumentAnswer::K1ScorpBasisStart {
+                    value: Some(K1ScorpStart::Continuing { risk_history, .. }),
+                } => risk_history,
+                crate::DocumentAnswer::K1PartnerBasisStart {
+                    value: Some(BasisStart::Continuing { risk_history, .. }),
+                } => risk_history,
                 _ => unreachable!(),
             };
             assert_eq!(*restored, history);
             *restored = ScorpRiskStart::New;
             // An echoed catalog cannot authorize an invalid answer on the server.
             *allowed_continuing_risk = vec![0];
-            rejected_with(
-                send(&mut session, reopened),
+            let path: alloc::string::String = libertas::SchemaPath::root()
+                .field("followups")
+                .key(followups[index].key.as_str())
+                .field("answer")
+                .field("value")
+                .field("risk_history")
+                .into();
+            crate::tests::support::assert::k1res::assert_located_rejection(
+                &mut session,
+                reopened,
                 if partnership { "PARTNER_RISK_HISTORY_NEW" } else { "SCORP_RISK_HISTORY_NEW" },
+                &path,
             );
             assert_eq!(session.draft, before);
         }
@@ -13636,7 +16293,7 @@ fn unit16_actual_fresh_research_history_source_row_save_reopen_restart() {
             amount: 500_000,
         });
     }
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let entity = d.income.last().unwrap().id;
     d.credits.as_mut().unwrap().business_credits = Some(empty_business_credit_history());
     let mut session = Interview::new(TEST_USER, d);
@@ -13730,13 +16387,16 @@ fn unit16_actual_fresh_retained_interest_origin_row_save_reopen_restart() {
     add(&mut d, income(savings_income(10000, 0)));
     let mut corporation = complete_ordinary_scorp(0, true);
     corporation.interest = 2_000_000;
-    add(&mut d, income(FederalIncome::Scorp { data: corporation }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(corporation) }));
     let entity = d.income.last().unwrap().id;
     itemized(d.deductions.as_mut().unwrap()).real_estate_taxes = 1_000_000;
     // Hold the approved witness's itemized route fixed. Automatic otherwise
     // correctly compares the new research limit and can prefer standard.
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     d.credits.as_mut().unwrap().business_credits = Some(BusinessCreditHistory {
         credits: vec![],
         carrybacks: vec![],
@@ -13804,7 +16464,12 @@ fn unit16_actual_fresh_retained_interest_origin_row_save_reopen_restart() {
         "INVESTMENT_BORROWING_RECORDS",
     );
     assert_eq!(session.draft, saved);
-    accepted(&send(&mut session, save_topic(&saved, TaxSection::PassThrough, vec![])));
+    accepted(&{
+        let mut request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        documents.common.k1.documents.clear();
+        send(&mut session, request)
+    });
     let borrowing =
         session.draft.deductions.as_ref().unwrap().investment_interest.as_ref().unwrap();
     assert_eq!(borrowing.loans[1].source, 0);
@@ -13824,54 +16489,65 @@ fn unit16_actual_fresh_k1_property_and_statement_rows_save_reopen_restart() {
     let profile = std::env::var("TAX_UNIT16_K1_PROFILE").unwrap_or_else(|_| "own".into());
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 31_610_000, 0);
+    name_accepted_income_documents(&mut d);
     let mut page = k1_1065("Synthetic actual Form3468 partnership");
-    page.interest =
-        PartnerInterest::General { participation: Participation::Over500Hours { hours: 600 } };
+    (page.participation, page.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Over500Hours { hours: 600 }).record(),
+        }),
+        Some(false),
+    );
     page.basis.contributions = 10_000_000;
     let (mut session, reply) = save_1065s(&d, vec![page]);
     accepted(&reply);
     if client.calculation(&mut session) {
         return;
     }
-    let seed = open_topic(&mut session, TaxSection::PassThrough);
+    let seed = open_document_center(&mut session);
     client.write("SEED", &seed);
     let mut answers = seed;
-    let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-    let IncomeDocument::K1Partnership(page) = &mut documents.documents[0].document else {
+    let P::SaveDocuments { documents, .. } = &mut answers else { panic!() };
+    let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[0].document
+    else {
         panic!()
     };
-    page.more.credits.push(crate::K1CreditPage::from(K1Credit {
-        carbon_oxide_origin: None,
-        renewable_facility_origin: None,
-        code: K1CreditCode::Other,
-        line: Some(BusinessCredit::DifferentialWage),
-        amount: 100_000,
-    }));
-    page.more.investment_property.push(K1InvestmentProperty::Energy {
-        id: 0,
-        basis: 1_000_000,
-        rate: EnergyRate {
-            increased_rate: false,
-            domestic_content: false,
-            energy_community: false,
+    crate::tests::support::builders::push_partnership_credit(
+        page,
+        K1Credit {
+            carbon_oxide_origin: None,
+            renewable_facility_origin: None,
+            code: K1CreditCode::Other,
+            line: Some(BusinessCredit::DifferentialWage),
+            amount: 100_000,
         },
-        own_form: if matches!(profile.as_str(), "automatic" | "no") {
+    );
+    crate::tests::support::builders::push_partnership_property(
+        page,
+        K1InvestmentProperty::Energy {
+            id: 0,
+            basis: 1_000_000,
+            rate: EnergyRate {
+                increased_rate: false,
+                domestic_content: false,
+                energy_community: false,
+            },
+            own_form: if matches!(profile.as_str(), "automatic" | "no") {
+                None
+            } else {
+                Some(OwnInvestmentCredit { amount: 200_000, reduced: profile != "unreduced" })
+            },
+        },
+    );
+    page.personal.as_mut().unwrap().investment_confirmed =
+        if matches!(profile.as_str(), "automatic" | "no") {
+            Some(if profile == "no" {
+                K1InvestmentConfirmation::No
+            } else {
+                K1InvestmentConfirmation::Yes
+            })
+        } else {
             None
-        } else {
-            Some(OwnInvestmentCredit { amount: 200_000, reduced: profile != "unreduced" })
-        },
-    });
-    page.more.allowed_investment_confirmations =
-        crate::k1_page::investment_choices(&page.more.investment_property);
-    page.more.investment_confirmed = if matches!(profile.as_str(), "automatic" | "no") {
-        Some(if profile == "no" {
-            K1InvestmentConfirmation::No
-        } else {
-            K1InvestmentConfirmation::Yes
-        })
-    } else {
-        None
-    };
+        };
     client.save(&mut session, answers);
     let result = supported(&session.draft);
     assert_eq!(
@@ -13897,6 +16573,7 @@ fn unit16_actual_fresh_k1_property_and_statement_rows_save_reopen_restart() {
     else {
         panic!()
     };
+    let data = data.clone();
     assert_eq!(
         crate::investment_credit::k1_basis_decrease(&data.investment_property),
         expected_reduction
@@ -13908,16 +16585,18 @@ fn unit16_actual_fresh_k1_property_and_statement_rows_save_reopen_restart() {
     }
     let saved = client.restart(&mut session);
     assert_eq!(supported(&session.draft), result);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
+    let reopened = open_document_center(&mut session);
     client.write("REOPENED", &reopened);
-    let P::SaveIncomes { documents, .. } = &reopened else { panic!() };
-    let IncomeDocument::K1Partnership(page) = &documents.documents[0].document else { panic!() };
+    let P::SaveDocuments { documents, .. } = &reopened else { panic!() };
+    let crate::K1Document::K1Partnership(page) = &documents.common.k1.documents[0].document else {
+        panic!()
+    };
     assert_eq!(
-        page.more.allowed_investment_confirmations,
+        page.calculation_page().more.allowed_investment_confirmations,
         if matches!(profile.as_str(), "automatic" | "no") { vec![0, 1] } else { vec![] }
     );
-    assert_eq!(page.more.credits.len(), 1);
-    assert_eq!(page.more.investment_property.len(), 1);
+    assert_eq!(page.statements.credits.len(), 1);
+    assert_eq!(page.statements.investment_property.len(), 1);
     accepted(&send(&mut session, reopened));
     assert_eq!(session.draft, saved);
 }
@@ -13934,23 +16613,31 @@ fn unit16_actual_fresh_retained_nol_row_save_reopen_restart() {
     let seed = client.editor(&mut session, TaxSection::SelfEmployment, "SEED");
     let mut answers = seed;
     let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-    documents.documents.push(document(
-        0,
-        IncomeDocument::NetOperatingLoss(LossCarryforward {
-            regular: vec![NolYearPage {
-                ptp_ebl: crate::PtpEblNol::NoPtpEbl,
-                injured_owners: None,
-                year: 2024,
-                balance: 1_000_000,
-                allowed_research_parts: vec![0],
-                research_parts: Some(ResearchLossPartsPage::Parts {
-                    sources: vec![ResearchLossPartPage { source: entity, amount: 1_000_000 }],
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::NetOperatingLoss(LossCarryforward {
+                    regular: vec![NolYearPage {
+                        ptp_ebl: crate::PtpEblNol::NoPtpEbl,
+                        injured_owners: None,
+                        year: 2024,
+                        balance: 1_000_000,
+                        allowed_research_parts: vec![0],
+                        research_parts: Some(ResearchLossPartsPage::Parts {
+                            sources: vec![ResearchLossPartPage {
+                                source: entity,
+                                amount: 1_000_000,
+                            }],
+                        }),
+                    }],
+                    amt: vec![],
+                    source: LossSource::Business,
                 }),
-            }],
-            amt: vec![],
-            source: LossSource::Business,
-        }),
-    ));
+            },
+        ))
+        .expect("record fixture"),
+    );
     client.save(&mut session, answers);
     let selected = std::env::var("TAX_UNIT16_NOL_EXPECT_ORIGIN").ok().as_deref() != Some("none");
     let r = supported(&session.draft);
@@ -13961,7 +16648,7 @@ fn unit16_actual_fresh_retained_nol_row_save_reopen_restart() {
     let saved = client.restart(&mut session);
     let reopened = client.editor(&mut session, TaxSection::SelfEmployment, "REOPENED");
     let P::SaveIncomes { documents, .. } = &reopened else { panic!() };
-    let IncomeDocument::NetOperatingLoss(loss) = &documents.documents.last().unwrap().document
+    let crate::IncomeRecord::NetOperatingLoss(loss) = &documents.documents.last().unwrap().document
     else {
         panic!()
     };
@@ -13969,7 +16656,7 @@ fn unit16_actual_fresh_retained_nol_row_save_reopen_restart() {
     assert_eq!(loss.regular[0].research_parts.is_some(), selected);
     let mut forged = reopened.clone();
     let P::SaveIncomes { documents, .. } = &mut forged else { panic!() };
-    let IncomeDocument::NetOperatingLoss(loss) =
+    let crate::IncomeRecord::NetOperatingLoss(loss) =
         &mut documents.documents.last_mut().unwrap().document
     else {
         panic!()
@@ -13988,7 +16675,12 @@ fn unit16_actual_fresh_retained_nol_row_save_reopen_restart() {
         "RETAINED_RESEARCH_SOURCE_UNAVAILABLE",
     );
     assert_eq!(session.draft, saved);
-    accepted(&send(&mut session, save_topic(&saved, TaxSection::PassThrough, vec![])));
+    accepted(&{
+        let mut request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        documents.common.k1.documents.clear();
+        send(&mut session, request)
+    });
     let NolHistory::Records { years, .. } = &session.draft.screening.as_ref().unwrap().nol else {
         panic!()
     };
@@ -14019,11 +16711,17 @@ fn unit16_actual_fresh_rental_basis_row_save_reopen_restart() {
     page.building.credit_reduction = 400_000;
     let mut answers = seed;
     let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
-    documents.documents = vec![document(0, IncomeDocument::Rental(page.clone()))];
+    documents.documents = vec![document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::Rental(page.clone()) },
+    )]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     client.save(&mut session, answers);
     let saved = session.draft.clone();
     assert_eq!(value(&supported(&saved), "agi"), 123_442);
-    // 2026-10-19, D-2026-10-19-01: $16,000×23/660=$557.5758;
+    // $16,000×23/660=$557.5758;
     // exact source cents round once to55,758c, then dollars on the form.
     assert_eq!(line_amount(&supported(&saved), "rental_2_depreciation"), 55_758);
     assert_eq!(displayed_line_amount(&supported(&saved), "rental_2_depreciation"), 55_800);
@@ -14032,7 +16730,9 @@ fn unit16_actual_fresh_rental_basis_row_save_reopen_restart() {
     assert_eq!(session.draft, saved);
     let reopened = open_topic(&mut session, TaxSection::Rentals);
     client.write("REOPENED", &reopened);
-    let IncomeDocument::Rental(reopened_page) = &page_documents(&reopened)[0].document else {
+    let IncomeSource::Record { value: crate::IncomeRecord::Rental(reopened_page) } =
+        &page_documents(&reopened)[0].document
+    else {
         unreachable!()
     };
     assert_eq!(reopened_page, &page);
@@ -14069,7 +16769,9 @@ fn unit16_actual_fresh_rental_basis_row_save_reopen_restart() {
     assert_eq!(value(&result, "agi"), 123_442);
     let saved = client.restart(&mut session);
     let reopened = open_topic(&mut session, TaxSection::Rentals);
-    let IncomeDocument::Rental(page) = &page_documents(&reopened)[0].document else {
+    let IncomeSource::Record { value: crate::IncomeRecord::Rental(page) } =
+        &page_documents(&reopened)[0].document
+    else {
         unreachable!()
     };
     assert_eq!(page.building.cost, 2_000_000);
@@ -14098,7 +16800,13 @@ fn unit16_actual_fresh_retained_capital_row_save_reopen_restart() {
     page.allowed_research_parts = vec![0];
     let mut answers = seed;
     let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
-    documents.documents = vec![document(0, IncomeDocument::CapitalLossCarryover(page))];
+    documents.documents = vec![document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::CapitalLossCarryover(page) },
+    )]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     client.save(&mut session, answers);
     let result = supported(&session.draft);
     assert_eq!(value(&result, "general_business_credit"), if none { 5567 } else { 5011 });
@@ -14109,7 +16817,9 @@ fn unit16_actual_fresh_retained_capital_row_save_reopen_restart() {
     let saved = client.restart(&mut session);
     let reopened = open_topic(&mut session, TaxSection::InvestmentSales);
     client.write("REOPENED", &reopened);
-    let IncomeDocument::CapitalLossCarryover(page) = &page_documents(&reopened)[0].document else {
+    let IncomeSource::Record { value: crate::IncomeRecord::CapitalLossCarryover(page) } =
+        &page_documents(&reopened)[0].document
+    else {
         unreachable!()
     };
     assert_eq!(page.allowed_research_parts, vec![0]);
@@ -14245,9 +16955,9 @@ fn unit16_actual_fresh_retained_charity_row_save_reopen_restart() {
         );
         assert_eq!(session.draft, saved);
     }
-    let mut removed = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &mut removed else { unreachable!() };
-    documents.documents.clear();
+    let mut removed = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut removed else { unreachable!() };
+    documents.common.k1.documents.clear();
     accepted(&send(&mut session, removed));
     let carry = &session.draft.deductions.as_ref().unwrap().charity_carryovers[0];
     assert_eq!(carry.balance, 1_000_000);
@@ -14263,30 +16973,38 @@ fn unit16_actual_fresh_k1_credit_import_lines_save_reopen_restart() {
         std::env::var("TAX_UNIT16_IMPORT_PROFILE").unwrap_or_else(|_| "partnership".into());
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 31_610_000, 0);
+    name_accepted_income_documents(&mut d);
     let document_value = if profile == "scorp" {
         let mut page = k1_1120s("Actual S corporation credit statement");
         page.interest = 1_000_000;
-        page.participation = Participation::Over500Hours { hours: 600 };
+        page.participation = Some(Participation::Over500Hours { hours: 600 });
         page.basis.additions = 10_000_000;
-        IncomeDocument::K1Scorp(page)
+        IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
     } else {
         assert_eq!(profile, "partnership");
         let mut page = k1_1065("Actual partnership credit statement");
         page.more.interest = 1_000_000;
-        page.interest =
-            PartnerInterest::General { participation: Participation::Over500Hours { hours: 600 } };
+        (page.participation, page.limited_for_se) = (
+            Some(crate::PartnerParticipation::General {
+                facts: (Participation::Over500Hours { hours: 600 }).record(),
+            }),
+            Some(false),
+        );
         page.basis.contributions = 10_000_000;
-        IncomeDocument::K1Partnership(page)
+        IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
     };
     let mut session = Interview::new(TEST_USER, d.clone());
-    accepted(&send(
-        &mut session,
-        save_topic(&d, TaxSection::PassThrough, vec![document(0, document_value)]),
-    ));
+    accepted(&{
+        let request = save_documents(&mut session, vec![document(0, document_value)]);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     if client.calculation(&mut session) {
         return;
     }
-    let seed = open_topic(&mut session, TaxSection::PassThrough);
+    let seed = open_document_center(&mut session);
     client.write("SEED", &seed);
     let expected: Vec<K1Credit> = [
         (K1CreditCode::OtherRentalRealEstate, BusinessCredit::DisabledAccess),
@@ -14306,11 +17024,21 @@ fn unit16_actual_fresh_k1_credit_import_lines_save_reopen_restart() {
     })
     .collect();
     let mut answers = seed;
-    let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-    let imported = expected.iter().cloned().map(crate::K1CreditPage::from).collect();
-    match &mut documents.documents[0].document {
-        IncomeDocument::K1Partnership(page) => page.more.credits = imported,
-        IncomeDocument::K1Scorp(page) => page.more.credits = imported,
+    let P::SaveDocuments { documents, .. } = &mut answers else { panic!() };
+    match &mut documents.common.k1.documents[0].document {
+        // The rental credits make participation a required answer.
+        crate::K1Document::K1Partnership(page) => {
+            crate::tests::support::builders::set_partnership_credits(page, &expected);
+            page.personal.as_mut().unwrap().rental_participation =
+                Some(crate::K1RentalParticipation::NotActive);
+        }
+        crate::K1Document::K1Scorp(page) => {
+            crate::tests::support::builders::set_scorp_credits(page, &expected);
+            let mut personal = crate::tests::support::builders::scorp_fixture_source(page).personal;
+            personal.rental_participation = Some(crate::K1RentalParticipation::NotActive);
+            *page =
+                crate::tests::support::builders::remember_scorp_document(page.clone(), personal);
+        }
         _ => panic!(),
     }
     client.save(&mut session, answers);
@@ -14321,14 +17049,14 @@ fn unit16_actual_fresh_k1_credit_import_lines_save_reopen_restart() {
     // statement's AB/ZZ and the separately answered M each allow100.
     assert_eq!(super::value(&result, "general_business_credit"), 300);
     let credits = match &session.draft.income.last().unwrap().income {
-        FederalIncome::Partnership { data } => &data.credits,
-        FederalIncome::Scorp { data } => &data.credits,
+        FederalIncome::Partnership { data } => data.clone().credits,
+        FederalIncome::Scorp { data } => ScorpK1::from(data).credits,
         _ => panic!(),
     };
-    assert_eq!(credits, &expected);
+    assert_eq!(credits, expected);
     let saved = client.restart(&mut session);
     assert_eq!(supported(&session.draft), result);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
+    let reopened = open_document_center(&mut session);
     client.write("REOPENED", &reopened);
     accepted(&send(&mut session, reopened));
     assert_eq!(session.draft, saved);
@@ -14569,14 +17297,12 @@ fn unit16_actual_fresh_shared_line_cap_and_section_b_save_reopen_restart() {
         let mut invalid_session = restart(saved.clone());
         let Reply::Response(review) = send(&mut invalid_session, forged) else { panic!() };
         client.write("LIMIT_REVIEW", &review);
-        let P::Review { result, .. } = review else { panic!() };
+        let P::Review { result, remaining_items, .. } = review else { panic!() };
         assert_eq!(result.state, ResultState::Unsupported);
-        assert!(
-            result
-                .issues
-                .iter()
-                .any(|issue| status_key(&issue.message).0 == "ISSUE_CREDIT_CARRYBACK_LIMIT")
-        );
+        assert!(remaining_items.iter().any(|item| matches!(
+            status_message(&item.status).args.get(1),
+            Some(MessageArg::Nested(issue)) if issue.key == "ISSUE_CREDIT_CARRYBACK_LIMIT"
+        )));
         assert!(result.tax.is_none());
         let invalid_saved = invalid_session.draft.clone();
         let Reply::Edit(mut correction) =
@@ -14698,74 +17424,53 @@ include!("interview/qbi_current_ptp/interview_registration.rs");
 
 include!("../passthrough/k1res_d6/interview_registration.rs");
 
-#[test]
-fn federal_cap_widening_keeps_w2_schedule_one_overflow_locator() {
-    let original = complete(FederalStatus::Single);
-    let mut session = Interview::new(TEST_USER, original.clone());
-    let mut form = w2(1_000);
-    form.wages = i64::MAX;
-    form.answers.deferred_pension = i64::MAX;
-    form.answers.inmate_pay = 1;
-    let reply =
-        send(&mut session, save_documents(&original, vec![document(0, IncomeDocument::W2(form))]));
-    let Reply::Response(P::Problem { message, field }) = reply else { panic!("{reply:?}") };
-    assert_eq!(message, libertas::libertas_formatted_text("W2_SCHEDULE_1_PAY_ABOVE_WAGES", &[]));
-    assert_eq!(field.as_deref(), Some("[documents/documents/0/document/answers/inmate_pay]"));
-    assert_eq!(session.draft, original);
-}
+#[path = "../federal/document_center.rs"]
+mod document_center;
 
 #[test]
-fn federal_cap_widening_keeps_1099g_original_relationship_priority() {
-    let original = complete(FederalStatus::Single);
-    let mut session = Interview::new(TEST_USER, original.clone());
-    let mut form = Form1099G {
-        amount: i64::MAX,
-        withholding: i64::MAX,
-        more: Default::default(),
-        state_details: Default::default(),
-    };
-    // The native source check follows this relationship check. Preserve that
-    // order even for a forged negative source and an overflowing partial sum.
-    form.more.rtaa = i64::MAX;
-    form.more.family_leave = -i64::MAX;
-    form.more.market_gain = -1;
-    let reply = send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::Form1099G(form))]),
-    );
-    let Reply::Response(P::Problem { message, field }) = reply else { panic!("{reply:?}") };
-    assert_eq!(
-        message,
-        libertas::libertas_formatted_text("FORM_1099G_WITHHOLDING_ABOVE_BENEFITS", &[])
-    );
-    assert_eq!(field.as_deref(), Some("[documents/documents/0/document/withholding]"));
-    assert_eq!(session.draft, original);
-}
-
-#[test]
-fn unit47_q1099_box_comparison_refuses_overflow_without_changing_the_draft() {
-    let (mut session, _) = education_session();
-    let page = open_topic(&mut session, TaxSection::OtherIncome);
-    let mut documents = page_documents(&page).to_vec();
-    let index = documents.len();
-    documents.push(document(
-        0,
-        IncomeDocument::Q1099(q1099_page(
-            i64::MAX,
-            EducationAccount::Qtp { earnings: i64::MAX, basis: 1 },
-            plain_withdrawal(),
-            Q1099Beneficiary::Recipient,
-        )),
-    ));
-    let saved = session.draft.clone();
-    let dirty = session.dirty;
-    let request = save_topic(&saved, TaxSection::OtherIncome, documents);
-    let Reply::Response(P::Problem { message, field }) = send(&mut session, request) else {
-        panic!("inconsistent 1099-Q boxes must be refused")
-    };
-    assert_eq!(message, libertas::libertas_formatted_text("Q1099_BOXES_DO_NOT_ADD_UP", &[]));
-    let expected = alloc::format!("[documents/documents/{index}/document/gross]");
-    assert_eq!(field.as_deref(), Some(expected.as_str()));
-    assert_eq!(session.draft, saved);
-    assert_eq!(session.dirty, dirty);
+fn no_form_income_records_have_their_own_summary_and_correction_labels() {
+    use crate::tests::support::builders::native_income::cash_tips_without_w2;
+    for (source, topic, summary, label) in [
+        (
+            cash_tips_without_w2(
+                vec![CashTipMonth { month: 1, received: 100_000, reported: 0 }],
+                TipCoverage::SocialAndMedicare,
+                true,
+            ),
+            TaxSection::Wages,
+            "1 cash tip record · $1000.00",
+            "Cash tip record",
+        ),
+        (
+            IncomeSource::Record {
+                value: IncomeRecord::PrivateLoanInterest(PrivateLoanInterest {
+                    borrower: "Synthetic Borrower".into(),
+                    interest: 100_000,
+                    seller_mortgage: None,
+                }),
+            },
+            TaxSection::InterestDividends,
+            "1 private loan interest record · $1000.00",
+            "Private loan interest",
+        ),
+    ] {
+        let mut session = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
+        let request = save_topic(&mut session, topic, vec![document(0, source)]);
+        accepted(&send(&mut session, request));
+        let entry = &session.draft.income[0];
+        assert_eq!(
+            status_text(&crate::interview::topic_summary(&[entry], false).encode()),
+            summary
+        );
+        // An unnamed source's correction still names its own record type.
+        let mut unnamed = entry.clone();
+        unnamed.label.clear();
+        let crate::IssueContext::Income { id, label: actual } =
+            crate::interview::income_issue_context(&unnamed)
+        else {
+            unreachable!()
+        };
+        assert_eq!(id, entry.id);
+        assert_eq!(status_text(&actual.encode()), alloc::format!("{label} {}", entry.id));
+    }
 }

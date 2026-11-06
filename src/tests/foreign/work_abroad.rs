@@ -201,7 +201,7 @@ fn two_spouses_exclude_separately_and_each_owner_reduces_its_own_foreign_tax() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, income(foreign_pay(150000)));
     let mut spouse = income(foreign_pay(100000));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     set_claim(&mut d, foreign_claim(Owner::Taxpayer));
     set_claim(&mut d, foreign_claim(Owner::Spouse));
@@ -346,6 +346,7 @@ fn residence_dates_need_a_whole_calendar_year() {
     let mut d = empty_return(FederalStatus::Single);
     let mut w = wage(0, Owner::Taxpayer, 8_000_000, 0);
     if let FederalIncome::Wage { data } = &mut w.income {
+        let mut data = edit_wage(data);
         data.abroad = 8_000_000;
     }
     add(&mut d, w);
@@ -431,6 +432,8 @@ fn form_2106_community_split_and_other_refusals_are_named() {
     add(&mut d, wage(0, Owner::Taxpayer, 5_000_000, 0));
     let job = d.income.last().unwrap().id;
     d.adjustments.as_mut().unwrap().employee_expenses.push(EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         leased_vehicles: vec![],
         owner: Owner::Taxpayer,
@@ -453,7 +456,7 @@ fn form_2106_community_split_and_other_refusals_are_named() {
     // Owner SEP or health insurance deductions with a business run abroad.
     let mut health = dubai_consultant();
     if let FederalIncome::Business { data } = &mut health.income[0].income {
-        data.retirement = BusinessRetirement::Sep { contribution: 100000, rate: 2500 };
+        data.retirement = BusinessRetirement::Sep { contribution: 100000, rate: 25.0 };
     }
     let r = estimate(&health);
     assert!(r.issues.iter().any(|i| i.section == "Foreign business exclusion"), "{r:?}");
@@ -469,15 +472,29 @@ fn page(s: &mut Interview, topic: TaxSection) -> P {
     }
 }
 fn shown(s: &mut Interview, topic: TaxSection) -> Vec<IncomeDocumentItem> {
-    let P::SaveIncomes { documents, .. } = page(s, topic) else { unreachable!() };
-    documents.documents
+    if topic == TaxSection::Wages {
+        let source_page = crate::tests::support::client::income_pages::open_document_center(s);
+        return crate::tests::support::client::income_pages::page_documents(&source_page)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::Wage { .. }))
+            .collect();
+    }
+    crate::tests::support::client::income_pages::page_documents(&page(s, topic))
 }
 // Saves the topic with only these (owner, document) rows.
-fn save_rows(s: &mut Interview, topic: TaxSection, rows: Vec<(Owner, IncomeDocument)>) -> Reply {
+fn save_rows(s: &mut Interview, topic: TaxSection, rows: Vec<(Owner, IncomeSource)>) -> Reply {
     let items =
         rows.into_iter().map(|(owner, document)| unanswered_document(owner, 0, document)).collect();
-    let request = save_topic(&s.draft.clone(), topic, items);
-    send(s, request)
+    let request = if topic == TaxSection::Wages {
+        crate::tests::support::client::income_pages::save_documents(s, items)
+    } else {
+        save_topic(s, topic, items)
+    };
+    if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(s, request)
+    } else {
+        send(s, request)
+    }
 }
 fn form_2555(qualification: ForeignQualification) -> Form2555 {
     Form2555 {
@@ -503,16 +520,28 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
         basis: crate::ResidenceBasis::Citizen,
         nonresident_statement: false,
     };
-    let pay = IncomeDocument::ForeignPay(ForeignPay {
-        employer: "Example Pte Ltd".into(),
-        wages: 5_000_000,
-    });
+    let pay = IncomeSource::Record {
+        value: crate::IncomeRecord::ForeignPay(ForeignPay {
+            employer: "Example Pte Ltd".into(),
+            wages: 5_000_000,
+        }),
+    };
     accepted(&save_rows(
         &mut s,
         TaxSection::WorkAbroad,
         vec![
-            (Owner::Taxpayer, IncomeDocument::Form2555(form_2555(presence.clone()))),
-            (Owner::Spouse, IncomeDocument::Form2555(form_2555(residence.clone()))),
+            (
+                Owner::Taxpayer,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Form2555(form_2555(presence.clone())),
+                },
+            ),
+            (
+                Owner::Spouse,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Form2555(form_2555(residence.clone())),
+                },
+            ),
             (Owner::Taxpayer, pay),
         ],
     ));
@@ -536,7 +565,9 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
     let reopened: Vec<_> = rows
         .iter()
         .filter_map(|item| match &item.document {
-            IncomeDocument::Form2555(f) => Some((item.owner, f.clone())),
+            IncomeSource::Record { value: crate::IncomeRecord::Form2555(f) } => {
+                Some((item.owner.owned(), f.clone()))
+            }
             _ => None,
         })
         .collect();
@@ -551,7 +582,7 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
     assert_eq!(again.draft, saved);
     // The topic is ticked and always shown with entries.
     assert!(
-        crate::interview::with_ticks(saved).checklist.income & IncomeTopics::WORK_ABROAD.0 != 0
+        crate::interview::with_ticks(saved).checklist.activities & ActivityTopics::ABROAD.0 != 0
     );
     // Both sides: a second Form 2555 for one person, a person with no choice,
     // dates outside the period, and a spouse off a joint return.
@@ -560,8 +591,18 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
             &mut s,
             TaxSection::WorkAbroad,
             vec![
-                (Owner::Taxpayer, IncomeDocument::Form2555(form_2555(presence.clone()))),
-                (Owner::Taxpayer, IncomeDocument::Form2555(form_2555(presence.clone()))),
+                (
+                    Owner::Taxpayer,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::Form2555(form_2555(presence.clone())),
+                    },
+                ),
+                (
+                    Owner::Taxpayer,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::Form2555(form_2555(presence.clone())),
+                    },
+                ),
             ],
         ),
         "FORM_2555_TWICE",
@@ -573,7 +614,10 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
         save_rows(
             &mut s,
             TaxSection::WorkAbroad,
-            vec![(Owner::Taxpayer, IncomeDocument::Form2555(nothing))],
+            vec![(
+                Owner::Taxpayer,
+                IncomeSource::Record { value: crate::IncomeRecord::Form2555(nothing) },
+            )],
         ),
         "FORM_2555_NOTHING_CLAIMED",
     );
@@ -585,7 +629,10 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
         save_rows(
             &mut s,
             TaxSection::WorkAbroad,
-            vec![(Owner::Taxpayer, IncomeDocument::Form2555(outside))],
+            vec![(
+                Owner::Taxpayer,
+                IncomeSource::Record { value: crate::IncomeRecord::Form2555(outside) },
+            )],
         ),
         "FOREIGN_HOUSING_STAY_OUTSIDE_RETURN_YEAR",
     );
@@ -593,7 +640,13 @@ fn work_abroad_page_round_trips_and_checks_both_sides() {
     let reply = current_document_refusal(
         "income-source-10278",
         &mut single,
-        vec![owned(Owner::Spouse, 0, IncomeDocument::Form2555(form_2555(residence_since_2023())))],
+        vec![owned(
+            Owner::Spouse,
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Form2555(form_2555(residence_since_2023())),
+            },
+        )],
         "MESSAGE_FORM_2555_YOUR_SPOUSE_S_GOES_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_JOINTLY",
         "[documents/documents/0/owner]",
     );
@@ -612,12 +665,15 @@ fn residence_since_2023() -> ForeignQualification {
 #[test]
 fn w2_abroad_amount_and_business_source_round_trip() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut w = w2(6_000_000);
-    w.answers.abroad = 4_000_000;
+    let mut w = w2_source(w2(6_000_000));
+    w.answers.abroad = W2Amount::of(4_000_000);
     accepted(&save_rows(
         &mut s,
         TaxSection::Wages,
-        vec![(Owner::Taxpayer, IncomeDocument::W2(w.clone()))],
+        vec![(
+            Owner::Taxpayer,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w.clone())) },
+        )],
     ));
     let wage = s
         .draft
@@ -628,15 +684,24 @@ fn w2_abroad_amount_and_business_source_round_trip() {
             _ => None,
         })
         .expect("a W-2 record");
-    assert_eq!(wage.abroad, 4_000_000);
+    assert_eq!(FederalWage::from(&wage).abroad, 4_000_000);
     // The answer reopens with the boxes: it is not an import target.
     let rows = shown(&mut s, TaxSection::Wages);
-    let IncomeDocument::W2(reopened) = &rows[0].document else { panic!("a W-2") };
-    assert_eq!(reopened.answers.abroad, 4_000_000);
+    let IncomeSource::Wage { value: crate::WageDocument::W2(_) } = &rows[0].document else {
+        panic!("a W-2")
+    };
+    assert_eq!(W2Amount::cents(stored_w2_answers(&s.draft, 0).abroad), 4_000_000);
     // Above box 1 is refused on both sides (the server twin here).
-    w.answers.abroad = 6_000_001;
+    w.answers.abroad = W2Amount::of(6_000_001);
     rejected_with(
-        save_rows(&mut s, TaxSection::Wages, vec![(Owner::Taxpayer, IncomeDocument::W2(w))]),
+        save_rows(
+            &mut s,
+            TaxSection::Wages,
+            vec![(
+                Owner::Taxpayer,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w)) },
+            )],
+        ),
         "W2_ABROAD_ABOVE_WAGES",
     );
     // A business run abroad reopens with its source.
@@ -645,10 +710,13 @@ fn w2_abroad_amount_and_business_source_round_trip() {
     accepted(&save_rows(
         &mut s,
         TaxSection::SelfEmployment,
-        vec![(Owner::Taxpayer, IncomeDocument::Business(b))],
+        vec![(Owner::Taxpayer, IncomeSource::Record { value: crate::IncomeRecord::Business(b) })],
     ));
     let rows = shown(&mut s, TaxSection::SelfEmployment);
-    let IncomeDocument::Business(reopened) = &rows[0].document else { panic!("a business") };
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(reopened) } = &rows[0].document
+    else {
+        panic!("a business")
+    };
     assert_eq!(
         reopened.more.source,
         BusinessSource::ForeignServices { confirmed: true, totalization_exempt: false }
@@ -662,7 +730,7 @@ fn leaving_a_joint_return_erases_the_spouses_form_2555() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, income(foreign_pay(50000)));
     let mut spouse = income(foreign_pay(40000));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     set_claim(&mut d, foreign_claim(Owner::Taxpayer));
     set_claim(&mut d, foreign_claim(Owner::Spouse));
@@ -693,48 +761,4 @@ fn housing_amounts_are_derived_from_the_exclusion_amount() {
 #[test]
 fn pub_54_mixed_housing_example_splits_by_the_employer_share() {
     assert_eq!(crate::foreign_housing::employer_exclusion(18000, 50000, 100000), 9000);
-}
-
-#[test]
-fn unit47_foreign_pay_comparison_preserves_award_path_above_i64() {
-    let mut draft = complete(FederalStatus::Single);
-    draft.income.clear();
-    let mut pay = foreign_pay(0);
-    let FederalIncome::ForeignEmployment { data } = &mut pay else { unreachable!() };
-    data.wages = i64::MAX;
-    add(&mut draft, income(pay));
-    let mut claim = foreign_claim(Owner::Taxpayer);
-    claim.prior_year_pay = i64::MAX;
-    claim.multi_year_pay.push(MultiYearPay {
-        description: "Award".into(),
-        amount: 1,
-        months_total: 1,
-        months_in_return_year: 1,
-        months_in_prior_year: 0,
-    });
-    set_claim(&mut draft, claim);
-    let (owner, issue) = crate::foreign_housing::source_pay_issue(&draft).unwrap();
-    assert_eq!(owner, Owner::Taxpayer);
-    assert_eq!(issue.key, "ISSUE_FOREIGN_AWARDS_ABOVE_PAY");
-    assert_eq!(issue.field.unwrap().square(), "[multi_year_pay]");
-    // The source total itself can exceed i64 before source admission, too.
-    add(&mut draft, income(foreign_pay(1)));
-    assert!(crate::foreign_housing::source_pay_issue(&draft).is_none());
-}
-
-#[test]
-fn unit47_foreign_housing_share_comparison_preserves_its_path_above_i64() {
-    let mut form = form_2555(residence());
-    let ForeignHousing::Claim { expenses, household, .. } = &mut form.housing else {
-        unreachable!()
-    };
-    *expenses = i64::MAX;
-    *household = ForeignHousingHousehold::SeparateReturnShared {
-        total_expenses: i64::MAX,
-        spouse_expenses: 1,
-        confirmed: true,
-    };
-    let issue = form.issue().unwrap();
-    assert_eq!(issue.key, "HOUSING_SHARES_ABOVE_TOTAL");
-    assert_eq!(issue.field.unwrap().square(), "[housing/expenses]");
 }

@@ -25,12 +25,16 @@ impl LegacyAnnuity {
             && self.before.value >= self.before.investment
             && self.after.value >= self.after.investment
     }
+    #[cfg(test)]
     pub(crate) fn valid(&self, gross: i64) -> bool {
+        self.valid_with_source_alignment(gross, true)
+    }
+    pub(crate) fn valid_with_source_alignment(&self, gross: i64, source_alignment: bool) -> bool {
         crate::federal_rules::valid_birth(self.issued)
             && [self.before.value, self.before.investment, self.after.value, self.after.investment]
                 .iter()
                 .all(|v| (0..=100000000000).contains(v))
-            && gross <= self.before.value + self.after.value
+            && (!source_alignment || gross <= self.before.value + self.after.value)
     }
     // Pub. 575, nonqualified distributions before annuity starting date.
     pub(crate) fn parts(&self, gross: i64) -> [i64; 4] {

@@ -194,12 +194,14 @@ fn separate_taxes_for_income(
 }
 
 pub(crate) fn project_sources(
-    d: &FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     r: &FederalResult,
     claim: Option<&InjuredSpouseAllocation>,
     f: &JointFacts,
     before_business: Option<&LiabilityTotals>,
 ) -> Option<OwnerProjection> {
+    let d = form_context.draft;
+    let direct_participation = form_context.participation();
     let people = d.people.as_ref()?;
     let personal_present = d.income.iter().any(|entry| {
         matches!(
@@ -249,6 +251,10 @@ pub(crate) fn project_sources(
     let inj = owner_index(a.injured);
     let capital_sources = f.capital.map(|source| source.by_first[inj]);
     let split = |amount, cents| crate::kernel::ratio::project_rounded_pair(amount, cents, inj);
+    let split_exact = |amount, cents: [Exact; 2]| {
+        let total = cents.iter().sum();
+        exact::project_rounded_pair(amount, &total, cents, inj)
+    };
     let single_or_exact = |amount, cents| super::single_or_exact(amount, cents, inj);
     let oth = 1 - inj;
     let mut problems: Vec<AllocationProblem> = Vec::new();
@@ -533,7 +539,7 @@ pub(crate) fn project_sources(
     let capital = f1040(r, "7a");
     let business = calc(r, "schedule_1_business_income") + calc(r, "schedule_1_farm_income");
     let statutory_business_present = d.income.iter().any(
-        |entry| matches!(&entry.income, FederalIncome::Wage { data } if data.statutory_employee),
+        |entry| matches!(&entry.income, FederalIncome::Wage { data } if crate::FederalWage::from(data).statutory_employee),
     );
     let statutory_targets =
         [calc(r, "schedule_1_business_income"), calc(r, "schedule_1_farm_income")];
@@ -603,7 +609,7 @@ pub(crate) fn project_sources(
         0
     };
     let unemployment =
-        if d.income.iter().any(|e| matches!(e.income, FederalIncome::Unemployment { .. })) {
+        if d.income.iter().any(|e| matches!(e.income, FederalIncome::GovernmentPayment { .. })) {
             calc(r, "schedule_1_unemployment")
         } else {
             0
@@ -832,7 +838,7 @@ pub(crate) fn project_sources(
     let personal_sources =
         f.nii_rental.personal_inputs.iter().try_fold([0; 2], |mut owners, (id, input)| {
             let entry = d.income.iter().find(|entry| entry.id == *id)?;
-            if entry.owner != input.owner
+            if entry.owner != crate::DocumentOwner::from(input.owner)
                 || !matches!(
                     entry.income,
                     FederalIncome::NonbusinessProperty {
@@ -867,7 +873,7 @@ pub(crate) fn project_sources(
             rental.income_by_id.iter().try_fold([0; 2], |mut owners, (id, amount)| {
                 let entry = d.income.iter().find(|entry| entry.id == *id)?;
                 f.other_sources.get(id).cloned().flatten()?;
-                owners[owner_index(entry.owner)] += amount;
+                owners[owner_index(entry.owner.owned())] += amount;
                 Some(owners)
             })
         })
@@ -984,7 +990,7 @@ pub(crate) fn project_sources(
             }
             if let Some(owners) = f.property_ordinary {
                 for (amount, source) in w.cents.iter_mut().zip(owners) {
-                    *amount += exact::whole(source) * exact::whole(100);
+                    *amount += exact::whole(source);
                 }
             } else {
                 w.unknown = [true; 2];
@@ -1127,79 +1133,82 @@ pub(crate) fn project_sources(
         }
     }
     let moving = crate::moving::amounts(d).deduction;
-    let jury = documents_by_owner(d, |income| match income {
+    let jury = documents_by_owner(d, |entry| match &entry.income {
         FederalIncome::JuryDuty { data } => data.remitted,
         _ => 0,
     });
-    let estate = documents_by_owner(d, |income| match income {
-        FederalIncome::EstateTrustPortfolio { data } => data.final_67e_deduction,
+    let estate = documents_by_owner(d, |entry| match &entry.income {
+        FederalIncome::EstateTrustPortfolio { data } => {
+            crate::FederalEstateTrustPortfolioK1::from(data).final_67e_deduction
+        }
         _ => 0,
     });
-    let penalty = documents_by_owner(d, |i| match i {
-        FederalIncome::Interest { data } => data.early_penalty,
-        FederalIncome::Oid { data } => data.early_penalty,
+    let penalty = documents_by_owner(d, |entry| match &entry.income {
+        FederalIncome::Interest { data } => crate::FederalInterest::from(data).early_penalty,
+        FederalIncome::Oid { data } => crate::FederalOid::from(data).early_penalty,
         _ => 0,
     });
     let foreign_housing: [i64; 2] =
         core::array::from_fn(|i| f.foreign.housing_deduction[i] + f.foreign_business_housing[i]);
+    let source_cents = |cents: [i64; 2]| Some(cents.map(exact::whole));
     let mut known = 0;
     for (id, label, w) in [
         (
             "foreign_housing_deduction",
             EqualAllocation::Adjustment,
-            Some(foreign_housing.map(|v| v * 100)),
+            source_cents(foreign_housing.map(|v| v * 100)),
         ),
-        ("olympic_exclusion", EqualAllocation::Adjustment, Some(f.olympic)),
+        ("olympic_exclusion", EqualAllocation::Adjustment, source_cents(f.olympic)),
         (
             "schedule_1_half_self_employment_tax",
             EqualAllocation::Adjustment,
-            Some(f.half_se.map(|v| v * 100)),
+            source_cents(f.half_se.map(|v| v * 100)),
         ),
         (
             "schedule_1_self_employed_retirement",
             EqualAllocation::Adjustment,
-            Some(f.sep.map(|v| v * 100)),
+            source_cents(f.sep.map(|v| v * 100)),
         ),
         (
             "schedule_1_self_employed_health_insurance",
             EqualAllocation::Adjustment,
-            Some(f.health.map(|v| v * 100)),
+            source_cents(f.health.map(|v| v * 100)),
         ),
-        ("schedule_1_hsa_deduction", EqualAllocation::Adjustment, Some(f.hsa)),
-        ("schedule_1_early_withdrawal_penalty", EqualAllocation::Adjustment, Some(penalty)),
-        ("schedule_1_alimony_paid", EqualAllocation::Adjustment, Some(alimony)),
+        ("schedule_1_hsa_deduction", EqualAllocation::Adjustment, source_cents(f.hsa)),
+        ("schedule_1_early_withdrawal_penalty", EqualAllocation::Adjustment, penalty.clone()),
+        ("schedule_1_alimony_paid", EqualAllocation::Adjustment, source_cents(alimony)),
         (
             "schedule_1_employee_business_expenses",
             EqualAllocation::Adjustment,
-            Some(f.employee_expenses.map(|v| v * 100)),
+            source_cents(f.employee_expenses.map(|v| v * 100)),
         ),
-        ("schedule_1_moving_expenses", EqualAllocation::Adjustment, Some(moving)),
+        ("schedule_1_moving_expenses", EqualAllocation::Adjustment, source_cents(moving)),
         (
             "schedule_1_educator_expenses",
             EqualAllocation::Educator,
-            Some(f.educator.map(|v| v * 100)),
+            source_cents(f.educator.map(|v| v * 100)),
         ),
-        ("schedule_1_ira_deduction", EqualAllocation::Ira, Some(f.ira.map(|v| v * 100))),
-        ("jury_pay_remitted", EqualAllocation::Adjustment, Some(jury)),
+        ("schedule_1_ira_deduction", EqualAllocation::Ira, source_cents(f.ira.map(|v| v * 100))),
+        ("jury_pay_remitted", EqualAllocation::Adjustment, jury),
         (
             "schedule_1_personal_property_rental_expenses",
             EqualAllocation::Adjustment,
-            f.personal_expenses,
+            f.personal_expenses.map(|cents| cents.map(exact::whole)),
         ),
-        ("schedule_1_pension_contributions", EqualAllocation::Adjustment, Some(f.pension)),
+        ("schedule_1_pension_contributions", EqualAllocation::Adjustment, source_cents(f.pension)),
         (
             "schedule_1_archer_msa_deduction",
             EqualAllocation::Adjustment,
-            Some(["archer_contribution_1_deduction", "archer_contribution_2_deduction"].map(
-                |id| {
+            source_cents(
+                ["archer_contribution_1_deduction", "archer_contribution_2_deduction"].map(|id| {
                     before_business.map_or_else(
                         || r.lines.iter().find(|line| line.id == id).map_or(0, |line| line.amount),
                         |_| calc(r, id) * 100,
                     )
-                },
-            )),
+                }),
+            ),
         ),
-        ("schedule_1_estate_deductions", EqualAllocation::Adjustment, Some(estate)),
+        ("schedule_1_estate_deductions", EqualAllocation::Adjustment, estate),
         ("schedule_1_student_loan_interest", EqualAllocation::StudentLoan, None),
     ] {
         // No personal source means this component does not apply. Do not
@@ -1244,14 +1253,14 @@ pub(crate) fn project_sources(
             }
         } else if amount == 0 {
             Some([0; 2])
-        } else if let Some(owners) = w.and_then(|w| split(amount, w)) {
+        } else if let Some(owners) = w.and_then(|w| split_exact(amount, w)) {
             Some(owners)
         } else {
             l14.complete = false;
             problems.push(AllocationProblem {
                 #[cfg(test)]
                 english: String::from(
-                    "Form8379 needs the actual allowed adjustment by its exclusive source owner.",
+                    "Form8379 needs the actual allowed adjustment by its source owners.",
                 ),
                 display: Message::new("WARN_8379_ADJUSTMENT_OWNER_UNAVAILABLE", alloc::vec![]),
             });
@@ -1829,10 +1838,14 @@ pub(crate) fn project_sources(
                 | FederalIncome::CasualtyLivingInsurance { .. }
                 | FederalIncome::TrumpDeath { .. }
                 | FederalIncome::Sale { .. }
+                | FederalIncome::InstallmentSale { .. }
                 | FederalIncome::HomeSale { .. }
                 | FederalIncome::NuaSale { .. }
                 | FederalIncome::EmployeeStockSale { .. }
                 | FederalIncome::EsppSale { .. }
+                | FederalIncome::EsppSaleSource { .. }
+                | FederalIncome::IsoSaleSource { .. }
+                | FederalIncome::NuaSaleSource { .. }
                 | FederalIncome::IsoSale { .. }
                 | FederalIncome::WorthlessSecurity { .. }
                 | FederalIncome::SmallBusinessStock { .. }
@@ -1851,36 +1864,62 @@ pub(crate) fn project_sources(
                                                                  // business, property character and deductions still need their own
                                                                  // source outputs and the reconciliation below remains mandatory.
         ) || matches!(&e.income,
+            FederalIncome::Broker { data }
+                if crate::broker_calculation::known_components(data, true, true)
+        ) || matches!(&e.income,
             // These supporting records contribute through the existing native
             // capital collector, never an independent Rest/NII amount. The
             // complete final capital owner packet and NII footing below still
             // apply; crop/business dispositions need their own final feed.
             FederalIncome::PropertyAcquisition { data }
-                if data.crop.is_none()
-                    && matches!(data.property,
-                        crate::TransferredProperty::PersonalUse { .. }
-                            | crate::TransferredProperty::Investment { .. })
+                if {
+                    let data = crate::PropertyAcquisition::from(data);
+                    data.crop.is_none()
+                        && matches!(data.property,
+                            Some(crate::TransferredProperty::PersonalUse { .. }
+                                | crate::TransferredProperty::Investment { .. }))
+                }
         ) || matches!(&e.income,
             FederalIncome::NonbusinessProperty {
                 kind: crate::NonbusinessPropertyKind::PersonalRental { .. }, ..
             } if f.personal_expenses.is_some()
         ) || matches!(&e.income,
-            FederalIncome::Business { data } if data.material_participation
+            FederalIncome::Business { data }
+                if direct_participation.get(e.id) == crate::participation::Participation::Yes
+                    // Passive C retains its native NIIT classification. The
+                    // reconciled statutory source proves wage character;
+                    // other sources need their completed regular PAL packet.
+                    || (data.current_passive_supported(direct_participation.get(e.id))
+                        && f.income_categories.niit_passive_business.is_some()
+                        && ((statutory_source.is_some() && crate::statutory_wages::business(d, e.id))
+                        || (f.nii_rental.inputs_complete
+                        && f.nii_rental.source_issue.is_none()
+                        && f.nii_rental.pool_issue.is_none()
+                        && f.nii_rental.post_pal.as_ref().is_some_and(|packet| {
+                            !packet.alternative
+                                && packet.sources.iter().any(|source| {
+                                    source.income == e.id
+                                        && source.owner == e.owner.owned()
+                                        && source.component == crate::extended_rules::PostPalComponent::DirectBusiness
+                                        && source.common_pool
+                                })
+                        }))))
         ) || (matches!(
             e.income,
             FederalIncome::OtherIncome { .. }
-                | FederalIncome::Unemployment { .. }
+                | FederalIncome::GovernmentPayment { .. }
                 | FederalIncome::Nec1099 { .. }
                 | FederalIncome::Misc1099 { .. }
                 | FederalIncome::K1099 { .. }
-                | FederalIncome::TaxRefund { .. }
-                | FederalIncome::ChildElection { .. }
+                    | FederalIncome::ChildElection { .. }
                 | FederalIncome::PersonalDebt { .. }
                 | FederalIncome::SavingsBonds { .. }
                 | FederalIncome::Cooperative { .. }
                 | FederalIncome::Rental { .. }
                 | FederalIncome::Partnership { .. }
                 | FederalIncome::Scorp { .. }
+                | FederalIncome::PartnershipActivities { .. }
+                | FederalIncome::ScorpActivities { .. }
                 | FederalIncome::EstateTrustPortfolio { .. }
                 | FederalIncome::EducationDistribution { .. }
                 | FederalIncome::Able { .. }
@@ -1959,12 +1998,18 @@ pub(crate) fn project_sources(
         let dividends =
             exact::project_rounded_pair(f1040(r, "3b"), &dividend_total, dividend_cents, inj)?;
         let annuities = split(calc(r, "nonqualified_annuity_investment_income"), f.nii_annuity)?;
-        let penalties = split(savings_penalty, f.nii_savings_penalty)?;
+        let penalty_cents = penalty.clone()?;
+        let penalty_total = penalty_cents.iter().sum::<Exact>();
+        if penalty_total != f.nii_savings_penalty.into_iter().map(exact::whole).sum::<Exact>() {
+            return None;
+        }
+        let penalties =
+            exact::project_rounded_pair(savings_penalty, &penalty_total, penalty_cents, inj)?;
         let substitutes = split(dollars(f.nii_substitute.iter().sum()), f.nii_substitute)?;
         let mut royalty_cents = f.k1_nii.royalties.map(exact::whole);
         for entry in &d.income {
             if matches!(entry.income, FederalIncome::Royalty { .. }) {
-                royalty_cents[owner_index(entry.owner)] +=
+                royalty_cents[owner_index(entry.owner.owned())] +=
                     f.other_sources.get(&entry.id).cloned().flatten()?;
             }
         }
@@ -1983,7 +2028,7 @@ pub(crate) fn project_sources(
             [0, 1].map(|owner| f.k1_nii.ordinary[owner] + ordinary_cut_cents[owner]),
         )?;
         let personal_net = if personal_present {
-            let personal_receipts = documents_by_owner(d, |income| match income {
+            let personal_receipts = documents_by_owner(d, |entry| match &entry.income {
                 FederalIncome::NonbusinessProperty {
                     kind: crate::NonbusinessPropertyKind::PersonalRental { .. },
                     receipts,
@@ -1991,7 +2036,7 @@ pub(crate) fn project_sources(
                 } => *receipts,
                 _ => 0,
             });
-            let gross = split(calc(r, "nonbusiness_personal_rent"), personal_receipts)?;
+            let gross = split_exact(calc(r, "nonbusiness_personal_rent"), personal_receipts?)?;
             let expenses = split(
                 calc(r, "schedule_1_personal_property_rental_expenses"),
                 f.personal_expenses?,
@@ -2005,8 +2050,23 @@ pub(crate) fn project_sources(
         let hobby_total = hobby_cents.iter().sum();
         let hobby =
             exact::project_rounded_pair(*hobby_target, &hobby_total, hobby_cents.clone(), inj)?;
+        let passive_business = match f.income_categories.niit_passive_business {
+            Some((target, cents)) => split(target, cents)?,
+            None => {
+                if d.income.iter().any(|entry| {
+                    matches!(&entry.income,
+                    FederalIncome::Business { data }
+                    if data.current_passive_supported(direct_participation.get(entry.id))
+                        && !crate::statutory_wages::business(d, entry.id))
+                }) {
+                    return None;
+                }
+                [0; 2]
+            }
+        };
         let base_owners: [i64; 2] = core::array::from_fn(|i| {
-            interest[i]
+            passive_business[i]
+                + interest[i]
                 + dividends[i]
                 + annuities[i]
                 + substitutes[i]
@@ -2113,17 +2173,25 @@ pub(crate) fn project_sources(
             let mut wages = [0i64; 2];
             let closed = d.income.iter().all(|entry| match &entry.income {
                 FederalIncome::Wage { data }
-                    if matches!(data.payroll, crate::W2Payroll::SocialSecurity)
-                        && data.employee_tips.is_none()
-                        && !data.statutory_employee =>
+                    if {
+                        let data = crate::FederalWage::from(data);
+                        matches!(data.payroll, crate::W2Payroll::SocialSecurity)
+                            && data.employee_tips.is_none()
+                            && !data.statutory_employee
+                    } =>
                 {
-                    wages[owner_index(entry.owner)] += data.medicare_wages;
+                    let data = crate::FederalWage::from(data);
+                    wages[owner_index(entry.owner.owned())] += data.medicare_wages;
                     true
                 }
                 FederalIncome::Interest { .. }
                 | FederalIncome::Dividend { .. }
                 | FederalIncome::Sale { .. }
+                | FederalIncome::InstallmentSale { .. }
                 | FederalIncome::QualifiedSmallBusinessSale { .. } => true,
+                FederalIncome::Broker { data } => {
+                    crate::broker_calculation::known_components(data, true, false)
+                }
                 _ => false,
             }) && d
                 .screening
@@ -2200,11 +2268,14 @@ pub(crate) fn project_sources(
         }
     } else if d.income.iter().any(|entry| match &entry.income {
         FederalIncome::Wage { data } => {
+            let data = &crate::FederalWage::from(data);
             data.employee_tips.is_some()
                 || data.uncollected_tax.is_some()
                 || data.other_box12.iter().any(|row| matches!(row.code, crate::W2Code::K))
         }
-        FederalIncome::Nec1099 { data } => data.golden_parachute != 0,
+        FederalIncome::Nec1099 { data } => {
+            crate::FederalForm1099Nec::from(data).golden_parachute != 0
+        }
         _ => false,
     }) {
         // Absent retained metadata is not an observed zero for a present
@@ -2290,18 +2361,22 @@ pub(crate) fn project_sources(
         problems.push(AllocationProblem { #[cfg(test)] english:String::from("Form 8379 needs final source-owner outputs for the remaining account, recapture or household taxes."),display:Message::new("WARN_8379_OTHER_TAX_OWNER_UNAVAILABLE",alloc::vec![]) });
     }
 
-    let qualified = documents_by_owner(d, |income| match income {
-        FederalIncome::Dividend { data } => data.qualified,
-        _ => 0,
-    });
-    let qualified = core::array::from_fn::<_, 2, _>(|i| {
-        qualified[i] + f.k1_portfolio[2][i] + f.child.qualified_by_owner[i] * 100
+    let qualified = documents_by_owner(d, |entry| {
+        crate::investment_statements::components(entry).map_or(0, |parts| parts.qualified_dividends)
     });
     let qualified_total = f1040(r, "3a");
-    let qualified = split(qualified_total, qualified).unwrap_or_else(|| {
-        missing = true;
-        [0; 2]
-    });
+    let qualified = qualified
+        .and_then(|mut cents| {
+            for (owner, value) in cents.iter_mut().enumerate() {
+                *value += exact::whole(f.k1_portfolio[2][owner])
+                    + exact::whole(f.child.qualified_by_owner[owner]) * exact::whole(100);
+            }
+            split_exact(qualified_total, cents)
+        })
+        .unwrap_or_else(|| {
+            missing = true;
+            [0; 2]
+        });
     let mut elected_owners = [[0; 2]; 2];
     for (class, key, label, capacity) in [
         (

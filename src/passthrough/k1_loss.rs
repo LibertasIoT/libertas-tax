@@ -173,11 +173,14 @@ impl LossAmounts {
         true // Amount<Cents> establishes nonnegativity at construction.
     }
     pub(crate) fn plus(&self, other: &Self) -> Self {
+        self.checked_plus(other).expect("validated class source total")
+    }
+    pub(crate) fn checked_plus(&self, other: &Self) -> Option<Self> {
         let mut out = *self;
         for (slot, value) in out.0.iter_mut().zip(other.0) {
-            *slot = Amount::new(slot.get() + value.get()).expect("validated class source total");
+            *slot = Amount::new(slot.get().checked_add(value.get())?).ok()?;
         }
-        out
+        Some(out)
     }
     pub(crate) fn minus(&self, other: &Self) -> Self {
         let mut out = *self;
@@ -217,7 +220,10 @@ pub(crate) struct ClassInput {
 impl ClassInput {
     // The amounts the basis stage allocates: current plus carried.
     pub(crate) fn basis(&self) -> LossAmounts {
-        self.current.plus(&self.basis_carry)
+        self.checked_basis().expect("validated basis class source total")
+    }
+    pub(crate) fn checked_basis(&self) -> Option<LossAmounts> {
+        self.current.checked_plus(&self.basis_carry)
     }
 
     // Whether the stored record carries anything a new activity cannot have.
@@ -388,13 +394,15 @@ pub struct K1LossCarry {
     /// Carried because of your basis
     /// The carryforward column of your 2025 basis worksheet for this kind of loss: Form 7203 Part III column (e), or column E of the partner basis worksheet's Part II. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub basis: i64,
     /// Carried because of the at-risk limits
     /// The part of this kind of loss your 2025 Form 6198 did not allow. It already passed your basis; do not include it above. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub risk: i64,
 }
@@ -418,19 +426,22 @@ pub struct K1LossCarryforwards {
     /// Section 179 deduction carried because of your basis
     /// Not the Form 4562 line 13 carryover, which is entered with the box. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179: i64,
     /// Cash contributions (60%) carried because of your basis
     /// Not a Schedule A carryover. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub charity: i64,
     /// Foreign taxes carried because of your basis
     /// Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub foreign_taxes: i64,
 }
@@ -638,6 +649,7 @@ impl K1LossClass {
     }
 }
 
+// Form 4952 interest reaches Form 6251 line 2c with independent basis allowances.
 // The App has existing projections for Schedule C/E/F amounts and Schedule D/
 // Form 4797 amounts. Other classes still lack a complete AMT projection when
 // their basis allowances differ; this is an App boundary, not an IRS exclusion.
@@ -648,16 +660,25 @@ pub(crate) fn amt_limit_differs(
     amt: &LossLedger,
     regular_items: &crate::k1_items::K1Items,
     amt_items: &crate::k1_items::K1Items,
+    section1256_mapped: bool,
 ) -> bool {
+    // The carryback election has only a regular-tax source amount. Different
+    // current allowances need independent AMT carryback records, including
+    // when only the at-risk limit changes the final contract row.
+    if !section1256_mapped
+        && regular_items.flows(regular).section1256 != amt_items.flows(amt).section1256
+    {
+        return true;
+    }
     // Code I has a Schedule E destination and therefore a Form 6251 line 2n
     // adjustment. Remove only its share of this class's basis allowance;
     // other deductions keep their existing refusal. Sale losses have a
     // Form 4797 destination and reach line 2k. Compare the residual code
     // losses, not the whole OtherLoss class; each tax system has its own
     // sale amounts and therefore its own per-item basis allocation. Preferred
-    // stock (Q) and nonportfolio capital (S) already reach Schedule D through
-    // k1_totals::apply in both systems. Subtract individual loss rows, so a
-    // positive code cannot hide another code's unmapped loss.
+    // stock (Q) and nonportfolio capital (S) reach Schedule D in both systems;
+    // mapped code C reaches Form 6781 and Form 6251 line 2k. Subtract only
+    // individual negative rows so positive codes cannot hide another loss.
     let unmapped = |ledger: &LossLedger, items: &crate::k1_items::K1Items| {
         let basis_only = LossLedger { risk_allowed: ledger.basis_allowed, ..*ledger };
         let flows = items.flows(&basis_only);
@@ -684,7 +705,17 @@ pub(crate) fn amt_limit_differs(
                         )
                         .then_some(phase::floor(-cents, 0))
                     })
-                    .sum::<i64>(),
+                    .sum::<i64>()
+                + if section1256_mapped {
+                    flows
+                        .rows
+                        .iter()
+                        .filter(|(_, kind, _)| *kind == crate::k1_items::K1ItemKind::Section1256)
+                        .map(|(_, _, cents)| phase::floor(-cents, 0))
+                        .sum::<i64>()
+                } else {
+                    0
+                },
         )
         .expect("mapped losses are inside their class");
         allowed
@@ -697,7 +728,6 @@ pub(crate) fn amt_limit_differs(
         K1LossClass::Section179,
         K1LossClass::OtherLoss,
         K1LossClass::OtherCharity,
-        K1LossClass::InvestmentInterest,
         K1LossClass::OtherDeductions,
     ]
     .into_iter()
@@ -706,7 +736,7 @@ pub(crate) fn amt_limit_differs(
 
 #[cfg(test)]
 pub(crate) const AMT_LIMIT_DIFFERS: &str = crate::fixture_english!(
-    "Your AMT basis allows a different section 179 deduction, contribution, other-income loss, investment interest expense or other deduction than your regular basis; this App does not yet calculate the AMT adjustment for that difference."
+    "Your AMT basis allows a different section 179 deduction, contribution, other-income loss or other deduction than your regular basis, and this App does not calculate those differing allowances."
 );
 
 #[cfg(test)]

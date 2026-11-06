@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 207000, "rule": {"select": "^<SaveInjuredSpouse>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 843000, "rule": {"select": "^<SaveInjuredSpouse.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 976000, "rule": {"select": "^<InjuredSpouse>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_INJURED_DEBT", "fields": ["injured", "debt", "obligated", "community"]}, {"title": "DISPLAY_INJURED_JOINT", "fields": ["estimated", "student_loan_borrower", "new_allocations", "allocations", "claimants"]}, {"title": "DISPLAY_INJURED_ROWS", "fields": ["known", "estimated_share", "explanation"]}]}},
+    {"order": 978000, "rule": {"select": "^<InjuredSpouse>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_INJURED_DEBT", "fields": ["injured", "debt", "obligated", "community"]}, {"title": "DISPLAY_INJURED_JOINT", "fields": ["estimated", "student_loan_borrower", "new_allocations", "allocations", "claimants"]}, {"title": "DISPLAY_INJURED_ROWS", "fields": ["known", "estimated_share", "explanation"]}]}}
+  ]
+}

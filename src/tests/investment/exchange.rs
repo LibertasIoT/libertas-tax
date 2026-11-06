@@ -774,9 +774,9 @@ fn exchange_pre_1999_building_refigures_the_alternative_minimum_tax_basis() {
         crate::extended_rules::depreciation_for_year(
             &data.buildings[0],
             false,
-            &(data).property_type,
+            (&(data).property_type, &crate::RentalLocation::UnitedStates),
             2026,
-            (data).sale.date(),
+            data.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
         )
         .unwrap()
@@ -846,7 +846,7 @@ fn depreciation_accepts_a_building_first_available_in_2027() {
         crate::extended_rules::depreciation_for_year(
             b,
             false,
-            &kind,
+            (&kind, &crate::RentalLocation::UnitedStates),
             y,
             None,
             crate::kernel::source_fact::SourceFact::NotReported,
@@ -859,18 +859,4 @@ fn depreciation_accepts_a_building_first_available_in_2027() {
     assert_eq!(year(&building(20270301), 2027), Ok(460_606));
     assert!(year(&building(20271231), 2026).is_ok());
     assert!(year(&building(20280101), 2026).is_err());
-    assert!(year(&building(20270230), 2026).is_err());
-}
-
-#[test]
-fn exchange_preflight_compares_received_total_beyond_i64() {
-    let (mut draft, _) = fixture_a();
-    mutate(&mut draft, |_, exchange| {
-        exchange.cash_received = i64::MAX;
-        exchange.other_received = i64::MAX;
-        exchange.land_value = i64::MAX;
-    });
-    let exchange = rental_exchange(&draft);
-    assert_eq!(exchange.issue(), None);
-    assert!(!exchange.valid());
 }

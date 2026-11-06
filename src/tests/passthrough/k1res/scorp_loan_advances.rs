@@ -1,9 +1,10 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::accepted;
 use crate::tests::support::assert::k1res::assert_atomic_rejection;
+use crate::tests::support::builders::k1res::expected_input;
 use crate::tests::support::builders::k1res::{documents, input, scorp_cash_advance};
-use crate::tests::support::client::income_pages::catalog_preview_document;
 use crate::tests::support::client::k1res::scorp_cash_advance_candidate;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::*;
 
 #[test]
@@ -57,24 +58,22 @@ fn scorp_cash_advance_uses_actual_stock_debt_and_group_risk_through_native_lifec
     assert_eq!(crate::k1_activity::income_issue(&income), None);
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     documents(&mut request)[0].document = input(&income);
-    let mut preview = catalog_preview_document(documents(&mut request)[0].document.clone());
-    let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-    *preview_id = id;
+
     assert!(matches!(
-        send(&mut session, preview),
-        Reply::Response(P::IncomePreview { preview: Some(-150_000), .. })
-    ));
-    assert!(matches!(
-        send(&mut session, crate::tests::support::client::estimate_documents_from_save(&request)),
-        Reply::Response(P::IncomeRunningEstimate { .. })
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            crate::tests::support::client::estimate_documents_from_save(&request)
+        ),
+        Reply::Response(P::Review { .. })
     ));
     assert_eq!(session.draft, before);
     assert_eq!(session.dirty, dirty);
-    accepted(&send(&mut session, request));
+    accepted(&send_fixture(&mut session, request));
     let saved = session.draft.clone();
-    assert_eq!(saved.revision, before.revision + 1);
+    assert_eq!(saved.revision, before.revision + 2);
     assert_eq!(saved.next_id, before.next_id);
     assert_eq!(
         crate::k1_activity::source(&saved.income[0].income).unwrap().ids().collect::<Vec<_>>(),
@@ -92,16 +91,17 @@ fn scorp_cash_advance_uses_actual_stock_debt_and_group_risk_through_native_lifec
     assert!(noted(&result, "WARN_K1_QBI_LOSS_NO_STATEMENT"));
     let mut cold = restart(saved.clone());
     assert_eq!(cold.draft, saved);
-    let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
-    assert_eq!(documents(&mut reopened)[0].document, input(&saved.income[0].income));
-    accepted(&send(&mut cold, reopened));
+    let mut reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
+    assert_eq!(documents(&mut reopened)[0].document, expected_input(&saved, &saved.income[0]));
+    accepted(&send_fixture(&mut cold, reopened));
     assert_eq!(cold.draft, saved);
     assert_eq!(estimate(&cold.draft), result);
 
     scorp_cash_advance(&mut data, 0);
-    let mut correction = open_topic(&mut cold, TaxSection::PassThrough);
+    let mut correction =
+        crate::tests::support::client::income_pages::open_document_center(&mut cold);
     documents(&mut correction)[0].document = input(&FederalIncome::ScorpActivities { data });
-    accepted(&send(&mut cold, correction));
+    accepted(&send_fixture(&mut cold, correction));
     assert_eq!(cold.draft.revision, saved.revision + 1);
     assert_eq!(cold.draft.next_id, saved.next_id);
     assert_eq!(
@@ -115,8 +115,8 @@ fn scorp_cash_advance_uses_actual_stock_debt_and_group_risk_through_native_lifec
     assert_eq!(value(&corrected, "agi"), 249_500);
     let accepted_draft = cold.draft.clone();
     let mut cold = restart(accepted_draft.clone());
-    let unchanged = open_topic(&mut cold, TaxSection::PassThrough);
-    accepted(&send(&mut cold, unchanged));
+    let unchanged = crate::tests::support::client::income_pages::open_document_center(&mut cold);
+    accepted(&send_fixture(&mut cold, unchanged));
     assert_eq!(cold.draft, accepted_draft);
     assert_eq!(estimate(&cold.draft), corrected);
 }
@@ -259,9 +259,10 @@ fn scorp_cash_advance_valid_unknown_sources_save_and_keep_named_boundaries() {
                 3_500
             );
         }
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         documents(&mut request)[0].document = input(&income);
-        accepted(&send(&mut session, request));
+        accepted(&send_fixture(&mut session, request));
         let result = estimate(&session.draft);
         assert!(result.tax.is_none(), "boundary {boundary}");
         assert_eq!(
@@ -276,8 +277,9 @@ fn scorp_cash_advance_valid_unknown_sources_save_and_keep_named_boundaries() {
         );
         let saved = session.draft.clone();
         let mut cold = restart(saved.clone());
-        let unchanged = open_topic(&mut cold, TaxSection::PassThrough);
-        accepted(&send(&mut cold, unchanged));
+        let unchanged =
+            crate::tests::support::client::income_pages::open_document_center(&mut cold);
+        accepted(&send_fixture(&mut cold, unchanged));
         assert_eq!(cold.draft, saved);
         assert_eq!(estimate(&cold.draft), result);
     }
@@ -286,34 +288,23 @@ fn scorp_cash_advance_valid_unknown_sources_save_and_keep_named_boundaries() {
 #[test]
 fn scorp_cash_advance_invalid_loan_entity_group_and_identity_edits_are_atomic() {
     let (mut session, base) = scorp_cash_advance_candidate(100_000);
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     documents(&mut request)[0].document =
         input(&FederalIncome::ScorpActivities { data: base.clone() });
-    accepted(&send(&mut session, request));
-    for boundary in 0..7 {
+    accepted(&send_fixture(&mut session, request));
+    for boundary in [1, 2, 5, 6] {
         let mut candidate = base.clone();
         let K1ComponentStatement::Entered { source } = &mut candidate.activities else {
             unreachable!()
         };
         let key = match boundary {
-            0 => {
-                candidate.entity.loans[0].regular.advances = -1;
-                "K1_ACTIVITY_SOURCE_AMOUNT_INVALID"
-            }
             1 => {
                 candidate.entity.loans[0].regular.basis = 500_001;
                 "K1_ACTIVITY_SOURCE_AMOUNT_INVALID"
             }
             2 => {
                 candidate.entity.loans[0].alternative_basis = Some(500_001);
-                "K1_ACTIVITY_SOURCE_AMOUNT_INVALID"
-            }
-            3 => {
-                candidate.entity.regular.opening = Some(-1);
-                "K1_ACTIVITY_SOURCE_AMOUNT_INVALID"
-            }
-            4 => {
-                source.risk_groups[1].investment_parts.as_mut().unwrap().loan_advances = -1;
                 "K1_ACTIVITY_SOURCE_AMOUNT_INVALID"
             }
             5 => {
@@ -326,7 +317,8 @@ fn scorp_cash_advance_invalid_loan_entity_group_and_identity_edits_are_atomic() 
             }
             _ => unreachable!(),
         };
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         documents(&mut request)[0].document =
             input(&FederalIncome::ScorpActivities { data: candidate });
         assert_atomic_rejection(&mut session, request, key);

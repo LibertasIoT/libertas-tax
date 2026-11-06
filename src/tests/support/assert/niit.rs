@@ -23,10 +23,14 @@ pub(in crate::tests) fn assert_k1_portfolio_owners_context(
     // A separate accepted interest source belongs exclusively to the other
     // spouse. The K1 has no operating profit/loss, PAL, EBL, property or carry.
     let mut other = income(savings_income(10_000, 0));
-    other.owner = if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+    other.owner = if owner == Owner::Taxpayer {
+        crate::DocumentOwner::Spouses
+    } else {
+        crate::DocumentOwner::Yours
+    };
     add(&mut original, other);
     let mut entry = k1_niit_portfolio_entry(source, code_a, final_deduction);
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     add(&mut original, entry);
     let code_a_income = if code_a { 2_000 } else { 0 };
     let deduction = if final_deduction { 2_000 } else { 0 };
@@ -252,7 +256,7 @@ pub(in crate::tests) fn assert_retained_niit_money(d: &FederalDraft) -> FederalR
     assert!(d.income.iter().all(|entry| match &entry.income {
         FederalIncome::Wage { .. } | FederalIncome::Interest { .. } => true,
         FederalIncome::Sale { data } =>
-            matches!(data.use_kind, SaleUse::Investment { wash_sale: 0 }),
+            matches!(data.form.use_kind, SaleUse::Investment { wash_sale: 0 }),
         _ => false,
     }));
     let r = supported(d);
@@ -273,7 +277,7 @@ pub(in crate::tests) fn assert_retained_niit_money(d: &FederalDraft) -> FederalR
     assert_eq!(r.refund, Some(394_600));
     let mut plain = d.clone();
     plain.injured_spouse = None;
-    plain.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    plain.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let plain = supported(&plain);
     assert_eq!(plain.return_lines, r.return_lines);
     assert_eq!((plain.tax, plain.refund), (r.tax, r.refund));

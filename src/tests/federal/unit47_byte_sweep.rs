@@ -12,11 +12,7 @@ fn student(label: &str) -> crate::HostedStudent {
         joined: 20260601,
         school_start: 20260601,
         school_end: 20260831,
-        months: vec![crate::HostedStudentMonth {
-            month: 6,
-            qualifying_days: 15,
-            cost: 8_000,
-        }],
+        months: vec![crate::HostedStudentMonth { month: 6, qualifying_days: 15, cost: 8_000 }],
         documented: true,
     }
 }
@@ -126,22 +122,18 @@ fn unit47_byte_sweep_gift_sources_save_long_utf8_without_truncation() {
             });
         }
         *source_text(&mut page, field) = exact.clone();
-        let mut session = at_the_gifts_page(DeductionRoute::Itemize, 0);
+        let mut session = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
         let request = save_gift_carryovers(&session.draft, page);
         itemized_hub(send_past_less_common(&mut session, request));
         let saved = session.draft.clone();
         let mut reopened = open_itemized_topic(&mut session, TaxSection::GiftCarryovers);
-        let P::SaveGiftCarryovers { value, .. } = &mut reopened else {
-            unreachable!()
-        };
+        let P::SaveGiftCarryovers { value, .. } = &mut reopened else { unreachable!() };
         assert_eq!(*source_text(value, field), exact);
         itemized_hub(send_past_less_common(&mut session, reopened));
         assert_eq!(session.draft, saved);
         let mut restored = restart(saved.clone());
         let mut reopened = open_itemized_topic(&mut restored, TaxSection::GiftCarryovers);
-        let P::SaveGiftCarryovers { value, .. } = &mut reopened else {
-            unreachable!()
-        };
+        let P::SaveGiftCarryovers { value, .. } = &mut reopened else { unreachable!() };
         assert_eq!(*source_text(value, field), exact);
         itemized_hub(send_past_less_common(&mut restored, reopened));
         assert_eq!(restored.draft, saved);
@@ -150,41 +142,25 @@ fn unit47_byte_sweep_gift_sources_save_long_utf8_without_truncation() {
 
 #[test]
 fn unit47_byte_sweep_mixed_gift_rows_keep_submitted_duplicate_indices_and_order() {
-    let mut session = at_the_gifts_page(DeductionRoute::Itemize, 0);
+    let mut session = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
     let before = session.draft.clone();
     let mut page = sources();
-    let LessCommonGift::HostedStudent(first) = &page.less_common[0] else {
-        unreachable!()
-    };
+    let LessCommonGift::HostedStudent(first) = &page.less_common[0] else { unreachable!() };
     let duplicate = first.clone();
-    page.less_common
-        .push(LessCommonGift::HostedStudent(duplicate));
-    let LessCommonGift::WhalingCaptain(captain) = &page.less_common[1] else {
-        unreachable!()
-    };
+    page.less_common.push(LessCommonGift::HostedStudent(duplicate));
+    let LessCommonGift::WhalingCaptain(captain) = &page.less_common[1] else { unreachable!() };
     let duplicate = captain.clone();
-    page.less_common
-        .push(LessCommonGift::WhalingCaptain(duplicate));
+    page.less_common.push(LessCommonGift::WhalingCaptain(duplicate));
     for (name, key, path) in [
-        (
-            "captain",
-            "WHALING_CAPTAIN_TWICE",
-            "[value/less_common/4/owner]",
-        ),
-        (
-            "student",
-            "HOSTED_STUDENT_TWICE",
-            "[value/less_common/3/label]",
-        ),
+        ("captain", "WHALING_CAPTAIN_TWICE", "[value/less_common/4/owner]"),
+        ("student", "HOSTED_STUDENT_TWICE", "[value/less_common/3/label]"),
     ] {
         let request = save_gift_carryovers(&session.draft, page.clone());
         let Reply::Response(problem @ P::Problem { .. }) = send(&mut session, request.clone())
         else {
             panic!("duplicate")
         };
-        let P::Problem { message, field, .. } = &problem else {
-            unreachable!()
-        };
+        let P::Problem { message, field, .. } = &problem else { unreachable!() };
         assert_eq!(*message, libertas::libertas_formatted_text(key, &[]));
         assert_eq!(field.as_deref(), Some(path));
         assert_eq!(session.draft, before);
@@ -195,8 +171,5 @@ fn unit47_byte_sweep_mixed_gift_rows_keep_submitted_duplicate_indices_and_order(
         );
         page.less_common.pop();
     }
-    itemized_hub(send_past_less_common(
-        &mut session,
-        save_gift_carryovers(&before, page),
-    ));
+    itemized_hub(send_past_less_common(&mut session, save_gift_carryovers(&before, page)));
 }

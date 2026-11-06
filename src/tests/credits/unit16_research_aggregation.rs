@@ -116,7 +116,7 @@ fn unit16_research_aggregation_actual_rental_editor_save_reopen_restart_correcti
     let mut initial_answers = initial_seed.clone();
     let P::SaveIncomes { documents, .. } = &mut initial_answers else { panic!() };
     for row in &mut documents.documents {
-        let IncomeDocument::Rental(page) = &mut row.document else { panic!() };
+        let crate::IncomeRecord::Rental(page) = &mut row.document else { panic!() };
         page.more.qbi_group = "Synthetic research shops".into();
     }
     let correction = std::env::var("TAX_UNIT16_RESEARCH_CORRECTION").as_deref() == Ok("1");
@@ -135,7 +135,7 @@ fn unit16_research_aggregation_actual_rental_editor_save_reopen_restart_correcti
     if correction {
         let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
         for row in &mut documents.documents {
-            let IncomeDocument::Rental(page) = &mut row.document else { panic!() };
+            let crate::IncomeRecord::Rental(page) = &mut row.document else { panic!() };
             page.more.qbi_group.clear();
         }
     }
@@ -177,7 +177,7 @@ fn unit16_research_aggregation_actual_rental_editor_save_reopen_restart_correcti
         let mut next = open_topic(&mut session, TaxSection::Rentals);
         let P::SaveIncomes { documents, .. } = &mut next else { panic!() };
         for row in &mut documents.documents {
-            let IncomeDocument::Rental(page) = &mut row.document else { panic!() };
+            let crate::IncomeRecord::Rental(page) = &mut row.document else { panic!() };
             page.more.qbi_group.clear();
         }
         accepted(&send(&mut session, next));

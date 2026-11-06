@@ -8,7 +8,7 @@
 //   after every other adjustment, plus the foreign earned income and adoption exclusions), 10-13
 //   (the phaseout, exact), 14 (to Schedule B line 3); Schedule B line 2 (gross interest) and line 4
 //   (interest less the exclusion, shown whenever the exclusion is positive). The entry is one
-//   savings-bond record on the Interest and dividends page (IncomeDocument::SavingsBonds, imported
+//   savings-bond record on the Interest and dividends page (InterestDividendDocument::SavingsBonds, imported
 //   from Form 8818: proceeds, interest, earliest issue date) with one row per person whose
 //   education was paid for. Exclusions: married filing separately and an owner under 24 when the
 //   bond was issued take no exclusion (a note, the estimate proceeds); a bond issued before 1990
@@ -27,9 +27,10 @@
 //   src/tests/family/education_accounts.rs form_8815_counts_the_expenses_the_529_exclusion_used_once,
 //   src/tests/investment/interview.rs savings_bonds_*; unit tests below.
 use crate::federal_model::EducationUse;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
 use crate::year_constants::{
     SAVINGS_BOND_OWNER_MINIMUM_AGE, SAVINGS_BOND_PHASEOUT_RANGE_JOINT_DOLLARS,
     SAVINGS_BOND_PHASEOUT_RANGE_OTHER_DOLLARS, SAVINGS_BOND_PHASEOUT_START_JOINT_DOLLARS,
@@ -40,7 +41,7 @@ use crate::{
     FederalSavingsBondExpenses, FederalSavingsBonds, FederalStatus, FormLine, Owner, TaxForm,
     TaxSection,
 };
-use crate::{federal_rules::note_once_scoped, kernel::lines::form_line};
+use crate::{federal_rules::note_once_scoped, line_emission::form_line};
 use alloc::vec::Vec;
 
 // Form 8815 line 6 worksheet, 2026 DRAFT instructions printed July 8, 2026,
@@ -61,6 +62,7 @@ pub(crate) fn sources(income: &[FederalIncomeEntry]) -> Vec<BondSource> {
         let FederalIncome::Interest { data } = &e.income else {
             continue;
         };
+        let data = &crate::FederalInterest::from(data);
         if let Some(records) = data.adjustments.as_ref().and_then(|a| a.instrument_records.as_ref())
         {
             for r in &records.records {
@@ -70,7 +72,7 @@ pub(crate) fn sources(income: &[FederalIncomeEntry]) -> Vec<BondSource> {
                 {
                     result.push(BondSource {
                         id: r.id,
-                        owner: e.owner,
+                        owner: e.owner.owned(),
                         label: alloc::format!("{}: {}", e.label, r.instrument),
                         gross: r.retained().us_obligations + r.previously_reported,
                         prior: r.previously_reported,
@@ -80,7 +82,7 @@ pub(crate) fn sources(income: &[FederalIncomeEntry]) -> Vec<BondSource> {
         } else if e.id > 0 && data.us_obligations >= 0 {
             result.push(BondSource {
                 id: e.id,
-                owner: e.owner,
+                owner: e.owner.owned(),
                 label: e.label.clone(),
                 gross: data.us_obligations
                     - data.nominee.as_ref().map_or(0, |n| n.us_obligations)
@@ -117,8 +119,11 @@ pub(crate) fn source_issue(
     let sources = sources(income);
     for e in income {
         if let FederalIncome::SavingsBonds { data } = &e.income
+            && let Some(answers) = &data.answers
             && !sources.iter().any(|s| {
-                s.id == data.interest_statement && s.owner == e.owner && data.interest <= s.gross
+                s.id == answers.interest_statement
+                    && s.owner == e.owner.owned()
+                    && data.redemption_interest.is_none_or(|interest| interest <= s.gross)
             })
         {
             return Some((
@@ -143,14 +148,16 @@ pub(crate) fn normalize(
         let FederalIncome::SavingsBonds { data } = &mut entry.income else {
             return true;
         };
-        let source =
-            sources.iter().find(|s| s.id == data.interest_statement && s.owner == entry.owner);
+        let Some(boxes) = data.record() else { return true };
+        let source = sources
+            .iter()
+            .find(|s| s.id == boxes.interest_statement && s.owner == entry.owner.owned());
         let Some(source) = source else { return true };
-        if !data.valid() || data.interest > source.gross {
+        if !boxes.valid() || boxes.interest > source.gross {
             return true;
         }
-        if source.prior == 0 || data.interest == source.gross {
-            data.interest -= source.prior;
+        if source.prior == 0 || boxes.interest == source.gross {
+            *data.redemption_interest.as_mut().unwrap() -= source.prior;
             return true;
         }
         financial_omission = true;
@@ -164,6 +171,106 @@ pub(crate) fn normalize(
         false
     });
     financial_omission
+}
+
+// A redemption paper supplies evidence, never another interest-income entry.
+// Form 8818 instructions require one record for each cashing; Form 8815 line 5
+// combines them. Resolve only an explicitly linked complete set of proceeds.
+struct RedemptionFacts {
+    target: i64,
+    owner: Owner,
+    proceeds: i64,
+    interest: i64,
+    earliest: Option<u32>,
+}
+fn redemption_facts(income: &[FederalIncomeEntry]) -> Vec<RedemptionFacts> {
+    income
+        .iter()
+        .filter_map(|entry| {
+            let FederalIncome::BondRedemption { data } = &entry.income else { return None };
+            Some(RedemptionFacts {
+                target: data.form_8815?,
+                owner: entry.owner.tax_owner()?,
+                proceeds: data.form.line6,
+                interest: data.form.line8,
+                earliest: data.form.earliest_issue_date(),
+            })
+        })
+        .collect()
+}
+fn resolve_redemptions(
+    data: &mut crate::SavingsBondsSource,
+    id: i64,
+    owner: crate::DocumentOwner,
+    redemptions: &[RedemptionFacts],
+) {
+    let mut linked = redemptions
+        .iter()
+        .filter(|row| row.target == id && Some(row.owner) == owner.tax_owner())
+        .peekable();
+    if linked.peek().is_none() {
+        return;
+    }
+    let totals =
+        linked.try_fold((0i64, 0i64, Some(u32::MAX)), |(proceeds, interest, earliest), row| {
+            Some((
+                proceeds.checked_add(row.proceeds)?,
+                interest.checked_add(row.interest)?,
+                match (earliest, row.earliest) {
+                    (Some(prior), Some(date)) => Some(prior.min(date)),
+                    _ => None,
+                },
+            ))
+        });
+    if let Some((proceeds, interest, earliest)) = totals
+        && proceeds == data.form.line5
+    {
+        data.redemption_interest = Some(interest);
+        data.earliest_issue_date = earliest;
+    } else {
+        data.redemption_interest = None;
+        data.earliest_issue_date = None;
+    }
+}
+pub(crate) fn apply_redemptions(income: &mut [FederalIncomeEntry]) {
+    let redemptions = redemption_facts(income);
+    for entry in income {
+        if let FederalIncome::SavingsBonds { data } = &mut entry.income {
+            resolve_redemptions(data, entry.id, entry.owner, &redemptions);
+        }
+    }
+}
+pub(crate) fn resolved_source(
+    income: &[FederalIncomeEntry],
+    id: i64,
+) -> Option<crate::SavingsBondsSource> {
+    let entry = income.iter().find(|entry| entry.id == id)?;
+    let FederalIncome::SavingsBonds { data } = &entry.income else { return None };
+    let mut resolved = data.clone();
+    resolve_redemptions(&mut resolved, id, entry.owner, &redemption_facts(income));
+    Some(resolved)
+}
+
+pub(crate) fn redemption_link_issue(
+    income: &[FederalIncomeEntry],
+) -> Option<(i64, crate::validation::ValidationIssue)> {
+    income.iter().find_map(|entry| {
+        let FederalIncome::BondRedemption { data } = &entry.income else { return None };
+        let target = data.form_8815?;
+        (!income.iter().any(|candidate| {
+            candidate.id == target
+                && entry.owner != crate::DocumentOwner::Unknown
+                && candidate.owner == entry.owner
+                && matches!(candidate.income, FederalIncome::SavingsBonds { .. })
+        }))
+        .then(|| {
+            (
+                entry.id,
+                crate::validation::ValidationIssue::new("BOND_REDEMPTION_FORM_8815_INVALID")
+                    .at_field("form_8815"),
+            )
+        })
+    })
 }
 
 const SOURCE: &str = "https://www.irs.gov/pub/irs-dft/f8815--dft.pdf";
@@ -193,9 +300,9 @@ pub(crate) struct SavingsBondContext<'a> {
 // The savings-bond entry of the working copy, if it has one.
 pub(crate) fn record(
     income: &[FederalIncomeEntry],
-) -> Option<(&FederalIncomeEntry, &FederalSavingsBonds)> {
+) -> Option<(&FederalIncomeEntry, FederalSavingsBonds)> {
     income.iter().find_map(|entry| match &entry.income {
-        FederalIncome::SavingsBonds { data } => Some((entry, data)),
+        FederalIncome::SavingsBonds { data } => data.record().map(|record| (entry, record)),
         _ => None,
     })
 }
@@ -220,7 +327,7 @@ pub(crate) fn phaseout_reduction(eligible: i64, magi: i64, joint: bool) -> i64 {
 
 // The Form 8863 entry of a person, if the person has one.
 pub(crate) fn education_entry(credits: &FederalCredits, person: i64) -> Option<usize> {
-    credits.education.iter().position(|e| e.student == person)
+    credits.education_inputs().iter().position(|e| e.student == person)
 }
 
 // Form 8815 and its Schedule B line 3 amount (whole dollars); 0 without a
@@ -249,7 +356,7 @@ pub(crate) fn calculate(cx: &SavingsBondContext, r: &mut FederalResult) -> i64 {
         let credit_entry = education_entry(cx.credits, student.person);
         let (tuition, received, credit_used) = match (&student.expenses, credit_entry) {
             (FederalSavingsBondExpenses::EducationCredit, Some(index)) => {
-                let e = &cx.credits.education[index].expenses;
+                let e = &cx.credits.education_inputs()[index].expenses;
                 // The expenses the 529 or Coverdell distributions used come
                 // from the Form 1099-Q calculation when the person has one;
                 // the credit entry's own allocation otherwise.
@@ -292,7 +399,7 @@ pub(crate) fn calculate(cx: &SavingsBondContext, r: &mut FederalResult) -> i64 {
     }
     let linked = sources(cx.income)
         .into_iter()
-        .find(|s| s.id == data.interest_statement && s.owner == entry.owner);
+        .find(|s| s.id == data.interest_statement && s.owner == entry.owner.owned());
     crate::require_localized!(
         r,
         linked.is_some_and(|s| data.interest <= s.gross),
@@ -355,10 +462,10 @@ pub(crate) fn calculate(cx: &SavingsBondContext, r: &mut FederalResult) -> i64 {
     }
     // IRC 135(c)(1)(B): the owner had attained age 24 before the bonds were
     // issued, tested on the earliest issue date.
-    let owner = cx.people.person(entry.owner);
-    let owner_section = match entry.owner {
-        Owner::Spouse => TaxSection::Spouse,
-        Owner::Taxpayer => TaxSection::People,
+    let owner = cx.people.person(entry.owner.owned());
+    let owner_section = match entry.owner.owned() {
+        crate::Owner::Spouse => TaxSection::Spouse,
+        crate::Owner::Taxpayer => TaxSection::People,
     };
     let owner_old_enough = owner.is_none_or(|person| {
         crate::federal_model::attained_on(

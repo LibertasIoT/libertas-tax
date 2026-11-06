@@ -66,6 +66,7 @@ pub(crate) struct AssetAmounts {
     pub entered_credit_reduction: i64,
     pub partial: Option<crate::asset_sale::PartialOperands>,
     pub qualified179_cost: i64,
+    pub straight_line_through_sale: Option<i64>,
 }
 impl AssetAmounts {
     pub(crate) fn deduction(self) -> Option<i64> {
@@ -73,7 +74,20 @@ impl AssetAmounts {
     }
 }
 impl AssetView<'_> {
+    #[cfg(test)]
     pub(crate) fn amounts(&self, mid_quarter: bool, alternative: bool) -> Option<AssetAmounts> {
+        self.amounts_in_context(
+            mid_quarter,
+            alternative,
+            crate::macrs_source::AdsInvocation::default(),
+        )
+    }
+    pub(crate) fn amounts_in_context(
+        &self,
+        mid_quarter: bool,
+        alternative: bool,
+        context: crate::macrs_source::AdsInvocation<'_>,
+    ) -> Option<AssetAmounts> {
         use crate::kernel::cost_recovery::gds;
         let selected =
             if alternative { self.asset.amt_projection_or_self() } else { self.asset.clone() };
@@ -138,6 +152,40 @@ impl AssetView<'_> {
             .refunds
             .iter()
             .any(|refund| refund.basis_reduction[usize::from(alternative)] != exact::whole(0));
+        // A service-year refund adjusts the existing original straight-line
+        // input after the purchase owner settles cost and credit reductions.
+        // Later ADS transitions keep their separate actual-history boundary.
+        if selected.class == crate::EquipmentClass::ThirtyNine
+            && let Some(mut schedule) = selected.source_straight_line_schedule(mid_quarter, context)
+        {
+            let crate::EquipmentHistory::New { section179, .. } = selected.history else {
+                return None;
+            };
+            let opening = new_basis?.checked_sub(section179.elected())?;
+            if opening < 0 {
+                return None;
+            }
+            let bonus = selected.raw_bonus_on_in_context(opening, context);
+            schedule.basis = crate::kernel::carry::Amount::new(opening.checked_sub(bonus)?).ok()?;
+            schedule.tax_year = self.purchase.effective_year;
+            let SourceFact::Reported(amounts) = schedule.recover().ok()? else { return None };
+            return Some(AssetAmounts {
+                bonus,
+                macrs: amounts.current.get(),
+                opening,
+                sale_cost_cents,
+                personal_basis_cents,
+                investment_reduction,
+                entered_credit_reduction,
+                partial: None,
+                qualified179_cost: if selected.qualified179_cost_in_context(context) > 0 {
+                    new_basis?
+                } else {
+                    0
+                },
+                straight_line_through_sale: selected.source_straight_line_through_sale(context),
+            });
+        }
         // A real later-year event selects the continuation schedule even if
         // the complete adjusted balance rounds back to its old cent value.
         if reduction == 0 && (new_basis.is_some() || !basis_event) {
@@ -151,6 +199,7 @@ impl AssetView<'_> {
                 entered_credit_reduction,
                 partial: None,
                 qualified179_cost: selected.qualified179_cost(),
+                straight_line_through_sale: None,
             });
         }
         if selected.class == crate::EquipmentClass::ThirtyNine {
@@ -183,6 +232,7 @@ impl AssetView<'_> {
                     None
                 },
                 qualified179_cost: 0,
+                straight_line_through_sale: None,
             });
         }
         if let Some(macrs) = crate::auto_recovery::purchase_post_recovery_amount(
@@ -200,6 +250,7 @@ impl AssetView<'_> {
                 entered_credit_reduction,
                 partial: None,
                 qualified179_cost: 0,
+                straight_line_through_sale: None,
             });
         }
         let mut schedule =
@@ -262,6 +313,7 @@ impl AssetView<'_> {
             entered_credit_reduction,
             partial: None,
             qualified179_cost,
+            straight_line_through_sale: None,
         })
     }
 }
@@ -279,15 +331,27 @@ fn opening(asset: &BusinessAsset) -> Option<i64> {
     (basis >= 0).then_some(basis)
 }
 
+#[cfg(test)]
 pub(crate) fn purchases(
     draft: &FederalDraft,
     owner: Owner,
     activity: i64,
     property: i64,
 ) -> Result<SourceFact<PurchaseBasis<'_>>, crate::Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    purchases_with_claims(draft, owner, activity, property, &source_claims)
+}
+
+pub(crate) fn purchases_with_claims<'source>(
+    draft: &'source FederalDraft,
+    owner: Owner,
+    activity: i64,
+    property: i64,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<SourceFact<PurchaseBasis<'source>>, crate::Section179PreparedIssue> {
     let mut refunds = Vec::new();
-    for source in crate::cooperative::sources(draft) {
-        if source.owner != owner || source.allocation.activity != Some(activity) {
+    for source in crate::cooperative::sources_with_claims(draft, source_claims) {
+        if source.owner != owner || source.activity != Some(activity) {
             continue;
         }
         for record in source.allocation.properties {
@@ -355,15 +419,27 @@ pub(crate) struct RefundIncome {
     pub qualification: [i64; 3],
     pub related_sstb_expenses: i64,
 }
+#[cfg(test)]
 pub(crate) fn income(
     draft: &FederalDraft,
     owner: Owner,
     activity: i64,
     alternative: bool,
 ) -> Result<SourceFact<RefundIncome>, crate::Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    income_with_claims(draft, owner, activity, alternative, &source_claims)
+}
+
+pub(crate) fn income_with_claims(
+    draft: &FederalDraft,
+    owner: Owner,
+    activity: i64,
+    alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<SourceFact<RefundIncome>, crate::Section179PreparedIssue> {
     let mut properties = alloc::collections::BTreeSet::new();
-    for source in crate::cooperative::sources(draft) {
-        if source.owner == owner && source.allocation.activity == Some(activity) {
+    for source in crate::cooperative::sources_with_claims(draft, source_claims) {
+        if source.owner == owner && source.activity == Some(activity) {
             for refund in source.allocation.properties {
                 if refund.amount > 0
                     && refund.treatment == crate::CoopPropertyTreatment::Purchase
@@ -382,7 +458,9 @@ pub(crate) fn income(
     let mut qualification = [exact::whole(0), exact::whole(0), exact::whole(0)];
     let mut source_sstb = alloc::collections::BTreeMap::<(i64, i64), Exact>::new();
     for property in properties {
-        let SourceFact::Reported(purchase) = purchases(draft, owner, activity, property)? else {
+        let SourceFact::Reported(purchase) =
+            purchases_with_claims(draft, owner, activity, property, source_claims)?
+        else {
             return Ok(SourceFact::Unavailable);
         };
         ordinary += purchase.excess(alternative);
@@ -411,7 +489,7 @@ pub(crate) fn income(
     }
     // Expenses retain their actual issuer/allocation association. Only the
     // newly taxable SSTB portion can add to the existing related-expense cap.
-    let sources = crate::cooperative::sources(draft);
+    let sources = crate::cooperative::sources_with_claims(draft, source_claims);
     let mut related_expenses = exact::whole(0);
     for ((parent, allocation), excess) in source_sstb {
         let Some(source) = sources
@@ -464,10 +542,11 @@ pub(crate) fn income(
     }))
 }
 
-pub(crate) fn current_cost(
+pub(crate) fn current_cost_with_claims(
     draft: &FederalDraft,
     activity: i64,
     asset: &BusinessAsset,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
     if !matches!(asset.history, crate::EquipmentHistory::New { .. }) {
         return Ok(asset.cost);
@@ -477,7 +556,7 @@ pub(crate) fn current_cost(
         .iter()
         .find(|entry| entry.id == activity)
         .ok_or(crate::Section179PreparedIssue::UnknownSource(activity))?;
-    match purchases(draft, entry.owner, activity, asset.id)? {
+    match purchases_with_claims(draft, entry.owner.owned(), activity, asset.id, source_claims)? {
         SourceFact::NotReported => Ok(asset.cost),
         SourceFact::Reported(purchase) => {
             let total =
@@ -496,19 +575,46 @@ pub(crate) fn current_cost(
     }
 }
 
-pub(crate) fn qualified179_cost(
+pub(crate) fn qualified179_cost_with_claims(
     draft: &FederalDraft,
     activity: i64,
     asset: &BusinessAsset,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
-    let cost = asset.qualified179_cost();
+    let fallback = macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(draft));
+    let view = macrs.or(fallback.as_ref()).unwrap();
+    let owner = draft
+        .income
+        .iter()
+        .find(|entry| entry.id == activity)
+        .ok_or(crate::Section179PreparedIssue::UnknownSource(activity))?
+        .owner;
+    let invocation = view.context(owner.owned(), Some(activity), asset);
+    if asset.qualified179_cost() > 0
+        && asset.class == crate::EquipmentClass::ThirtyNine
+        && asset.potential_real179()
+        && !asset.real179_in_context(invocation)
+    {
+        return Err(crate::Section179PreparedIssue::SourceBoundaryUnavailable(
+            activity,
+            "ASSET_QIP_SOURCE_CONTEXT_UNAVAILABLE",
+        ));
+    }
+    let cost = asset.qualified179_cost_in_context(invocation);
+    if cost == 0 && asset.elected179() > 0 {
+        return Err(crate::Section179PreparedIssue::SourceBoundaryUnavailable(
+            activity,
+            "ASSET_MACRS_SOURCE_FACTS",
+        ));
+    }
     if cost == 0 {
         return Ok(0);
     }
     let Some(entry) = draft.income.iter().find(|entry| entry.id == activity) else {
         return Err(crate::Section179PreparedIssue::UnknownSource(activity));
     };
-    match purchases(draft, entry.owner, activity, asset.id)? {
+    match purchases_with_claims(draft, entry.owner.owned(), activity, asset.id, source_claims)? {
         SourceFact::NotReported => Ok(cost),
         SourceFact::Reported(purchase) => {
             let net = purchase.new_basis(purchase.asset);
@@ -526,6 +632,7 @@ pub(crate) fn qualified179_cost(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn source_amounts(
     draft: &FederalDraft,
     activity: i64,
@@ -533,16 +640,66 @@ pub(crate) fn source_amounts(
     mid_quarter: bool,
     alternative: bool,
 ) -> Result<AssetAmounts, crate::Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    source_amounts_with_claims(
+        draft,
+        activity,
+        asset,
+        mid_quarter,
+        alternative,
+        &source_claims,
+        None,
+    )
+}
+
+pub(crate) fn source_amounts_with_claims(
+    draft: &FederalDraft,
+    activity: i64,
+    asset: &BusinessAsset,
+    mid_quarter: bool,
+    alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
+) -> Result<AssetAmounts, crate::Section179PreparedIssue> {
     use crate::Section179PreparedIssue as E;
     let Some(entry) = draft.income.iter().find(|entry| entry.id == activity) else {
         return Err(E::UnknownSource(activity));
     };
-    match purchases(draft, entry.owner, activity, asset.id)? {
+    match purchases_with_claims(draft, entry.owner.owned(), activity, asset.id, source_claims)? {
         SourceFact::NotReported => {
             let selected = if alternative { asset.amt_projection_or_self() } else { asset.clone() };
+            let fallback =
+                macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(draft));
+            let invocation = macrs.or(fallback.as_ref()).unwrap().context(
+                entry.owner.owned(),
+                Some(activity),
+                asset,
+            );
+            let (bonus, macrs) = if let Some(key) =
+                selected.macrs_source_issue_in_context(invocation)
+            {
+                if selected.disposal != crate::AssetDisposal::No
+                    || selected.partial.is_some()
+                    || selected.available179() > 0
+                {
+                    return Err(E::SourceBoundaryUnavailable(activity, key));
+                }
+                (0, 0)
+            } else {
+                match selected.source_ads_recovery_in_context(invocation) {
+                    Ok(Some(_)) => (
+                        selected.source_bonus_amount_in_context(invocation),
+                        selected.source_macrs_amount_in_context(mid_quarter, invocation).ok_or(
+                            E::SourceBoundaryUnavailable(activity, "ASSET_ADS_SOURCE_UNAVAILABLE"),
+                        )?,
+                    ),
+                    Ok(None) => (selected.bonus_amount(), selected.macrs_amount(mid_quarter)),
+                    Err(_) => (0, 0),
+                }
+            };
             Ok(AssetAmounts {
-                bonus: selected.bonus_amount(),
-                macrs: selected.macrs_amount(mid_quarter),
+                bonus,
+                macrs,
                 opening: selected.opening_basis(),
                 sale_cost_cents: selected.business_basis()
                     + selected.investment_basis_reduction()
@@ -551,12 +708,35 @@ pub(crate) fn source_amounts(
                 investment_reduction: selected.investment_basis_reduction(),
                 entered_credit_reduction: selected.entered_credit_reduction(),
                 partial: None,
-                qualified179_cost: selected.qualified179_cost(),
+                qualified179_cost: selected.qualified179_cost_in_context(invocation),
+                straight_line_through_sale: selected.source_straight_line_through_sale(invocation),
             })
         }
-        SourceFact::Reported(purchase) => AssetView { asset, purchase }
-            .amounts(mid_quarter, alternative)
-            .ok_or(E::SourceBoundaryUnavailable(activity, "ISSUE_COOP_PROPERTY_HISTORY_NEEDED")),
+        SourceFact::Reported(purchase) => {
+            let fallback =
+                macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(draft));
+            let invocation = macrs.or(fallback.as_ref()).unwrap().context(
+                entry.owner.owned(),
+                Some(activity),
+                asset,
+            );
+            match asset.source_ads_recovery_in_context(invocation) {
+                Ok(Some(_))
+                    if asset.class == crate::EquipmentClass::ThirtyNine
+                        && matches!(asset.history, crate::EquipmentHistory::New { .. })
+                        && asset.partial.is_none() => {}
+                Ok(None) => {}
+                _ => {
+                    return Err(E::SourceBoundaryUnavailable(
+                        activity,
+                        "ASSET_ADS_ORIGINAL_HISTORY_UNAVAILABLE",
+                    ));
+                }
+            }
+            AssetView { asset, purchase }
+                .amounts_in_context(mid_quarter, alternative, invocation)
+                .ok_or(E::SourceBoundaryUnavailable(activity, "ISSUE_COOP_PROPERTY_HISTORY_NEEDED"))
+        }
         SourceFact::Unavailable => {
             Err(E::SourceBoundaryUnavailable(activity, "ISSUE_COOP_PROPERTY_HISTORY_NEEDED"))
         }
@@ -566,35 +746,54 @@ pub(crate) fn source_amounts(
 // Property consumers explicitly use the native property projection. C/F
 // sources remain whole until Totals settlement; Form4835 already owns a
 // divided property view. Never infer a fraction from rounded copied costs.
-fn property_operands(
+
+fn property_operands_with_claims(
     draft: &FederalDraft,
     activity: i64,
     asset: &BusinessAsset,
     mid_quarter: bool,
     alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
 ) -> Result<(BusinessAsset, AssetAmounts), crate::Section179PreparedIssue> {
     use crate::Section179PreparedIssue as E;
     let entry =
         draft.income.iter().find(|entry| entry.id == activity).ok_or(E::UnknownSource(activity))?;
-    let purchase = match purchases(draft, entry.owner, activity, asset.id)? {
-        SourceFact::NotReported => {
-            return Ok((
-                asset.clone(),
-                source_amounts(draft, activity, asset, mid_quarter, alternative)?,
-            ));
-        }
-        SourceFact::Unavailable => {
-            return Err(E::SourceBoundaryUnavailable(
-                activity,
-                "ISSUE_COOP_PROPERTY_HISTORY_NEEDED",
-            ));
-        }
-        SourceFact::Reported(purchase) => purchase,
-    };
+    let purchase =
+        match purchases_with_claims(draft, entry.owner.owned(), activity, asset.id, source_claims)?
+        {
+            SourceFact::NotReported => {
+                return Ok((
+                    asset.clone(),
+                    source_amounts_with_claims(
+                        draft,
+                        activity,
+                        asset,
+                        mid_quarter,
+                        alternative,
+                        source_claims,
+                        macrs,
+                    )?,
+                ));
+            }
+            SourceFact::Unavailable => {
+                return Err(E::SourceBoundaryUnavailable(
+                    activity,
+                    "ISSUE_COOP_PROPERTY_HISTORY_NEEDED",
+                ));
+            }
+            SourceFact::Reported(purchase) => purchase,
+        };
     let canonical = purchase.asset;
-    let mut amounts = AssetView { asset: canonical, purchase }
-        .amounts(mid_quarter, alternative)
-        .ok_or(E::SourceBoundaryUnavailable(activity, "ISSUE_COOP_PROPERTY_HISTORY_NEEDED"))?;
+    let mut amounts = source_amounts_with_claims(
+        draft,
+        activity,
+        canonical,
+        mid_quarter,
+        alternative,
+        source_claims,
+        macrs,
+    )?;
     if !matches!(entry.income, FederalIncome::FarmRental { .. }) {
         return Ok((canonical.clone(), amounts));
     }
@@ -616,6 +815,7 @@ fn property_operands(
     amounts.investment_reduction = project(amounts.investment_reduction);
     amounts.entered_credit_reduction = project(amounts.entered_credit_reduction);
     amounts.qualified179_cost = project(amounts.qualified179_cost);
+    amounts.straight_line_through_sale = amounts.straight_line_through_sale.map(project);
     if let Some(partial) = &mut amounts.partial {
         partial.cost = project(partial.cost);
         partial.full_year = project(partial.full_year);
@@ -623,6 +823,7 @@ fn property_operands(
     Ok((selected.clone(), amounts))
 }
 
+#[cfg(test)]
 pub(crate) fn sale(
     draft: &FederalDraft,
     activity: i64,
@@ -630,10 +831,56 @@ pub(crate) fn sale(
     mid_quarter: bool,
     alternative: bool,
 ) -> Result<Option<crate::asset_sale::AssetGain>, crate::Section179PreparedIssue> {
-    let (asset, amounts) = property_operands(draft, activity, asset, mid_quarter, alternative)?;
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    sale_with_claims(draft, activity, asset, mid_quarter, alternative, &source_claims, None)
+}
+
+pub(crate) fn sale_with_claims(
+    draft: &FederalDraft,
+    activity: i64,
+    asset: &BusinessAsset,
+    mid_quarter: bool,
+    alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
+) -> Result<Option<crate::asset_sale::AssetGain>, crate::Section179PreparedIssue> {
+    if asset.nonmacrs() {
+        let entry = draft
+            .income
+            .iter()
+            .find(|entry| entry.id == activity)
+            .ok_or(crate::Section179PreparedIssue::UnknownSource(activity))?;
+        let assets = match &entry.income {
+            FederalIncome::Business { data } => &data.assets,
+            FederalIncome::FarmRental { data } => &data.assets,
+            _ => return Err(crate::Section179PreparedIssue::WrongSourceKind(activity)),
+        };
+        let index = assets
+            .iter()
+            .position(|source| source.id == asset.id)
+            .ok_or(crate::Section179PreparedIssue::UnknownSource(activity))?;
+        return Ok(crate::asset_sale::property_asset_sale(
+            draft,
+            activity,
+            asset,
+            index,
+            mid_quarter,
+            alternative,
+        ));
+    }
+    let (asset, amounts) = property_operands_with_claims(
+        draft,
+        activity,
+        asset,
+        mid_quarter,
+        alternative,
+        source_claims,
+        macrs,
+    )?;
     Ok(asset.sale_with_purchase(mid_quarter, alternative, Some(amounts)))
 }
 
+#[cfg(test)]
 pub(crate) fn partial(
     draft: &FederalDraft,
     activity: i64,
@@ -641,22 +888,53 @@ pub(crate) fn partial(
     mid_quarter: bool,
     alternative: bool,
 ) -> Result<Option<crate::asset_sale::PartialGain>, crate::Section179PreparedIssue> {
-    let (asset, amounts) = property_operands(draft, activity, asset, mid_quarter, alternative)?;
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    partial_with_claims(draft, activity, asset, mid_quarter, alternative, &source_claims, None)
+}
+
+pub(crate) fn partial_with_claims(
+    draft: &FederalDraft,
+    activity: i64,
+    asset: &BusinessAsset,
+    mid_quarter: bool,
+    alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
+) -> Result<Option<crate::asset_sale::PartialGain>, crate::Section179PreparedIssue> {
+    let (asset, amounts) = property_operands_with_claims(
+        draft,
+        activity,
+        asset,
+        mid_quarter,
+        alternative,
+        source_claims,
+        macrs,
+    )?;
     Ok(asset.partial_with_purchase(amounts.partial))
 }
 
-pub(crate) fn depreciation(
+pub(crate) fn depreciation_with_claims(
     draft: &FederalDraft,
     activity: i64,
     assets: &[BusinessAsset],
     mid_quarter: bool,
     alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
     let mut total = 0_i64;
     for asset in assets {
-        let amount = source_amounts(draft, activity, asset, mid_quarter, alternative)?
-            .deduction()
-            .ok_or(crate::Section179PreparedIssue::AmountOverflow(activity))?;
+        let amount = source_amounts_with_claims(
+            draft,
+            activity,
+            asset,
+            mid_quarter,
+            alternative,
+            source_claims,
+            macrs,
+        )?
+        .deduction()
+        .ok_or(crate::Section179PreparedIssue::AmountOverflow(activity))?;
         total = total
             .checked_add(amount)
             .ok_or(crate::Section179PreparedIssue::AmountOverflow(activity))?;
@@ -664,21 +942,50 @@ pub(crate) fn depreciation(
     Ok(total)
 }
 
-pub(crate) fn operating_cost(
+pub(crate) fn operating_cost_with_claims(
     draft: &FederalDraft,
     activity: i64,
     business: &crate::FederalBusiness,
     mid_quarter: bool,
     alternative: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
-    let has_refund = crate::cooperative::sources(draft).iter().any(|source| {
-        source.allocation.activity == Some(activity)
-            && source.allocation.properties.iter().any(|record| record.amount > 0)
-    });
-    if !has_refund {
+    if let Some(key) = business.intangibles.iter().find_map(crate::BusinessIntangible::boundary) {
+        return Err(crate::Section179PreparedIssue::SourceBoundaryUnavailable(activity, key));
+    }
+    let has_refund =
+        crate::cooperative::sources_with_claims(draft, source_claims).iter().any(|source| {
+            source.activity == Some(activity)
+                && source.allocation.properties.iter().any(|record| record.amount > 0)
+        });
+    let fallback = macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(draft));
+    let view = macrs.or(fallback.as_ref()).unwrap();
+    let has_class_election =
+        draft.income.iter().find(|entry| entry.id == activity).is_some_and(|entry| {
+            business.assets.iter().any(|asset| {
+                let invocation = view.context(entry.owner.owned(), Some(activity), asset);
+                invocation.election.is_some()
+                    || invocation.required.is_some()
+                    || invocation.unavailable
+                    || asset
+                        .macrs_source
+                        .as_ref()
+                        .is_some_and(|source| source.improvement.is_some())
+            })
+        });
+    if !has_refund && !has_class_election {
         return Ok(business.operating_cost_before_supplies(mid_quarter));
     }
-    let depreciation = depreciation(draft, activity, &business.assets, mid_quarter, alternative)?;
+    let depreciation = depreciation_with_claims(
+        draft,
+        activity,
+        &business.assets,
+        mid_quarter,
+        alternative,
+        source_claims,
+        macrs,
+    )?;
     business
         .operating_cost_with_asset_deductions(depreciation)
         .ok_or(crate::Section179PreparedIssue::AmountOverflow(activity))
@@ -713,7 +1020,7 @@ pub(crate) fn choices(draft: &FederalDraft) -> Vec<RecordChoice> {
             _ => continue,
         };
         for (index, value) in assets.iter().enumerate() {
-            if asset(draft, entry.owner, Some(entry.id), value.id).is_some() {
+            if asset(draft, entry.owner.owned(), Some(entry.id), value.id).is_some() {
                 choices.push(RecordChoice {
                     id: value.id,
                     label: crate::Message::new(

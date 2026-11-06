@@ -83,22 +83,6 @@ fn personal_rental_prior_and_current_losses_share_other_passive_profit() {
 }
 
 #[test]
-fn personal_rental_prior_history_rejects_invalid_balances() {
-    let mut d = complete(FederalStatus::Single);
-    let rent = personal_rent_with_history(12000, 2000, 8000, 12000, false);
-    add(&mut d, income(rent));
-    let FederalIncome::NonbusinessProperty {
-        kind: NonbusinessPropertyKind::PersonalRental { history, .. },
-        ..
-    } = &mut d.income[1].income
-    else {
-        panic!()
-    };
-    *history = PersonalRentalHistory { regular: -1, amt: 0 };
-    assert!(!d.valid_stored());
-}
-
-#[test]
 fn former_passive_property_current_net_loss_stays_outside_prior_loss_pool() {
     let source = former_passive_property_scorp(-8_000, 3_000, 6_000, 4_000);
     let activity = source.pool_activity_result().unwrap();

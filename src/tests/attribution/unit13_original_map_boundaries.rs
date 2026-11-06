@@ -17,8 +17,8 @@ fn unit13_original_r9_farmland_deferral_preserves_money_sources_and_saved_claim(
                 draft.people = joint.people;
                 draft.setup = joint.setup;
                 let FederalIncome::Wage { data } = &mut draft.income[0].income else { panic!() };
-                data.withholding = 5_000_000;
-                draft.income[1].owner = farm_owner;
+                edit_wage(data).withholding = 5_000_000;
+                draft.income[1].owner = crate::DocumentOwner::from(farm_owner);
                 let farm_id = draft.income[1].id;
                 add(&mut draft, wage(0, Owner::Spouse, 2_000_000, 100_000));
                 if reversed {
@@ -32,7 +32,7 @@ fn unit13_original_r9_farmland_deferral_preserves_money_sources_and_saved_claim(
                 let source_income = draft.income.clone();
                 let mut claim = allocation();
                 claim.injured = injured;
-                draft.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+                draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
                 draft.injured_spouse = Some(claim);
                 let claimed = supported(&draft);
                 assert_eq!(

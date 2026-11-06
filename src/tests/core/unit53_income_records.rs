@@ -72,7 +72,7 @@ fn malformed_income_scopes_leave_the_entire_target_unchanged() {
                 }
             }
             8 => {
-                records[0].0 = TaxDataKey::Draft { user: TEST_USER };
+                records[0].0 = TaxDataKey::StorageFormat { user: TEST_USER };
                 Error::UnexpectedRecord
             }
             9 => {

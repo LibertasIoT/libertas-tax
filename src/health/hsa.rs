@@ -1,3 +1,8 @@
+pub use crate::hsa_source::{
+    HsaAllocationMethod, HsaEligibilityLoss, HsaExcessAccounting, HsaFamilyShare,
+    HsaFundingHistory, HsaLateExcessWithdrawal, HsaLossReason, HsaPriorEmployerExcessDeposit,
+    HsaPriorExcess,
+};
 // Coverage: Form5329 PRINT PartVII (2026-10-13): accepted excess-accounting
 //   sources project lines42–49 per filer. Full room/distributions, carry and
 //   current excess retain source cents; tax retains its existing whole-dollar
@@ -20,7 +25,7 @@
 //   Ordinary/deemed distributions and beneficiary Part II sources are the canonical
 //   1099-SA/trustee statement document (medical_account.rs), not duplicate HSA account fields. Refusals are explicit
 //   issues (unknown facts, mismatched histories).
-//   Unit B6a (2026-10-09): every stored FederalHsa field has a page field. The HSA page (HsaPage)
+//   Every stored FederalHsa field has a page field. The HSA page (HsaPage)
 //   gains, on each account, the timely corrections (Form 8889 lines 2, 9, 14a and the 1099-SA code
 //   2), late withdrawals of an old excess, the prior-year employer excess deposited in 2026, the
 //   excess accounting (Form 5329 Part VII), the last-month rule's first loss and its
@@ -43,7 +48,7 @@
 //   Both block another lifetime exclusion without creating current income or
 //   contributions. Date/coverage/duplicate guards repeat on save and restore.
 //   Tests: health_accounts/interview hsa_earlier_*; Notice2008-51 pp4–5.
-//   Fix unit F3 (2026-10-10): the refusal-only confirmations are gone (the excess accounting, the
+//   The refusal-only confirmations are gone (the excess accounting, the
 //   last-month history, the 2025 funding history, and the left-out flags on corrections, late
 //   withdrawals, prior employer excess and 2026 funding): the printed dates and amounts decide.
 //   Evidence: hsa.rs, hsa_funding.rs, hsa_last_month.rs, hsa_correction.rs, medical_account.rs,
@@ -65,126 +70,18 @@
 pub(crate) fn catchup_age(birth: u32, year: u32) -> bool {
     crate::federal_model::age_on(birth, year * 10000 + 1231) >= 55
 }
-use crate::federal_rules::{valid_birth, valid_date};
-use crate::kernel::lines::line_cents;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 #[cfg(test)]
 use crate::kernel::ratio::dollars;
 use crate::kernel::ratio::exact::{self, Exact, whole};
 use crate::kernel::ratio::positive;
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line_cents;
 use crate::{
-    FederalHsa, FederalPeople, FederalResult, FederalStatus, HsaCorrection, HsaCoverage,
-    HsaEligibility, Owner,
+    FederalHsa, FederalPeople, FederalResult, FederalStatus, HsaCorrection, HsaCoverage, Owner,
 };
 
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
-
-/// HSA contribution-limit method and family eligibility context
-/// Choose actual monthly capacity or the December last-month method. Spouses who are both eligible share a family allowance equally unless they actually agree otherwise. Other-filer coverage is factual context when that person has no HSA entry; it creates no account or income. December requires actual December 1 eligibility and its testing period through December 31, 2027, except for death or disability.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct HsaFamilyShare {
-    /// Contribution-limit method
-    #[libertas_default("Monthly")]
-    pub method: HsaAllocationMethod,
-    /// Taxpayer's agreed parts
-    #[libertas_default(1)]
-    #[libertas_number(min = 0)]
-    pub taxpayer_parts: u32,
-    /// Spouse's agreed parts
-    /// One part each means equal shares. Zero for one spouse is allowed; both cannot be zero. The same ratio applies when recomputing the ordinary monthly family allowance for recapture.
-    #[libertas_default(1)]
-    #[libertas_number(min = 0)]
-    pub spouse_parts: u32,
-    /// Other filer's eligibility when that person has no HSA entry
-    /// Supply the other filer's actual first-day monthly eligibility when only one account owner is listed, including an ineligible full year. On a separate return this is the spouse; on a joint return it is the missing account owner. This context creates no HSA account, contribution, distribution or catch-up. Leave absent when both owners have entries. Report actual Archer contributions in their existing records.
-    #[libertas_default($null)]
-    pub other_coverage: Option<HsaEligibility>,
-}
-/// HSA contribution-limit method
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum HsaAllocationMethod {
-    /// Actual monthly eligibility
-    /// Divide the allowance for eligible family months, then add each owner's self-only months and personal catch-up. This method does not use the current last-month rule.
-    Monthly,
-    /// December eligibility
-    /// Use December1 eligibility and coverage for the annual last-month-rule capacity, with each eligible owner's personal catch-up and the testing period. Divide family capacity only when both spouses are eligible; a self-only December plan uses its own self-only limit.
-    December,
-}
-impl HsaFamilyShare {
-    fn valid(&self) -> bool {
-        u64::from(self.taxpayer_parts) + u64::from(self.spouse_parts) > 0
-            && self.other_coverage.as_ref().is_none_or(|v| match v {
-                HsaEligibility::FullYear { .. } => true,
-                HsaEligibility::Monthly { months } => months.len() == 12,
-            })
-    }
-    fn amount(&self, value: i64, owner: usize) -> i64 {
-        let parts = if owner == 0 { self.taxpayer_parts } else { self.spouse_parts };
-        crate::kernel::ratio::fraction(
-            value,
-            i64::from(parts),
-            (i64::from(self.taxpayer_parts) + i64::from(self.spouse_parts)).max(1),
-        )
-    }
-}
-
-/// Retained 2025 Form 5329 HSA excess
-/// Use the actual prior return after any amendment. Its tax determines whether the excess enters line 42 of the 2026 form; the App recalculates how much remains after 2026 activity.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct HsaPriorExcess {
-    /// Retained 2025 Form 5329 line 48 excess contributions
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub line_48: i64,
-    /// Retained 2025 Form 5329 line 49 tax
-    /// The 2026 line 42 imports line 48 only when this tax was positive.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub line_49: i64,
-}
-impl HsaPriorExcess {
-    fn valid(&self) -> bool {
-        self.line_48 >= 1 && self.line_49 >= 1
-    }
-}
-
-/// 2026 Form 5329 HSA excess-accounting facts
-/// Use when personal or employer excess remains in 2026 or a retained 2025 excess enters this year. A qualified IRA-to-HSA funding transfer uses contribution room before employer and personal deposits. The App calculates current excess, prior absorption, deduction, income and tax; do not enter current precomputed tax.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct HsaExcessAccounting {
-    /// 2025 excess and tax on the retained Form 5329, if any
-    /// [NullText]
-    /// No 2025 HSA excess carries into 2026
-    /// [SetText]
-    /// The retained 2025 excess and tax are
-    pub prior_year: Option<HsaPriorExcess>,
-    /// Part of the uncorrected excess from employer deposits actually made in 2026 already included in 2026 Form W-2 box 1 wages
-    /// Enter only the taxable 2026-deposit excess principal, not all HSA wages or timely corrected amounts. The remaining 2026-deposit excess enters Schedule 1 other income. A 2027 deposit follows 2027 income reporting. Confirm the W-2 wage source is entered once in Income.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub employer_excess_in_wages: i64,
-    /// Fair market value of all this owner's HSAs on December 31, 2026
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub year_end_value: i64,
-    /// Additional contributions made after December 31, 2026 and designated for 2026
-    /// Enter only other net later deposits, excluding failed indirect-rollover deposits entered on Other income. Include other deposits in the manual personal/employer totals as appropriate. The App adds linked cash once; Form5329 uses both net later subsets for its2026 account-value ceiling.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub later_return_year_deposits: i64,
-    /// Employer part of the later deposits designated for 2026
-    /// A taxable employer excess from a deposit actually made in 2027 belongs to 2027 wages or other income, although the designated deposit still affects the 2026 Form 8889 limit and Form 5329 value ceiling.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub later_employer_deposits: i64,
-}
 impl crate::HsaAccount {
     // The first rule an account breaks, in the order the rules are declared
     // (the client's rules on each type, repeated on save with the same keys).
@@ -273,289 +170,69 @@ impl crate::HsaAccount {
             .or_else(|| crate::HsaFundingUseHistory::same_month_issue(&self.uses))
     }
 }
-impl HsaExcessAccounting {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.later_employer_deposits > self.later_return_year_deposits).then_some(
-            crate::validation::ValidationIssue::new("HSA_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER")
-                .at_field("later_employer_deposits"),
-        )
-    }
-    fn valid(&self) -> bool {
-        self.year_end_value >= 0
-            && self.later_return_year_deposits >= 0
-            && (0..=self.later_return_year_deposits).contains(&self.later_employer_deposits)
-            && self.employer_excess_in_wages >= 0
-            && self.prior_year.as_ref().is_none_or(HsaPriorExcess::valid)
-    }
-}
-
-/// Late withdrawal of a prior-year HSA excess
-/// A distribution after that contribution year's correction deadline is taxable even when the cash paid medical expenses. Enter the entire 2026 distribution once here, excluding it from medical and ordinary nonmedical withdrawals. This is not a timely contribution correction.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct HsaLateExcessWithdrawal {
-    /// Year of the original excess contribution
-    // Tax structure: this history concerns contributions for years before the current return.
-    #[libertas_number(min = 2004, max = 2025)]
-    pub contribution_year: u32,
-    /// Expired correction deadline including any valid extension or relief
-    #[libertas_date_only]
-    // Tax structure: this event or eligibility period must fall by the end of the return year.
-    #[libertas_number(min = 20040101, max = 20261231)]
-    pub deadline: u32,
-    /// Date distributed in 2026
-    #[libertas_date_only]
-    // Tax structure: this event or eligibility period must fall by the end of the return year.
-    #[libertas_number(min = 20260101, max = 20261231)]
-    pub date: u32,
-    /// Entire late distribution, including any earnings paid with it
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// Account owner was permanently and totally disabled before distribution
-    /// Age 65 is determined from the owner's birth date. Both exceptions remove the 20% tax, not ordinary income. Check the disability determination and its effective date. No applies the 20% tax before age 65.
-    pub disabled: bool,
-}
-impl HsaLateExcessWithdrawal {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.date <= self.deadline).then_some(
-            crate::validation::ValidationIssue::new("HSA_LATE_EXCESS_NOT_LATE").at_field("date"),
-        )
-    }
-    fn record_issue(&self) -> Option<crate::validation::ValidationIssue> {
-        let invalid =
-            |field| crate::validation::ValidationIssue::new("HSA_RECORD_INVALID").at_field(field);
-        if !(2004..=2025).contains(&self.contribution_year) {
-            Some(invalid("contribution_year"))
-        } else if !valid_date(self.deadline)
-            || !(self.contribution_year..=2026).contains(&(self.deadline / 10000))
-        {
-            Some(invalid("deadline"))
-        } else if !valid_date(self.date) || self.date / 10000 != 2026 || self.date <= self.deadline
-        {
-            Some(invalid("date"))
-        } else if self.amount < 1 {
-            Some(invalid("amount"))
-        } else {
-            None
-        }
-    }
-}
-
-/// Uncorrected prior-year HSA employer excess deposited in 2026
-/// This deposit was designated for 2025 and belongs on that year's Form 8889, not in current personal or employer totals. Its taxable principal enters 2026 wages or other income because the employer actually deposited it in 2026. The retained 2025 Form 8889 shows it above the allowable limit; a positive 2025 Form 5329 tax must be supplied separately as retained prior excess.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct HsaPriorEmployerExcessDeposit {
-    /// Actual 2026 HSA deposit date
-    #[libertas_date_only]
-    // Tax structure: this event or eligibility period must fall by the end of the return year.
-    #[libertas_number(min = 20260101, max = 20261231)]
-    pub contributed_on: u32,
-    /// Last permitted date for a 2025-designated contribution
-    /// Use April 15, 2026 or a documented later deadline under applicable relief; an ordinary filing extension does not extend this contribution deadline.
-    #[libertas_date_only]
-    // Tax structure: this event or eligibility period must fall by the end of the return year.
-    #[libertas_number(min = 20260101, max = 20261231)]
-    pub deadline: u32,
-    /// Principal established as uncorrected employer excess on the retained 2025 return
-    /// This is only the taxable excess part of the deposit, not its full code W amount. Do not also enter it as a 2026-designated employer contribution or as a timely correction.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// Taxable principal is already in 2026 W-2 box 1 wages
-    /// Yes requires those wages in Income. No sends the principal to Schedule 1 other income. Ask the employer, or compare W-2 box 1 with the payroll statement.
-    pub in_wages: bool,
-}
-impl HsaPriorEmployerExcessDeposit {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.contributed_on > self.deadline).then_some(
-            crate::validation::ValidationIssue::new("HSA_PRIOR_EXCESS_DEPOSIT_AFTER_DEADLINE")
-                .at_field("deadline"),
-        )
-    }
-    fn valid(&self) -> bool {
-        valid_date(self.contributed_on)
-            && self.contributed_on / 10000 == 2026
-            && valid_date(self.deadline)
-            && self.deadline / 10000 == 2026
-            && self.contributed_on <= self.deadline
-            && self.amount >= 1
-    }
-}
-impl FederalHsa {
-    pub(crate) fn valid(&self) -> bool {
-        self.record_issue().is_none()
-    }
-    pub(crate) fn record_issue(&self) -> Option<crate::validation::ValidationIssue> {
-        use crate::validation::ValidationIssue;
-        let invalid = || ValidationIssue::new("HSA_RECORD_INVALID");
-        for (field, amount) in [
-            ("personal", self.personal),
-            ("employer", self.employer),
-            ("employer_outside", self.employer_outside),
-        ] {
-            if amount < 0 {
-                return Some(invalid().at_field(field));
-            }
-        }
-        if matches!(&self.coverage, HsaEligibility::Monthly { months } if months.len() != 12) {
-            return Some(invalid().at_field("coverage"));
-        }
-        if self
-            .last_month_loss
-            .as_ref()
-            .is_some_and(|v| !valid_date(v.date) || !(20261201..=20271231).contains(&v.date))
-        {
-            return Some(invalid().at_field("last_month_loss"));
-        }
-        // Section 223 permits only the self-only-to-family second qualified transfer.
-        // IRC 408(d)(9): one lifetime transfer plus the same-year family-coverage exception.
-        if self.funding.len() > 2 || self.funding.iter().any(|v| !v.valid()) {
-            // Stored funding is flattened into the Page's separate collection;
-            // keep opaque intrinsic failures unlocated here rather than invent
-            // an accounts/{i}/funding path which the request does not contain.
-            return Some(invalid());
-        }
-        if let Some(index) = self.corrections.iter().position(|v| !v.valid()) {
-            return Some(invalid().at_list_item("corrections", index));
-        }
-        if HsaCorrection::manual_returned_for_return_year(&self.corrections, false)
-            > whole(self.personal)
-        {
-            return Some(invalid().at_field("corrections"));
-        }
-        if self.corrected(true) > whole(self.employer) {
-            return Some(invalid().at_field("corrections"));
-        }
-        if self.excess_accounting.as_ref().is_some_and(|v| {
-            !v.valid()
-                || whole(v.later_employer_deposits) > self.net_employer()
-                || whole(v.later_return_year_deposits) - whole(v.later_employer_deposits)
-                    > whole(self.personal)
-                        - HsaCorrection::manual_returned_for_return_year(&self.corrections, false)
-        }) {
-            return Some(invalid().at_field("excess_accounting"));
-        }
-        if self.last_month_history.as_ref().is_some_and(|v| !v.valid()) {
-            return Some(invalid().at_field("last_month_history"));
-        }
-        // The same statutory transfer limit applies to the prior-year testing history.
-        if self.funding_history.len() > 2 {
-            return Some(invalid().at_field("funding_history"));
-        }
-        if let Some(index) = self.funding_history.iter().position(|v| !v.valid()) {
-            return Some(invalid().at_list_item("funding_history", index));
-        }
-        if let Some(issue) = self.uses.iter().enumerate().find_map(|(index, value)| {
-            value.record_issue().map(|issue| issue.in_list("uses", index))
-        }) {
-            return Some(issue);
-        }
-        if crate::HsaFundingUseHistory::same_month(&self.uses).is_some() {
-            return Some(invalid().at_field("uses"));
-        }
-        if self.funding_history.len() >= 2
-            && self.funding_history[0].funded / 100 == self.funding_history[1].funded / 100
-        {
-            return Some(invalid().at_field("funding_history"));
-        }
-        if let Some(issue) = self.late_excess.iter().enumerate().find_map(|(index, value)| {
-            value.record_issue().map(|issue| issue.in_list("late_excess", index))
-        }) {
-            return Some(issue);
-        }
-        self.prior_employer_excess
-            .iter()
-            .position(|v| !v.valid())
-            .map(|index| invalid().at_list_item("prior_employer_excess", index))
-    }
-    fn corrected(&self, employer: bool) -> Exact {
-        HsaCorrection::returned_for_return_year(&self.corrections, employer)
-    }
-    fn net_personal(&self) -> Exact {
-        whole(self.personal) - self.corrected(false)
-    }
-    fn net_employer(&self) -> Exact {
-        whole(self.employer) - self.corrected(true)
-    }
-    fn month(&self, month: usize) -> HsaCoverage {
-        self.coverage.month(month)
-    }
-}
-impl HsaEligibility {
-    pub(crate) fn month(&self, month: usize) -> HsaCoverage {
-        match self {
-            Self::FullYear { coverage } => *coverage,
-            Self::Monthly { months } => months.get(month).copied().unwrap_or(HsaCoverage::None),
-        }
-    }
-}
-
-// Transient twelfths of cents from the existing monthly/December branches.
-// Independently rounded form details can differ by a cent from their rounded
-// sum; retain the original combined numerator for the actual owner capacity.
 struct ContributionLimitTrace {
     before_archer: i64,
-    after_archer: i64,
     allocated: i64,
     catchup: i64,
 }
 
 struct ContributionAmounts {
     archer: i64,
-    allowed: i64,
     funding: i64,
-    deduction: i64,
     personal: i64,
     employer: i64,
+    prior_deducted: i64,
 }
 
+// Form 8889 lines 2 to 13 print whole dollars figured from the printed lines; the
+// returned line 13 is the deduction that crosses to Schedule 1 (D-2026-10-19-12).
 fn contribution_lines(
     owner: usize,
     trace: &ContributionLimitTrace,
     amounts: ContributionAmounts,
     r: &mut FederalResult,
-) -> Result<(), crate::medical_account::OutputFailure> {
-    let ContributionAmounts { archer, allowed, funding, deduction, personal, employer } = amounts;
+) -> Result<i64, crate::medical_account::OutputFailure> {
+    let ContributionAmounts { archer, funding, personal, employer, prior_deducted } = amounts;
     let cents = |numerator| crate::kernel::ratio::fraction(numerator, 1, 12);
-    let capacity = cents(allowed);
-    let other = crate::medical_account::required_output(
-        &(whole(employer) + whole(funding)),
-        crate::IssueContext::owner(
-            crate::TaxSection::Hsa,
-            if owner == 0 { Owner::Taxpayer } else { Owner::Spouse },
-        ),
-    )?;
+    let l = crate::forms::form_8889::contribution(&crate::forms::form_8889::ContributionCents {
+        personal,
+        before_archer: cents(trace.before_archer),
+        archer,
+        allocated: cents(trace.allocated),
+        catchup: cents(trace.catchup),
+        employer,
+        funding,
+        prior_deducted,
+    });
     emit_lines(
         r,
         &mut (),
         [
-            ("personal", "2", personal),
-            ("limit", "3", cents(trace.before_archer)),
-            ("archer", "4", archer),
-            ("after_archer", "5", cents(trace.after_archer)),
-            ("allocated", "6", cents(trace.allocated)),
-            ("catchup", "7", cents(trace.catchup)),
-            ("total_limit", "8", capacity),
-            ("employer", "9", employer),
-            ("funding", "10", funding),
-            ("other", "11", other),
-            ("personal_limit", "12", positive(capacity - other)),
-            ("deduction", "13", deduction),
+            ("personal", "2", l.l2),
+            ("limit", "3", l.l3),
+            ("archer", "4", l.l4),
+            ("after_archer", "5", l.l5),
+            ("allocated", "6", l.l6),
+            ("catchup", "7", l.l7),
+            ("total_limit", "8", l.l8),
+            ("employer", "9", l.l9),
+            ("funding", "10", l.l10),
+            ("other", "11", l.l11),
+            ("personal_limit", "12", l.l12),
+            ("deduction", "13", l.l13),
         ],
         |(suffix, printed, amount), _, _| {
             Some(calculation_row(
                 Some(crate::FormLine::new(crate::TaxForm::Form8889, printed)),
                 &alloc::format!("hsa_{}_contribution_{suffix}", owner + 1),
-                LineValue::MoneyCents(amount),
+                LineValue::MoneyDollars(amount),
                 &["adjustments.hsa", "adjustments.archer"],
                 "https://www.irs.gov/pub/irs-dft/i8889--dft.pdf",
                 msg!("EXPLAIN_HSA_CONTRIBUTION_CENTS"),
             ))
         },
     );
-    Ok(())
+    Ok(l.l13)
 }
 
 // Dollar outputs except the personal deduction, retained in cents alongside
@@ -595,7 +272,7 @@ fn distribution_lines(
             let amount = if printed.is_some() {
                 crate::medical_account::required_output(&amount, context.clone())?
             } else if let Some(amount) =
-                crate::medical_account::explanation_output(&amount, context.clone(), r)
+                crate::medical_account_return::explanation_output(&amount, context.clone(), r)
             {
                 amount
             } else {
@@ -617,7 +294,7 @@ fn distribution_lines(
                 },
             );
         }
-        crate::kernel::lines::form_count(
+        crate::line_emission::form_count(
             r,
             crate::FormLine::new(crate::TaxForm::Form8889, "17a"),
             &alloc::format!("hsa_{}_distribution_exception", owner + 1),
@@ -635,7 +312,7 @@ fn distribution_lines(
                 exact::rounded_exact(&(exact::dollars_exact(&penalized[owner]) / whole(5))),
             ),
         ] {
-            let Some(cents) = crate::medical_account::explanation_output(
+            let Some(cents) = crate::medical_account_return::explanation_output(
                 &(amount * whole(100)),
                 context.clone(),
                 r,
@@ -660,6 +337,7 @@ fn distribution_lines(
 // Existing contribution-owner facts, separate from distribution source rows.
 pub(crate) struct ContributionContext<'a> {
     pub msa: [Exact; 2],
+    pub statements: &'a [crate::contribution_documents::StatementAmounts; 2],
     pub failed: &'a [crate::medical_rollover::Contribution; 2],
     pub married: bool,
     pub family_share: Option<&'a HsaFamilyShare>,
@@ -724,8 +402,7 @@ pub(crate) fn calculate(
     }
     let mut accounts = [None, None];
     let mut form_distributions = distributions.clone();
-    let mut deduction = whole(0);
-    let mut deduction_by_owner = [whole(0), whole(0)];
+    let mut printed_deduction = [0i64; 2];
     let mut taxable = distributions.each_ref().map(|v| v.taxable.clone());
     let mut penalized = distributions.each_ref().map(|v| v.penalized.clone());
     let mut personal = [whole(0), whole(0)];
@@ -774,8 +451,6 @@ pub(crate) fn calculate(
         accounts[owner] = Some(h);
         personal[owner] = h.net_personal() + &contributions.failed[owner].personal;
         employer[owner] = h.net_employer();
-        deduction += &personal[owner];
-        deduction_by_owner[owner] += &personal[owner];
         for correction in &h.corrections {
             crate::require_localized!(
                 r,
@@ -807,7 +482,7 @@ pub(crate) fn calculate(
             sources.correction_employer_income[owner] += whole(principal);
         }
         if !h.corrections.is_empty()
-            && let Some(amount) = crate::medical_account::explanation_output(
+            && let Some(amount) = crate::medical_account_return::explanation_output(
                 &(h.corrected(false) + h.corrected(true)),
                 crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
                 r,
@@ -934,7 +609,7 @@ pub(crate) fn calculate(
         let late_excess: Exact = h.late_excess.iter().map(|v| whole(v.amount)).sum();
         form_distributions[owner].gross += &late_excess;
         if late_excess > whole(0)
-            && let Some(amount) = crate::medical_account::explanation_output(
+            && let Some(amount) = crate::medical_account_return::explanation_output(
                 &late_excess,
                 crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
                 r,
@@ -973,7 +648,7 @@ pub(crate) fn calculate(
             ("deemed", &source.deemed, msg!("EXPLAIN_HSA_N_DEEMED")),
         ] {
             if *amount > whole(0)
-                && let Some(amount) = crate::medical_account::explanation_output(
+                && let Some(amount) = crate::medical_account_return::explanation_output(
                     amount,
                     crate::IssueContext::owner(
                         crate::TaxSection::Hsa,
@@ -1183,14 +858,6 @@ pub(crate) fn calculate(
         let ordinary_catchup = if separate_catchup { catchup[i] } else { 0 };
         let mut trace = ContributionLimitTrace {
             before_archer: limits[i] + catchup[i] - ordinary_catchup,
-            after_archer: crate::medical_account::required_output(
-                &phase::floor(
-                    whole(limits[i] + catchup[i] - ordinary_catchup)
-                        - archer_reduction(i) * whole(12),
-                    whole(0),
-                ),
-                native_context.clone(),
-            )?,
             allocated: ordinary - ordinary_catchup,
             catchup: ordinary_catchup,
         };
@@ -1256,7 +923,6 @@ pub(crate) fn calculate(
                     before_archer: (crate::year_constants::HSA_FAMILY_LIMIT_2026_CENTS
                         + inline_extra)
                         * 12,
-                    after_archer: after_archer * 12,
                     allocated: family * 12,
                     catchup: separate_extra * 12,
                 };
@@ -1292,13 +958,6 @@ pub(crate) fn calculate(
                         allowed = phase::floor(allowed, december);
                         trace = ContributionLimitTrace {
                             before_archer: (base + extra - separate_extra) * 12,
-                            after_archer: crate::medical_account::required_output(
-                                &phase::floor(
-                                    whole(base + extra - separate_extra) - archer_reduction(i),
-                                    whole(0),
-                                ),
-                                native_context.clone(),
-                            )? * 12,
                             allocated: positive(december - separate_extra * 12),
                             catchup: separate_extra * 12,
                         };
@@ -1377,15 +1036,10 @@ pub(crate) fn calculate(
         // contribution room, including through the December family method.
         if !eligible[i] && accounts[i].is_some() {
             allowed = 0;
-            trace = ContributionLimitTrace {
-                before_archer: 0,
-                after_archer: 0,
-                allocated: 0,
-                catchup: 0,
-            };
+            trace = ContributionLimitTrace { before_archer: 0, allocated: 0, catchup: 0 };
         }
         if let Some(h) = accounts[i] {
-            let mut owner_deduction = personal[i].clone();
+            let mut prior_deducted_cents = 0;
             if let Some(excess) = &h.excess_accounting {
                 // Form 8889 line 10 reduces both the line 8 employer limit and
                 // line 12 personal limit. A qualified transfer can exceed the
@@ -1398,7 +1052,10 @@ pub(crate) fn calculate(
                 let personal_excess = phase::floor(&personal[i] - &personal_room, whole(0));
                 let employer_excess = phase::floor(&employer[i] - whole(capacity), whole(0));
                 let current_employer_excess = phase::floor(
-                    &employer[i] - whole(excess.later_employer_deposits) - whole(capacity),
+                    &employer[i]
+                        - whole(excess.later_employer_deposits)
+                        - whole(contributions.statements[i].later_employer)
+                        - whole(capacity),
                     whole(0),
                 );
                 let later_employer_excess = &employer_excess - &current_employer_excess;
@@ -1438,32 +1095,16 @@ pub(crate) fn calculate(
                     "The supported Form 5329 path requires a current personal/employer excess or retained 2025 line 48 with positive line 49, reconciled W-2 wages for employer excess, and the statutory equal division or an actual agreement for shared eligible family months. Monthly limits are divided by 12 and rounded to cents before qualified IRA funding is subtracted.",
                 );
                 shared_excess += (&personal_excess + &employer_excess) * whole(12);
-                deduction += whole(prior_deducted) - &personal_excess;
-                deduction_by_owner[i] += whole(prior_deducted) - &personal_excess;
-                owner_deduction += whole(prior_deducted) - &personal_excess;
+                prior_deducted_cents = prior_deducted;
                 let employer_income = phase::floor(employer_other_income, whole(0));
                 excess_employer_other_income += &employer_income;
                 sources.excess_employer_income[i] += &employer_income;
                 let account_value = whole(excess.year_end_value)
+                    + whole(contributions.statements[i].value)
+                    + whole(contributions.statements[i].later)
                     + whole(excess.later_return_year_deposits)
                     + &contributions.failed[i].later;
                 let current_excess = &personal_excess + &employer_excess;
-                let capped_excess =
-                    phase::cap(&current_excess + whole(prior_remaining), [account_value.clone()]);
-                let tax = crate::kernel::ratio::fraction(
-                    crate::medical_account::required_output(
-                        &exact::dollars_exact(&capped_excess),
-                        crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
-                    )?,
-                    6,
-                    100,
-                );
-                crate::medical_account::required_output(
-                    &(whole(tax) * whole(100)),
-                    crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
-                )?;
-                excess_tax += tax;
-                sources.excess_tax[i] += tax;
                 // Form5329 PartVII uses the same accepted account facts and
                 // exact-cent limit owner; only line49 is a whole-dollar tax.
                 // Lines43/44 are the full source amounts, not the portions
@@ -1482,30 +1123,39 @@ pub(crate) fn calculate(
                     &distributions,
                     output_context.clone(),
                 )?;
-                let unused_and_distributions = crate::medical_account::required_output(
-                    &(whole(unused_room) + &distributions),
-                    output_context.clone(),
-                )?;
                 let excess_row = crate::medical_account::required_output(
                     &current_excess,
                     output_context.clone(),
                 )?;
-                let closing_row = crate::medical_account::required_output(
-                    &(whole(prior_remaining) + current_excess),
-                    output_context.clone(),
-                )?;
+                // Lines 45 to 49 are figured from the printed lines; line 49 is the
+                // tax that crosses to Schedule 2 (D-2026-10-19-12).
+                let part = crate::forms::form_8889::excess(
+                    prior,
+                    unused_room,
+                    distribution_row,
+                    excess_row,
+                    crate::medical_account::required_output(
+                        &phase::cap(
+                            &current_excess + whole(prior_remaining),
+                            [account_value.clone()],
+                        ),
+                        output_context.clone(),
+                    )?,
+                );
+                excess_tax += part.l49;
+                sources.excess_tax[i] += part.l49;
                 emit_lines(
                     r,
                     &mut (),
                     [
-                        (42, LineValue::MoneyCents(prior)),
-                        (43, LineValue::MoneyCents(unused_room)),
-                        (44, LineValue::MoneyCents(distribution_row)),
-                        (45, LineValue::MoneyCents(unused_and_distributions)),
-                        (46, LineValue::MoneyCents(prior_remaining)),
-                        (47, LineValue::MoneyCents(excess_row)),
-                        (48, LineValue::MoneyCents(closing_row)),
-                        (49, LineValue::MoneyDollars(tax)),
+                        (42, part.l42),
+                        (43, part.l43),
+                        (44, part.l44),
+                        (45, part.l45),
+                        (46, part.l46),
+                        (47, part.l47),
+                        (48, part.l48),
+                        (49, part.l49),
                     ],
                     |(number, value), _, _| {
                         Some(calculation_row(
@@ -1514,7 +1164,7 @@ pub(crate) fn calculate(
                                 &alloc::format!("{number}"),
                             )),
                             &alloc::format!("hsa_{}_excess_line{number}", i + 1),
-                            value,
+                            LineValue::MoneyDollars(value),
                             &["adjustments.hsa", "adjustments.hsa.excess_accounting"],
                             "https://www.irs.gov/pub/irs-dft/f5329--dft.pdf",
                             msg!("EXPLAIN_HEALTH_ACCOUNT_EXCESS_FORM"),
@@ -1594,9 +1244,11 @@ pub(crate) fn calculate(
                     "https://www.irs.gov/pub/irs-dft/i5329--dft.pdf",
                     msg!("EXPLAIN_HSA_N_N_UNCORRECTED_EXCESS"),
                 );
-                if let Some(amount) =
-                    crate::medical_account::explanation_output(&account_value, output_context, r)
-                {
+                if let Some(amount) = crate::medical_account_return::explanation_output(
+                    &account_value,
+                    output_context,
+                    r,
+                ) {
                     line_cents(
                         r,
                         &alloc::format!("hsa_{}_return_year_excess_account_value", i + 1),
@@ -1612,13 +1264,13 @@ pub(crate) fn calculate(
                     cash[i] == whole(0)
                         || total[i]
                             <= whole(positive(crate::kernel::ratio::fraction(allowed, 1, 12))),
-                    &crate::IssueContext::Section(crate::TaxSection::Hsa),
+                    &crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
                     "HSA",
-                    "ISSUE_CONTRIBUTIONS_EXCEED_THE_SUPPORTED_ELIGIBILITY_AND_AGE_55_CATCH_UP_74377E12",
-                    "Contributions exceed the supported eligibility and age-55 catch-up limit after Archer MSA contributions; review the agreed family division, December eligibility and any excess contributions.",
+                    "HSA_EXCESS_ACCOUNTING_REQUIRED",
+                    "Contributions exceed this owner's HSA contribution limit. Review eligibility, the family split and timely returns of excess contributions. If excess remains, open Excess contributions to this HSA and enter the year-end account value and any later deposits so the App can calculate Form 5329's 6% additional tax.",
                 );
             }
-            contribution_lines(
+            printed_deduction[i] = contribution_lines(
                 i,
                 &trace,
                 ContributionAmounts {
@@ -1626,12 +1278,8 @@ pub(crate) fn calculate(
                         &archer_reduction(i),
                         native_context,
                     )?,
-                    allowed,
                     funding: funding[i],
-                    deduction: crate::medical_account::required_output(
-                        &owner_deduction,
-                        crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
-                    )?,
+                    prior_deducted: prior_deducted_cents,
                     personal: crate::medical_account::required_output(
                         &personal[i],
                         crate::IssueContext::owner(crate::TaxSection::Hsa, h.owner),
@@ -1803,17 +1451,15 @@ pub(crate) fn calculate(
     };
     let income = required_sum(sources.distribution_income)?;
     let tax = required_sum(sources.distribution_tax)?;
-    let deduction_by_owner = [
-        crate::medical_account::required_output(&deduction_by_owner[0], output_context.clone())?,
-        crate::medical_account::required_output(&deduction_by_owner[1], output_context.clone())?,
-    ];
+    // Schedule 1 line 13 is the sum of the printed Form 8889 line 13 amounts.
+    let deduction_by_owner = printed_deduction.map(|dollars| dollars * 100);
     crate::medical_account::required_output(
         &(whole(excess_tax) * whole(100)),
         output_context.clone(),
     )?;
     Ok(CalculationResult {
         sources,
-        deduction: crate::medical_account::required_output(&deduction, output_context.clone())?,
+        deduction: deduction_by_owner[0] + deduction_by_owner[1],
         income,
         tax,
         recapture: required_sum(funding_income)?,
@@ -1828,77 +1474,7 @@ pub(crate) fn calculate(
     })
 }
 
-/// Prior qualified IRA-to-HSA funding transfer
-/// These are 2025 qualified direct IRA-to-HSA funding distributions, not ordinary HSA rollovers. Each has its own testing period through the end of the same month in 2026. Enter up to two only for the permitted self-only-to-family coverage change.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct HsaFundingHistory {
-    /// Date the HSA received the IRA transfer in 2025
-    #[libertas_date_only]
-    // Tax structure: retained prior-year history ends before the current return year.
-    #[libertas_number(min = 20250101, max = 20251231)]
-    pub funded: u32,
-    /// Qualified funding amount transferred
-    /// Use the original qualified transfer, not current account value or a precomputed recapture tax. Do not include this historical amount in current contributions or withdrawals.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub amount: i64,
-    /// First loss of HSA eligibility after funding, if any
-    /// Absent means eligibility continued through the testing period. Use the first date you failed to be an eligible individual, including disqualifying insurance, Medicare or dependent status. A later restoration of eligibility does not undo recapture.
-    /// [NullText]
-    /// HSA eligibility continued through the funding testing period
-    /// [SetText]
-    /// The first loss of HSA eligibility was
-    pub loss: Option<HsaEligibilityLoss>,
-}
-/// First loss of HSA eligibility
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct HsaEligibilityLoss {
-    /// First ineligible date
-    #[libertas_date_only]
-    pub date: u32,
-    /// Cause of eligibility loss
-    pub reason: HsaLossReason,
-}
-/// Cause of HSA eligibility loss
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum HsaLossReason {
-    /// Insurance, Medicare enrollment, dependent status or another nonexcepted cause
-    Other,
-    /// Permanent and total disability caused the loss
-    Disability,
-    /// Account owner's death
-    Death,
-}
 impl HsaFundingHistory {
-    // Two transfers in one month, retaining the actual later duplicate row.
-    fn same_month_issue(list: &[HsaFundingHistory]) -> Option<crate::validation::ValidationIssue> {
-        list.iter().enumerate().find_map(|(index, value)| {
-            list[..index].iter().any(|previous| previous.funded / 100 == value.funded / 100).then(
-                || {
-                    crate::validation::ValidationIssue::new("HSA_FUNDING_HISTORY_SAME_MONTH")
-                        .at_field("funded")
-                        .in_list("funding_history", index)
-                },
-            )
-        })
-    }
-
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        self.loss.as_ref().is_some_and(|v| v.date < self.funded).then_some(
-            crate::validation::ValidationIssue::new("HSA_FUNDING_LOSS_BEFORE_FUNDING")
-                .at_field("date")
-                .in_field("loss"),
-        )
-    }
-    fn valid(&self) -> bool {
-        valid_birth(self.funded)
-            && self.funded / 10000 == 2025
-            && self.amount >= 0
-            && self.loss.as_ref().is_none_or(|v| valid_birth(v.date) && v.date >= self.funded)
-    }
     fn recapture(&self) -> i64 {
         if self.loss.as_ref().is_some_and(|v| {
             v.reason == HsaLossReason::Other

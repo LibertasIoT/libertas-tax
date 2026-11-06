@@ -39,9 +39,9 @@
 
 // Schedule EIC and the EIC worksheet: eligibility, investment income and the
 // table credit. Amounts are whole dollars.
-use crate::kernel::lines::{form_line, line};
 use crate::kernel::phase;
 use crate::kernel::ratio::positive;
+use crate::line_emission::{form_line, line};
 use crate::{
     FederalDependent, FederalPeople, FederalResult, FormLine, TaxForm, extended_rules::RentalResult,
 };
@@ -187,7 +187,7 @@ fn schedule_eic_rows(ctx: &ScheduleEicContext<'_>, r: &mut FederalResult) {
         let number = index + 1;
         let encoded = || crate::MessageArg::Encoded(child.name());
         let mut row = |line: &str, name: &str, amount: i64, key: &str| {
-            crate::kernel::lines::form_value(
+            crate::line_emission::form_value(
                 r,
                 FormLine::new(TaxForm::ScheduleEic, line),
                 &alloc::format!("schedule_eic_child_{number}_{name}"),

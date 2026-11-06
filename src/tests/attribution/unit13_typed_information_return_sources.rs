@@ -5,11 +5,16 @@ use crate::tests::support::assert::injured_income::typed_information_return_sour
 fn unit13_typed_information_return_mixed_misc_and_nec_keep_each_native_category() {
     let mut draft = injured_return((60_000, 5_000), (20_000, 500), 1_000, allocation());
     let mut misc = income(FederalIncome::Misc1099 {
-        data: FederalForm1099Misc {
+        data: misc_source(FederalForm1099Misc {
+            cash_tips: 0,
+            tip_occupation_codes: Default::default(),
+            overtime: 0,
+            crop_insurance: 0,
+            component_ids: Default::default(),
             rents: 0,
-            rents_use: None,
+
             royalties: 0,
-            royalties_use: None,
+
             other: 50,
             other_use: Some(IncomeUse::Income {
                 kind: OtherIncomeKind::Prize {
@@ -25,21 +30,22 @@ fn unit13_typed_information_return_mixed_misc_and_nec_keep_each_native_category(
             client_funds: 0,
             fish_sales: 0,
             deferred: 0,
-            business: None,
-        },
+        }),
     });
-    misc.owner = Owner::Spouse;
+    misc.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, misc);
     add(
         &mut draft,
         income(FederalIncome::Nec1099 {
-            data: FederalForm1099Nec {
+            data: nec_source(FederalForm1099Nec {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
+                overtime: 0,
                 compensation: 50,
                 withholding: 0,
                 golden_parachute: 0,
-                belongs: IncomeUse::NotForProfit,
-                business: None,
-            },
+                belongs: Some(IncomeUse::NotForProfit),
+            }),
         }),
     );
     // One MISC ID contributes to TWO native annual categories:50c of prizes
@@ -66,7 +72,7 @@ fn unit13_typed_information_return_signed_medicaid_categories_keep_exclusion_onc
             kind: OtherIncomeKind::MedicaidWaiver { in_your_home: true },
         },
     });
-    excluded.owner = Owner::Spouse;
+    excluded.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, excluded);
     add(
         &mut draft,

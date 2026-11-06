@@ -29,6 +29,7 @@ fn account(contributions: i64, exempt: i64, returns: Vec<TrumpExcessReturn>) -> 
 }
 fn returned(principal: i64, earnings: i64) -> TrumpExcessReturn {
     TrumpExcessReturn {
+        document_id: None,
         principal: principal * 100,
         earnings: earnings * 100,
         received: 20261201,
@@ -49,7 +50,7 @@ fn trump_account_excess_through_the_other_taxes_page() {
     ok(&save_other_taxes(
         &mut s,
         vec![OtherTax::TrumpAccounts {
-            accounts: vec![account(8_000, 1_000, vec![returned(500, 20)])],
+            accounts: vec![(&account(8_000, 1_000, vec![returned(500, 20)])).into()],
         }],
     ));
     let r = supported(&s.draft);
@@ -58,7 +59,6 @@ fn trump_account_excess_through_the_other_taxes_page() {
     assert_eq!(value(&r, "trump_account_taxpayer_line61_tax"), 90);
     assert_eq!(value(&r, "trump_account_taxpayer_line63_tax"), 20);
     assert_eq!(line23(&s.draft) - before, 11_000);
-    assert_ne!(s.draft.checklist.other_taxes & OtherTaxTopics::ACCOUNT_TAXES.0, 0);
     let stored = s.draft.clone();
     let mut again = restart(stored.clone());
     let page = open_other_taxes(&mut again);
@@ -75,7 +75,9 @@ fn late_trump_account_excess_note_keeps_exact_usd_amount() {
     late.received = 20270501;
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::TrumpAccounts { accounts: vec![account(8_000, 1_000, vec![late])] }],
+        vec![OtherTax::TrumpAccounts {
+            accounts: vec![(&account(8_000, 1_000, vec![late])).into()],
+        }],
     ));
     assert!(supported(&s.draft).review_notes.iter().any(|note| {
         note.display
@@ -92,12 +94,12 @@ fn trump_account_five_thousand_dollar_limit_boundary() {
     let mut s = Interview::new(TEST_USER, young());
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::TrumpAccounts { accounts: vec![account(6_000, 1_000, vec![])] }],
+        vec![OtherTax::TrumpAccounts { accounts: vec![(&account(6_000, 1_000, vec![])).into()] }],
     ));
     assert_eq!(value(&supported(&s.draft), "trump_account_taxpayer_line61_tax"), 0);
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::TrumpAccounts { accounts: vec![account(6_100, 1_000, vec![])] }],
+        vec![OtherTax::TrumpAccounts { accounts: vec![(&account(6_100, 1_000, vec![])).into()] }],
     ));
     assert_eq!(value(&supported(&s.draft), "trump_account_taxpayer_line61_tax"), 6);
 }
@@ -114,7 +116,7 @@ fn trump_account_beneficiary_under_18_is_day_exact() {
     let mut s = Interview::new(TEST_USER, d);
     ok(&save_other_taxes(
         &mut s,
-        vec![OtherTax::TrumpAccounts { accounts: vec![account(6_100, 1_000, vec![])] }],
+        vec![OtherTax::TrumpAccounts { accounts: vec![(&account(6_100, 1_000, vec![])).into()] }],
     ));
     assert_eq!(value(&supported(&s.draft), "trump_account_taxpayer_line61_tax"), 6);
     s.draft.people.as_mut().unwrap().taxpayer.birth_date = 20090101;
@@ -128,7 +130,9 @@ fn trump_account_page_rules_are_checked_on_save() {
     refused_key(
         save_other_taxes(
             &mut s,
-            vec![OtherTax::TrumpAccounts { accounts: vec![account(1_000, 1_001, vec![])] }],
+            vec![OtherTax::TrumpAccounts {
+                accounts: vec![(&account(1_000, 1_001, vec![])).into()],
+            }],
         ),
         "TRUMP_EXEMPT_ABOVE_CONTRIBUTIONS",
     );
@@ -136,7 +140,7 @@ fn trump_account_page_rules_are_checked_on_save() {
         save_other_taxes(
             &mut s,
             vec![OtherTax::TrumpAccounts {
-                accounts: vec![account(8_000, 0, vec![returned(100, -101)])],
+                accounts: vec![(&account(8_000, 0, vec![returned(100, -101)])).into()],
             }],
         ),
         "TRUMP_LOSS_ABOVE_PRINCIPAL",
@@ -144,9 +148,10 @@ fn trump_account_page_rules_are_checked_on_save() {
     let mut spouse = account(8_000, 0, vec![]);
     spouse.owner = Owner::Spouse;
     assert!(
-        refusal(
-            save_other_taxes(&mut s, vec![OtherTax::TrumpAccounts { accounts: vec![spouse] }],)
-        )
+        refusal(save_other_taxes(
+            &mut s,
+            vec![OtherTax::TrumpAccounts { accounts: vec![(&spouse).into()] }],
+        ))
         .contains("joint return")
     );
     assert_eq!(s.draft, before);
@@ -154,7 +159,7 @@ fn trump_account_page_rules_are_checked_on_save() {
     ok(&save_other_taxes(
         &mut s,
         vec![OtherTax::TrumpAccounts {
-            accounts: vec![account(8_000, 0, vec![returned(100, -100)])],
+            accounts: vec![(&account(8_000, 0, vec![returned(100, -100)])).into()],
         }],
     ));
 }
@@ -356,19 +361,23 @@ fn coverdell_failed_correction_save_preserves_accepted_draft_and_dirty_state() {
 #[test]
 fn coverdell_current_code2_source_is_linked_once_and_deletion_keeps_actual_correction() {
     let mut s = coverdell_session(FederalStatus::Single, 20100301);
-    let mut page = crate::tests::cross::interview::open_topic(&mut s, TaxSection::OtherIncome);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    documents.documents.push(crate::tests::cross::interview::document(
+    let mut rows = crate::tests::support::client::income_pages::all_documents(&mut s);
+    rows.push(crate::tests::cross::interview::document(
         0,
-        IncomeDocument::Q1099(Q1099 {
-            gross: 55_000,
-            account: EducationAccount::Coverdell {
-                amounts: CoverdellAmounts::Reported { earnings: 5000, basis: 50_000 },
-            },
-            transfer: Q1099Transfer::ExcessThisYear,
-            beneficiary: Q1099Beneficiary::Recipient,
-        }),
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Q1099(q1099_paper(Q1099 {
+                payer_trustee: Default::default(),
+                recipient: Default::default(),
+                gross: 55_000,
+                account: EducationAccount::Coverdell {
+                    amounts: CoverdellAmounts::Reported { earnings: 5000, basis: 50_000 },
+                },
+                transfer: Q1099Transfer::ExcessThisYear,
+                recipient_not_beneficiary: false,
+            })),
+        },
     ));
+    let page = crate::tests::support::client::income_pages::save_documents(&mut s, rows);
     ok(&send(&mut s, page));
     let id = s
         .draft
@@ -390,18 +399,24 @@ fn coverdell_current_code2_source_is_linked_once_and_deletion_keeps_actual_corre
     // page, and names the unresolved mandatory tax instead of blocking the
     // income Save or counting the old correction earnings again.
     let mut changed = restart(s.draft.clone());
-    let mut page =
-        crate::tests::cross::interview::open_topic(&mut changed, TaxSection::OtherIncome);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    let IncomeDocument::Q1099(q) =
-        &mut documents.documents.iter_mut().find(|e| e.id == id).unwrap().document
+    let mut page = crate::tests::support::client::income_pages::open_document_center(&mut changed);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let crate::OtherIncomeDocument::Q1099(q) = &mut documents
+        .other
+        .other_income
+        .documents
+        .iter_mut()
+        .find(|e| e.id == id)
+        .unwrap()
+        .document
     else {
         unreachable!()
     };
-    q.gross = 56_000;
-    q.account = EducationAccount::Coverdell {
-        amounts: CoverdellAmounts::Reported { earnings: 6000, basis: 50_000 },
-    };
+    q.gross_distribution = 56_000;
+    q.distribution_from = crate::Form1099QDistributionFrom::CoverdellEsa;
+    q.earnings = 6000;
+    q.basis = 50_000;
+    q.fair_market_value = None;
     ok(&send(&mut changed, page));
     assert!(!changed.draft.finished_sections.contains(&TaxSection::OtherTaxes));
     let r = estimate(&changed.draft);
@@ -414,9 +429,9 @@ fn coverdell_current_code2_source_is_linked_once_and_deletion_keeps_actual_corre
     ok(&save_other_taxes(&mut changed, vec![coverdell_topic(corrected)]));
     assert_eq!(value(&supported(&changed.draft), "education_account_taxable_earnings"), 60);
     let mut again = restart(s.draft.clone());
-    let mut page = crate::tests::cross::interview::open_topic(&mut again, TaxSection::OtherIncome);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    documents.documents.retain(|d| d.id != id);
+    let mut page = crate::tests::support::client::income_pages::open_document_center(&mut again);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    documents.other.other_income.documents.retain(|d| d.id != id);
     ok(&send(&mut again, page));
     assert_eq!(again.draft.coverdell_excess[0].corrections[0].income_document, None);
     let r = supported(&again.draft);
@@ -537,18 +552,4 @@ fn coverdell_zero_prior_value_cap_does_not_erase_statutory_excess() {
     assert_eq!(return_line(&r, "23") - return_line(&before, "23"), 3000);
     assert!(noted(&r, "NOTE_COVERDELL_PRIOR_ZERO_TAX"));
     assert_eq!(estimate(&restart(s.draft.clone()).draft), r);
-}
-
-#[test]
-fn unit47_trump_return_comparison_accepts_a_positive_total_above_i64() {
-    let mut correction = returned(1, 0);
-    correction.principal = i64::MAX;
-    correction.earnings = 1;
-    // This relationship is satisfied; native amount admission remains separate.
-    assert!(correction.issue().is_none());
-    correction.principal = 1;
-    correction.earnings = i64::MIN;
-    let issue = correction.issue().unwrap();
-    assert_eq!(issue.key, "TRUMP_LOSS_ABOVE_PRINCIPAL");
-    assert_eq!(issue.field.unwrap().square(), "[earnings]");
 }

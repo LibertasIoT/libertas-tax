@@ -458,6 +458,8 @@ fn accrued_taxes_refuse_an_earlier_years_tax_on_both_sides() {
     let mut s = Interview::new(TEST_USER, d);
     let reply = s
         .handle(P::EstimateMoreCredits {
+            credit_income_sources: crate::tax_credit_bonds::income_sources(&s.draft),
+            allowed_credit_owners: vec![Owner::Taxpayer as i32],
             initial_carbon_oxide_origins: vec![],
             initial_renewable_facility_origins: Vec::new(),
             businesses: vec![],
@@ -473,13 +475,15 @@ fn accrued_taxes_refuse_an_earlier_years_tax_on_both_sides() {
             user: TEST_USER,
             allowed_owners: vec![Owner::Taxpayer as i32],
             foreign_businesses: vec![],
+            estate_foreign_sources: vec![],
             capital_sales: vec![],
             foreign_situations: vec![],
             mortgage_loans: vec![],
             value: MoreCredits {
+                answers: Vec::new(),
                 credits: vec![MoreCredit::ForeignTax(accrued.try_into().unwrap())],
 
-                credit_income_sources: Vec::new(),
+                documents: Vec::new(),
             },
         })
         .unwrap();
@@ -554,7 +558,8 @@ fn a_negative_form_8978_line_14_decreases_line_20_and_the_credit_no_longer_compe
     };
     let base = supported(&fixture());
     let mut d = fixture();
-    d.credits.as_mut().unwrap().bba_audit_interest = Some(bba_interest_reduction());
+    d.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_interest_reduction()));
     let r = supported(&d);
     let decrease = -value(&r, "form_8978_line_14");
     assert!(decrease > 0);

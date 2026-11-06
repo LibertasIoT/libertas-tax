@@ -1,76 +1,33 @@
-use crate::federal_rules::valid_date;
-use crate::kernel::lines::line_cents;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line_cents;
 use crate::{
-    FederalDraft, FederalIncome, FederalResult, FederalStatus, Owner, RetirementException,
-    RetirementKind, RetirementTreatment,
+    FederalDraft, FederalResult, FederalStatus, RetirementException, RetirementKind,
+    RetirementTreatment,
 };
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
-
-/// Certified long-term-care distribution records
-/// Reduces only the additional early-distribution tax, not pension income. The plan must offer this distribution and accept the issuer's annual premium statement. No three-year repayment treatment. Enter any separately deductible premiums in the usual medical or business expense records; this exception does not create a deduction.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct CareDistribution {
-    /// Consistent fictional plan label
-    /// Use the same label for every payment from this plan and a different label for another plan. Multiple plans are supported when their combined qualifying amount stays within $2,600; larger cross-plan claims require further review.
-    #[libertas_size(min = 1)]
-    pub plan: String,
-    /// Vested benefit value used by the administrator for the annual distribution limit
-    /// Repeat the same annual valuation for payments from this plan. Do not enter an unvested balance or a calculated 10% limit.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub balance: i64,
-    /// Coverage is for this employee's spouse
-    /// Otherwise the employee is the covered person. Spouse coverage receives this exception only on a joint return. No other relative qualifies.
-    #[libertas_default(false)]
-    pub spouse_coverage: bool,
-    /// Annual certified premiums paid by or assessed to this employee for this covered person
-    /// Use the issuer's annual premium statement, including eligible certified riders. Repeat the same annual total on additional payments for this person; do not repeat the other spouse's separately allocated premiums. Assessed premiums can qualify even before payment, but that does not establish a medical deduction.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub premiums: i64,
-    /// Date the issuer's 2026 premium statement was filed with the plan
-    #[libertas_date_only]
-    pub statement_filed: u32,
-    /// Participating plan and certified insurance documentation confirmed
-    /// Check the plan administrator’s confirmation and issuer’s annual premium statement.
-    /// No leaves this exception out, so the 10% additional tax applies. Qualified defined-contribution 401(a), 403(a) or 403(b) plan; issuer disclosure acknowledged by IRS and annual statement accepted before payment. All this employee's qualifying payments are entered. No IRA, designated Roth source, commercial annuity, defined-benefit pension or governmental 457 source. This is not a retroactive designation of an ordinary withdrawal from a plan that does not offer this option. Source valuations and premium allocations are confirmed by the administrator and issuer. A payer-reported taxable amount must already include the special section 401(a)(39)(D)/402(l)(3) pretax-first allocation. Calculated partial account-basis withdrawals require that separate allocation before use here.
-    pub confirmed: bool,
-}
-impl CareDistribution {
-    pub(crate) fn valid(&self) -> bool {
-        !self.plan.trim().is_empty()
-            && self.plan.trim() == self.plan
-            && (0..=100000000000).contains(&self.balance)
-            && (0..=100000000000).contains(&self.premiums)
-            && valid_date(self.statement_filed)
-    }
-}
 
 pub(crate) fn calculate(
     d: &FederalDraft,
     r: &mut FederalResult,
-    basis: &crate::retirement::BasisResult,
+    basis: &crate::retirement_return::BasisResult,
 ) -> BTreeMap<i64, i64> {
     let mut out = BTreeMap::new();
     let mut entries: Vec<_> = d
         .income
         .iter()
         .filter_map(|e| {
-            let FederalIncome::Retirement { data: v } = &e.income else {
-                return None;
-            };
-            let RetirementTreatment::Exception {
+            let v = e.income.retirement()?;
+            let Some(RetirementTreatment::Exception {
                 distributed,
                 facts: RetirementException::LongTermCare { data },
                 ..
-            } = &v.ordinary_distribution
+            }) = v.ordinary_distribution.clone()
             else {
                 return None;
             };
-            Some((e, v, *distributed, data))
+            Some((e, v, distributed, data))
         })
         .collect();
     entries.sort_by_key(|(e, _, date, _)| (*date, e.id));
@@ -79,7 +36,7 @@ pub(crate) fn calculate(
     let mut owner_used = [0, 0];
     let joint = d.setup.as_ref().is_some_and(|s| s.filing_status() == FederalStatus::Joint);
     for (e, v, date, data) in entries {
-        let owner = usize::from(e.owner == Owner::Spouse);
+        let owner = usize::from(e.owner == crate::DocumentOwner::Spouses);
         if !data.confirmed {
             continue;
         }
@@ -116,14 +73,14 @@ pub(crate) fn calculate(
         }
         // Section 401(a)(39)(D) invokes 402(l)(3): qualifying amounts are
         // taxable amounts, not a pro-rata fraction of the gross payment.
-        let taxable = phase::floor(basis.taxable(e.id, v), 0);
+        let taxable = phase::floor(basis.taxable(e.id, &v), 0);
         crate::require_localized!(
             r,
             taxable == v.gross
                 || matches!(
                     v.taxable,
-                    crate::RetirementTaxable::Payer { .. }
-                        | crate::RetirementTaxable::FullDischarge { .. }
+                    Some(crate::RetirementTaxable::Payer)
+                        | Some(crate::RetirementTaxable::FullDischarge { .. })
                 ),
             &crate::interview::income_issue_context(e),
             "Long-term-care distribution basis",

@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 996000, "rule": {"select": "^<FormW2GPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"fields": ["calendar_year", "corrected", "payer", "payer_telephone"]}, {"fields": ["winnings", "date_won", "type_of_wager", "withholding"]}, {"fields": ["transaction", "race", "identical_wagers", "cashier"]}, {"fields": ["winner", "window", "first_identification", "second_identification"]}, {"fields": ["states", "localities"]}]}}
+  ]
+}

@@ -1,3 +1,7 @@
+pub use crate::education_account_source::QtpRothRollover;
+pub use crate::ira_contribution_sources::{
+    IraExcess, IraKind, LateCorrection, ReturnedContribution,
+};
 // Coverage: Form5329 PRINT PartsIII/IV (2026-10-13): existing per-filer
 //   computations project lines9–25, including reduction subtotals13/21; only
 //   a carried positive-tax excess or current excess creates the corresponding
@@ -27,12 +31,12 @@
 // excess re-rounding or wage-based allocation. T/injured_spouse.rs unit13_ira_excess_tax.
 // 2026 limits: https://www.irs.gov/pub/irs-drop/n-25-67.pdf
 // Worksheet ownership: https://www.irs.gov/publications/p590a (1-2, 2-2 and Appendix B).
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::dollars;
 use crate::kernel::ratio::exact::{self, Exact};
+use crate::line_emission::emit as emit_lines;
 use crate::*;
-use alloc::string::String;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 // The IRA-contributions editor's preflight, before cloning accepted state.
@@ -98,9 +102,15 @@ pub(crate) fn contributions_issue(
         let withdrawn: i64 = d
             .income
             .iter()
-            .filter(|e| e.owner == p.owner)
+            .filter(|e| e.owner == crate::DocumentOwner::from(p.owner))
             .map(|e| match &e.income {
-                FederalIncome::Retirement { data } if data.kind == RetirementKind::Ira => {
+                FederalIncome::Retirement { data: source }
+                    if {
+                        let data = &crate::FederalRetirement::from(source);
+                        data.kind == RetirementKind::Ira
+                    } =>
+                {
+                    let data = &crate::FederalRetirement::from(source);
                     data.gross
                 }
                 _ => 0,
@@ -141,67 +151,6 @@ pub(crate) fn contributions_issue(
     None
 }
 
-// IRC 529(c)(3)(E), 408A(c)(3)(E), (c)(5)(B), (e)(1)(C):
-// https://uscode.house.gov/view.xhtml?req=(title:26%20section:529%20edition:prelim)
-// https://uscode.house.gov/view.xhtml?req=(title:26%20section:408a%20edition:prelim)
-/// Direct 2026 transfer from a long-held section 529 plan to its beneficiary's Roth IRA
-/// Form 1099-Q box 4b is checked: the 529 trustee moved this money directly to the beneficiary's Roth IRA. The form's earnings (box 2) and basis (box 3) are the transfer's earnings and contribution portions. A qualified rollover, reported by the Roth custodian in 2026 Form 5498 box 10. It shares the annual IRA dollar and compensation room with regular contributions but is not a regular Roth contribution or a Saver's Credit contribution.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct QtpRothRollover {
-    /// Source 529 account reference
-    /// Use a short local reference or the Form 1099-Q account identifier; do not enter a full account number. Use the same reference for multiple Forms 1099-Q from the same 529 account, and different references for different accounts.
-    #[libertas_size(min = 1)]
-    pub account_reference: String,
-    /// State sponsoring the source 529 plan
-    /// Use the plan's records, not your home state, school location or the payer's address. Leave undefined when the plan does not identify a sponsoring state.
-    /// [NullText]
-    /// The plan records do not identify a sponsoring state
-    /// [SetText]
-    /// The source 529 plan's sponsoring state is
-    #[libertas_default($null)]
-    pub plan_state: Option<crate::TaxState>,
-    /// Date the source 529 account was opened for this beneficiary
-    /// The account must have been maintained for this same beneficiary throughout the 15-year period ending on the direct transfer date. A beneficiary change or uncertain account history needs separate review.
-    #[libertas_date_only]
-    pub account_opened_on: u32,
-    /// Date the 529 trustee transferred the money directly to the Roth IRA trustee
-    /// This entry covers a transfer completed in 2026 and designated for 2026. A transfer in 2027 designated for 2026 needs a separate timing worksheet.
-    #[libertas_date_only]
-    pub transferred_on: u32,
-    /// Amount of the source account available from deposits made at least five years earlier
-    /// Use this source account's administrator-reconciled balance of contributions made before the five-year period ending on this transfer date plus earnings attributable to them, immediately before this transfer and after all earlier distributions and transfers, including earlier listed transfers on the same date. It must cover this entire transfer. Do not infer it from the account opening date or another account's balance.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub seasoned_available: i64,
-    /// Transfer and source records confirmed
-    /// Check Form 1099-Q, the 529 plan statements and Form 5498: this account's history for the same beneficiary throughout the 15 years, the direct trustee-to-trustee transfer into that person's own Roth IRA, this account's five-year seasoned balance after earlier distributions, and that the earlier transfers on the IRA contributions page include every earlier qualifying transfer. No means the transfer is not a qualified rollover: the form is taxed as an ordinary 529 withdrawal and the amount deposited is a regular Roth contribution you enter on the IRA contributions page.
-    pub confirmed: bool,
-}
-
-impl QtpRothRollover {
-    // The shape of the stored facts, whatever their tax meaning.
-    pub(crate) fn well_formed(&self) -> bool {
-        let date = crate::federal_rules::valid_date;
-        !self.account_reference.trim().is_empty()
-            && date(self.account_opened_on)
-            && date(self.transferred_on)
-            && (0..=100_000_000_000).contains(&self.seasoned_available)
-    }
-
-    // The facts of box 4b against the transfer's amount (the 1099-Q's boxes 2
-    // and 3, in cents).
-    pub(crate) fn valid(&self, amount: i64) -> bool {
-        self.well_formed()
-            && (20260101..=20261231).contains(&self.transferred_on)
-            && self.account_opened_on / 10000 + crate::year_constants::QTP_ROTH_ACCOUNT_YEARS
-                <= self.transferred_on / 10000
-            && self.account_opened_on + crate::year_constants::QTP_ROTH_ACCOUNT_YEARS * 10000
-                <= self.transferred_on
-            && (1..=crate::year_constants::QTP_ROTH_LIFETIME_LIMIT_CENTS).contains(&amount)
-            && amount <= self.seasoned_available
-    }
-}
-
 // One 529-to-Roth transfer as the calculation reads it: the facts of box 4b
 // with the same Form 1099-Q's contribution portion (box 3) and earnings
 // portion (box 2), in cents.
@@ -240,20 +189,25 @@ impl QtpTransfers {
         let mut all = Self::default();
         for entry in income {
             if let FederalIncome::EducationDistribution { data } = &entry.income
-                && let crate::Q1099Transfer::RothIra { rollover } = &data.transfer
+                && let data = &crate::FederalEducationDistribution::from(data)
+                && matches!(data.transfer, crate::Q1099Transfer::RothIra)
+                && let Some(rollover) = &data.roth_rollover
                 && let crate::EducationAccount::Qtp { earnings, basis } = &data.account
+                && data.answer_issue().is_none()
             {
                 // A transfer whose records are not confirmed is not a qualified rollover: its
                 // form is an ordinary 529 withdrawal (education_account.rs).
                 if !rollover.confirmed {
                     continue;
                 }
-                all.0[usize::from(entry.owner == Owner::Spouse)].push(QtpTransfer {
-                    id: entry.id,
-                    rollover: rollover.clone(),
-                    contributions: *basis,
-                    earnings: *earnings,
-                });
+                all.0[usize::from(entry.owner == crate::DocumentOwner::Spouses)].push(
+                    QtpTransfer {
+                        id: entry.id,
+                        rollover: rollover.clone(),
+                        contributions: *basis,
+                        earnings: *earnings,
+                    },
+                );
             }
         }
         for owner in &mut all.0 {
@@ -343,12 +297,12 @@ pub(crate) fn exclude_returned_prior_excess(
         let mut entries: alloc::vec::Vec<_> = d
             .income
             .iter()
-            .filter(|e| e.owner == owner)
+            .filter(|e| e.owner == crate::DocumentOwner::from(owner))
             .filter_map(|e| match &e.income {
-                FederalIncome::Retirement { data }
-                    if data.kind == crate::RetirementKind::Ira && !data.outside_form_8606() =>
-                {
-                    Some((e.id, data))
+                FederalIncome::Retirement { data: source } => {
+                    let data = crate::FederalRetirement::from(source);
+                    (data.kind == crate::RetirementKind::Ira && !data.outside_form_8606())
+                        .then_some((e.id, data))
                 }
                 _ => None,
             })
@@ -399,9 +353,15 @@ pub(crate) fn provisional_roth_absorbed(d: &FederalDraft) -> [i64; 2] {
         let withdrawn: i64 = d
             .income
             .iter()
-            .filter(|e| usize::from(e.owner == Owner::Spouse) == owner)
+            .filter(|e| usize::from(e.owner == crate::DocumentOwner::Spouses) == owner)
             .map(|e| match &e.income {
-                FederalIncome::Roth { data } if data.inherited == crate::InheritedLink::No => {
+                FederalIncome::Roth { data: source }
+                    if {
+                        let data = &crate::RothWithdrawal::from(source);
+                        data.inherited == crate::InheritedLink::No
+                    } =>
+                {
+                    let data = &crate::RothWithdrawal::from(source);
                     data.gross
                 }
                 _ => 0,
@@ -456,92 +416,6 @@ pub(crate) fn qtp_excess_by_entry(d: &FederalDraft) -> alloc::collections::BTree
     out
 }
 
-/// Returned contribution
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ReturnedContribution {
-    /// Kind of IRA
-    #[libertas_default(Traditional)]
-    pub kind: IraKind,
-    /// Contribution principal returned
-    /// The original 2026 contribution, even when a loss reduced the cash paid back.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub principal: i64,
-    /// Earnings paid with it, or the loss
-    /// The custodian's net income allocable to the contribution; a loss is negative. Positive earnings are 2026 income.
-    #[libertas_money("USD", 2)]
-    #[libertas_default(0)]
-    pub earnings: i64,
-    /// Date the custodian paid it back
-    #[libertas_date_only]
-    // Treas. Reg. 301.9100-2: the six-month corrective-return extension ends October 15, 2027.
-    #[libertas_number(min = 20270101, max = 20271015)]
-    pub returned_on: u32,
-    /// How a return after April 15, 2027 was still timely
-    /// Leave empty for a return by April 15, 2027.
-    /// [NullText]
-    /// The contribution was returned by April 15, 2027
-    /// [SetText]
-    /// The later return was timely because
-    #[libertas_default($null)]
-    pub late: Option<LateCorrection>,
-}
-/// Kind of IRA
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum IraKind {
-    /// Traditional IRA
-    Traditional,
-    /// Roth IRA
-    Roth,
-}
-/// How a return after April 15, 2027 was still timely
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum LateCorrection {
-    /// A filing extension to October 15, 2027
-    /// Form 4868 was filed by April 15, 2027.
-    FilingExtension,
-    /// The return was filed on time and the contribution returned within six months after April 15, 2027
-    /// Treas. Reg. 301.9100-2: an amended 2026 return reports the earnings, which this App does not file.
-    TimelyFiledReturn,
-}
-impl ReturnedContribution {
-    pub(crate) fn valid(&self) -> bool {
-        crate::federal_rules::valid_date(self.returned_on)
-            && (20270101..=20271015).contains(&self.returned_on)
-            && (1..=100_000_000_000).contains(&self.principal)
-            && (-self.principal..=100_000_000_000 - self.principal).contains(&self.earnings)
-    }
-    // The client rules of the record, checked again on save.
-    #[cfg(test)]
-    pub(crate) fn rule(&self) -> Option<&'static str> {
-        self.issue().map(|issue| issue.key)
-    }
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        let issue = |key, field| crate::validation::ValidationIssue::new(key).at_field(field);
-        if self.returned_on > 20270415 && self.late.is_none() {
-            Some(issue("IRA_RETURN_AFTER_DUE_DATE_NEEDS_ROUTE", "late"))
-        } else if self.returned_on <= 20270415 && self.late.is_some() {
-            Some(issue("IRA_RETURN_ROUTE_WITHOUT_LATE_DATE", "late"))
-        } else if i128::from(self.principal) + i128::from(self.earnings) < 0 {
-            Some(issue("IRA_RETURN_LOSS_ABOVE_PRINCIPAL", "earnings"))
-        } else {
-            None
-        }
-    }
-    // Form 1040 line 4a: the cash the custodian paid back.
-    pub(crate) fn gross(&self) -> i64 {
-        self.principal + self.earnings
-    }
-    // Form 1040 line 4b: positive earnings; a loss is nothing.
-    pub(crate) fn taxable(&self) -> i64 {
-        phase::floor(self.earnings, 0)
-    }
-}
-
 #[derive(Clone, Default)]
 pub(crate) struct IraResult {
     pub deduction: i64,
@@ -575,24 +449,6 @@ pub(crate) fn absorbed_traditional(v: &FederalIraContribution, room: i64, line_1
         )
         .get()],
     )
-}
-
-impl IraNextYearDeposits {
-    pub(crate) fn valid(&self) -> bool {
-        (20270101..=20271231).contains(&self.last_deposited_on)
-            && crate::federal_rules::valid_date(self.last_deposited_on)
-            && (0..=100_000_000_000).contains(&self.traditional)
-            && (0..=100_000_000_000).contains(&self.roth)
-            && (self.traditional > 0 || self.roth > 0)
-    }
-
-    pub(crate) fn eligible(&self, facts: &FederalIraContribution) -> bool {
-        self.valid()
-            && self.last_deposited_on <= 20270415
-            && self.designation_confirmed
-            && self.traditional <= facts.traditional
-            && self.roth <= facts.roth
-    }
 }
 
 fn contribution_limit(person: &FederalPerson) -> i64 {
@@ -840,42 +696,6 @@ pub(crate) fn validate_roth(
     Ok(limits)
 }
 
-/// Excess IRA contributions and year-end values
-/// The App computes the 2026 traditional and Roth IRA limits and any excess itself. These facts complete Form 5329 Parts III and IV: the 6% tax on an uncorrected excess is capped by the account values at year end, and a 2025 excess carried in is reduced by 2026 withdrawals.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct IraExcess {
-    /// Value of all your traditional IRAs on December 31, 2026
-    /// Include SEP and SIMPLE IRAs and any 2026 contributions made in 2027. Use the custodians' year-end statements.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    /// [NullText]
-    /// Use the Form 8606 values
-    pub traditional_value: Option<i64>,
-    /// Value of all your Roth IRAs on December 31, 2026
-    /// Include any 2026 contributions made in 2027.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub roth_value: i64,
-    /// Traditional IRA excess carried from line 16 of your 2025 Form 5329
-    /// Enter it only when line 17 of that form showed tax; otherwise leave zero.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub prior_traditional: i64,
-    /// Roth IRA excess carried from line 24 of your 2025 Form 5329
-    /// Enter it only when line 25 of that form showed tax; otherwise leave zero.
-    #[libertas_default(0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub prior_roth: i64,
-    /// Part of your 2026 withdrawals that returned an excess from a year before 2026
-    /// Form 5329 line 12: a traditional IRA excess contribution for 2025 or earlier paid back to you in 2026 after that year's return due date, when you took no deduction for it, none was allowable, and that year's total contributions were within its limit. It is not taxable and is not an IRA withdrawal on Form 8606. Leave 0 otherwise; a withdrawal that fails a condition is ordinary income.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub returned_prior_excess: i64,
-}
-
 // The IRA contributions page's excess record (question C18).
 // The traditional value has one home: an owner with a Form 8606 on the
 // Retirement page leaves it empty and the stored record takes the Form 8606
@@ -891,30 +711,35 @@ pub struct IraExcessEntry {
     /// [SetText]
     /// The value of all my traditional IRAs was
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub traditional_value: Option<i64>,
     /// Value of all your Roth IRAs on December 31, 2026
     /// Include any 2026 contributions made in 2027.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub roth_value: i64,
     /// Traditional IRA excess carried from line 16 of your 2025 Form 5329
     /// Enter it only when line 17 of that form showed tax; otherwise leave zero.
     #[libertas_default(0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_traditional: i64,
     /// Roth IRA excess carried from line 24 of your 2025 Form 5329
     /// Enter it only when line 25 of that form showed tax; otherwise leave zero.
     #[libertas_default(0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_roth: i64,
     /// Part of your 2026 withdrawals that returned an excess from a year before 2026
     /// Form 5329 line 12: a traditional IRA excess contribution for 2025 or earlier paid back to you in 2026 after that year's return due date, when you took no deduction for it, none was allowable, and that year's total contributions were within its limit. It is not taxable and is not an IRA withdrawal on Form 8606. Leave 0 otherwise; a withdrawal that fails a condition is ordinary income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub returned_prior_excess: i64,
 }
@@ -950,27 +775,6 @@ impl IraExcessEntry {
             prior_roth: record.prior_roth,
             returned_prior_excess: record.returned_prior_excess,
         })
-    }
-}
-
-impl IraExcess {
-    pub(crate) fn valid(&self, form_8606: Option<Exact>) -> bool {
-        // A wide known duplicate projection is None only when the original
-        // Form8606 operands establish it. Without that source, a value is required.
-        // Form8606 remains authoritative over the readonly duplicate, including
-        // an older representable duplicate that has not yet followed an edit.
-        let consistent = form_8606.is_some() || self.traditional_value.is_some();
-        consistent
-            && self.traditional_value.is_none_or(|value| value >= 0)
-            && [
-                self.roth_value,
-                self.prior_traditional,
-                self.prior_roth,
-                self.returned_prior_excess,
-            ]
-            .iter()
-            .all(|v| (0..=100_000_000_000).contains(v))
-            && self.returned_prior_excess <= self.prior_traditional
     }
 }
 

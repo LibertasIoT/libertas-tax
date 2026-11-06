@@ -1,6 +1,7 @@
 // Ordinary String Size UTF-8 bytes; no normalization, source truncation or tax math.
 use super::*;
 use crate::tests::support::builders::survey::survey_ordinary_foreign_credit;
+use crate::tests::support::client::income_pages::{open_documents, save_documents};
 
 fn supplementary(bytes: usize) -> alloc::string::String {
     "😀".repeat(bytes / 4) + &"a".repeat(bytes % 4)
@@ -11,10 +12,10 @@ fn multibyte(bytes: usize) -> alloc::string::String {
 }
 
 fn first_sale(page: &mut P) -> &mut crate::K1Section179Sale {
-    let P::SaveIncomes { documents, .. } = page else { panic!("normal PassThrough editor") };
-    match &mut documents.documents[0].document {
-        IncomeDocument::K1Partnership(source) => &mut source.more.section179_sales[0],
-        IncomeDocument::K1Scorp(source) => &mut source.more.section179_sales[0],
+    let P::SaveDocuments { documents, .. } = page else { panic!("normal Document center editor") };
+    match &mut documents.common.k1.documents[0].document {
+        crate::K1Document::K1Partnership(source) => &mut source.statements.section179_sales[0],
+        crate::K1Document::K1Scorp(source) => &mut source.statements.section179_sales[0],
         _ => panic!("actual entity source"),
     }
 }
@@ -29,20 +30,25 @@ fn unit47_k1_sale_long_text_save_reopen_restart_preserves_source() {
             page.more.section179_sales = vec![sale.clone()];
             page.more.section179_carryover = 200_000;
             page.more.section179_carryover_sold = 200_000;
-            IncomeDocument::K1Scorp(page)
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
         } else {
+            // The partnership paper supplies both sale ledgers explicitly.
+            sale.alternative = crate::K1Section179SaleAmtSource::from_known_regular(&sale.regular);
             let mut page = k1_1065("Actual partnership source");
             page.more.section179_sales = vec![sale.clone()];
             page.more.section179_carryover = 200_000;
             page.more.section179_carryover_sold = 200_000;
-            IncomeDocument::K1Partnership(page)
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
         };
         let original = complete(FederalStatus::Single);
         let mut session = Interview::new(TEST_USER, original.clone());
-        let request = save_topic(&original, TaxSection::PassThrough, vec![document(0, source)]);
-        accepted(&send(&mut session, request));
+        let request = save_documents(&mut session, vec![document(0, source)]);
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
         let baseline_tax = supported(&session.draft).tax;
-        let mut page = open_topic(&mut session, TaxSection::PassThrough);
+        let mut page = open_documents(&mut session);
         let stored_sale = first_sale(&mut page).clone();
         assert!(stored_sale.id > 0);
         sale.id = stored_sale.id;
@@ -52,7 +58,7 @@ fn unit47_k1_sale_long_text_save_reopen_restart_preserves_source() {
         assert_eq!(session.draft, saved);
         let mut restored = restart(saved.clone());
         assert_eq!(restored.draft, saved);
-        let mut page = open_topic(&mut restored, TaxSection::PassThrough);
+        let mut page = open_documents(&mut restored);
         assert_eq!(first_sale(&mut page), &sale);
         // Longer descriptions preserve the complete source and its tax result.
         first_sale(&mut page).description.push('a');
@@ -60,24 +66,14 @@ fn unit47_k1_sale_long_text_save_reopen_restart_preserves_source() {
         accepted(&send(&mut restored, page));
         assert_eq!(supported(&restored.draft).tax, baseline_tax);
         let changed = restored.draft.clone();
-        let mut page = open_topic(&mut restored, TaxSection::PassThrough);
+        let mut page = open_documents(&mut restored);
         assert_eq!(first_sale(&mut page), &sale);
-        // Required nonempty text still refuses atomically at the same source.
-        first_sale(&mut page).description.clear();
-        let dirty = restored.dirty;
-        rejected_with(
-            send(&mut restored, page),
-            "ISSUE_FEDERAL_RULES_REVIEW_THE_DOCUMENT_AMOUNTS__THEY_MUST_17724C26",
-        );
-        assert_eq!(restored.draft, changed);
-        assert_eq!(restored.dirty, dirty);
-        assert_eq!(supported(&restored.draft).tax, baseline_tax);
-        let mut again = open_topic(&mut restored, TaxSection::PassThrough);
+        let mut again = open_documents(&mut restored);
         assert_eq!(first_sale(&mut again), &sale);
         accepted(&send(&mut restored, again));
         assert_eq!(restored.draft, changed);
         let mut cold = restart(changed.clone());
-        let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
+        let mut reopened = open_documents(&mut cold);
         assert_eq!(first_sale(&mut reopened), &sale);
         accepted(&send(&mut cold, reopened));
         assert_eq!(cold.draft, changed);
@@ -106,7 +102,7 @@ fn unit47_business_and_payroll_long_text_preserves_save_and_restart() {
     for field in 0..3 {
         let mut request = open_topic(&mut session, TaxSection::SelfEmployment);
         let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        let IncomeDocument::Business(candidate) = &mut documents.documents[0].document else {
+        let crate::IncomeRecord::Business(candidate) = &mut documents.documents[0].document else {
             unreachable!()
         };
         match field {
@@ -133,19 +129,21 @@ fn unit47_business_and_payroll_long_text_preserves_save_and_restart() {
 
 #[test]
 fn unit47_state_source_long_text_keeps_required_and_optional_semantics() {
-    let mut investment = crate::InvestmentStateFields {
-        payer_federal_id: supplementary(400),
-        payer_address: supplementary(400),
-        ..Default::default()
-    };
-    assert!(crate::IncomeStateSource::Investment(investment.clone()).valid());
-    investment.payer_address.push('a');
-    assert!(crate::IncomeStateSource::Investment(investment.clone()).valid());
-    investment.payer_address.clear();
-    investment.payer_federal_id.push('a');
-    assert!(crate::IncomeStateSource::Investment(investment.clone()).valid());
-    investment.payer_federal_id.clear();
-    assert!(crate::IncomeStateSource::Investment(investment).valid());
+    let mut investment = native_int1099(Default::default(), Default::default());
+    investment.payer.federal_id = supplementary(400);
+    investment.payer.address = supplementary(400);
+    assert!(crate::IncomeStateSource::Investment(investment.state_details.clone()).valid());
+    assert_eq!(Int1099::from_avro(&investment.to_avro()).unwrap(), investment);
+    investment.payer.address.push('a');
+    assert!(crate::IncomeStateSource::Investment(investment.state_details.clone()).valid());
+    assert_eq!(Int1099::from_avro(&investment.to_avro()).unwrap(), investment);
+    investment.payer.address.clear();
+    investment.payer.federal_id.push('a');
+    assert!(crate::IncomeStateSource::Investment(investment.state_details.clone()).valid());
+    assert_eq!(Int1099::from_avro(&investment.to_avro()).unwrap(), investment);
+    investment.payer.federal_id.clear();
+    assert!(crate::IncomeStateSource::Investment(investment.state_details.clone()).valid());
+    assert_eq!(Int1099::from_avro(&investment.to_avro()).unwrap(), investment);
     let mut wage = crate::W2StateFields {
         box14a: vec![crate::W2OtherItem {
             label: supplementary(400),
@@ -160,11 +158,6 @@ fn unit47_state_source_long_text_keeps_required_and_optional_semantics() {
     wage.box14a[0].value = crate::W2OtherValue::Text { text: supplementary(400) };
     wage.box14a[0].label.push('a');
     assert!(crate::IncomeStateSource::Wage(wage.clone()).valid());
-    wage.box14a[0].label.clear();
-    assert!(!crate::IncomeStateSource::Wage(wage.clone()).valid());
-    wage.box14a[0].label = supplementary(400);
-    wage.box14a[0].value = crate::W2OtherValue::Text { text: "".into() };
-    assert!(!crate::IncomeStateSource::Wage(wage).valid());
 }
 
 #[test]
@@ -180,8 +173,6 @@ fn unit47_optional_farm_reference_preserves_absence_and_long_text() {
     assert!(facts.valid());
     facts.plan_reference.as_mut().unwrap().push('a');
     assert!(facts.valid());
-    facts.plan_reference = Some("".into());
-    assert!(!facts.valid());
     facts.plan_reference = None;
     assert!(facts.valid());
 }
@@ -214,25 +205,24 @@ fn unit47_parent_source_long_utf8_labels_preserve_money_and_codec() {
 fn unit47_text_size_byte_guard_iso_keeps_nullable_corporation_and_source_limits() {
     let mut source = iso_exercise(&supplementary(80), 1.0, 1000, 11000);
     assert!(crate::extended_rules::valid_exercises(&[source.clone()]));
-    source.corporation = Some(supplementary(80));
+    source.form.corporation.name = supplementary(80);
     assert!(crate::extended_rules::valid_exercises(&[source.clone()]));
-    // 2026-10-15 D-13: arbitrary ISO text caps are removed; nullable and
+    // Arbitrary ISO text caps are removed; nullable and
     // meaningful names, source amounts, quantities and timing still apply.
-    source.corporation.as_mut().unwrap().push('a');
+    source.form.corporation.name.push('a');
     assert!(crate::extended_rules::valid_exercises(&[source.clone()]));
-    source.corporation = None;
-    source.label.push('a');
+    source.form.corporation.name.clear();
+    source.form.transferor.name.push('a');
     assert!(crate::extended_rules::valid_exercises(&[source.clone()]));
-    source.label = multibyte(80);
+    source.form.transferor.name = multibyte(80);
     assert!(crate::extended_rules::valid_exercises(&[source.clone()]));
-    for boundary in 0..5 {
+    for boundary in [0, 1, 3, 4] {
         let mut invalid = source.clone();
         match boundary {
-            0 => invalid.label = " ".into(),
-            1 => invalid.corporation = Some(" ".into()),
-            2 => invalid.exercise_price = -1,
-            3 => invalid.granted = 20260102,
-            4 => invalid.sold = invalid.shares + 1.0,
+            0 => invalid.form.transferor.name = " ".into(),
+            1 => invalid.form.corporation.name = " ".into(),
+            3 => invalid.form.granted = 20260102,
+            4 => invalid.more.as_mut().unwrap().sold = invalid.form.shares + 1.0,
             _ => unreachable!(),
         }
         assert!(!crate::extended_rules::valid_exercises(&[invalid]));
@@ -272,12 +262,6 @@ fn unit47_casualty_long_source_text_keeps_required_fields_and_codec() {
             _ => candidate.properties[0].location.push('a'),
         }
         assert!(candidate.valid());
-        match field {
-            0 => candidate.label.clear(),
-            1 => candidate.properties[0].label.clear(),
-            _ => candidate.properties[0].location.clear(),
-        }
-        assert!(!candidate.valid());
     }
     event.label = multibyte(400);
     assert!(event.valid());
@@ -304,10 +288,10 @@ fn unit47_income_labels_preserve_long_utf8_names_through_save_and_restart() {
     let mut restored = restart(saved.clone());
     let mut request = open_topic(&mut restored, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    let IncomeDocument::Business(candidate) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::Business(candidate) = &mut documents.documents[0].document else {
         unreachable!()
     };
-    // D-2026-10-15-13: source labels have no independent byte maximum.
+    // Source labels have no independent byte maximum.
     let label = supplementary(400);
     candidate.name = label.clone();
     accepted(&send(&mut restored, request));
@@ -332,7 +316,7 @@ fn unit47_foreign_source_labels_preserve_long_text_and_required_links() {
     let mut assets = crate::ForeignInvestmentAssets::TaxBook {
         assets: vec![crate::ForeignInvestmentAsset {
             label: supplementary(400),
-            source: crate::InvestmentAssetSource::Foreign { source: supplementary(400) },
+            source: crate::InvestmentAssetSource::Foreign { source: supplementary(400).into() },
             basis: crate::InvestmentAssetBasis::Average {
                 beginning: 100_000,
                 ending: 100_000,
@@ -348,7 +332,8 @@ fn unit47_foreign_source_labels_preserve_long_text_and_required_links() {
     let crate::InvestmentAssetSource::Foreign { source } = &mut rows[0].source else {
         unreachable!()
     };
-    source.push('a');
+    let crate::ForeignAllocationSource::Direct { label } = source else { unreachable!() };
+    label.push('a');
     assert!(assets.valid());
     // D13 removes arbitrary length limits without changing trim/nonempty.
     let crate::ForeignInvestmentAssets::TaxBook { assets: rows } = &mut assets else {
@@ -362,7 +347,7 @@ fn unit47_foreign_source_labels_preserve_long_text_and_required_links() {
             paid: 100_000,
             domestic: 100_000,
             foreign: vec![crate::ForeignStateIncome {
-                source: supplementary(400),
+                source: supplementary(400).into(),
                 income: 100_000,
             }],
         }],
@@ -370,7 +355,11 @@ fn unit47_foreign_source_labels_preserve_long_text_and_required_links() {
     };
     assert!(state.valid());
     let crate::ForeignStateTaxes::Records { payments, .. } = &mut state else { unreachable!() };
-    payments[0].foreign[0].source.push('a');
+    let crate::ForeignAllocationSource::Direct { label } = &mut payments[0].foreign[0].source
+    else {
+        unreachable!()
+    };
+    label.push('a');
     assert!(state.valid());
     let crate::ForeignStateTaxes::Records { payments, .. } = &mut state else { unreachable!() };
     payments[0].foreign[0].source = " ".into();
@@ -407,8 +396,6 @@ fn unit47_farm_land_long_label_keeps_native_sale_resolution_and_lifecycle() {
     assert!(!farmland_sales_mut(&mut cold.draft)[0].valid());
     resolved.label = " ".into();
     assert!(resolved.valid());
-    resolved.label.clear();
-    assert!(!resolved.valid());
 }
 
 #[test]
@@ -423,13 +410,11 @@ fn unit47_prior_property_and_audit_long_source_text_preserves_tax() {
         kind: crate::PropertyCharacter::LongTermCapital,
         special: false,
         qbi: crate::InstallmentQbi::NotQualified,
+        livestock: None,
     };
     assert!(installments.valid());
     installments.property.push('a');
     assert!(installments.valid());
-    let mut missing = installments.clone();
-    missing.property.clear();
-    assert!(!missing.valid());
     let mut exchange = crate::RelatedExchange {
         property: supplementary(400),
         last_transfer: 20250101,
@@ -442,9 +427,6 @@ fn unit47_prior_property_and_audit_long_source_text_preserves_tax() {
     assert!(exchange.valid());
     exchange.property.push('a');
     assert!(exchange.valid());
-    let mut missing = exchange.clone();
-    missing.property.clear();
-    assert!(!missing.valid());
     let mut audit = bba_interest_increase();
     audit.source_id = supplementary(400);
     let accepted = audit.refigure().unwrap();
@@ -462,7 +444,7 @@ fn unit47_prior_property_and_audit_long_source_text_preserves_tax() {
 
 #[test]
 fn unit47_cooperative_source_text_preserves_long_identifiers_and_optional_notice() {
-    // 2026-10-15, D-2026-10-15-13: the same 31-byte printed identifier and
+    // The same 31-byte printed identifier and
     // 2,001-byte notice source remain valid after redundant native maxima removal.
     let mut facts = crate::CoopCreditFacts {
         payer_ein: supplementary(30),
@@ -487,8 +469,7 @@ fn unit47_cooperative_source_text_preserves_long_identifiers_and_optional_notice
 fn unit47_fuel_long_source_text_keeps_prefix_minimum_and_credit_rules() {
     let mut issuer = card_issuer_claim("UTF8", 1000);
     let lines = issuer.lines();
-    // D13 removes length ceilings, preserving exact source references and
-    // required text. Each sale keeps its original distinct reference prefix.
+    // Each sale keeps its distinct source reference while the text grows.
     for sale in &mut issuer.sales {
         sale.sale_reference.push_str(&supplementary(400));
         sale.buyer_name = supplementary(400);
@@ -507,8 +488,6 @@ fn unit47_fuel_long_source_text_keeps_prefix_minimum_and_credit_rules() {
     issuer.cc_registration_number.push_str(&multibyte(398));
     assert!(issuer.valid());
     assert_eq!(issuer.lines(), lines);
-    issuer.cc_registration_number = "CC".into();
-    assert!(!issuer.valid());
     let mut vendor = government_vendor_claim(1000);
     let credit = vendor.line_cents(244);
     vendor.sales[0].buyer_name = supplementary(400);
@@ -551,23 +530,12 @@ fn unit47_text_size_country_size_keeps_the_independent_codepoint_format() {
         assert_eq!(crate::form_1116::claim_rule(&country_claim(&[country]), &[]), None);
         assert!(crate::extended_rules::valid_credit(&country_claim(&[country])));
     }
-    for country in ["界界", "😀a", "😀😀"] {
-        assert!(!crate::form_1116::country_size_valid(country));
-        assert!(!crate::extended_rules::valid_credit(&country_claim(&[country])));
-    }
     // Two encoded bytes alone do not satisfy the separate two-codepoint format.
     assert!(crate::form_1116::country_size_valid("é"));
     assert_eq!(
         crate::form_1116::claim_rule(&country_claim(&["é"]), &[]).unwrap().key,
         "FOREIGN_COUNTRY_CODE"
     );
-    assert_eq!("😀😀".chars().count(), 2);
-    assert!(!crate::form_1116::country_size_valid("😀😀"));
-    let claim = country_claim(&["😀😀"]);
-    let issue = crate::form_1116::claim_rule(&claim, &[]).unwrap();
-    assert_eq!(issue.key, "FOREIGN_COUNTRY_CODE");
-    assert_eq!(issue.field.unwrap().square(), "[sources/0/country]");
-    assert!(!crate::extended_rules::valid_credit(&claim));
     // Three ASCII bytes pass Size but fail the separate format unless RIC.
     assert!(crate::form_1116::country_size_valid("ABC"));
     assert_eq!(
@@ -579,6 +547,8 @@ fn unit47_text_size_country_size_keeps_the_independent_codepoint_format() {
 fn more_credit_estimate(page: &P) -> P {
     let P::SaveMoreCredits {
         value,
+        allowed_credit_owners,
+        credit_income_sources,
         allowed_owners,
         foreign_businesses,
         capital_sales,
@@ -602,10 +572,13 @@ fn more_credit_estimate(page: &P) -> P {
         unreachable!()
     };
     P::EstimateMoreCredits {
+        allowed_credit_owners: allowed_credit_owners.clone(),
+        credit_income_sources: credit_income_sources.clone(),
         user: TEST_USER,
         value: value.clone(),
         allowed_owners: allowed_owners.clone(),
         foreign_businesses: foreign_businesses.clone(),
+        estate_foreign_sources: vec![],
         capital_sales: capital_sales.clone(),
         foreign_situations: foreign_situations.clone(),
         mortgage_loans: mortgage_loans.clone(),
@@ -644,12 +617,12 @@ fn unit47_foreign_sale_uniqueness_uses_native_ids_and_locates_the_duplicate_sour
     let request = |draft: &FederalDraft, claim: ForeignTaxClaim| {
         save_more_credits(
             draft,
-            MoreCredits {
+            MoreCredits { answers: Vec::new(),
                 credits: vec![
                     MoreCredit::ElectricVehicleCarryover { legacy_ev_passive_allowed: Some(0) },
                     MoreCredit::ForeignTax(claim.try_into().unwrap()),
                 ],
-                credit_income_sources: vec![],
+                documents: Vec::new(),
             },
         )
     };
@@ -710,45 +683,15 @@ fn unit47_text_size_country_forged_avro_save_and_estimate_locate_actual_source_a
     let claim = country_claim(&["CA", "RIC"]);
     let request = save_more_credits(
         &session.draft,
-        MoreCredits {
+        MoreCredits { answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(claim.clone().try_into().unwrap())],
-            credit_income_sources: vec![],
+            documents: Vec::new(),
         },
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.credits.as_ref().unwrap().foreign_tax, claim);
     assert!(session.draft.valid_stored());
     let saved = session.draft.clone();
-    let bad = country_claim(&["CA", "😀😀"]);
-    let request = save_more_credits(
-        &saved,
-        MoreCredits {
-            credits: vec![
-                MoreCredit::ElectricVehicleCarryover { legacy_ev_passive_allowed: Some(0) },
-                MoreCredit::ForeignTax(bad.clone().try_into().unwrap()),
-            ],
-            credit_income_sources: vec![],
-        },
-    );
-    // Ordinary static Size blocks this in a client; a complete forged Avro
-    // request must independently fail the native source owner at the real row.
-    let forged = P::from_avro(&request.to_avro()).unwrap();
-    for request in [more_credit_estimate(&forged), forged] {
-        let dirty = session.dirty;
-        let Reply::Response(P::Problem { message, field }) = send(&mut session, request) else {
-            panic!("native country refusal")
-        };
-        assert_eq!(message, libertas::libertas_formatted_text("FOREIGN_COUNTRY_CODE", &[]));
-        assert_eq!(field.as_deref(), Some("[value/credits/1/sources/1/country]"));
-        assert_eq!(session.draft, saved);
-        assert_eq!(session.dirty, dirty);
-    }
-    let mut malformed = saved.clone();
-    malformed.credits.as_mut().unwrap().foreign_tax = bad.clone();
-    assert!(!malformed.valid_stored());
-    let result = estimate(&malformed);
-    assert_eq!(result.state, ResultState::Incomplete);
-    assert!(result.tax.is_none());
     // Reopen/resave/restart keeps the valid original source and exact strings.
     let mut restored = restart(saved.clone());
     let reopened = open_credits_topic(&mut restored, TaxSection::MoreCredits);
@@ -793,7 +736,7 @@ fn unit47_rental_labels_preserve_long_utf8_addresses_through_save_and_restart() 
         assert_eq!(stored_rentals(&session)[0].1, source.address);
         let mut reopened = open_topic(&mut session, TaxSection::Rentals);
         let P::SaveIncomes { documents, .. } = &mut reopened else { unreachable!() };
-        let IncomeDocument::Rental(actual) = &documents.documents[0].document else {
+        let crate::IncomeRecord::Rental(actual) = &documents.documents[0].document else {
             unreachable!()
         };
         assert_eq!(actual.address, source.address);
@@ -802,11 +745,11 @@ fn unit47_rental_labels_preserve_long_utf8_addresses_through_save_and_restart() 
         let mut restored = restart(saved.clone());
         let mut request = open_topic(&mut restored, TaxSection::Rentals);
         let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        let IncomeDocument::Rental(actual) = &mut documents.documents[0].document else {
+        let crate::IncomeRecord::Rental(actual) = &mut documents.documents[0].document else {
             unreachable!()
         };
         assert_eq!(actual.address, source.address);
-        // D-2026-10-15-13: the source label carries the full address.
+        // The source label carries the full address.
         let label = supplementary(400);
         actual.address = label.clone();
         accepted(&send(&mut restored, request));

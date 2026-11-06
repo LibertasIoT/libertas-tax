@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 855000, "rule": {"select": "^<Section1256Carryback>.injured_owners", "when_single_choice": "hide"}}
+  ]
+}

@@ -8,7 +8,7 @@ pub(in crate::tests) mod business_credit_owner_sources {
         // nor elective payment; no new source fact or monetary oracle is inferred.
         let mut d = injured_return((190000, 100), (0, 0), 0, claim);
         let mut source = income(cash_business(0));
-        source.owner = owner;
+        source.owner = crate::DocumentOwner::from(owner);
         source.label = alloc::format!("{owner:?} current production activity");
         add(&mut d, source);
         let id = d.income.last().unwrap().id;
@@ -89,9 +89,11 @@ pub(in crate::tests) mod business_credit_owner_sources {
                 // https://www.irs.gov/instructions/i1116
                 let mut dividend = crate::tests::foreign::foreign::fund_dividends(1000, 0, 0);
                 let FederalIncome::Dividend { data } = &mut dividend else { panic!() };
+                let mut data = edit_dividend(data);
                 data.foreign_tax = 10000;
+                drop(data);
                 let mut entry = income(dividend);
-                entry.owner = owner;
+                entry.owner = crate::DocumentOwner::from(owner);
                 entry.label = "Synthetic foreign dividend statement".into();
                 add(&mut d, entry);
                 d.credits.as_mut().unwrap().foreign_tax =
@@ -102,7 +104,7 @@ pub(in crate::tests) mod business_credit_owner_sources {
                     .income
                     .iter_mut()
                     .find(|entry| {
-                        entry.owner == Owner::Taxpayer
+                        entry.owner == crate::DocumentOwner::Yours
                             && matches!(entry.income, FederalIncome::Wage { .. })
                     })
                     .unwrap();
@@ -139,12 +141,21 @@ pub(in crate::tests) mod business_credit_owner_sources {
         reverse: bool,
     ) -> FederalDraft {
         let mut draft = residual_fixture(ResidualFamily::ForeignTax, owner, injured, reverse);
-        draft
+        let person = if payer == Owner::Spouse { -2 } else { -1 };
+        let names = fixture_document_names(&draft, person).map(|mut names| {
+            names.set_assignment(crate::document_names::Assignment::matched(
+                crate::DocumentRecipient::from_key(person).unwrap(),
+            ));
+            names
+        });
+        let dividend = draft
             .income
             .iter_mut()
             .find(|entry| matches!(entry.income, FederalIncome::Dividend { .. }))
-            .unwrap()
-            .owner = payer;
+            .unwrap();
+        // The statement is the payer's: it prints the payer's name.
+        dividend.owner = crate::DocumentOwner::from(payer);
+        crate::tests::support::builders::prepare_income_fixture(dividend, names);
         draft.injured_spouse.as_mut().unwrap().allocations.clear();
         draft
     }
@@ -170,7 +181,8 @@ pub(in crate::tests) mod business_credit_owner_sources {
             .income
             .iter_mut()
             .find(|entry| {
-                entry.owner == Owner::Taxpayer && matches!(entry.income, FederalIncome::Wage { .. })
+                entry.owner == crate::DocumentOwner::Yours
+                    && matches!(entry.income, FederalIncome::Wage { .. })
             })
             .unwrap();
         *entry = wage(entry.id, Owner::Taxpayer, wages * 100, 10000);
@@ -180,13 +192,17 @@ pub(in crate::tests) mod business_credit_owner_sources {
             .find(|entry| matches!(entry.income, FederalIncome::Dividend { .. }))
             .unwrap();
         let FederalIncome::Dividend { data } = &mut first.income else { panic!() };
+        let mut data = edit_dividend(data);
         data.foreign_tax = taxes[0];
+        drop(data);
         if !matches!(case, PayeeLimitCase::SoleCap(_)) {
             let mut second = crate::tests::foreign::foreign::fund_dividends(1000, 0, 0);
             let FederalIncome::Dividend { data } = &mut second else { panic!() };
+            let mut data = edit_dividend(data);
             data.foreign_tax = taxes[1];
+            drop(data);
             let mut entry = income(second);
-            entry.owner = Owner::Spouse;
+            entry.owner = crate::DocumentOwner::Spouses;
             entry.label = "Synthetic second foreign dividend statement".into();
             add(&mut draft, entry);
         }
@@ -233,10 +249,14 @@ pub(in crate::tests) mod elective_credit_mixed_sources {
         let mut credits = vec![];
         for (owner, amount) in [Owner::Taxpayer, Owner::Spouse].into_iter().zip(family.credits()) {
             let mut e = income(cash_business(0));
-            e.owner = owner;
+            e.owner = crate::DocumentOwner::from(owner);
             e.label = alloc::format!("{owner:?} production activity");
             let FederalIncome::Business { data } = &e.income else { panic!() };
-            assert!(data.material_participation && data.all_at_risk());
+            assert!(
+                data.material_participation.individual(2026, false)
+                    == crate::participation::Participation::Yes
+                    && data.all_at_risk()
+            );
             assert!(matches!(data.activity, BusinessActivity::Ordinary { .. }));
             add(&mut d, e);
             credits.push(EnteredBusinessCredit {
@@ -276,7 +296,7 @@ pub(in crate::tests) mod elective_credit_owner_sources {
         claim.injured = injured;
         let mut d = injured_return((30000, 100), (0, 0), 0, claim);
         let mut source = income(cash_business(0));
-        source.owner = owner;
+        source.owner = crate::DocumentOwner::from(owner);
         add(&mut d, source);
         let id = d.income.last().unwrap().id;
         d.credits.as_mut().unwrap().business_credits = Some(BusinessCreditHistory {
@@ -364,7 +384,7 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
                 if matches!(family, Family::EmploymentExcluded) { owner } else { other(owner) };
             let wages = if matches!(family, Family::HighTax) { 60000 } else { 200000 };
             let mut pay = income(foreign_pay(wages));
-            pay.owner = employee;
+            pay.owner = crate::DocumentOwner::from(employee);
             add(&mut d, pay);
             if !matches!(family, Family::HighTax) {
                 set_claim(&mut d, foreign_claim(employee));
@@ -380,7 +400,7 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
             ));
             if matches!(family, Family::BusinessExcluded) {
                 let mut business = income(foreign_service_business(50000));
-                business.owner = owner;
+                business.owner = crate::DocumentOwner::from(owner);
                 add(&mut d, business);
                 let business = d.income.last().unwrap().id;
                 set_claim(&mut d, foreign_claim(owner));
@@ -392,7 +412,7 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
                 ));
             } else if matches!(family, Family::HighTax) {
                 let mut interest = income(savings_income(40000, 0));
-                interest.owner = owner;
+                interest.owner = crate::DocumentOwner::from(owner);
                 add(&mut d, interest);
                 sources.push(row(
                     owner,
@@ -412,15 +432,40 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
             return d;
         }
         if matches!(family, Family::K3Pair) {
-            let mut d = fixture(Family::K3 { released: false }, owner, injured, false);
+            let mut d = known_fact_partnership_draft(fixture(
+                Family::K3 { released: false },
+                owner,
+                injured,
+                false,
+            ));
             let mut second = d
                 .income
                 .iter()
                 .find(|entry| matches!(entry.income, FederalIncome::Partnership { .. }))
                 .unwrap()
                 .clone();
-            second.owner = other(owner);
+            second.owner = crate::DocumentOwner::from(other(owner));
             second.label = "Synthetic second Global Fund LP same JA category".into();
+            let recipient = if second.owner == crate::DocumentOwner::Spouses {
+                crate::DocumentRecipient::Spouse
+            } else {
+                crate::DocumentRecipient::Taxpayer
+            };
+            let household = fixture_document_names(&d, recipient.key()).unwrap();
+            let printed = second.printed.as_mut().unwrap();
+            printed.issuer.as_mut().unwrap().name = second.label.clone();
+            printed.recipient.name = household.recipient.name;
+            printed.set_assignment(crate::document_names::Assignment::matched(recipient));
+            if let FederalIncome::Partnership { data } = &mut second.income {
+                let source = data.source.as_mut().unwrap();
+                source.paper.partnership.name = second.label.clone();
+                source.paper.partner = printed.recipient.clone();
+                crate::document_names::Assignment::matched(recipient).apply_to(
+                    &mut source.assigned,
+                    &mut source.owner_source,
+                    &mut source.joint_share,
+                );
+            }
             add(&mut d, second);
             if reverse {
                 d.income.reverse();
@@ -451,20 +496,21 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
                     // Same accepted release as foreign::k3_box_21_above...:
                     // the earlier1D released class is absent from current K3 tax.
                     data.regular.carried.foreign_taxes = 100;
-                    data.regular.basis.opening += 100;
+                    data.regular.basis.opening =
+                        data.regular.basis.opening.map(|value| value + 100);
                     data.alternative = Some(data.regular.clone());
                 }
                 let mut entry = income(FederalIncome::Partnership { data });
-                entry.owner = owner;
+                entry.owner = crate::DocumentOwner::from(owner);
                 entry.label = "Synthetic Global Fund LP current K3".into();
                 add(&mut d, entry);
             }
             Family::MixedCategories => {
                 let mut pay = income(foreign_pay(10000));
-                pay.owner = owner;
+                pay.owner = crate::DocumentOwner::from(owner);
                 add(&mut d, pay);
                 let mut interest = income(savings_income(1000, 0));
-                interest.owner = other(owner);
+                interest.owner = crate::DocumentOwner::from(other(owner));
                 add(&mut d, interest);
                 sources.push(row(owner, ForeignTaxCategory::Employment, 10000, 100));
                 sources.push(row(
@@ -485,7 +531,7 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
                     owner
                 };
                 let mut pay = income(foreign_pay(40000));
-                pay.owner = earner;
+                pay.owner = crate::DocumentOwner::from(earner);
                 add(&mut d, pay);
                 sources.push(row(
                     earner,
@@ -547,16 +593,16 @@ pub(in crate::tests) mod fuel_credit_owner_sources {
         for (owner, cents) in [Owner::Taxpayer, Owner::Spouse].into_iter().zip(business) {
             let mut data = ordinary_partner_source(0, true);
             data.fuel_tax_credit = (cents != 0).then(|| PartnerFuelTaxCredit {
-                fuels: fuel(cents),
+                fuels: fuel(cents).into(),
                 statement_complete: true,
                 farm_activity: false,
             });
             let mut entry = income(FederalIncome::Partnership { data });
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut draft, entry);
         }
         draft.payments.as_mut().unwrap().home_kerosene = Some(FederalHomeKerosene {
-            thousandths_of_gallon: 2058,
+            gallons: 2.058,
             actual_cost: 1000,
             qualified: true,
             not_claimed_elsewhere: true,
@@ -569,7 +615,7 @@ pub(in crate::tests) mod fuel_credit_owner_sources {
     }
 
     pub(in crate::tests) fn fuel(cents: i64) -> FederalFuelLines {
-        let thousandths_of_gallon = match cents {
+        let thousandths = match cents {
             1 => 42,
             24 => 988,
             49 => 2016,
@@ -579,7 +625,7 @@ pub(in crate::tests) mod fuel_credit_owner_sources {
         };
         let fuels = FederalFuelLines {
             kerosene_off_highway: Some(FederalFuelUse {
-                thousandths_of_gallon,
+                gallons: crate::kernel::natural::natural(thousandths, 1_000),
                 actual_cost: 1000,
                 qualified: true,
                 not_claimed_elsewhere: true,
@@ -648,20 +694,23 @@ pub(in crate::tests) mod r8_employee_withholding {
         };
         let mut e = income(FederalIncome::EmployeeWages {
             data: EmployeeWages {
+                source_issuer: Default::default(),
+                source_recipient: Default::default(),
                 wages: 750000,
                 withholding: 25000,
                 form1099: true,
-                reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
-                complete: true,
+                payroll: crate::EmployeePayrollSource::Form8919 {
+                    reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
+                },
             },
         });
-        e.owner = owner;
+        e.owner = crate::DocumentOwner::from(owner);
         e.label.clear();
         add(&mut d, e);
         for e in &mut d.income {
             e.community = CommunityShare::Community;
             if texas {
-                e.refund_management = Some(if e.owner == Owner::Taxpayer {
+                e.refund_management = Some(if e.owner == crate::DocumentOwner::Yours {
                     RefundManagement::Taxpayer
                 } else {
                     RefundManagement::Spouse
@@ -691,9 +740,9 @@ pub(in crate::tests) mod r8_sale_withholding {
         };
         let mut sale = ordinary_investment_sale(10000, 10000, GainTerm::Long);
         let FederalIncome::Sale { data } = &mut sale else { panic!() };
-        data.withholding = 25000;
+        data.form.withholding = 25000;
         let mut sale = income(sale);
-        sale.owner = owner;
+        sale.owner = crate::DocumentOwner::from(owner);
         add(&mut d, sale);
         for entry in &mut d.income {
             entry.community = CommunityShare::Community;
@@ -723,15 +772,17 @@ pub(in crate::tests) mod r9_actual_clients {
         draft.people = joint.people;
         draft.setup = joint.setup;
         let FederalIncome::Wage { data } = &mut draft.income[0].income else { panic!() };
+        let mut data = edit_wage(data);
         data.withholding = 5_000_000;
-        draft.income[1].owner = farm_owner;
+        drop(data);
+        draft.income[1].owner = crate::DocumentOwner::from(farm_owner);
         add(&mut draft, wage(0, Owner::Spouse, 2_000_000, 100_000));
         if reversed {
             draft.income.reverse();
         }
         let mut claim = allocation();
         claim.injured = injured;
-        draft.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+        draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
         draft.injured_spouse = Some(claim);
         checked(&draft, farm_owner, injured);
         draft

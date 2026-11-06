@@ -1,231 +1,25 @@
-// Coverage: Form 8862 — Supported (unit T2-46, 2026-09-26).
-//   Lines: Part I line 1 (2026) and line 2 (one box per credit group that needs the form);
-//   Part II line 3 (income-reporting-only cause skips the rest), line 4 (another taxpayer's
-//   qualifying child, from FederalPerson.another_eitc_child), Section A lines 5a–5c (the
-//   Schedule EIC qualifying children, from family()), 6, 7 (days from DependentResidency) and 8
-//   (a 2026 birth date), Section B lines 9a/9b (new days fields, checked against
-//   FederalPerson.us_home_over_half_year), 10a/10b (eic_age: age 25 the day before the
-//   birthday, age 65 on the birthday, i8862 line 10; unit family credits F8, 2026-10-10) and
-//   11a/11b (FilerDependency);
-//   Part III lines 12a–12d/13a–13d (the CTC and ODC people from family()) and 14–17 (their
-//   classification facts); Part IV lines 18a–18c and 19a/19b (the American Opportunity
-//   students, from FederalEducation.eligible_student and aotc_requirements). The credits
-//   themselves compute in schedule_eic.rs, schedule_8812.rs and the Form 8863 arm of
-//   federal_rules.rs; this module only decides whether the form is needed and fills it.
-//   Not needed (a review note, no lines): a math or clerical error only; a reinstated credit
-//   with no later disallowance; a CTC/ODC or AOTC disallowance for a year before 2016; the
-//   childless-EIC exception when the only earlier finding was that a listed child was not a
-//   qualifying child; a group whose credit the return does not claim.
-//   A still-running 2-year (reckless or intentional disregard) or 10-year (fraud) ban covering
-//   2026, counted from the disallowed tax year as the instructions' example does, is a zero
-//   credit for that credit group with NOTE_8862_*_BANNED (unit B11 KIDS, 2026-10-11): `bans`
-//   reads it before the credits, the earned income credit and the child credits (CTC, ACTC,
-//   ODC; the people stay dependents) come out of Schedule EIC and Schedule 8812 and no Form
-//   8862 is filled for the group, and a banned American opportunity student is figured with the
-//   lifetime learning credit (section 25A(b)(4) names only the AOTC; unknowns.rs aotc_ban). The
-//   appeal (a mailed return with Form 8862 during the ban) is the note's text, not a choice.
-//   Line 8 prints the month and day of a child's birth (born in 2026) and of death
-//   (FederalDependent.death_date). Refused by name: days on line 9a (or 9b) contradicting the
-//   filer's "main home in the United States more than half the year" answer. Not modeled: the
-//   tiebreaker note under lines 8 and 17 (a competing claim is decided by family()).
-//   Batch 6 (2026-10-05): the finding is a required choice (Not sure removed; the IRS notice
-//   states it); days on line 9a/9b not entered give a note (WARN_8862_HOME_DAYS_*), since the
-//   estimate does not use them.
-//   Evidence: forms/form_8862.rs (compute, requirement, bans); src/tests/family/kids.rs f4_*, f4b_*, f4c_*,
-//   f6_*, f6b_*; federal_rules.rs (Family's
-//   eic_child_ids/ctc_ids/odc_ids, the call after Schedule 8812); federal_model.rs
-//   (FederalCredits.after_disallowance, MoreCredit::AfterDisallowance); interview.rs
-//   (more_credit_items, apply_more_credits, more_credits_candidate); src/tests/family/family.rs
-//   eic_after_disallowance_return_matches_hand_computation,
-//   two_year_ban_runs_through_the_second_year_after_the_disallowed_year,
-//   ten_year_ban_runs_through_the_tenth_year_after_the_disallowed_year,
-//   childless_eic_after_disallowance_needs_line_9_days,
-//   form_8862_is_not_needed_for_a_math_error_reinstatement_or_pre_2016_child_credit,
-//   childless_eic_exception_and_income_reporting_finding, child_credit_and_aotc_parts_list_each_person;
-//   src/tests/family/interview.rs each_more_credit_variant_reaches_its_field, refusals_name_their_topic.
-//   T2-cx (2026-09-27, question C19): each credit group defaults to Never and reinstated to false.
-//   IRS sources: Form 8862 (Rev. December 2025, Created 1/8/26) and Instructions for Form 8862
-//   (Rev. December 2025, Nov 26, 2025), irs.gov/pub/irs-pdf/f8862.pdf and i8862.pdf, fetched
-//   2026-09-26; the irs-dft copies (f8862--dft.pdf, i8862--dft.pdf) are drafts of the same
-//   December 2025 revision, and no 2026 revision exists at that retrieval date.
-
+#[allow(unused_imports)]
+pub(crate) use crate::disallowance_source::{
+    Bans, NoFormReason, Requirement, TAX_YEAR, bans, requirement,
+};
+pub use crate::disallowance_source::{
+    CreditDisallowance, CreditsAfterDisallowance, DisallowanceFacts, DisallowanceFinding,
+    EicDisallowance, EicDisallowanceCause,
+};
 // Form 8862: whether a previously reduced or disallowed EIC, CTC/ACTC/ODC or
 // AOTC may be claimed again for 2026, and the form's Parts I–IV filled from
 // the return's own people, children and students.
-use crate::kernel::lines::form_line;
+use crate::line_emission::form_line;
 use crate::{
-    DependentResidency, EducationMethod, FederalDependent, FederalEducation, FederalPeople,
-    FederalResult, FormLine, Message, MessageArg, PersonChoice, TaxForm,
+    DependentResidency, EducationMethod, FederalDependent, FederalPeople, FederalResult, FormLine,
+    Message, MessageArg, PersonChoice, TaxForm,
 };
 use alloc::{format, vec::Vec};
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 const SOURCE: &str = "https://www.irs.gov/instructions/i8862";
 const INPUTS: &[&str] = &["credits"];
 #[cfg(test)]
 const SECTION: &str = "More credits";
-const TAX_YEAR: u32 = 2026;
-
-/// Credits claimed after an earlier disallowance (Form 8862)
-/// Answer for each credit the IRS reduced or disallowed for an earlier year. The App fills Form 8862 from the people, children and students already on this return.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct CreditsAfterDisallowance {
-    /// Earned income credit
-    #[libertas_default(Never)]
-    pub earned_income: EicDisallowance,
-    /// Child tax credit, additional child tax credit or credit for other dependents
-    #[libertas_default(Never)]
-    pub child_credits: CreditDisallowance,
-    /// American opportunity tax credit
-    #[libertas_default(Never)]
-    pub education_credit: CreditDisallowance,
-}
-
-/// Earlier disallowance
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum CreditDisallowance {
-    /// Never reduced or disallowed
-    Never,
-    /// Reduced or disallowed for an earlier year
-    Disallowed(DisallowanceFacts),
-}
-
-/// Earlier disallowance
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum EicDisallowance {
-    /// Never reduced or disallowed
-    Never,
-    /// Reduced or disallowed for an earlier year
-    Disallowed {
-        /// The disallowance
-        facts: DisallowanceFacts,
-        /// What the IRS found
-        cause: EicDisallowanceCause,
-        /// Days in 2026 your main home was in the United States
-        /// Needed only when you claim the credit without a qualifying child. Count temporary absences and extended active military duty as days at home.
-        /// [NullText]
-        /// I am claiming EIC with a qualifying child; these days do not apply
-        /// [SetText]
-        /// Without a qualifying child, my U.S. home days were
-        // Calendar structure: tax year 2026 has 365 days.
-        #[libertas_number(min = 0, max = 365)]
-        your_us_home_days: Option<u32>,
-        /// Days in 2026 your spouse’s main home was in the United States
-        /// Needed only on a joint return claiming the credit without a qualifying child.
-        /// [NullText]
-        /// Spouse home days do not apply to this EIC claim
-        /// [SetText]
-        /// For our joint claim without a qualifying child, my spouse's U.S. home days were
-        // Calendar structure: tax year 2026 has 365 days.
-        #[libertas_number(min = 0, max = 365)]
-        spouse_us_home_days: Option<u32>,
-    },
-}
-
-/// The disallowance
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct DisallowanceFacts {
-    /// Most recent tax year for which the credit was reduced or disallowed
-    /// The year of the return the IRS adjusted, not the year the notice arrived.
-    // Form 8862 prior-finding window: 1997 onward, before this 2026 return.
-    #[libertas_number(min = 1997, max = 2025)]
-    pub year: u32,
-    /// The IRS finding
-    /// The IRS notice or letter that reduced or disallowed the credit states it; an IRS account transcript also shows it.
-    #[libertas_inline_choices]
-    pub finding: DisallowanceFinding,
-    /// Form 8862 was filed after that year, the credit was allowed again, and it has not been reduced or disallowed since except for a math or clerical error
-    #[libertas_default(false)]
-    pub reinstated: bool,
-}
-
-/// The IRS finding
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum DisallowanceFinding {
-    /// A math or clerical error only
-    MathOrClericalError,
-    /// Not eligible, with no finding of reckless disregard or fraud
-    Ineligible,
-    /// Reckless or intentional disregard of the rules (a 2-year ban)
-    RecklessDisregard,
-    /// Fraud (a 10-year ban)
-    Fraud,
-}
-
-/// What the IRS found
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-#[libertas_inline_choices]
-pub enum EicDisallowanceCause {
-    /// Only incorrectly reported earned income or investment income
-    IncomeReporting,
-    /// Only that a child listed on Schedule EIC was not a qualifying child
-    ChildNotQualifying,
-    /// Another reason, or more than one
-    Other,
-}
-
-impl CreditsAfterDisallowance {
-    // The server twin of the page's range attributes.
-    pub(crate) fn valid(&self) -> bool {
-        let year_ok = |facts: &DisallowanceFacts| (1997..=2025).contains(&facts.year);
-        let days_ok = |days: Option<u32>| days.is_none_or(|d| d <= 365);
-        let group_ok = |group: &CreditDisallowance| match group {
-            CreditDisallowance::Never => true,
-            CreditDisallowance::Disallowed(facts) => year_ok(facts),
-        };
-        let eic_ok = match &self.earned_income {
-            EicDisallowance::Never => true,
-            EicDisallowance::Disallowed {
-                facts, your_us_home_days, spouse_us_home_days, ..
-            } => year_ok(facts) && days_ok(*your_us_home_days) && days_ok(*spouse_us_home_days),
-        };
-        eic_ok && group_ok(&self.child_credits) && group_ok(&self.education_credit)
-    }
-}
-
-// What the disallowance facts mean for the 2026 claim of one credit group.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Requirement {
-    // The form is not needed for this credit group; the reason is noted.
-    NotNeeded(NoFormReason),
-    // The form is needed and can be filled.
-    Required,
-    // A ban still covers 2026: the credit cannot be claimed (years, last year).
-    Banned(u32, u32),
-}
-
-// The instructions' Who Must File table and its exceptions: `first_year` is
-// the last tax year the requirement does not reach (1996 for the EIC, 2015
-// for the child credits and the AOTC). A ban runs for the 2 or 10 tax years
-// after the disallowed year, as in the instructions' example (a disallowed
-// 2024 claim bars 2025 and 2026).
-pub(crate) fn requirement(facts: &DisallowanceFacts, first_year: u32) -> Requirement {
-    if facts.finding == DisallowanceFinding::MathOrClericalError {
-        return Requirement::NotNeeded(NoFormReason::MathError);
-    }
-    if facts.reinstated {
-        return Requirement::NotNeeded(NoFormReason::Reinstated);
-    }
-    if facts.year <= first_year {
-        return Requirement::NotNeeded(NoFormReason::BeforeRequirement);
-    }
-    let years = match facts.finding {
-        DisallowanceFinding::RecklessDisregard => 2,
-        DisallowanceFinding::Fraud => 10,
-        _ => return Requirement::Required,
-    };
-    if TAX_YEAR <= facts.year + years {
-        Requirement::Banned(years, facts.year + years)
-    } else {
-        Requirement::Required
-    }
-}
 
 // What the return supplies to Form 8862.
 pub(crate) struct Form8862Context<'a> {
@@ -237,7 +31,7 @@ pub(crate) struct Form8862Context<'a> {
     pub(crate) eic_children: &'a [i64],
     pub(crate) ctc_children: &'a [i64],
     pub(crate) other_dependents: &'a [i64],
-    pub(crate) education: &'a [FederalEducation],
+    pub(crate) education: &'a [crate::federal_model::EducationAnnualProjection],
     pub(crate) students: &'a [PersonChoice],
     pub(crate) joint: bool,
     // Whether the return claims each credit group at all (line 27a, Schedule
@@ -252,15 +46,6 @@ pub(crate) enum CreditGroup {
     EarnedIncome,
     Child,
     Education,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NoFormReason {
-    MathError,
-    Reinstated,
-    BeforeRequirement,
-    NotClaimed,
-    ChildlessException,
 }
 
 impl NoFormReason {
@@ -325,40 +110,6 @@ impl CreditGroup {
             Self::Child => "NOTE_8862_CHILD_CREDITS_BANNED",
             Self::Education => "NOTE_8862_AOTC_BANNED",
         }
-    }
-}
-
-// The credit groups a still-running ban covers for 2026, each as (years of
-// the ban, last tax year it covers). A banned group's credit is zero and
-// Form 8862 is not filled for it; the other groups are untouched.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct Bans {
-    pub(crate) eic: Option<(u32, u32)>,
-    pub(crate) child: Option<(u32, u32)>,
-    pub(crate) aotc: Option<(u32, u32)>,
-}
-
-pub(crate) fn bans(claim: Option<&CreditsAfterDisallowance>) -> Bans {
-    let ban = |facts: &DisallowanceFacts, first_year: u32| match requirement(facts, first_year) {
-        Requirement::Banned(years, last) => Some((years, last)),
-        _ => None,
-    };
-    let Some(claim) = claim else {
-        return Bans::default();
-    };
-    Bans {
-        eic: match &claim.earned_income {
-            EicDisallowance::Never => None,
-            EicDisallowance::Disallowed { facts, .. } => ban(facts, 1996),
-        },
-        child: match &claim.child_credits {
-            CreditDisallowance::Never => None,
-            CreditDisallowance::Disallowed(facts) => ban(facts, 2015),
-        },
-        aotc: match &claim.education_credit {
-            CreditDisallowance::Never => None,
-            CreditDisallowance::Disallowed(facts) => ban(facts, 2015),
-        },
     }
 }
 
@@ -830,7 +581,7 @@ fn part_iii(ctx: &Form8862Context<'_>, r: &mut FederalResult) {
 }
 
 fn part_iv(ctx: &Form8862Context<'_>, r: &mut FederalResult) {
-    let students: Vec<(&FederalEducation, &PersonChoice)> = ctx
+    let students: Vec<(&crate::federal_model::EducationAnnualProjection, &PersonChoice)> = ctx
         .education
         .iter()
         .filter(|e| e.method() == EducationMethod::AmericanOpportunity)

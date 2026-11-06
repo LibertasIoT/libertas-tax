@@ -1,31 +1,16 @@
 use crate::kernel::ratio::exact::{self, Exact};
 
-// Settled cash-source metadata for the native Form1040 withholding categories.
-// Rows retain actual selected-return source Cents; targets retain the existing
-// separately rounded annual Dollars. This packet performs no tax allocation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NativeWithholdingSource {
-    pub(crate) id: i64,
-    pub(crate) owner: crate::Owner,
-    pub(crate) cents: [i64; 3],
-}
+pub(crate) use crate::return_carriers::{NativeWithholdingSource, NativeWithholdingSources};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct NativeWithholdingSources {
-    pub(crate) rows: alloc::vec::Vec<NativeWithholdingSource>,
-    pub(crate) joint_dollars: [i64; 3],
-    pub(crate) complete: bool,
-    // An inherited record is credited once; its linked statement identities
-    // remain available for validating the actual source relationship.
-    pub(crate) inherited_payment_ids: alloc::collections::BTreeMap<i64, alloc::vec::Vec<i64>>,
-}
 impl NativeWithholdingSources {
     pub(crate) fn projected(&self, d: &crate::FederalDraft, first: usize) -> Option<[[i64; 2]; 3]> {
         let source = self;
         if !source.complete || first > 1 || source.joint_dollars.iter().any(|v| *v < 0) {
             return None;
         }
-        let mut cents = [[0_i64; 2]; 3];
+        let mut cents: [[Exact; 2]; 3] =
+            core::array::from_fn(|_| core::array::from_fn(|_| exact::whole(0)));
+        let mut native_cents: [Exact; 3] = core::array::from_fn(|_| exact::whole(0));
         let mut seen = alloc::collections::BTreeSet::new();
         for row in &source.rows {
             if row.id <= 0 || !seen.insert(row.id) || row.cents.iter().any(|v| *v < 0) {
@@ -33,22 +18,24 @@ impl NativeWithholdingSources {
             }
             let mut matches = d.income.iter().filter(|e| e.id == row.id);
             let entry = matches.next()?;
-            if matches.next().is_some() || entry.owner != row.owner {
+            if matches.next().is_some() || entry.owner != crate::DocumentOwner::from(row.owner) {
                 return None;
             }
+            let (weights, denominator) = entry.accepted_assignment().owner_weights()?;
             for (category, value) in row.cents.iter().enumerate() {
-                let owner = usize::from(row.owner == crate::Owner::Spouse);
-                cents[category][owner] = cents[category][owner].checked_add(*value)?;
+                let value = exact::whole(*value);
+                native_cents[category] += &value;
+                for (owner, weight) in weights.iter().enumerate() {
+                    cents[category][owner] += &value * exact::ratio(*weight, denominator)?;
+                }
             }
         }
         let mut owners = [[0; 2]; 3];
-        for category in 0..3 {
-            // The kernel accepts every i64 cent operand; only its source sum
-            // needs to be representable before the pair's footing check.
-            cents[category][0].checked_add(cents[category][1])?;
-            owners[category] = crate::kernel::ratio::project_rounded_pair(
+        for (category, (cents, native_cents)) in cents.into_iter().zip(native_cents).enumerate() {
+            owners[category] = exact::project_rounded_pair(
                 source.joint_dollars[category],
-                cents[category],
+                &native_cents,
+                cents,
                 first,
             )?;
             if owners[category].iter().any(|v| *v < 0) {
@@ -298,6 +285,8 @@ impl Native461Sources {
 // The existing Form8959 computation already settled these three tax pools.
 // Payroll/RRTA operands are genuine Cents; ScheduleSE net is native Dollars.
 pub(crate) struct NativeAdditionalMedicare {
+    // Known part pools remain readable when another actual source is unavailable.
+    pub(crate) unavailable_parts: [bool; 3],
     pub(crate) tax_dollars: [i64; 3],
     pub(crate) payroll_categories: [(i64, [i64; 2]); 3],
     pub(crate) railroad: (i64, [i64; 2]),
@@ -306,6 +295,9 @@ pub(crate) struct NativeAdditionalMedicare {
 }
 impl NativeAdditionalMedicare {
     pub(crate) fn capacities(&self, joint: i64) -> Option<[i64; 2]> {
+        if self.unavailable_parts.iter().any(|value| *value) {
+            return None;
+        }
         let current = |(native, cents): (i64, [i64; 2])| {
             if native < 0
                 || cents.iter().any(|amount| *amount < 0)
@@ -396,6 +388,7 @@ impl NativeOtherPayrollTaxes {
 // ordinary raw source operands retain possible signed owner cancellation.
 // None at the enclosing field is unavailable, never an inferred zero credit.
 pub(crate) struct NativeMedicareWithholding {
+    pub(crate) railroad_unavailable: bool,
     pub(crate) rrta_dollars: i64,
     pub(crate) rrta_withheld_cents: [i64; 2],
     pub(crate) ordinary_dollars: i64,
@@ -481,6 +474,9 @@ pub(crate) struct NativeIncomeCategories {
     // captured owner Cents. The combined Schedule1 hobby/not-for-profit row
     // is not this Form8960 source. None preserves unavailable attribution.
     pub(crate) niit_hobby: Option<(i64, [Exact; 2])>,
+    // Same final passive C source items that the native SE owner excluded,
+    // except statutory wage receipts. Whole-dollar target and source cents.
+    pub(crate) niit_passive_business: Option<(i64, [i64; 2])>,
     pub(crate) personal_rent_dollars: i64,
     // Settled Form2441 owner amounts, already native annual Dollars.
     // Provenance classifies those amounts; it never changes financial owners.
@@ -534,7 +530,7 @@ impl NativeIncomeCategories {
             |mut owners, part| {
                 let entry = draft.income.iter().find(|entry| entry.id == part.id)?;
                 if matches!(entry.income, crate::FederalIncome::Wage { .. }) {
-                    if part.owner != usize::from(entry.owner == crate::Owner::Spouse) {
+                    if part.owner != usize::from(entry.owner == crate::DocumentOwner::Spouses) {
                         return None;
                     }
                     owners[part.owner] += part.source_cents.as_ref()?;
@@ -553,10 +549,16 @@ impl NativeIncomeCategories {
             (core::array::from_fn(|_| exact::whole(0)), core::array::from_fn(|_| exact::whole(0))),
             |(mut sources, mut removed), part| {
                 let entry = draft.income.iter().find(|entry| entry.id == part.id)?;
-                if part.owner != usize::from(entry.owner == crate::Owner::Spouse) {
+                if part.owner != usize::from(entry.owner == crate::DocumentOwner::Spouses) {
                     return None;
                 }
-                sources[part.owner] += part.source_cents.as_ref()?;
+                let (weights, denominator) = entry.accepted_assignment().owner_weights()?;
+                let source_cents = part.source_cents.as_ref()?;
+                for (owner, weight) in weights.iter().enumerate() {
+                    sources[owner] += source_cents * exact::ratio(*weight, denominator)?;
+                }
+                // Rest still carries the original source under its native
+                // carrier owner; remove that operand once before reattribution.
                 removed[part.owner] += part.rest_cents.as_ref()?;
                 Some((sources, removed))
             },

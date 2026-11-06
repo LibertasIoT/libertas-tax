@@ -1,7 +1,8 @@
 // Cash-farm prepaid supplies. Schedule F expense ownership stays in FederalBusiness.
-use crate::kernel::lines::line_cents;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line_cents;
 use crate::{BusinessActivity, FederalBusiness, FederalDraft, FederalIncome, FederalResult};
 use alloc::{collections::BTreeMap, format, vec::Vec};
 use libertas_macros::*;
@@ -34,7 +35,8 @@ pub struct FarmSupplies {
 pub struct FarmSupplyAdvance {
     /// Paid cost of the identified unused supplies
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Actual purchase terms, payment and any refund for this unused portion
     pub purchase: crate::FarmSupplyPurchase,
@@ -46,11 +48,13 @@ pub struct FarmSupplyCarry {
     /// Undeducted cost entering 2026
     /// From the retained supply record and earlier return, not the original cost if part was already deducted. The entire identified portion must have the same 2026 consumption status.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub balance: i64,
     /// Separate undeducted AMT cost entering 2026
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt_balance: i64,
     /// This entire portion was used or consumed in 2026
     /// No keeps the cost for a later year.
@@ -73,12 +77,14 @@ pub struct FarmPoultryResale {
     pub year: u32,
     /// Original paid cost attributable to this identified portion
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Cost already deducted through 2025
     /// Use retained tax records, including any deduction in the purchase year. Current-year purchases must have zero here. Never deduct a previously recovered cost again.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub deducted: i64,
     /// This entire identified portion was sold or otherwise disposed of in 2026
@@ -106,12 +112,14 @@ pub struct FarmProductionPoultryCarry {
     pub label: alloc::string::String,
     /// Cost paid in 2025 for this identified lot
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Cost deducted on the 2025 return
     /// Include all deductions already allowed for the same cost. The App computes the remaining cost; never repeat the original purchase as a new 2026 payment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub deducted: i64,
 }
 
@@ -136,12 +144,14 @@ pub struct FarmSupplyYear {
     pub year: u32,
     /// Prepaid farm supplies for that year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prepaid: i64,
     /// Other deductible farming expenses from that year's records
     /// Include depreciation and amortization; exclude prepaid supplies. Include all of the taxpayer's farms, not just this activity.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub other: i64,
 }
 
@@ -285,13 +295,15 @@ impl FarmSupplies {
         };
         costs.amounts(allowed)
     }
-    pub(crate) fn report(
+
+    pub(crate) fn report_with_claims(
         &self,
         d: &FederalDraft,
         b: &FederalBusiness,
         id: i64,
         r: &mut FederalResult,
         home: Option<&crate::home_office::HomeContext>,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
     ) {
         // Each current purchase keeps its own source facts and retained balance.
         crate::require_localized!(
@@ -306,17 +318,18 @@ impl FarmSupplies {
         // The local expense stage cannot yet coordinate cross-farm allocations or
         // mutually income-limited deductions. Never publish its provisional sum there.
         let farms = d.income.iter().filter(|e| matches!(&e.income, FederalIncome::Business { data } if matches!(data.activity, BusinessActivity::Farming { .. }))).count();
-        let shared = selected_amounts_with_home(d, false, home)
+        let shared = selected_amounts_with_home_with_claims(d, false, home, source_claims)
             .ok()
             .and_then(|values| values.get(&id).copied());
         let distinct_amt = crate::depreciation::business_amt_adjustment(b, mq) != 0
-            || crate::farm_conservation::business_amt_adjustment(d, id) != 0
+            || crate::farm_conservation::business_amt_adjustment_with_claims(d, id, source_claims)
+                != 0
             || crate::farm_production::business_amt_adjustment(d, id) != 0
             || self.retained.iter().any(|cost| cost.balance != cost.amt_balance);
         crate::require_localized!(
             r,
             !distinct_amt
-                || selected_amounts_with_home(d, true, home)
+                || selected_amounts_with_home_with_claims(d, true, home, source_claims)
                     .ok()
                     .and_then(|values| values.get(&id).copied())
                     .is_some(),
@@ -327,7 +340,7 @@ impl FarmSupplies {
         );
         let coupled = (farms != 1 && shared.is_none())
             || d.income.iter().any(|e| matches!(&e.income, FederalIncome::Business { data } if data.assets.iter().any(|a| a.available179() > 0)))
-            || selected_amounts_with_home(d, true, home).ok().and_then(|values| values.get(&id).copied()).is_none();
+            || selected_amounts_with_home_with_claims(d, true, home, source_claims).ok().and_then(|values| values.get(&id).copied()).is_none();
         crate::require_localized!(
             r,
             matches!(&b.activity, BusinessActivity::Farming { data } if matches!(data.accounting, crate::FarmAccounting::Cash { .. })),
@@ -363,12 +376,16 @@ impl FarmSupplies {
         );
         let amounts = shared.unwrap_or_else(|| {
             let other = b.operating_cost_before_supplies(mq)
-                + crate::farm_conservation::expense_adjustment(d, id, b)
-                + crate::section179::calculate(d).businesses.get(&id).copied().unwrap_or(0);
+                + crate::farm_conservation::expense_adjustment_with_claims(d, id, b, source_claims)
+                + crate::section179::calculate_with_claims(d, source_claims)
+                    .businesses
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0);
             self.amounts(other, b)
         });
         let poultry = self.poultry_amounts();
-        if let Some(amt) = selected_amounts_with_home(d, true, home)
+        if let Some(amt) = selected_amounts_with_home_with_claims(d, true, home, source_claims)
             .ok()
             .and_then(|values| values.get(&id).copied())
             && amt != amounts
@@ -496,22 +513,44 @@ fn limited_prepaid_checked<E>(
 // Accepted IDs fix exact-cent remainders; unimplemented dependent deductions
 // remain explicit rather than changing the denominator.
 // This stage reads base costs only; never call section179::expenses here.
+#[cfg(test)]
 pub(crate) fn shared_amounts(d: &FederalDraft, id: i64) -> Option<[i64; 4]> {
-    shared_amounts_for(d, id, false)
+    let source_claims = crate::related_forms::effective_claimants(d);
+    shared_amounts_with_claims(d, id, &source_claims)
+}
+
+pub(crate) fn shared_amounts_with_claims(
+    d: &FederalDraft,
+    id: i64,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Option<[i64; 4]> {
+    shared_amounts_for_with_claims(d, id, false, source_claims)
 }
 type SupplyAmounts = BTreeMap<i64, [i64; 4]>;
 type SupplyIssue = (i64, &'static str);
 
+#[cfg(test)]
 pub(crate) fn shared_amounts_for(d: &FederalDraft, id: i64, amt: bool) -> Option<[i64; 4]> {
-    shared_source_scope(d, amt, None).0?.get(&id).copied()
+    let source_claims = crate::related_forms::effective_claimants(d);
+    shared_amounts_for_with_claims(d, id, amt, &source_claims)
 }
 
-pub(crate) fn selected_amounts_with_home(
+pub(crate) fn shared_amounts_for_with_claims(
+    d: &FederalDraft,
+    id: i64,
+    amt: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Option<[i64; 4]> {
+    shared_source_scope_with_claims(d, amt, None, source_claims).0?.get(&id).copied()
+}
+
+pub(crate) fn selected_amounts_with_home_with_claims(
     d: &FederalDraft,
     amt: bool,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<SupplyAmounts, SupplyIssue> {
-    let (amounts, issue) = shared_source_scope(d, amt, home);
+    let (amounts, issue) = shared_source_scope_with_claims(d, amt, home, source_claims);
     match (amounts, issue) {
         (_, Some(issue)) => Err(issue),
         (Some(amounts), None) => Ok(amounts),
@@ -535,10 +574,12 @@ impl FarmSupplies {
 
 // One native pool retains its old amounts separately from source availability.
 // Legacy callers keep their old None/local-fallback behavior unchanged.
-fn shared_source_scope(
+
+fn shared_source_scope_with_claims(
     d: &FederalDraft,
     amt: bool,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> (Option<SupplyAmounts>, Option<SupplyIssue>) {
     let mut farms: Vec<_> = d
         .income
@@ -572,7 +613,11 @@ fn shared_source_scope(
     let invalid = farms.iter().find_map(|(e, b, f)| {
         let key = if amt
             && (crate::depreciation::business_amt_adjustment(b, mq) != 0
-                || crate::farm_conservation::business_amt_adjustment(d, e.id) != 0
+                || crate::farm_conservation::business_amt_adjustment_with_claims(
+                    d,
+                    e.id,
+                    source_claims,
+                ) != 0
                 || crate::farm_production::business_amt_adjustment(d, e.id) != 0
                 || f.supplies
                     .as_ref()
@@ -615,10 +660,19 @@ fn shared_source_scope(
         .zip(&costs)
         .map(|((e, b, _), c)| {
             b.operating_cost_before_supplies(mq)
-                + crate::farm_conservation::expense_adjustment(d, e.id, b)
+                + crate::farm_conservation::expense_adjustment_with_claims(
+                    d,
+                    e.id,
+                    b,
+                    source_claims,
+                )
                 - if amt {
                     crate::depreciation::business_amt_adjustment(b, mq)
-                        + crate::farm_conservation::business_amt_adjustment(d, e.id)
+                        + crate::farm_conservation::business_amt_adjustment_with_claims(
+                            d,
+                            e.id,
+                            source_claims,
+                        )
                         + crate::farm_production::business_amt_adjustment(d, e.id)
                 } else {
                     0
@@ -648,14 +702,20 @@ fn shared_source_scope(
                     return None;
                 };
                 Some(
-                    crate::home_office::HomeIncome::from_source(
+                    crate::home_office::HomeIncome::from_source_with_claims(
                         d,
                         entry.id,
                         data,
                         data.operating_cost_with_adjustment(
                             mq,
-                            crate::farm_conservation::expense_adjustment(d, entry.id, data),
+                            crate::farm_conservation::expense_adjustment_with_claims(
+                                d,
+                                entry.id,
+                                data,
+                                source_claims,
+                            ),
                         ),
+                        source_claims,
                     )
                     .map(|income| (entry.id, income))
                     .map_err(|_| (entry.id, "HOME_OUTPUT_UNAVAILABLE")),
@@ -665,11 +725,12 @@ fn shared_source_scope(
         for (((entry, business, _), &base), share) in farms.iter().zip(&base).zip(&allocated) {
             inputs.insert(
                 entry.id,
-                crate::home_office::HomeIncome::from_source(
+                crate::home_office::HomeIncome::from_source_with_claims(
                     d,
                     entry.id,
                     business,
                     base.checked_add(*share).ok_or((entry.id, "HOME_OUTPUT_UNAVAILABLE"))?,
+                    source_claims,
                 )
                 .map_err(|_| (entry.id, "HOME_OUTPUT_UNAVAILABLE"))?,
             );
@@ -678,8 +739,13 @@ fn shared_source_scope(
         for ((entry, _, _), &base) in farms.iter().zip(&base) {
             let office = if crate::home_office::uses_activity(d, entry.id) {
                 let context = home.ok_or((entry.id, "HOME_CONTEXT_REQUIRED"))?;
-                crate::home_office::deduction_with_context(d, entry.id, &inputs, context)
-                    .map_err(|_| (entry.id, "HOME_FARM_PREPAID_SOURCE_UNAVAILABLE"))?
+                crate::home_office::deduction_with_context_with_claims(
+                    context.source_context(d, source_claims),
+                    entry.id,
+                    &inputs,
+                    context,
+                )
+                .map_err(|_| (entry.id, "HOME_FARM_PREPAID_SOURCE_UNAVAILABLE"))?
             } else {
                 0
             };
@@ -728,8 +794,16 @@ impl FarmSupplyAdvance {
 
 // The ordinary business collector has deducted the regular supply allowance.
 // Feed only its separate AMT difference into the existing AMT business owner.
-pub(crate) fn business_amt_adjustment(d: &FederalDraft, id: i64) -> i64 {
-    match (shared_amounts_for(d, id, false), shared_amounts_for(d, id, true)) {
+
+pub(crate) fn business_amt_adjustment_with_claims(
+    d: &FederalDraft,
+    id: i64,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> i64 {
+    match (
+        shared_amounts_for_with_claims(d, id, false, source_claims),
+        shared_amounts_for_with_claims(d, id, true, source_claims),
+    ) {
         (Some(regular), Some(amt)) => regular[2] - amt[2],
         _ => 0,
     }

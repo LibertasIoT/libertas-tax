@@ -1,0 +1,132 @@
+                                                                                                                                                                                              651123
+                                                                                                                             Final K-1                  Amended K-1                        OMB No. 1545-0123
+Schedule K-1
+(Form 1065)                                                                       2025                           Part III Partner’s Share of Current Year Income,
+                                                                                                                          Deductions, Credits, and Other Items
+Department of the Treasury                                                                                      1            Ordinary business income (loss)          14   Self-employment earnings (loss)
+Internal Revenue Service                                            For calendar year 2025, or tax year
+                                                                                                                                                            3000
+              beginning       10 / 01 / 2025                        ending       09 / 30 / 2026                 2            Net rental real estate income (loss)
+
+Partner’s Share of Income, Deductions,                                                                                                                  (500)
+                                                                                                                3            Other net rental income (loss)           15   Credits
+Credits, etc.                   See separate instructions.
+                                                                                                                                                                  0
+      Part I        Information About the Partnership                                                        4a              Guaranteed payments for services
+ A      Partnership’s employer identification number
+                                                 00-0000302                                                 4b               Guaranteed payments for capital          16   Schedule K-3 is attached if
+                                                                                                                                                                           checked . . . . .
+ B      Partnership’s name, address, city, state, and ZIP code
+ Example Creek Partners LLC                                                                                  4c              Total guaranteed payments                17   Alternative minimum tax (AMT) items
+ 610 Example Partnership Lane
+ Example Grove VA 00000                                                                                         5            Interest income
+ C      IRS center where partnership filed return:                                                                                                             90
+ D            Check if this is a publicly traded partnership (PTP)                                           6a              Ordinary dividends
+      Part II       Information About the Partner                                                                                                              60
+ E      Partner’s SSN or TIN (Do not use TIN of a disregarded entity. See instructions.)                    6b               Qualified dividends                      18   Tax-exempt income and
+                                                                                                                                                                           nondeductible expenses
+                                             987-65-4320                                                                                                       40
+ F      Name, address, city, state, and ZIP code for partner entered in E. See instructions.                 6c              Dividend equivalents                     A                                  20
+ John Smith
+ 100 Example Orchard Lane, Example Grove, VA 00000                                                              7            Royalties                                C                                  30
+
+ G            General partner or LLC                                Limited partner or other LLC                8            Net short-term capital gain (loss)
+              member-manager                                        member                                                                                            19   Distributions
+H1            Domestic partner                                      Foreign partner                          9a              Net long-term capital gain (loss)        A                              1000
+H2            If the partner is a disregarded entity (DE), enter the partner’s:
+        TIN                                  Name                                                           9b               Collectibles (28%) gain (loss)
+ I1     What type of entity is this partner?               Individual                                                                                                 20   Other information
+ I2     If this partner is a retirement plan (IRA/SEP/Keogh/etc.), check here                  .             9c              Unrecaptured section 1250 gain
+                                                                                                                                                                      Z                             STMT
+ J      Partner’s share of profit, loss, and capital (see instructions):
+                         Beginning                                 Ending                                    10              Net section 1231 gain (loss)
+        Profit                                         10 %                                    10 %
+        Loss                                           10 %                                    10 %          11              Other income (loss)
+        Capital                                        10 %                                    10 %
+        Check if decrease is due to:
+              Sale or         Exchange of partnership interest. See instructions.
+K1      Partner’s share of liabilities:                                                                      12              Section 179 deduction                    21   Foreign taxes paid or accrued
+                                                      Beginning                       Ending                                                                  100
+        Nonrecourse       .    .         $                                   $                               13              Other deductions
+
+        Qualified nonrecourse
+                                                                                                             A                                                 50
+        financing . . .                  $                                   $
+        Recourse      .   .    .         $                                   $
+K2      Check this box if item K1 includes liability amounts from lower-tier partnerships
+K3      Check if any of the above liability is subject to guarantees or other
+        payment obligations by the partner. See instructions . . . . .                                      22                   More than one activity for at-risk purposes*
+ L                                 Partner’s Capital Account Analysis                                       23                   More than one activity for passive activity purposes*
+        Beginning capital account                 .    .    .   $                                            *See attached statement for additional information.
+        Capital contributed during the year .               .   $
+        Current year net income (loss) .               .    .   $
+
+
+
+
+                                                                                                          For IRS Use Only
+        Other increase (decrease) (attach explanation) $
+        Withdrawals and distributions .                .    .   $(                                    )
+        Ending capital account               .    .    .    .   $
+ M      Did the partner contribute property with a built-in gain (loss)?
+              Yes             No         If “Yes,” attach statement. See instructions.
+ N            Partner’s Share of Net Unrecognized Section 704(c) Gain or (Loss)
+        Beginning     .   .    .     .       .    .    .    .   $
+        Ending .      .   .    .     .       .    .    .    .   $
+For Paperwork Reduction Act Notice, see the Instructions for Form 1065. www.irs.gov/Form1065 Cat. No. 11394R Schedule K-1 (Form 1065) 2025 Created 2/26/25
+
+                                                                             SYNTHETIC TEST DATA — NOT A TAX DOCUMENT
+Example Orchard Accounting Service
+600 Example Ledger Way, Example Grove VA 00000
+EIN 00-0000399
+
+
+Current entity source statement
+Recipient: John Smith
+Reporting period: January 1 – December 31, 2026
+
+Allocated current source amounts (U.S. dollars)
+ Entity name: Example Creek Partners LLC
+ EIN: 00-0000302
+ Reporting period begins: 2025-10-01
+ Reporting period ends: 2026-09-30
+ Box 1 ordinary income: 3000
+ Box 2 rental real estate loss: -500
+ Box 3 other rental: 0
+ Current section 179 deduction: 100
+ Cash charity code A: 50
+ Tax-exempt interest: 20
+ Nondeductible expenses: 30
+ Fully taxable section 179 property sales: None
+
+
+
+
+                                       SYNTHETIC TEST DATA — NOT A TAX DOCUMENT
+Example Orchard Accounting Service
+600 Example Ledger Way, Example Grove VA 00000
+EIN 00-0000399
+
+
+Section 199A statement — box 20 code Z
+Recipient: John Smith
+Reporting period: January 1 – December 31, 2026
+
+Allocated current source amounts (U.S. dollars)
+ Business source: Example Creek Partners LLC operations
+ Qualified business income: 3000
+ W-2 wages: 1000
+ UBIA qualified property: 10000
+ Specified service business: No
+ Qualified REIT dividends: 0
+ Qualified PTP items: 0
+ Box 2 rental is a trade or business: Yes
+ Box 2 qualified rental income: -500
+ Box 2 W-2 wages: 0
+ Box 2 UBIA: 20000
+
+
+
+
+                                        SYNTHETIC TEST DATA — NOT A TAX DOCUMENT
+

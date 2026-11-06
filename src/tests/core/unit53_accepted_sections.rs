@@ -8,6 +8,7 @@ use libertas::data::{KeyCodec, KeyDecode};
 fn accepted_sections_preserve_absent_empty_and_native_facts_through_sdk_codecs() {
     let absent = FederalDraft::empty("absent".into());
     let mut empty = complete(FederalStatus::Joint);
+    empty.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     empty.injured_spouse = Some(allocation());
     let mut rich = hsa_prior_basis_funding(123, 456, 789, 987, 12);
     rich.tax_year = 2041;
@@ -33,12 +34,23 @@ fn accepted_sections_preserve_absent_empty_and_native_facts_through_sdk_codecs()
     ];
     injured.claimants =
         vec![InjuredClaimantFacts { person: i64::MAX - 2, claimant: Owner::Spouse }];
-    rich.situations =
-        vec![RareSituation::Straddles, RareSituation::RemicResidual, RareSituation::Straddles];
-    rich.adjustment_refusals =
-        vec![MoreAdjustment::OtherAdjustments, MoreAdjustment::OtherAdjustments];
+    rich.often_missed = OftenMissed {
+        income: MissedIncome::JURY.0 | MissedIncome::MARKETPLACE.0,
+        unprepared: vec![
+            RareSituation::Straddles.into(),
+            RareSituation::RemicResidual.into(),
+            Unprepared::OtherAdjustments,
+            Unprepared::Section965,
+            Unprepared::HousingCreditRecapture,
+        ],
+        benefits: MissedBenefits::EDUCATOR.0,
+    };
     rich.credit_refusals = vec![MoreCreditRefusal::OtherCredit];
-    rich.tax_refusals = vec![OtherTaxRefusal::Section965, OtherTaxRefusal::HousingCreditRecapture];
+    rich.without_form = Some(IncomeWithoutFormAnswers {
+        self_work: true,
+        tips: true,
+        other: Some(WithoutFormOther { amount: 10_003, description: "Other income".into() }),
+    });
     rich.coverdell_excess = vec![CoverdellExcess {
         beneficiary: Owner::Spouse,
         contributors: vec![],
@@ -50,22 +62,26 @@ fn accepted_sections_preserve_absent_empty_and_native_facts_through_sdk_codecs()
         special_needs: true,
     }];
     let payments = rich.payments.as_mut().unwrap();
-    payments.estimated = Some(30_008);
+
     payments.extension = 8_009;
-    payments.estimated_payments = vec![
-        DatedPayment {
-            date: 20260915,
-            amount: 20_005,
-            payer: PaymentPayer::Spouse,
-            refund_property: None,
-        },
-        DatedPayment {
-            date: 20260415,
-            amount: 10_003,
-            payer: PaymentPayer::Taxpayer,
-            refund_property: Some(RefundSourcePropertyFacts::Separate { owner: Owner::Taxpayer }),
-        },
-    ];
+    payments.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: vec![
+            DatedPayment {
+                date: 20260915,
+                amount: 20_005,
+                payer: PaymentPayer::Spouse,
+                refund_property: None,
+            },
+            DatedPayment {
+                date: 20260415,
+                amount: 10_003,
+                payer: PaymentPayer::Taxpayer,
+                refund_property: Some(RefundSourcePropertyFacts::Separate {
+                    owner: Owner::Taxpayer,
+                }),
+            },
+        ],
+    };
     payments.waiver = Some(PenaltyWaiver::Partial {
         reason: PenaltyWaiverReason::CasualtyOrDisasterOrUnusual,
         explanation: " raw explanation \0 ".into(),
@@ -105,10 +121,9 @@ fn accepted_sections_preserve_absent_empty_and_native_facts_through_sdk_codecs()
             destination.credits = None;
             destination.screening = None;
             destination.injured_spouse = None;
-            destination.situations.clear();
-            destination.adjustment_refusals.clear();
+            destination.often_missed = OftenMissed::default();
             destination.credit_refusals.clear();
-            destination.tax_refusals.clear();
+            destination.without_form = None;
             destination.coverdell_excess.clear();
             destination.payments = None;
             destination.assemble_accepted_sections(user, copy, &records).unwrap();
@@ -118,8 +133,9 @@ fn accepted_sections_preserve_absent_empty_and_native_facts_through_sdk_codecs()
 }
 
 #[test]
-fn assembly_changes_only_the_eleven_owned_fields() {
+fn assembly_changes_only_the_owned_fields() {
     let mut source = complete(FederalStatus::Joint);
+    source.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     source.injured_spouse = Some(allocation());
     let records = source.disassemble_accepted_sections(7, 0).unwrap();
     let mut destination = FederalDraft::empty("different destination".into());
@@ -132,10 +148,9 @@ fn assembly_changes_only_the_eleven_owned_fields() {
     expected.credits = source.credits;
     expected.screening = source.screening;
     expected.injured_spouse = source.injured_spouse;
-    expected.situations = source.situations;
-    expected.adjustment_refusals = source.adjustment_refusals;
+    expected.often_missed = source.often_missed;
     expected.credit_refusals = source.credit_refusals;
-    expected.tax_refusals = source.tax_refusals;
+    expected.without_form = source.without_form;
     expected.coverdell_excess = source.coverdell_excess;
     expected.payments = source.payments;
     destination.assemble_accepted_sections(7, 0, &records).unwrap();
@@ -164,7 +179,7 @@ fn malformed_record_sets_and_namespaces_never_partially_change_a_draft() {
         wrong_payload[index].1 = TaxAppData::StorageFormat { format: STORAGE_FORMAT };
         cases.push(wrong_payload);
         for key in [
-            TaxDataKey::Draft { user: 7 },
+            TaxDataKey::StorageFormat { user: 7 },
             TaxDataKey::ReturnRecord {
                 user: 9,
                 tax_year: source.tax_year,
@@ -228,42 +243,68 @@ fn malformed_record_sets_and_namespaces_never_partially_change_a_draft() {
 #[test]
 fn payment_record_measures_actual_root_overhead_and_platform_value_boundary() {
     use libertas::data::{EncodedKey, wire};
+    // Measure the wrapper with the same Avro string-length prefix as the
+    // boundary, without keeping a multi-megabyte source and its copies alive.
     let mut draft = complete(FederalStatus::Single);
     draft.payments.as_mut().unwrap().waiver = Some(PenaltyWaiver::Full {
         reason: PenaltyWaiverReason::CasualtyOrDisasterOrUnusual,
-        explanation: "x".repeat(wire::MAX_VALUE_BYTES + 1),
+        explanation: "x".repeat(1 << 20),
     });
-    // This pure native fact is encodable; it does not establish durable Data
-    // admission. The ordinary platform byte limit still rejects oversized values.
+    let native_bytes = draft.payments.as_ref().unwrap().to_avro().len();
     let records = draft.disassemble_accepted_sections(7, 0).unwrap();
     let (key, value) = &records[7];
+    let key = EncodedKey::new(key).unwrap().as_bytes().to_vec();
     let wrapper_bytes = value.to_avro().len();
-    let native_bytes = draft.payments.as_ref().unwrap().to_avro().len();
     assert!(wrapper_bytes > native_bytes);
-    assert!(native_bytes > wire::MAX_VALUE_BYTES);
-    let overhead = wrapper_bytes - (wire::MAX_VALUE_BYTES + 1);
+    let overhead = wrapper_bytes - (1 << 20);
+    let mut payments = draft.payments.take().unwrap();
+    drop(records);
+    drop(draft);
+    let Some(PenaltyWaiver::Full { explanation, .. }) = &mut payments.waiver else {
+        unreachable!()
+    };
+    *explanation = "x".repeat(wire::MAX_VALUE_BYTES + 1);
+    assert!(payments.to_avro().len() > wire::MAX_VALUE_BYTES);
+    let Some(PenaltyWaiver::Full { explanation, .. }) = &mut payments.waiver else {
+        unreachable!()
+    };
+    explanation.clear();
+    explanation.shrink_to_fit();
     for extra in [0, 1] {
         let target = wire::MAX_VALUE_BYTES + extra;
-        let mut payments = draft.payments.clone().unwrap();
         let Some(PenaltyWaiver::Full { explanation, .. }) = &mut payments.waiver else {
             unreachable!()
         };
         *explanation = "x".repeat(target - overhead);
-        let value = TaxAppData::PaymentsSection { payments: Some(payments) }.to_avro();
+        let section = TaxAppData::PaymentsSection { payments: Some(payments) };
+        let mut value = section.to_avro();
+        value.shrink_to_fit();
+        let TaxAppData::PaymentsSection { payments: Some(mut recovered) } = section else {
+            unreachable!()
+        };
+        let Some(PenaltyWaiver::Full { explanation, .. }) = &mut recovered.waiver else {
+            unreachable!()
+        };
+        explanation.clear();
+        explanation.shrink_to_fit();
+        payments = recovered;
         assert_eq!(value.len(), target);
+        if extra == 1 {
+            // The root wrapper is part of the platform value boundary.
+            assert!(value.len() > wire::MAX_VALUE_BYTES);
+        }
         let request = wire::Request {
             version: wire::VERSION,
             id: 1,
             checked: true,
             command: wire::Command::ExecuteInTransaction {
                 transaction: 1,
-                operation: wire::Operation::Put {
-                    key: EncodedKey::new(key).unwrap().as_bytes().to_vec(),
-                    value,
-                },
+                operation: wire::Operation::Put { key: key.clone(), value },
             },
         };
-        let decoded = wire::decode_request(&wire::encode(&request));
+        let encoded = wire::encode(&request);
+        drop(request);
+        let decoded = wire::decode_request(&encoded);
         if extra == 0 {
             assert!(decoded.is_ok());
         } else {
@@ -272,7 +313,7 @@ fn payment_record_measures_actual_root_overhead_and_platform_value_boundary() {
     }
     std::println!(
         "Unit53 actual payments root: text={} native={native_bytes} wrapper={wrapper_bytes} root_option_overhead={}",
-        wire::MAX_VALUE_BYTES + 1,
+        1 << 20,
         wrapper_bytes - native_bytes
     );
 }

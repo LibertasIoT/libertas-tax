@@ -1,81 +1,11 @@
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
+pub use crate::optional_se_source::{NonfarmSeHistory, SeElection};
 use crate::{BusinessActivity, FederalDraft, FederalIncome, FederalResult, Owner};
 use alloc::vec::Vec;
-use libertas_macros::*;
 
-/// Optional self-employment method election
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct SeElection {
-    /// Person making the election
-    pub owner: Owner,
-    /// Farm optional method, elected on the Farming page
-    pub farm: bool,
-    /// Nonfarm optional method and retained earnings history, elected on Self-employment
-    /// [NullText]
-    /// Do not elect the nonfarm optional method
-    /// [SetText]
-    /// The nonfarm optional method uses this retained earnings history
-    #[libertas_default($null)]
-    pub nonfarm: Option<NonfarmSeHistory>,
-}
-/// Nonfarm optional-method history
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct NonfarmSeHistory {
-    /// Actual 2023 net earnings from self-employment
-    /// Copy retained Schedule SE actual earnings, not optional earnings or gross receipts. Include both farming and nonfarming actual earnings.
-    #[libertas_money("USD", 2)]
-    pub earnings_third_prior_year: i64,
-    /// Actual 2024 net earnings from self-employment
-    #[libertas_money("USD", 2)]
-    pub earnings_second_prior_year: i64,
-    /// Actual 2025 net earnings from self-employment
-    #[libertas_money("USD", 2)]
-    pub earnings_prior_year: i64,
-    /// Earlier years using the nonfarm optional method
-    /// List every prior use, including nonconsecutive years. Farm-only elections do not count toward the five-year lifetime limit.
-    // Tax structure: the nonfarm optional method has a five-year lifetime limit; a current election allows at most four prior uses.
-    #[libertas_size(max = 4)]
-    pub prior_years: Vec<u32>,
-}
-impl NonfarmSeHistory {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        use crate::validation::ValidationIssue;
-        for (field, value) in [
-            ("earnings_third_prior_year", self.earnings_third_prior_year),
-            ("earnings_second_prior_year", self.earnings_second_prior_year),
-            ("earnings_prior_year", self.earnings_prior_year),
-        ] {
-            if !(-100000000000..=100000000000).contains(&value) {
-                return Some(
-                    ValidationIssue::new("NONFARM_OPTIONAL_HISTORY_INVALID").at_field(field),
-                );
-            }
-        }
-        if self.prior_years.len() >= 5 {
-            return Some(
-                ValidationIssue::new("NONFARM_OPTIONAL_HISTORY_INVALID").at_field("prior_years"),
-            );
-        }
-        if let Some((i, _)) = self
-            .prior_years
-            .iter()
-            .enumerate()
-            .find(|(i, y)| !(1951..=2025).contains(*y) || self.prior_years[..*i].contains(y))
-        {
-            return Some(
-                ValidationIssue::new("NONFARM_OPTIONAL_HISTORY_INVALID")
-                    .at_list_item("prior_years", i),
-            );
-        }
-        None
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.issue().is_none()
-    }
-}
 #[derive(Default)]
 pub(crate) struct OptionalSe {
     pub net: i64,
@@ -106,7 +36,18 @@ pub(crate) fn calculate(
     owner: Owner,
     r: &mut FederalResult,
 ) -> Option<OptionalSe> {
-    calculate_with_partners(d, owner, None, r)
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_claims(d, owner, r, &source_claims)
+}
+
+#[cfg(test)]
+pub(crate) fn calculate_with_claims(
+    d: &FederalDraft,
+    owner: Owner,
+    r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Option<OptionalSe> {
+    calculate_with_partners_with_claims(d, owner, None, r, source_claims)
 }
 
 #[cfg(test)]
@@ -116,31 +57,69 @@ pub(crate) fn calculate_with_partners(
     partners: Option<&[(i64, crate::partnership::PartnerSeResult)]>,
     r: &mut FederalResult,
 ) -> Option<OptionalSe> {
-    match calculate_with_partners_with_section179(d, owner, partners, None, r, None) {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_partners_with_claims(d, owner, partners, r, &source_claims)
+}
+
+#[cfg(test)]
+pub(crate) fn calculate_with_partners_with_claims(
+    d: &FederalDraft,
+    owner: Owner,
+    partners: Option<&[(i64, crate::partnership::PartnerSeResult)]>,
+    r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Option<OptionalSe> {
+    match calculate_with_partners_with_section179_with_claims(
+        d,
+        owner,
+        partners,
+        None,
+        r,
+        None,
+        source_claims,
+    ) {
         Ok(value) => value,
         Err(_) => unreachable!("legacy optional-SE calculation has no selected allocation"),
     }
 }
 
-pub(crate) fn calculate_with_section179(
+pub(crate) fn calculate_with_section179_with_claims(
     d: &FederalDraft,
     owner: Owner,
     selected: Option<&crate::Section179PreparedAllocation>,
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<Option<OptionalSe>, crate::Section179PreparedIssue> {
-    calculate_with_partners_with_section179(d, owner, None, selected, r, home)
+    calculate_with_partners_with_section179_with_claims(
+        d,
+        owner,
+        None,
+        selected,
+        r,
+        home,
+        source_claims,
+    )
 }
 
-pub(crate) fn calculate_with_partners_with_section179(
+pub(crate) fn calculate_with_partners_with_section179_with_claims(
     d: &FederalDraft,
     owner: Owner,
     partners: Option<&[(i64, crate::partnership::PartnerSeResult)]>,
     selected: Option<&crate::Section179PreparedAllocation>,
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<Option<OptionalSe>, crate::Section179PreparedIssue> {
-    if crate::clergy::calculate_with_section179(d, owner, selected, home)?.sect {
+    if crate::clergy::calculate_with_section179_with_claims(
+        d,
+        owner,
+        selected,
+        home,
+        source_claims,
+    )?
+    .sect
+    {
         return Ok(None);
     }
     if owner == Owner::Spouse {
@@ -173,22 +152,29 @@ pub(crate) fn calculate_with_partners_with_section179(
     // One source list drives both election totals and deduction attribution.
     // Values remain cents until the existing per-category rounding boundary.
     let mut sources = Vec::new();
-    for e in d.income.iter().filter(|e| e.owner == owner) {
+    for e in d.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(owner)) {
         let source = match &e.income {
             FederalIncome::Business { data }
                 if !(crate::statutory_wages::business(d, e.id)
-                    || crate::clergy::calculate_with_section179(d, owner, selected, home)?
-                        .exempt
+                    || crate::clergy::calculate_with_section179_with_claims(
+                        d,
+                        owner,
+                        selected,
+                        home,
+                        source_claims,
+                    )?
+                    .exempt
                         && crate::clergy::business(data)) =>
             {
                 let category =
                     usize::from(!matches!(data.activity, BusinessActivity::Farming { .. }));
                 // A farm's gross income (Schedule F line 9) and profit include the Form
                 // 1099-G box 7 and 1099-PATR income routed to it.
-                let routed = crate::federal_rules::farm_routed_income(
+                let routed = crate::federal_rules::farm_routed_income_with_claims(
                     d,
                     usize::from(owner == Owner::Spouse),
                     e.id,
+                    source_claims,
                 )?;
                 // Neither totalization-exempt income nor notary services
                 // supplies optional-method Social Security coverage.
@@ -208,16 +194,27 @@ pub(crate) fn calculate_with_partners_with_section179(
                         - data.notary_gross.unwrap_or(0)
                         - if category == 1 { data.inventory.cost() } else { 0 },
                     data.earned_receipts() + routed
-                        - crate::section179_return::expenses(d, e.id, data, selected, home).map(
-                            |expense| {
-                                expense
-                                    - selected.map_or(0, |allocation| {
-                                        allocation.ordinary_risk_adjustment(e.id)
-                                    })
-                            },
-                        )?
-                        - crate::clergy::business_se_exclusion_with_section179(
-                            d, e.id, data, selected, home,
+                        - crate::section179_return::expenses_with_claims(
+                            d,
+                            e.id,
+                            data,
+                            selected,
+                            home,
+                            source_claims,
+                        )
+                        .map(|expense| {
+                            expense
+                                - selected.map_or(0, |allocation| {
+                                    allocation.ordinary_limit_adjustment(e.id)
+                                })
+                        })?
+                        - crate::clergy::business_se_exclusion_with_section179_with_claims(
+                            d,
+                            e.id,
+                            data,
+                            selected,
+                            home,
+                            source_claims,
                         )?,
                 ))
             }
@@ -230,7 +227,7 @@ pub(crate) fn calculate_with_partners_with_section179(
                 let input = data.se_gross.as_ref().map(|v| v.source());
                 if let (Some(earnings), Some((category, gross))) = (resolved, input)
                     && (data.guaranteed_se()..=100000000000).contains(&gross)
-                    && (!data.limited_for_se || gross == data.guaranteed_services)
+                    && (data.limited_for_se == Some(false) || gross == data.guaranteed_services)
                 {
                     Some((category, gross, earnings.earnings * 100))
                 } else {
@@ -245,6 +242,30 @@ pub(crate) fn calculate_with_partners_with_section179(
                     return Ok(None);
                 }
             }
+            FederalIncome::PartnershipActivities { data } => {
+                let resolved = partners.and_then(|items| {
+                    let mut matching = items.iter().filter(|(id, _)| *id == e.id);
+                    let first = matching.next()?;
+                    matching.next().is_none().then_some(&first.1)
+                });
+                match data.ordinary_self_employment() {
+                    Ok(None) => None,
+                    Ok(Some(source)) if resolved == Some(&source.net) => {
+                        Some((source.category, source.gross, source.net.earnings_cents))
+                    }
+                    _ => {
+                        crate::require_localized!(
+                            r,
+                            false,
+                            &crate::interview::income_issue_context(e),
+                            "Partnership optional SE",
+                            "ISSUE_RESOLVE_THIS_PARTNERSHIP_S_REGULAR_SE_EARNINGS_AND_K_1_BOX_14_B_C_G_E76F6153",
+                            "Resolve this partnership's regular SE earnings and K-1 box 14 B/C gross-income category. Ordinary limited-partner income is not optional-method gross income; include entered guaranteed service payments in gross income.",
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
             _ => None,
         };
         if let Some((category, source_gross, source_profit)) = source {
@@ -257,7 +278,13 @@ pub(crate) fn calculate_with_partners_with_section179(
     // Pub.517 nonfarm optional method uses all ministerial gross and net,
     // including church-employee ministerial wages and the full housing amount.
     // They have no business identity and never receive a business deduction.
-    let clergy = crate::clergy::calculate_with_section179(d, owner, selected, home)?;
+    let clergy = crate::clergy::calculate_with_section179_with_claims(
+        d,
+        owner,
+        selected,
+        home,
+        source_claims,
+    )?;
     let clergy_gross = clergy.nonbusiness_gross();
     let clergy_profit = clergy.extra_se();
     if clergy_gross != 0 || clergy_profit != 0 {

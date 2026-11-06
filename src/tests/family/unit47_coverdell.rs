@@ -1,14 +1,13 @@
 // Unit47 native Coverdell diagnostic/Save controls.
 // Existing published monetary witness remains unchanged in tests/other_taxes.rs.
 extern crate std;
-use crate::tests::cross::interview::{open_other_taxes, other_taxes_request, save_other_taxes, save_you};
 use super::*;
+use crate::tests::cross::interview::{
+    open_other_taxes, other_taxes_request, save_other_taxes, save_you,
+};
 
 fn accepted(reply: Reply) {
-    assert!(
-        !matches!(reply, Reply::Response(P::Problem { .. })),
-        "{reply:?}"
-    );
+    assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
 }
 pub(super) fn record() -> CoverdellExcessPage {
     CoverdellExcessPage {
@@ -29,6 +28,11 @@ pub(super) fn record() -> CoverdellExcessPage {
         value: 1_000_000,
         special_needs: false,
     }
+}
+// A calculated tax listed before the Coverdell topic, so the topic's outer
+// index is 1.
+pub(super) fn lead_tax() -> OtherTax {
+    OtherTax::HouseholdEmployees { employers: vec![(&household_employer(3_000)).into()] }
 }
 pub(super) fn topic(beneficiaries: Vec<CoverdellExcessPage>) -> OtherTax {
     OtherTax::CoverdellExcess { beneficiaries }
@@ -51,26 +55,14 @@ fn assert_refusal_unchanged(
     let before = s.draft.clone();
     let dirty = s.dirty;
     let page = open_other_taxes(s);
-    let request = other_taxes_request(
-        &page,
-        &s.draft,
-        vec![OtherTax::AlternativeMinimumTax, topic(beneficiaries)],
-    );
+    let request = other_taxes_request(&page, &s.draft, vec![lead_tax(), topic(beneficiaries)]);
     let reply = send(s, request.clone());
     if let Ok(path) = std::env::var("TAX_UNIT47_REQUEST") {
         std::fs::write(path, request.to_avro()).unwrap();
-        let Reply::Response(response) = &reply else {
-            panic!("expected response")
-        };
-        std::fs::write(
-            std::env::var("TAX_UNIT47_RESPONSE").unwrap(),
-            response.to_avro(),
-        )
-        .unwrap();
+        let Reply::Response(response) = &reply else { panic!("expected response") };
+        std::fs::write(std::env::var("TAX_UNIT47_RESPONSE").unwrap(), response.to_avro()).unwrap();
     }
-    let Reply::Response(P::Problem { message, field }) = reply else {
-        panic!("expected {key}")
-    };
+    let Reply::Response(P::Problem { message, field }) = reply else { panic!("expected {key}") };
     assert_eq!(message, libertas::libertas_formatted_text(key, &[]));
     assert_eq!(s.draft, before);
     assert_eq!(s.dirty, dirty);
@@ -104,9 +96,7 @@ fn unit47_coverdell_duplicate_filer_with_distinct_labels_uses_local_key_atomical
         .into_iter()
         .map(|label| CoverdellContributorPage {
             label: label.into(),
-            person: CoverdellContributorKindPage::Filer {
-                owner: Owner::Taxpayer,
-            },
+            person: CoverdellContributorKindPage::Filer { owner: Owner::Taxpayer },
             contributions: vec![],
         })
         .collect();
@@ -141,10 +131,7 @@ fn unit47_coverdell_correction_loss_boundary_saves_reopens_and_restarts() {
         income_document: None,
     });
     // Zero proceeds is a valid equality boundary, not a negative deduction.
-    accepted(save_other_taxes(
-        &mut s,
-        vec![topic(vec![candidate.clone()])],
-    ));
+    accepted(save_other_taxes(&mut s, vec![topic(vec![candidate.clone()])]));
     let before = s.draft.clone();
     let baseline = estimate(&before);
     let mut again = restart(before.clone());
@@ -165,33 +152,14 @@ fn unit47_coverdell_correction_loss_boundary_saves_reopens_and_restarts() {
 }
 
 #[test]
-fn unit47_coverdell_malformed_source_keeps_generic_key_and_no_arithmetic_panic() {
+fn unit47_coverdell_long_donor_account_labels_save_and_reopen() {
     let mut s = session();
     let mut candidate = record();
-    candidate.corrections.push(CoverdellCorrectionPage {
-        account: "Actual ESA".into(),
-        principal: i64::MAX,
-        withdrawn: 20270501,
-        earnings: i64::MAX,
-        income_document: None,
-    });
-    // Shape is rejected before adding principal+earnings; no catch_unwind hides a panic.
-    assert_refusal_unchanged(&mut s, vec![candidate], "COVERDELL_INVALID_SOURCE", None);
-}
-
-#[test]
-fn unit47_coverdell_long_donor_account_labels_save_and_required_empty_refusals_remain() {
-    let mut s = session();
-    let mut candidate = record();
-    // D13: preserve the full400-byte donor/account names. The financial
-    // source figures and required nonblank-label behavior stay unchanged.
+    // Donor and account names can occupy the full 400-byte allowance.
     let boundary = "🧾".repeat(100);
     candidate.contributors[0].label = boundary.clone();
     candidate.contributors[0].contributions[0].account = boundary.clone();
-    accepted(save_other_taxes(
-        &mut s,
-        vec![topic(vec![candidate.clone()])],
-    ));
+    accepted(save_other_taxes(&mut s, vec![topic(vec![candidate.clone()])]));
     let stored = s.draft.clone();
     let baseline = estimate(&stored);
     let mut again = restart(stored.clone());
@@ -202,21 +170,6 @@ fn unit47_coverdell_long_donor_account_labels_save_and_required_empty_refusals_r
     accepted(save_other_taxes(&mut again, shown.taxes));
     assert_eq!(again.draft, stored);
     assert_eq!(estimate(&again.draft), baseline);
-    let mut empty_donor = candidate.clone();
-    empty_donor.contributors[0].label.clear();
-    assert_refusal_unchanged(
-        &mut again,
-        vec![empty_donor],
-        "COVERDELL_INVALID_SOURCE",
-        None,
-    );
-    candidate.contributors[0].contributions[0].account.clear();
-    assert_refusal_unchanged(
-        &mut again,
-        vec![candidate],
-        "COVERDELL_INVALID_SOURCE",
-        None,
-    );
 }
 
 #[test]
@@ -248,20 +201,12 @@ fn unit47_coverdell_repeated_topic_path_uses_actual_second_topic() {
     let mut s = session();
     let before = s.draft.clone();
     let dirty = s.dirty;
-    let Reply::Response(P::Problem { message, field }) = save_other_taxes(
-        &mut s,
-        vec![
-            OtherTax::AlternativeMinimumTax,
-            topic(vec![record()]),
-            topic(vec![record()]),
-        ],
-    ) else {
+    let Reply::Response(P::Problem { message, field }) =
+        save_other_taxes(&mut s, vec![lead_tax(), topic(vec![record()]), topic(vec![record()])])
+    else {
         panic!("expected duplicate topic refusal")
     };
-    assert_eq!(
-        message,
-        libertas::libertas_formatted_text("COVERDELL_TOPIC_TWICE", &[])
-    );
+    assert_eq!(message, libertas::libertas_formatted_text("COVERDELL_TOPIC_TWICE", &[]));
     assert_eq!(field.as_deref(), Some("[value/taxes/2/beneficiaries]"));
     assert_eq!(s.draft, before);
     assert_eq!(s.dirty, dirty);

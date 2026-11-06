@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {"order": 122000, "rule": {"select": "^<MoreCredits>.documents", "layout": "summary", "paths": [{"show": "variant"}]}},
+    {"order": 179000, "rule": {"select": "^<Hub>", "button_labels": {"actions": {"source": "single_action"}}}},
+    {"order": 202000, "rule": {"select": "^<SaveMoreCredits>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 211000, "rule": {"select": "^<Hub>", "right_pane": ["SaveIncomes", "SaveHsa", "SaveSelfEmployedBenefits", "SaveIraContributions", "SaveEducator", "SaveStudentLoan", "SaveEmployeeExpenses", "SaveMoreAdjustments", "SaveMedical", "SaveTaxes", "SaveOtherItemized", "SaveMortgages", "SaveGiftCarryovers", "SaveEducation", "SaveSaver", "SaveMarketplace", "SaveMoreCredits"], "detail": ["^<Hub.topics.items>[]"], "refresh": "OpenHub"}},
+    {"order": 561000, "rule": {"select": "^<MoreCredit>", "flatten": true}},
+    {"order": 769000, "rule": {"select": "^<MoreCredits>.credits", "promote": true}},
+    {"order": 809000, "rule": {"select": "^<Hub>", "title": {"field": "topics.name"}}},
+    {"order": 838000, "rule": {"select": "^<SaveMoreCredits.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 846000, "rule": {"select": "^<Hub.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

@@ -44,16 +44,19 @@ pub(in crate::tests) fn disjoint_view_counterpart(
     match source {
         FederalIncome::Partnership { data } => {
             data.section179_sales = properties;
-            data.regular.basis.opening = basis[0] * 100;
+            data.regular.basis.opening = Some(basis[0] * 100);
             data.regular.risk.start = start(risk[0]);
             let mut alternative = data.regular.clone();
-            alternative.basis.opening = basis[1] * 100;
+            alternative.basis.opening = Some(basis[1] * 100);
             alternative.risk.start = start(risk[1]);
             data.alternative = Some(alternative);
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             data.section179_sales = properties;
-            data.opening = basis[0] * 100;
+            data.opening = Some(basis[0] * 100);
             data.risk.start = start(risk[0]);
             let mut alternative = amt_records(data);
             alternative.stock = basis[1] * 100;
@@ -66,13 +69,18 @@ pub(in crate::tests) fn disjoint_view_counterpart(
 
 fn code_loss(source: &mut FederalIncome, amount: i64) {
     match source {
-        FederalIncome::Partnership { data } => data.income.push(PartnerIncome {
+        FederalIncome::Partnership { data } => data.income.push(PartnerIncomeTotal {
             code: PartnerIncomeCode::NonportfolioShort,
             amount: -amount * 100,
         }),
-        FederalIncome::Scorp { data } => data
-            .income
-            .push(ScorpIncome { code: ScorpIncomeCode::NonportfolioShort, amount: -amount * 100 }),
+        FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+            data.income.push(ScorpIncome {
+                code: ScorpIncomeCode::NonportfolioShort,
+                amount: -amount * 100,
+            })
+        }
         _ => unreachable!(),
     }
 }
@@ -87,6 +95,9 @@ fn ledger(source: &FederalIncome, amt: bool) -> (LossLedger, K1Items) {
             )
         }
         FederalIncome::Scorp { data } => {
+            let source_view = ScorpK1::from(data);
+            let data = &source_view;
+
             let source: crate::scorp_amt::ScorpSource<'_> =
                 if amt { data.amt.as_ref().unwrap().source(data).unwrap() } else { data.into() };
             (source.ledger().unwrap(), source.k1_items())
@@ -101,7 +112,6 @@ fn check(
     allowed_sales: [Vec<i64>; 2],
     refusal: bool,
 ) {
-    let original = source.clone();
     let (regular, regular_items) = ledger(&source, false);
     let (amt, amt_items) = ledger(&source, true);
     assert_eq!(
@@ -121,11 +131,12 @@ fn check(
         );
     }
     assert_eq!(
-        crate::k1_loss::amt_limit_differs(&regular, &amt, &regular_items, &amt_items),
+        crate::k1_loss::amt_limit_differs(&regular, &amt, &regular_items, &amt_items, true),
         refusal
     );
     // Exercise the actual collector's source selection, not only its helper.
     let (d, _) = draft(source);
+    let original = d.income[0].income.clone();
     let result = estimate(&d);
     assert_eq!(refused_with(&result, "ISSUE_K1_AMT_LIMIT_DIFFERS"), refusal);
     if refusal {
@@ -180,8 +191,12 @@ fn k1_sale_amt_independent_depreciation_can_change_a_loss_to_a_gain() {
         let (d, _) = draft(source.clone());
         let entry = &d.income[0];
         let facts = match &entry.income {
-            FederalIncome::Partnership { data } => data.totals_facts(entry),
-            FederalIncome::Scorp { data } => data.totals_facts(entry),
+            FederalIncome::Partnership { data } => data.totals_facts(entry).unwrap(),
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                data.totals_facts(entry)
+            }
             _ => unreachable!(),
         };
         assert_eq!(facts.flows.ordinary, -300_000);
@@ -196,7 +211,11 @@ fn k1_sale_amt_residual_comparison_keeps_original_code_cents_unchanged() {
         code_loss(&mut source, 1);
         match &mut source {
             FederalIncome::Partnership { data } => data.income[0].amount = -149,
-            FederalIncome::Scorp { data } => data.income[0].amount = -149,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.income[0].amount = -149
+            }
             _ => unreachable!(),
         }
         disjoint_view_counterpart(&mut source, vec![sale(2)], vec![sale(4)], [2, 3], [10_000; 2]);
@@ -213,8 +232,12 @@ fn k1_sale_amt_residual_comparison_keeps_original_code_cents_unchanged() {
         let (d, _) = draft(source.clone());
         let entry = &d.income[0];
         let facts = match &entry.income {
-            FederalIncome::Partnership { data } => data.totals_facts(entry),
-            FederalIncome::Scorp { data } => data.totals_facts(entry),
+            FederalIncome::Partnership { data } => data.totals_facts(entry).unwrap(),
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                data.totals_facts(entry)
+            }
             _ => unreachable!(),
         };
         let mut totals = crate::federal_rules::Totals::default();
@@ -328,8 +351,12 @@ fn k1_sale_amt_independent_risk_losses_reach_the_existing_disposition_totals() {
         let (d, _) = draft(source.clone());
         let entry = &d.income[0];
         let facts = match &entry.income {
-            FederalIncome::Partnership { data } => data.totals_facts(entry),
-            FederalIncome::Scorp { data } => data.totals_facts(entry),
+            FederalIncome::Partnership { data } => data.totals_facts(entry).unwrap(),
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                data.totals_facts(entry)
+            }
             _ => unreachable!(),
         };
         assert_eq!(facts.flows.ordinary, -100_000);
@@ -350,7 +377,7 @@ fn k1_sale_amt_unavailable_is_not_an_absent_or_copied_monetary_view() {
     for mut source in sources(15_000, 0, 0, 30_000) {
         let sales = match &mut source {
             FederalIncome::Partnership { data } => &mut data.section179_sales,
-            FederalIncome::Scorp { data } => &mut data.section179_sales,
+            FederalIncome::Scorp { data } => &mut data.statements.section179_sales,
             _ => unreachable!(),
         };
         sales[0].alternative = K1Section179SaleAmtSource::Unavailable;
@@ -384,7 +411,11 @@ fn k1_sale_amt_unavailable_is_not_an_absent_or_copied_monetary_view() {
         let mut parent_missing = d.clone();
         match &mut parent_missing.income[0].income {
             FederalIncome::Partnership { data } => data.alternative = None,
-            FederalIncome::Scorp { data } => data.amt = None,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.amt = None
+            }
             _ => unreachable!(),
         }
         assert!(parent_missing.valid_stored());
@@ -406,20 +437,32 @@ fn k1_sale_amt_unavailable_is_not_an_absent_or_copied_monetary_view() {
         assert!(refused_with(&parent_result, parent_key), "{:?}", parent_result.issues);
         assert!(parent_result.lines.is_empty());
         let mut known = d.clone();
-        let sales = match &mut known.income[0].income {
-            FederalIncome::Partnership { data } => &mut data.section179_sales,
-            FederalIncome::Scorp { data } => &mut data.section179_sales,
+        match &mut known.income[0].income {
+            FederalIncome::Partnership { data } => {
+                data.section179_sales[0].alternative = K1Section179SaleAmtSource::NotReported;
+                assert_eq!(data.section179_sales[0].monetary_view(true), Some(None));
+            }
+            FederalIncome::Scorp { data } => {
+                // A stored not-reported alternative beside an AMT record is the
+                // separate-AMT choice; the same-as-regular choice mirrors the regular view.
+                let record = ScorpK1::from(&*data).amt.unwrap();
+                data.personal.amt = Some(ScorpAmtRecords::Separate { record });
+                data.statements.section179_sales[0].alternative =
+                    K1Section179SaleAmtSource::NotReported;
+                assert_eq!(
+                    ScorpK1::from(&*data).section179_sales[0].monetary_view(true),
+                    Some(None)
+                );
+            }
             _ => unreachable!(),
         };
-        sales[0].alternative = K1Section179SaleAmtSource::NotReported;
-        assert_eq!(sales[0].monetary_view(true), Some(None));
         assert!(crate::k1_sales::facts(&known.income[0], true, None).unwrap().is_none());
         assert!(!refused_with(&estimate(&known), "ISSUE_K1_SALE_AMT_UNAVAILABLE"));
     }
 }
 
 #[test]
-fn k1_sale_amt_unmapped_section1256_difference_retains_its_refusal() {
+fn k1_sale_amt_section1256_carryback_difference_retains_its_refusal() {
     for mut source in sources(0, 0, 0, 20_000) {
         code_loss(&mut source, 4_000);
         match &mut source {
@@ -427,6 +470,9 @@ fn k1_sale_amt_unmapped_section1256_difference_retains_its_refusal() {
                 data.income[0].code = PartnerIncomeCode::Section1256;
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.income[0].code = ScorpIncomeCode::Section1256;
             }
             _ => unreachable!(),
@@ -438,9 +484,19 @@ fn k1_sale_amt_unmapped_section1256_difference_retains_its_refusal() {
             [3_000; 2],
             [10_000; 2],
         );
-        // Unlike Q/S, the Form 6781 owner has no separate AMT flow here.
-        // Regular allows $1,500 of code C; AMT allows $2,000.
-        check(source, [3_000; 2], [vec![-1_500], vec![-1_000]], true);
+        // 2026-10-19: C now has an independent AMT Form 6781 flow.
+        // The existing regular-only carryback still lacks independent AMT
+        // consumption records. Preserve that actual refusal with sales too.
+        let (regular, items) = ledger(&source, false);
+        let (amt, amt_items) = ledger(&source, true);
+        assert_eq!(items.flows(&regular).section1256, -150_000);
+        assert_eq!(amt_items.flows(&amt).section1256, -200_000);
+        assert!(crate::k1_loss::amt_limit_differs(&regular, &amt, &items, &amt_items, false));
+        let (mut d, _) = draft(source);
+        d.screening.as_mut().unwrap().section_1256_carryback = Some(100_000);
+        let result = estimate(&d);
+        assert_eq!(result.state, ResultState::Unsupported);
+        assert!(refused_with(&result, "ISSUE_K1_AMT_LIMIT_DIFFERS"));
     }
 }
 
@@ -463,6 +519,9 @@ fn k1_sale_amt_capital_codes_keep_each_term_and_system_after_basis_allocation() 
                         };
                     }
                     FederalIncome::Scorp { data } => {
+                        let mut source_edit = edit_scorp(data);
+                        let data = &mut *source_edit;
+
                         data.income[0].code = if long {
                             ScorpIncomeCode::NonportfolioLong
                         } else {
@@ -497,7 +556,7 @@ fn k1_sale_amt_capital_codes_keep_each_term_and_system_after_basis_allocation() 
 #[test]
 fn k1_sale_amt_capital_code_native_save_reopen_restart_and_correction() {
     use crate::tests::support::assert::accepted;
-    use crate::tests::support::client::income_pages::open_topic;
+    use crate::tests::support::client::income_pages::open_document_center;
     use crate::tests::support::client::{
         restart, roundtrip_native_draft, roundtrip_native_request, save_reopen_native_sources, send,
     };
@@ -514,8 +573,8 @@ fn k1_sale_amt_capital_code_native_save_reopen_restart_and_correction() {
         let (original, id) = draft(source);
         let saved = save_reopen_native_sources(
             original,
-            &[TaxSection::PassThrough],
-            &[TaxSection::PassThrough],
+            &[TaxSection::Documents],
+            &[TaxSection::Documents],
         );
         assert_eq!(saved.income[0].id, id);
         let (regular, items) = ledger(&saved.income[0].income, false);
@@ -523,18 +582,18 @@ fn k1_sale_amt_capital_code_native_save_reopen_restart_and_correction() {
         assert_eq!(items.flows(&regular).capital(), [-150_000, 0]);
         assert_eq!(amt_items.flows(&amt).capital(), [-200_000, 0]);
         let mut session = restart(saved);
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        let document = &mut documents.documents[0];
+        let mut request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let document = &mut documents.common.k1.documents[0];
         assert_eq!(document.id, id);
         let sales_before = match &mut document.document {
-            IncomeDocument::K1Partnership(page) => {
-                page.more.income[0].amount = -200_000;
-                page.more.section179_sales.clone()
+            crate::K1Document::K1Partnership(page) => {
+                page.form.income[0].amount = Some(-200_000);
+                page.statements.section179_sales.clone()
             }
-            IncomeDocument::K1Scorp(page) => {
-                page.more.income[0].amount = -200_000;
-                page.more.section179_sales.clone()
+            crate::K1Document::K1Scorp(page) => {
+                page.form.income[0].amount = Some(-200_000);
+                page.statements.section179_sales.clone()
             }
             _ => unreachable!(),
         };
@@ -549,10 +608,10 @@ fn k1_sale_amt_capital_code_native_save_reopen_restart_and_correction() {
         let corrected = supported(&session.draft);
         let mut cold = restart(roundtrip_native_draft(session.draft));
         assert_eq!(estimate(&cold.draft), corrected);
-        let reopened = open_topic(&mut cold, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = reopened else { unreachable!() };
-        assert_eq!(documents.documents[0].id, id);
-        assert_eq!(documents.documents[0].document, expected_document);
+        let reopened = open_document_center(&mut cold);
+        let P::SaveDocuments { documents, .. } = reopened else { unreachable!() };
+        assert_eq!(documents.common.k1.documents[0].id, id);
+        assert_eq!(documents.common.k1.documents[0].document, expected_document);
     }
 }
 
@@ -575,6 +634,9 @@ fn k1_sale_amt_capital_code_losses_do_not_create_foreign_credit_gross_gains() {
                         };
                     }
                     FederalIncome::Scorp { data } => {
+                        let mut source_edit = edit_scorp(data);
+                        let data = &mut *source_edit;
+
                         data.income[0].code = if long {
                             ScorpIncomeCode::NonportfolioLong
                         } else {
@@ -625,7 +687,11 @@ fn k1_sale_amt_k3_capital_code_losses_keep_the_entity_gross_owner() {
         k3.us_gross = 100_000;
         match &mut source {
             FederalIncome::Partnership { data } => data.schedule_k3 = Some(k3),
-            FederalIncome::Scorp { data } => data.schedule_k3 = Some(k3),
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.schedule_k3 = Some(k3)
+            }
             _ => unreachable!(),
         }
         let mut d = crate::tests::foreign::foreign::passive_fund_return(60_000);
@@ -646,7 +712,11 @@ fn k1_sale_amt_k3_own_distribution_gains_stay_outside_entity_gross() {
         let k3 = crate::tests::foreign::foreign::k3_blank();
         match &mut source {
             FederalIncome::Partnership { data } => data.schedule_k3 = Some(k3),
-            FederalIncome::Scorp { data } => data.schedule_k3 = Some(k3),
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.schedule_k3 = Some(k3)
+            }
             _ => unreachable!(),
         }
         let mut d = crate::tests::foreign::foreign::passive_fund_return(60_000);
@@ -669,8 +739,12 @@ fn k1_sale_amt_own_gross_cents_round_after_replacing_the_regular_subtotal() {
         add(&mut d, income(source));
         let entry = d.income.iter().find(|entry| entry.id == id).unwrap();
         let facts = match &entry.income {
-            FederalIncome::Partnership { data } => data.totals_facts(entry),
-            FederalIncome::Scorp { data } => data.totals_facts(entry),
+            FederalIncome::Partnership { data } => data.totals_facts(entry).unwrap(),
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                data.totals_facts(entry)
+            }
             _ => unreachable!(),
         };
         assert_eq!(
@@ -723,7 +797,7 @@ fn k1_sale_amt_gross_producer_preserves_cross_term_cancellation() {
     let (d, _) = draft(k1_distribution_counterparts(0, [0, 0])[0].clone());
     let entry = &d.income[0];
     let FederalIncome::Partnership { data } = &entry.income else { unreachable!() };
-    let mut facts = data.totals_facts(entry);
+    let mut facts = data.totals_facts(entry).unwrap();
     // Synthetic admitted owner inputs isolate its arithmetic boundary:
     // the regular +10/-10 cents net to zero, with 10 cents gross.
     facts.flows.preferred = [10, -10];
@@ -744,7 +818,7 @@ fn k1_sale_amt_gross_producer_refuses_atomically_at_its_income_source() {
     let (d, _) = draft(k1_distribution_counterparts(100, [49, 51])[0].clone());
     let entry = &d.income[0];
     let FederalIncome::Partnership { data } = &entry.income else { unreachable!() };
-    let facts = data.totals_facts(entry);
+    let facts = data.totals_facts(entry).unwrap();
     for gross in [false, true] {
         let opening = [if gross { 0 } else { i64::MAX }, if gross { i64::MAX } else { 0 }];
         let mut totals = crate::federal_rules::Totals::default();
@@ -760,5 +834,142 @@ fn k1_sale_amt_gross_producer_refuses_atomically_at_its_income_source() {
         assert_eq!(result.issues.len(), 1);
         assert_eq!(result.issues[0].display.key, crate::k1_activity::ordinary::RANGE_KEY);
         assert_eq!(result.issues[0].context, crate::interview::income_issue_context(entry));
+    }
+}
+
+#[test]
+fn mixed_native_and_legacy_capital_sources_preserve_each_amt_gross_adjustment() {
+    use crate::tests::support::client::save_reopen_native_sources;
+
+    for k3 in [false, true] {
+        for legacy_first in [false, true] {
+            let draft = mixed_native_legacy_capital_draft(k3, legacy_first);
+            let result = supported(&draft);
+            // Native current $1,000/$1,000 less basis release $400/$200,
+            // plus legacy current $1,000/$1,500 less release $400/$200:
+            // net $1,200/$2,100, gross $2,000/$2,500 before those losses.
+            // K-3 instead supplies the legacy source's whole $3,000 gross.
+            // https://www.irs.gov/instructions/i1116
+            assert_eq!(value(&result, "capital_gain"), 1_200);
+            assert_eq!(value(&result, "amt_capital_gain"), 2_100);
+            assert_eq!(value(&result, "amt_capital_adjustment"), 900);
+            assert_eq!(value(&result, "agi"), 71_200);
+            assert_eq!(result.capital_footing, Some(if k3 { [100_000; 2] } else { [200_000; 2] }),);
+            assert_eq!(
+                [false, true].map(|amt| form_1116_any(&result, amt, "_gross_income_all_sources")),
+                if k3 { [74_000; 2] } else { [72_000, 72_500] },
+            );
+            save_reopen_native_sources(draft, &[TaxSection::Documents], &[TaxSection::Documents]);
+        }
+    }
+}
+
+#[test]
+fn legacy_k1_retained_capital_losses_keep_gross_before_loss_through_native_edit() {
+    use crate::tests::support::client::income_pages::open_document_center;
+    use crate::tests::support::client::{
+        restart, roundtrip_native_draft, roundtrip_native_request, save_reopen_native_sources, send,
+    };
+    for long in [false, true] {
+        for basis in [false, true] {
+            for k3 in [false, true] {
+                for mut source in legacy_k1_capital_sources(long, basis) {
+                    let partnership = matches!(source, FederalIncome::Partnership { .. });
+                    if k3 {
+                        let mut statement = crate::tests::foreign::foreign::k3_blank();
+                        statement.us_gross = 300_000;
+                        match &mut source {
+                            FederalIncome::Partnership { data } => {
+                                data.schedule_k3 = Some(statement)
+                            }
+                            FederalIncome::Scorp { data } => {
+                                let mut source_edit = edit_scorp(data);
+                                let data = &mut *source_edit;
+                                data.schedule_k3 = Some(statement)
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                    let mut draft = crate::tests::foreign::foreign::passive_fund_return(60_000);
+                    let id = draft.next_id;
+                    add(&mut draft, income(source));
+                    let result = supported(&draft);
+                    // i1116 lines 3d/3e: $1,000 gain before either the $400
+                    // regular or $200 AMT loss. K-3 supplies its own $3,000
+                    // whole-source gross instead. No new income enters AGI.
+                    // https://www.irs.gov/instructions/i1116
+                    assert_eq!(value(&result, "agi"), 70_600);
+                    assert_eq!(value(&result, "capital_gain"), 600);
+                    assert_eq!(value(&result, "amt_capital_gain"), 800);
+                    assert_eq!(
+                        [false, true].map(|amt| form_1116_any(
+                            &result,
+                            amt,
+                            "_gross_income_all_sources"
+                        )),
+                        [if k3 { 73_000 } else { 71_000 }; 2],
+                    );
+                    let saved = save_reopen_native_sources(
+                        draft,
+                        &[TaxSection::Documents],
+                        &[TaxSection::Documents],
+                    );
+                    let mut session = restart(saved);
+                    let mut request = open_document_center(&mut session);
+                    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+                    let document = documents
+                        .common
+                        .k1
+                        .documents
+                        .iter_mut()
+                        .find(|document| document.id == id)
+                        .unwrap();
+                    match &mut document.document {
+                        crate::K1Document::K1Partnership(page) => {
+                            if long {
+                                page.form.long = Some(200_000);
+                            } else {
+                                page.form.short = Some(200_000);
+                            }
+                        }
+                        crate::K1Document::K1Scorp(page) => {
+                            if long {
+                                page.form.long = Some(200_000);
+                            } else {
+                                page.form.short = Some(200_000);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                    crate::tests::support::assert::accepted(&send(
+                        &mut session,
+                        roundtrip_native_request(request),
+                    ));
+                    let result = supported(&session.draft);
+                    assert_eq!(value(&result, "agi"), 71_600);
+                    assert_eq!(value(&result, "capital_gain"), 1_600);
+                    assert_eq!(
+                        value(&result, "amt_capital_gain"),
+                        if partnership { 1_800 } else { 800 }
+                    );
+                    assert_eq!(
+                        [false, true].map(|amt| form_1116_any(
+                            &result,
+                            amt,
+                            "_gross_income_all_sources"
+                        )),
+                        if k3 {
+                            [73_000; 2]
+                        } else {
+                            [72_000, if partnership { 72_000 } else { 71_000 }]
+                        },
+                    );
+                    assert_eq!(
+                        supported(&restart(roundtrip_native_draft(session.draft)).draft),
+                        result
+                    );
+                }
+            }
+        }
     }
 }

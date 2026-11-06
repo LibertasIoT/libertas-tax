@@ -21,6 +21,9 @@ pub(crate) struct NiitItemizedDeductions {
     eligible_capacities: Option<[i64; 2]>,
     complement_capacities: Option<[i64; 2]>,
     pub(crate) owners_dollars: Option<[i64; 2]>,
+    // Actual component owners, before the aggregate itemized cap. Overlapping
+    // capacities alone cannot identify an individual's allowed expense.
+    pub(crate) before_owners_dollars: Option<[[i64; 5]; 2]>,
     // Actual current paid capacities for a verified pure ScheduleA portfolio
     // interest pool. A joint limit can leave a choice even with known payers.
     pub(crate) pure_interest_capacities: Option<[i64; 2]>,
@@ -72,6 +75,19 @@ pub(crate) struct NativeDeductionOperands {
 impl NiitItemizedDeductions {
     #[inline(never)]
     pub(crate) fn from_native(draft: &FederalDraft, input: NativeDeductionOperands) -> Self {
+        let first = draft
+            .injured_spouse
+            .as_ref()
+            .map_or(0, |claim| usize::from(claim.injured == Owner::Spouse));
+        Self::from_native_for_first(draft, input, first)
+    }
+
+    #[inline(never)]
+    pub(crate) fn from_native_for_first(
+        draft: &FederalDraft,
+        input: NativeDeductionOperands,
+        first: usize,
+    ) -> Self {
         let NativeDeductionOperands {
             itemizing,
             portfolio_only_itemized,
@@ -88,10 +104,6 @@ impl NiitItemizedDeductions {
             estate_ird_cents,
             current_k1_interest_cents,
         } = input;
-        let first = draft
-            .injured_spouse
-            .as_ref()
-            .map_or(0, |claim| usize::from(claim.injured == Owner::Spouse));
         let current_interest = portfolio_current_owners(draft, current_k1_interest_cents, first);
         let pure_interest_capacities = current_interest.filter(|capacities| {
             allowed_available
@@ -104,7 +116,7 @@ impl NiitItemizedDeductions {
         // This is an allowed nonnegative expense, not signed income. The
         // actual native zero target uniquely fixes both owners at zero even
         // when a positive paid source has an unidentified individual payer.
-        let project_capacities = |connected_dollars: i64| {
+        let project_components = |connected_dollars: i64| {
             let deductions = draft.deductions.as_ref()?;
             let property = nonnegative_capacities(
                 before_dollars[0],
@@ -133,7 +145,27 @@ impl NiitItemizedDeductions {
                 estate_ird_cents,
                 first,
             )?;
-            Some([0, 1].map(|i| property[i] + interest[i] + connected[i] + foreign[i] + estate[i]))
+            Some([property, interest, connected, foreign, estate])
+        };
+        let project_capacities = |connected_dollars: i64| {
+            let components = project_components(connected_dollars)?;
+            Some([0, 1].map(|owner| components.iter().map(|part| part[owner]).sum()))
+        };
+        let before_owners_dollars = if !allowed_available {
+            None
+        } else if joint_dollars == 0 {
+            Some([[0; 5]; 2])
+        } else {
+            project_components(before_dollars[2]).and_then(|components| {
+                let mut owners = [[0; 5]; 2];
+                for (component, capacities) in components.into_iter().enumerate() {
+                    let amounts = unique_allowed(before_dollars[component], capacities)?;
+                    for owner in 0..2 {
+                        owners[owner][component] = amounts[owner];
+                    }
+                }
+                Some(owners)
+            })
         };
         let before_capacities = (allowed_available && itemizing && income_tax_available)
             .then(|| project_capacities(before_dollars[2]))
@@ -180,6 +212,7 @@ impl NiitItemizedDeductions {
             eligible_capacities: before_capacities,
             complement_capacities,
             owners_dollars,
+            before_owners_dollars,
             pure_interest_capacities,
             same_itemized_capacities,
             whole_itemized_capacities,

@@ -117,8 +117,8 @@ fn unit16_r4_mortgage_gift_owner_editor_save_reopen_restart() {
     } else {
         let P::SaveOtherTaxes { value, .. } = &mut page else { panic!() };
         let OtherTax::MortgageSubsidyRecapture { homes } = &mut value.taxes[0] else { panic!() };
-        let MortgageSubsidyDisposition::Ordinary {
-            transfer: MortgageSubsidyTransfer::GiftToOther { owners, .. },
+        let MortgageSubsidyDispositionView::Ordinary {
+            transfer: MortgageSubsidyTransferView::GiftToOther { owners, .. },
             ..
         } = &mut homes[0].disposition
         else {
@@ -143,8 +143,8 @@ fn unit16_r4_mortgage_gift_owner_editor_save_reopen_restart() {
     let mut invalid = open_other_taxes(&mut session);
     let P::SaveOtherTaxes { value, .. } = &mut invalid else { panic!() };
     let OtherTax::MortgageSubsidyRecapture { homes } = &mut value.taxes[0] else { panic!() };
-    let MortgageSubsidyDisposition::Ordinary {
-        transfer: MortgageSubsidyTransfer::GiftToOther { owners, .. },
+    let MortgageSubsidyDispositionView::Ordinary {
+        transfer: MortgageSubsidyTransferView::GiftToOther { owners, .. },
         ..
     } = &mut homes[0].disposition
     else {

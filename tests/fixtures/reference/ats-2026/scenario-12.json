@@ -1,0 +1,534 @@
+{
+ "source": {
+  "title": "IRS MeF ATS Test Scenario 12, TY2026 Form 1040 (Sam Gardenia: 1040, Sch. 1, 2, 3, C, SE, Form 3800 + Sch. A, 4562-B, 7205, 7207, 7220, W-2)",
+  "edition": "TREASURY/IRS DRAFT Version A (forms created 2026-03 to 2026-06)",
+  "scenario": 12,
+  "url": "https://www.irs.gov/pub/irs-efile/ty26-1040-ats-scenario-12.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "6d44ae53fe842b804258ca1a49400f0cc5d15a17b6fdb0cc74c016927b54c9bf"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "W-2 box 6 entered as 1,535.23",
+   "reason": "the ATS prints whole dollars (1,535); the exact 1.45% of box 5 (105,878) is 1,535.23 and the App refuses Medicare withholding below it (triage F-1)"
+  },
+  {
+   "fact": "taxpayer birth date 1990-06-15",
+   "reason": "the scenario gives no birth date; any age 19-64 changes nothing here"
+  },
+  {
+   "fact": "Form 7205 designer deduction (5,000) and Form 4562-B amortization (667) entered as ordinary Schedule C other expenses",
+   "reason": "the App leaves the whole business out when a Form 7205 deduction is declared (D-1) and takes 5,000 immediately plus 333 of amortization for 10,000 of start-up costs (C-6); the two as-filed treatments are asserted by scenario-12-7205 and scenario-12-startup"
+  },
+  {
+   "fact": "purchased Form 7207 credit entered as the 10,000 Form 3800 line 1b column (f) amount",
+   "reason": "Forms 7207 and 7220 are not computed; the credit is an input (D-2)"
+  },
+  {
+   "fact": "business is not a specified service trade or business; no Form 8995 data beyond the Schedule C profit",
+   "reason": "taxable income is below the single threshold, so the specified-service answer does not change the deduction"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19900615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 100836,
+     "withholding": 14444,
+     "social_wages": 105878,
+     "social_tax": 6564,
+     "medicare_wages": 105878,
+     "medicare_tax": 1535.23
+    }
+   ]
+  },
+  {
+   "page": "business",
+   "receipts": 25235,
+   "expenses": {
+    "insurance": 550,
+    "legal_and_professional": 125,
+    "office": 1000,
+    "other_rent": 2500,
+    "supplies": 6532,
+    "taxes_and_licenses": 200
+   },
+   "other": [
+    [
+     "Form 7205 designer deduction",
+     5000
+    ],
+    [
+     "Form 4562-B amortization",
+     667
+    ]
+   ]
+  },
+  {
+   "page": "bought_production_credit",
+   "amount": 10000
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "1a",
+   "amount": 100836,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "1z",
+   "amount": 100836,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "8",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "9",
+   "amount": 109497,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "10",
+   "amount": 612,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "11a / 11b",
+   "amount": 108885,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "12e",
+   "amount": 16100,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "13b",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "14",
+   "amount": 16100,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "15",
+   "amount": 92785,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "16",
+   "amount": 15125,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "17",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "18",
+   "amount": 15125,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "19",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "20",
+   "amount": 10000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "21",
+   "amount": 10000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "22",
+   "amount": 5125,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "23",
+   "amount": 1224,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "24a",
+   "amount": 6349,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "24c",
+   "amount": 6349,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "25a",
+   "amount": 14444,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "25d",
+   "amount": 14444,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "33",
+   "amount": 14444,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "34",
+   "amount": 8095,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "37",
+   "amount": 0,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch1",
+   "line": "3",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch1",
+   "line": "10",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch1",
+   "line": "15",
+   "amount": 612,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch1",
+   "line": "26",
+   "amount": 612,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch2",
+   "line": "4",
+   "amount": 1224,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch2",
+   "line": "15",
+   "amount": 1224,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch2",
+   "line": "21",
+   "amount": 1224,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "1",
+   "amount": 25235,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "3",
+   "amount": 25235,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "5",
+   "amount": 25235,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "7",
+   "amount": 25235,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "15",
+   "amount": 550,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "17",
+   "amount": 125,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "18",
+   "amount": 1000,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "20b",
+   "amount": 2500,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "22",
+   "amount": 6532,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "23",
+   "amount": 200,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "28",
+   "amount": 16574,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "29",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchC",
+   "line": "31",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchSE",
+   "line": "2",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchSE",
+   "line": "3",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchSE",
+   "line": "4a",
+   "amount": 7998,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchSE",
+   "line": "4c",
+   "amount": 7998,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchSE",
+   "line": "12",
+   "amount": 1224,
+   "provenance": "printed"
+  },
+  {
+   "form": "SchSE",
+   "line": "13",
+   "amount": 612,
+   "provenance": "printed"
+  },
+  {
+   "form": "3800",
+   "line": "1",
+   "amount": 10000,
+   "provenance": "printed"
+  },
+  {
+   "form": "3800",
+   "line": "7",
+   "amount": 16147,
+   "provenance": "printed"
+  },
+  {
+   "form": "3800",
+   "line": "17",
+   "amount": 10000,
+   "provenance": "printed"
+  },
+  {
+   "form": "3800",
+   "line": "38",
+   "amount": 10000,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope",
+ "known_gaps": [
+  {
+   "form": "7205",
+   "lines": "1-5, Schedule C line 27a",
+   "ledger": "SCHC-G6",
+   "note": "A Form 7205 designer deduction leaves the business out of the estimate (WARN_BUSINESS_LEFT_OUT); scenario-12-7205 asserts it (D-1)"
+  },
+  {
+   "form": "7207, 7220",
+   "lines": "7207 Parts I-IV, 7220 Parts I-V",
+   "ledger": "NRG-G4c",
+   "note": "neither form is computed; the credit amount is an input and the App only notes that Form 7220 accompanies a prevailing-wage claim (D-2)"
+  },
+  {
+   "form": "3800 Schedule A",
+   "lines": "1-13",
+   "ledger": "1040-G23",
+   "note": "the transfer election statement is not modeled; the purchased credit is entered on the credits page as a purchased credit (D-2)"
+  },
+  {
+   "form": "1040",
+   "lines": "35a",
+   "ledger": "none",
+   "note": "the App prints no line 35a (it shows the refund on line 34); the source prints 8,095 on 34 and 35a"
+  }
+ ],
+ "expect_mismatch": [
+  {
+   "form": "1040",
+   "line": "13b",
+   "class": "C",
+   "triage": "C-3"
+  },
+  {
+   "form": "1040",
+   "line": "14",
+   "class": "C",
+   "triage": "C-3"
+  },
+  {
+   "form": "1040",
+   "line": "15",
+   "class": "C",
+   "triage": "C-3"
+  },
+  {
+   "form": "1040",
+   "line": "16",
+   "class": "C+E",
+   "triage": "C-3, E-3"
+  },
+  {
+   "form": "1040",
+   "line": "18",
+   "class": "C+E",
+   "triage": "C-3, E-3"
+  },
+  {
+   "form": "1040",
+   "line": "20",
+   "class": "C",
+   "triage": "C-4"
+  },
+  {
+   "form": "1040",
+   "line": "21",
+   "class": "C",
+   "triage": "C-4"
+  },
+  {
+   "form": "1040",
+   "line": "22",
+   "class": "C+E",
+   "triage": "C-3, C-4, E-3"
+  },
+  {
+   "form": "1040",
+   "line": "24a",
+   "class": "C+E",
+   "triage": "C-3, C-4, E-3"
+  },
+  {
+   "form": "1040",
+   "line": "24c",
+   "class": "C+E",
+   "triage": "C-3, C-4, E-3"
+  },
+  {
+   "form": "1040",
+   "line": "34",
+   "class": "C+E",
+   "triage": "C-3, C-4, E-3"
+  },
+  {
+   "form": "1040",
+   "line": "37",
+   "class": "C+E",
+   "triage": "C-3, C-4, E-3"
+  },
+  {
+   "form": "3800",
+   "line": "1",
+   "class": "C",
+   "triage": "C-4"
+  },
+  {
+   "form": "3800",
+   "line": "7",
+   "class": "C",
+   "triage": "C-5"
+  },
+  {
+   "form": "3800",
+   "line": "17",
+   "class": "C",
+   "triage": "C-4"
+  },
+  {
+   "form": "3800",
+   "line": "38",
+   "class": "C",
+   "triage": "C-4"
+  }
+ ]
+}

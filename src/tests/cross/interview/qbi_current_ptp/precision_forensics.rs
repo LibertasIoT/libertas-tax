@@ -21,6 +21,7 @@ fn run_precision_case(case: PrecisionCase) {
     // independently verify the tax point before the precision oracle.
     let wages_cents = (case.taxable_dollars + 16_100 - case.schedule_e_dollars) * 100;
     draft.income[0] = wage(1, Owner::Taxpayer, wages_cents, 0);
+    name_accepted_income_documents(&mut draft);
     let wage_source = draft.income[0].clone();
     let mut session = Interview::new(TEST_USER, draft);
     ptp_save_prior_carry(&mut session, &alloc::format!("{}-prior-carry", case.name), exchange);
@@ -29,29 +30,35 @@ fn run_precision_case(case: PrecisionCase) {
         let mut page = ptp_page(0, true);
         page.name = alloc::format!("Precision PTP source {}", index + 1);
         page.ordinary = *raw;
-        let PartnerQbi::Statement { income, .. } = &mut page.qbi else {
-            unreachable!()
-        };
+        let PartnerQbi::Statement { income, .. } = &mut page.qbi else { unreachable!() };
         *income = *raw;
         pages.push(page);
     }
-    let preview = exchange(
+    let candidate = crate::tests::support::client::income_pages::save_documents(
         &mut session,
-        credit_preview(IncomeDocument::K1Partnership(pages[0].clone())),
-        &alloc::format!("{}-preview", case.name),
-        true,
+        vec![document(0, IncomeSource::K1 {
+            value: crate::K1Document::K1Partnership((pages[0].clone()).into()),
+        })],
     );
-    assert!(matches!(preview, Reply::Response(P::IncomePreview { .. })));
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
+    let preview = exchange(&mut session, candidate, &alloc::format!("{}-candidate-save-review", case.name), true);
+    assert!(matches!(preview, Reply::Response(P::Review { .. })));
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
         pages
             .iter()
             .cloned()
-            .map(|page| document(0, IncomeDocument::K1Partnership(page)))
+            .map(|page| {
+                document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) })
+            })
             .collect(),
     );
-    let candidate_display = ptp_estimate_and_save(&mut session, request, case.name, exchange, credit_estimate_documents_from_save);
+    let candidate_display = ptp_estimate_and_save(
+        &mut session,
+        request,
+        case.name,
+        exchange,
+        credit_estimate_documents_from_save,
+    );
     let result = supported(&session.draft);
     // Capture actual financial values before any precision assertion. Pure
     // EstimateDocuments exports contain the actual candidate response, whereas
@@ -96,19 +103,14 @@ fn run_precision_case(case: PrecisionCase) {
     // Lifecycle and exact raw-source preservation execute before the final
     // precision assertions so a red financial result retains forensic state.
     assert_eq!(session.draft.income[0], wage_source);
-    assert_eq!(
-        session
-            .draft
-            .screening
-            .as_ref()
-            .unwrap()
-            .qbi_history
-            .reit_ptp,
-        300_000
-    );
+    assert_eq!(session.draft.screening.as_ref().unwrap().qbi_history.reit_ptp, 300_000);
     ptp_reopen_and_cold_resave(
         &mut session,
-        &pages.iter().cloned().map(IncomeDocument::K1Partnership).collect::<Vec<_>>(),
+        &pages
+            .iter()
+            .cloned()
+            .map(|value| IncomeSource::K1 { value: crate::K1Document::K1Partnership((value).into()) })
+            .collect::<Vec<_>>(),
         &result,
         case.name,
         exchange,
@@ -123,15 +125,9 @@ fn run_precision_case(case: PrecisionCase) {
         case.name
     );
     assert_eq!(value(&result, "qbi_deduction"), case.deduction_dollars);
-    assert_eq!(
-        value(&result, "reit_ptp_loss_carryforward"),
-        case.carry_dollars
-    );
+    assert_eq!(value(&result, "reit_ptp_loss_carryforward"), case.carry_dollars);
     assert_eq!(value(&result, "qbi_loss_carryforward"), 0);
-    assert_eq!(
-        value(&result, "taxable_income"),
-        case.taxable_dollars - case.deduction_dollars
-    );
+    assert_eq!(value(&result, "taxable_income"), case.taxable_dollars - case.deduction_dollars);
 }
 
 macro_rules! precision_case {
@@ -154,60 +150,12 @@ macro_rules! precision_case {
 // The original source-cent amounts remain unchanged at all three tax points.
 // Midpoint positive: 610450/2=305225c -> reported3052; net52 -> deduction10.
 // Midpoint negative: -10450/2=-5225c -> reported-52 -> fixedcarry3052.
-precision_case!(
-    ptp_precision_positive_threshold,
-    &[610_450],
-    6_105,
-    201_750,
-    6_105,
-    621,
-    0
-);
-precision_case!(
-    ptp_precision_positive_midpoint,
-    &[610_450],
-    6_105,
-    239_250,
-    3_052,
-    10,
-    0
-);
-precision_case!(
-    ptp_precision_positive_ceiling,
-    &[610_450],
-    6_105,
-    276_750,
-    0,
-    0,
-    3_000
-);
-precision_case!(
-    ptp_precision_negative_threshold,
-    &[-10_450],
-    -105,
-    201_750,
-    -105,
-    0,
-    3_105
-);
-precision_case!(
-    ptp_precision_negative_midpoint,
-    &[-10_450],
-    -105,
-    239_250,
-    -52,
-    0,
-    3_052
-);
-precision_case!(
-    ptp_precision_negative_ceiling,
-    &[-10_450],
-    -105,
-    276_750,
-    0,
-    0,
-    3_000
-);
+precision_case!(ptp_precision_positive_threshold, &[610_450], 6_105, 201_750, 6_105, 621, 0);
+precision_case!(ptp_precision_positive_midpoint, &[610_450], 6_105, 239_250, 3_052, 10, 0);
+precision_case!(ptp_precision_positive_ceiling, &[610_450], 6_105, 276_750, 0, 0, 3_000);
+precision_case!(ptp_precision_negative_threshold, &[-10_450], -105, 201_750, -105, 0, 3_105);
+precision_case!(ptp_precision_negative_midpoint, &[-10_450], -105, 239_250, -52, 0, 3_052);
+precision_case!(ptp_precision_negative_ceiling, &[-10_450], -105, 276_750, 0, 0, 3_000);
 // Two equivalent real sources each10050c: each exacteligible5025c, combined
 // category10050c -> reported101. Early dollars gives102; per-source eligible
 // dollar rounding gives100. Fixedcarry3000 distinguishes all three outcomes.

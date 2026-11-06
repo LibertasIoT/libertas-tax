@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {"order": 140000, "rule": {"select": "^<PriorCapitalReturnPage>.research_parts", "when_single_choice": "hide"}},
+    {"order": 141000, "rule": {"select": "^<NolYearPage>.research_parts", "when_single_choice": "hide"}},
+    {"order": 363000, "rule": {"select": "^<PriorCapitalReturnPage>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["owners", "status", "agi", "deductions", "senior_deduction", "ordinary_history", "investment_parts", "niit_difference"]}, {"ratio": 1, "fields": ["short", "long", "deducted_loss", "amt", "origins"]}]}},
+    {"order": 436000, "rule": {"select": "^<PriorCapitalReturnPage>", "flatten": {"name_row": false}}},
+    {"order": 682000, "rule": {"select": "^<PriorCapitalReturnPage>.owners", "promote": true}},
+    {"order": 801000, "rule": {"select": "^<NolYearPage>.year", "promote": true}},
+    {"order": 853000, "rule": {"select": "^<PriorCapitalReturnPage>.injured_owners", "when_single_choice": "hide"}},
+    {"order": 854000, "rule": {"select": "^<PriorCapitalReturnPage>.injured_niit_owners", "when_single_choice": "hide"}},
+    {"order": 942000, "rule": {"select": "^<PriorCapitalReturnPage>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_PRIOR_CAPITAL_RETURN", "fields": ["owners", "status", "agi", "deductions", "senior_deduction"]}, {"title": "DISPLAY_PRIOR_CAPITAL_SCHEDULE_D", "fields": ["short", "long", "deducted_loss", "section_1256", "amt"]}, {"title": "DISPLAY_PRIOR_CAPITAL_HISTORY", "fields": ["origins", "ordinary_history", "investment_parts", "niit_difference"]}]}},
+    {"order": 943000, "rule": {"select": "^<PriorCapitalReturnPage>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PRIOR_CAPITAL_RETURN", "fields": ["owners", "status", "agi", "deductions", "senior_deduction"]}, {"title": "DISPLAY_PRIOR_CAPITAL_SCHEDULE_D", "fields": ["short", "long", "deducted_loss", "section_1256", "amt"]}, {"title": "DISPLAY_PRIOR_CAPITAL_HISTORY", "fields": ["origins", "ordinary_history", "investment_parts", "niit_difference"]}]}}
+  ]
+}

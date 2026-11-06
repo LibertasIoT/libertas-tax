@@ -1,4 +1,5 @@
 use crate::tests::*;
+use alloc::string::String;
 
 pub(in crate::tests) fn hsa_entry(
     owner: Owner,
@@ -6,6 +7,8 @@ pub(in crate::tests) fn hsa_entry(
     personal: i64,
 ) -> FederalHsa {
     FederalHsa {
+        personal_outside: personal,
+
         employer_outside: 0,
         owner,
         coverage: HsaEligibility::FullYear { coverage },
@@ -44,19 +47,30 @@ pub(in crate::tests) fn ltc_period(
 // A Form 1099-LTC with per diem payments of a qualified contract, naming `insured`.
 pub(in crate::tests) fn ltc_form(per_diem: i64, insured: Option<i64>) -> FederalIncome {
     FederalIncome::LtcBenefits {
-        data: FederalLtcPayment {
-            interest: 0,
+        data: LtcSource {
+            interest: None,
+            form: Ltc1099Paper {
+                payer: Default::default(),
+                recipient: Default::default(),
+                insured_party: Default::default(),
+                benefits: Some(per_diem * 100),
+                accelerated: Some(0),
+                paid: LtcPaidBasis::PerDiem,
+                box4_qualified: false,
+                illness: Some(LtcIllness::Chronic),
+                date_certified: None,
+                calendar_year: 2026,
+                corrected: false,
+                payer_phone: String::new(),
+                account_number: String::new(),
+            },
             benefit_origin: Some(LtcPaymentOrigin::Insurance),
             accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
                 business_insurable_interest: false,
             }),
-            benefits: per_diem * 100,
-            accelerated: 0,
-            paid: LtcPaidBasis::PerDiem,
             contract: LtcContract::Qualified {
                 qualification: CareContractQualification::Qualified,
             },
-            illness: LtcIllness::Chronic,
             insured,
         },
     }
@@ -84,38 +98,74 @@ pub(in crate::tests) fn ltc_one_period(starts: u32, ends: u32) -> LtcPeriods {
 // A Form 1099-SA of an Archer MSA: $2,000 spent on medical costs and `nonmedical` kept.
 pub(in crate::tests) fn archer_msa(nonmedical: i64) -> FederalIncome {
     FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: (2000 + nonmedical) * 100,
-            account: MedicalSaAccount::Archer,
-            payment: MedicalSaPayment::Own {
-                nonmedical: vec![MedicalAccountWithdrawal {
-                    date: 20260615,
-                    amount: nonmedical * 100,
-                }],
-                medical: 200000,
-                rollover: None,
-                disabled_since: None,
-            },
+        data: {
+            let paper_source = sa_source(Sa1099 {
+                origin: crate::HealthDocumentOrigin::Form1099Sa,
+                gross: (2000 + nonmedical) * 100,
+                box2_earnings: None,
+                box3_code: Some(1),
+                box4_value: None,
+                account: MedicalSaAccount::Archer,
+                ..Default::default()
+            });
+            crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Archer,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Archer,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Own {
+                    nonmedical: vec![MedicalAccountWithdrawal {
+                        date: 20260615,
+                        amount: nonmedical * 100,
+                    }],
+                    medical: 200000,
+                    rollover: None,
+                    disabled_since: None,
+                }),
+                ..paper_source
+            }
         },
     }
 }
 // A Form 1099-SA of a Medicare Advantage MSA: $2,000 spent on medical costs.
 pub(in crate::tests) fn medicare_msa(nonmedical: i64, prior: MedicareMsaPrior) -> FederalIncome {
     FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: (nonmedical + 2000) * 100,
-            account: MedicalSaAccount::MedicareAdvantage { prior },
-            payment: MedicalSaPayment::Own {
-                nonmedical: vec![MedicalAccountWithdrawal {
-                    date: 20260615,
-                    amount: nonmedical * 100,
-                }],
-                medical: 200000,
-                rollover: None,
-                disabled_since: None,
-            },
+        data: {
+            let paper_source = sa_source(Sa1099 {
+                origin: crate::HealthDocumentOrigin::Form1099Sa,
+                gross: (nonmedical + 2000) * 100,
+                box2_earnings: None,
+                box3_code: Some(1),
+                box4_value: None,
+                account: MedicalSaAccount::MedicareAdvantage,
+                ..Default::default()
+            });
+            crate::SaSource {
+                medicare_prior: Some(prior),
+                medicare_from_spouse: Some(false),
+                payment: Some(MedicalSaPayment::Own {
+                    nonmedical: vec![MedicalAccountWithdrawal {
+                        date: 20260615,
+                        amount: nonmedical * 100,
+                    }],
+                    medical: 200000,
+                    rollover: None,
+                    disabled_since: None,
+                }),
+                ..paper_source
+            }
         },
     }
 }
@@ -123,21 +173,40 @@ pub(in crate::tests) fn medicare_msa(nonmedical: i64, prior: MedicareMsaPrior) -
 // the holder's bills paid on 2026-06-16, box 1 the same $50,000.
 pub(in crate::tests) fn medical_inheritance(account: MedicalSaAccount) -> FederalIncome {
     FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: 5000000,
-            account,
-            payment: MedicalSaPayment::Inherited {
-                died: 20260615,
-                value: 5000000,
-                beneficiary: MedicalBeneficiary::Nonspouse {
-                    payments: vec![InheritedMedicalPayment {
-                        incurred: 20251231,
-                        paid: 20260616,
-                        amount: 1200000,
-                    }],
+        data: {
+            let paper_source = sa_source(Sa1099 {
+                origin: crate::HealthDocumentOrigin::Form1099Sa,
+                gross: 5000000,
+                box2_earnings: None,
+                box3_code: Some(4),
+                box4_value: Some(5000000),
+                account: account.clone(),
+                ..Default::default()
+            });
+            crate::SaSource {
+                medicare_prior: if matches!(&account, MedicalSaAccount::MedicareAdvantage) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
                 },
-            },
+                medicare_from_spouse: if matches!(&account, MedicalSaAccount::MedicareAdvantage) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Inherited {
+                    died: 20260615,
+
+                    beneficiary: MedicalBeneficiary::Nonspouse {
+                        payments: vec![InheritedMedicalPayment {
+                            incurred: 20251231,
+                            paid: 20260616,
+                            amount: 1200000,
+                        }],
+                    },
+                }),
+                ..paper_source
+            }
         },
     }
 }
@@ -174,6 +243,8 @@ pub(in crate::tests) fn archer_contributor(
     personal: i64,
 ) -> ArcherContributor {
     ArcherContributor {
+        personal_outside: personal * 100,
+
         employer_outside: 0,
         owner,
         personal: personal * 100,
@@ -215,14 +286,44 @@ pub(in crate::tests) fn add_hsa_distribution(
             .as_ref()
             .map_or(0, |v| crate::kernel::ratio::exact::rounded(&v.amount()).unwrap());
     let mut e = income(FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross,
-            account: MedicalSaAccount::Hsa,
-            payment: MedicalSaPayment::Own { medical, nonmedical, disabled_since, rollover },
+        data: {
+            let paper_source = sa_source(Sa1099 {
+                origin: HealthDocumentOrigin::Form1099Sa,
+                gross,
+                box2_earnings: None,
+                box3_code: Some(1),
+                box4_value: None,
+                account: MedicalSaAccount::Hsa,
+                ..Default::default()
+            });
+            crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Own {
+                    medical,
+                    nonmedical,
+                    disabled_since,
+                    rollover,
+                }),
+                ..paper_source
+            }
         },
     });
-    e.owner = owner;
+    e.owner = crate::DocumentOwner::from(owner);
     add(d, e);
     d.income.last().unwrap().id
 }
@@ -233,15 +334,40 @@ pub(in crate::tests) fn add_hsa_deemed(
     disabled_since: Option<u32>,
 ) -> i64 {
     let mut e = income(FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: HealthDocumentOrigin::TrusteeStatement,
-            gross: crate::kernel::ratio::exact::rounded(&event.amount())
-                .expect("synthetic deemed source fits its actual native statement"),
-            account: MedicalSaAccount::Hsa,
-            payment: MedicalSaPayment::Unreported { event, disabled_since },
+        data: {
+            let paper_source = sa_source(Sa1099 {
+                origin: HealthDocumentOrigin::TrusteeStatement,
+                gross: crate::kernel::ratio::exact::rounded(&event.amount())
+                    .expect("synthetic deemed source fits its actual native statement"),
+                box2_earnings: None,
+                box3_code: None,
+                box4_value: None,
+                account: MedicalSaAccount::Hsa,
+                ..Default::default()
+            });
+            crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Unreported { event, disabled_since }),
+                ..paper_source
+            }
         },
     });
-    e.owner = owner;
+    e.owner = crate::DocumentOwner::from(owner);
     add(d, e);
     d.income.last().unwrap().id
 }
@@ -249,13 +375,13 @@ pub(in crate::tests) fn hsa_distribution_mut(
     d: &mut FederalDraft,
     owner: Owner,
     index: usize,
-) -> &mut FederalMedicalDistribution {
+) -> &mut crate::SaSource {
     d.income
         .iter_mut()
-        .filter(|e| e.owner == owner)
+        .filter(|e| e.owner == crate::DocumentOwner::from(owner))
         .filter_map(|e| match &mut e.income {
             FederalIncome::MedicalDistribution { data }
-                if matches!(data.account, MedicalSaAccount::Hsa) =>
+                if matches!(data.account(), MedicalSaAccount::Hsa) =>
             {
                 Some(data)
             }
@@ -274,7 +400,7 @@ pub(in crate::tests) fn hsa_funding(funded: u32, loss: u32, amount: i64) -> HsaF
 }
 
 pub(in crate::tests) fn inherited_interest(amount: i64) -> FederalIncome {
-    FederalIncome::Interest { data: native_interest(amount, 0) }
+    FederalIncome::Interest { data: interest_source(native_interest(amount, 0)) }
 }
 
 pub(in crate::tests) fn hsa_correction(
@@ -405,8 +531,10 @@ pub(in crate::tests) fn hsa_prior_basis_funding(
     let id = h.funding[0].income;
     let e = d.income.iter_mut().find(|v| v.id == id).unwrap();
     if let FederalIncome::Retirement { data } = &mut e.income {
+        let mut data = edit_retirement(data);
         data.gross = (amount + other) * 100;
-        data.taxable = RetirementTaxable::IraBasis;
+        data.taxable = Some(RetirementTaxable::IraBasis);
+        drop(data);
     }
     d.adjustments.as_mut().unwrap().ira_basis =
         vec![prior_ira_basis(Owner::Taxpayer, prior, after)];
@@ -456,7 +584,8 @@ pub(in crate::tests) fn health_coverage_child(d: &mut FederalDraft, age: u32) ->
 // editor. The fixture chooses its actual year; production never infers this.
 pub(in crate::tests) fn health_w2_year(d: &mut FederalDraft, year: HealthEmployerYear) {
     let mut rows =
-        crate::health_employer::page_rows(d, crate::health_employer::bindings(d)).unwrap();
+        crate::health_employer::page_rows_current_year(d, crate::health_employer::bindings(d))
+            .unwrap();
     for row in &mut rows {
         row.allocation = year.clone();
     }
@@ -472,6 +601,7 @@ pub(in crate::tests) fn ltc_native_payee_cohort(
 ) -> FederalDraft {
     let amount = benefits + accelerated;
     let mut draft = complete(FederalStatus::Joint);
+    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     draft.injured_spouse = Some(crate::tests::support::builders::allocation());
     let insured = draft.next_id;
     let mut first = ltc_period(0, CareBenefitRecipient::Insured { other_payees: false });
@@ -493,8 +623,8 @@ pub(in crate::tests) fn ltc_native_payee_cohort(
     for _ in 0..count {
         let mut source = ltc_form(1, Some(insured));
         let FederalIncome::LtcBenefits { data } = &mut source else { unreachable!() };
-        data.benefits = benefits;
-        data.accelerated = accelerated;
+        data.form.benefits = Some(benefits);
+        data.form.accelerated = Some(accelerated);
         payments.push(InjuredLtcPeriodPayment { source: draft.next_id, amount });
         add(&mut draft, income(source));
     }
@@ -547,6 +677,9 @@ pub(in crate::tests) fn health_account_page(
     archer: ArcherContributionsPage,
 ) -> HsaPage {
     HsaPage {
+        contribution_sources: vec![],
+        employer_statements: vec![],
+
         employer_sources: vec![],
         linked_deposits: vec![],
         other_coverage: None,
@@ -575,4 +708,32 @@ pub(in crate::tests) fn archer_contributor_row(
         prior_employer_excess: vec![],
         excess_accounting: None,
     }
+}
+
+pub(in crate::tests) fn ltc_identity_fixture() -> (FederalDraft, i64, Ltc1099Paper) {
+    let mut draft = complete(FederalStatus::Single);
+    let mut record = ltc_record(LtcPeriods::One {
+        starts: 20260101,
+        ends: 20260131,
+        services: 1_000_000,
+        reimbursements: 200_000,
+        recipient: CareBenefitRecipient::Other { insured_received: 0, others_received: 0 },
+    });
+    let FederalIncome::LtcInsured { data } = &mut record else { unreachable!() };
+    data.insured = crate::FederalLtcInsuredPerson::Other { name: "Taylor Insured Example".into() };
+    add(&mut draft, income(record));
+    let period_id = draft.income.last().unwrap().id;
+    add(&mut draft, income(ltc_form(4_000, Some(period_id))));
+    let entry = draft.income.last().unwrap();
+    let id = entry.id;
+    let FederalIncome::LtcBenefits { data } = &entry.income else { unreachable!() };
+    let mut source = data.clone();
+    source.form.insured_party = crate::PrintedParty {
+        name: "Taylor Insured Example".into(),
+        federal_id: "***-**-4321".into(),
+        address: "7 Example Street, Apt. 00B\nSample City, NY 00123".into(),
+    };
+    source.form.date_certified = Some(20240229);
+    let paper = ltc_document(source);
+    (draft, id, paper)
 }

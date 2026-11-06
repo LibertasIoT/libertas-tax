@@ -1,4 +1,4 @@
-// Coverage: Form7206 source and deduction owner (coupled Units20/24 WIP).
+// Coverage: Form7206 source and deduction owner.
 // Complete monthly/LTC editor facts are retained under the actual Business,
 // PartnerK1 or ScorpK1; stable income IDs identify plans, and an S-corp plan
 // selects an existing same-owner W-2 for its Medicare-wage limit. No wage or
@@ -28,17 +28,23 @@
 // classes conserve each source through deduction and retained credit; missing
 // medical attribution withholds that benefit. Broader annual-owner cent
 // fitting and retirement coordination remain open in the owning audit; this
-// checkpoint does not claim complete coupled Units20/24 support.
+// checkpoint does not claim complete coupled deduction support.
 // Evidence: health_accounts Form7206 fixtures, partner health fixtures and
 // interview::scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave.
 
-use crate::kernel::lines::line;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+pub use crate::medical_care_source::{CareContractQualification, MedicalCarePremium};
+pub(crate) use crate::medical_care_source::{
+    medical_care_issue, medical_expenses_issue, medical_source_amount,
+};
+
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{Exact, dollar_allocations, whole};
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line;
 use crate::marketplace::CalculationMoney;
-use crate::{FederalDraft, FederalIncome, FederalResult, Owner};
+use crate::{FederalDraft, FederalIncome, FederalResult};
 use alloc::{collections::BTreeMap, format, vec::Vec};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
@@ -61,7 +67,8 @@ pub enum EntityPremiumPayment {
     Reimbursed {
         /// Actual reimbursement included in these premiums
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
         /// Reimbursement was included in the existing K-1 guaranteed payments or W-2 wages
         /// Check the existing K-1 guaranteed-payment statement or W-2 box 1 reporting. This does not add another income amount.
@@ -205,11 +212,13 @@ impl HealthEstablishment {
 pub struct ReimbursedHealthPremiums {
     /// Included ordinary premiums actually reimbursed by this entity
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub premiums: i64,
     /// Included reimbursement of the nonmedical child premium increase
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub child_increase: i64,
 }
@@ -225,12 +234,14 @@ pub struct BusinessHealthMonth {
     /// After-tax premiums paid for this month's coverage
     /// Include medical, dental, vision and voluntary Medicare premiums paid in 2026. Exclude Marketplace premiums: select their saved Form 1095-A in the policy assignments instead. Exclude tax-free reimbursements, HSA/FSA payments and tax-free retired public-safety distributions. Do not enter these premiums elsewhere. For an assigned Marketplace month with no other premiums, enter zero here to retain its actual employer eligibility.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub premiums: i64,
     /// Included premium increase for a child under 27 who does not qualify for medical itemization
     /// This is part of the total above, not an additional premium. Enter only the increase attributable to adding your son, daughter, stepchild, adopted child or legally placed foster child who is under 27 at December 31, 2026 and is not a medical-expense dependent. Enter zero if adding the child did not increase family premiums. Amounts not used by the self-employed deduction cannot enter Schedule A. Medical-expense dependents include qualifying children of divorced parents and dependents allowed under the special medical-expense rules, even if not claimed on your return.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub child_increase: i64,
     /// Actual entity reimbursement of this month's included premiums
@@ -253,73 +264,19 @@ pub struct BusinessCareMonth {
     /// After-tax premium paid for this coverage
     /// Exclude tax-free reimbursements and payments funded with tax-free HSA/FSA or public-safety retirement amounts. Do not repeat these premiums in ordinary health coverage or itemized medical expenses.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub premiums: i64,
     /// Included premium actually reimbursed by this entity
     /// Complete only for an entity Reimbursed plan. A partial plan reimbursement requires the actual funded amount for this contract and month, including zero. Do not repeat it as another premium or income amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub reimbursed: Option<i64>,
     /// Eligible for employer-subsidized long-term-care insurance during this month
     /// Consider your employer and your spouse's employer, even if you declined enrollment. This is eligibility for long-term-care coverage, not ordinary medical insurance. Check the employer’s long-term-care benefit eligibility records for this month.
     pub employer_eligible: bool,
-}
-
-/// Qualification of this long-term-care insurance contract
-/// Use the insurer's contract classification and actual issue/change history.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    LibertasAvroEncode,
-    LibertasAvroDecode,
-    LibertasExport,
-    libertas_macros::VariantIndex,
-)]
-pub enum CareContractQualification {
-    /// Meets section 7702B(b)'s qualified-contract requirements
-    Qualified,
-    /// Contract issued before 1997 under the state's then-applicable LTC law
-    Grandfathered {
-        /// Actual original issue date
-        #[libertas_date_only]
-        // IRC 7702B(f): grandfathered LTC contracts were issued before January 1, 1997.
-        #[libertas_number(min = 10101, max = 19961231)]
-        issued: u32,
-        /// Met the LTC insurance law of the state where issued at that time
-        /// Check the insurer’s original contract and classification statement.
-        state_compliant: bool,
-        /// Contract has since been materially changed
-        /// Check the insurer’s amendments and current classification statement.
-        /// A material change can end grandfathered treatment. If the changed contract independently satisfies section 7702B(b), choose Qualified instead.
-        materially_changed: bool,
-    },
-    /// Does not qualify for the qualified-LTC premium allowance
-    Nonqualified,
-}
-impl CareContractQualification {
-    pub(crate) fn valid(&self) -> bool {
-        match self {
-            Self::Grandfathered { issued, .. } => {
-                let year = issued / 10000;
-                let month = issued / 100 % 100;
-                let day = issued % 100;
-                (1..=1996).contains(&year)
-                    && (1..=crate::dates::days_in_month(year, month)).contains(&day)
-            }
-            _ => true,
-        }
-    }
-    pub(crate) fn qualified(&self) -> bool {
-        self.valid()
-            && matches!(
-                self,
-                Self::Qualified
-                    | Self::Grandfathered { state_compliant: true, materially_changed: false, .. }
-            )
-    }
 }
 
 /// One insured person's long-term-care contracts with the same qualification facts
@@ -389,77 +346,6 @@ impl BusinessCarePremium {
         }
         None
     }
-}
-
-/// Personal qualified long-term-care premiums
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct MedicalCarePremium {
-    /// Insured person
-    /// The person's identity on the people page: -1 for you, -2 for your spouse, otherwise the dependent's identity. A person is told apart by this, never by name.
-    #[libertas_hidden]
-    #[libertas_read_only]
-    #[libertas_default(0)]
-    pub person: i64,
-    /// Unreimbursed after-tax premiums paid in 2026
-    /// Enter full premiums before the age limit. Exclude employer-paid or tax-free reimbursed amounts, HSA/FSA payments, and amounts already reported in business or public-safety coverage. Enter only premiums eligible for your medical deduction for yourself, your spouse or a medical-expense dependent.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub premiums: i64,
-    /// Actual contract qualification
-    /// Nonqualified contracts receive no qualified-LTC premium benefit; known income and other independent source facts remain retained.
-    pub qualified: CareContractQualification,
-}
-impl MedicalCarePremium {
-    #[allow(dead_code)] // Retain the existing Boolean validation API beside its typed owner.
-    pub(crate) fn valid(&self) -> bool {
-        self.issue().is_none()
-    }
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        let field = if self.person == 0 {
-            "person"
-        } else if !self.qualified.valid() {
-            "qualified"
-        } else if self.premiums < 0 {
-            "premiums"
-        } else {
-            return None;
-        };
-        Some(medical_source_invalid().at_field(field))
-    }
-}
-
-fn medical_source_invalid() -> crate::validation::ValidationIssue {
-    crate::validation::ValidationIssue::new(
-        "ISSUE_INTERVIEW_REVIEW_THE_ACCEPTED_PAGE_VALUES_BEFORE_65B6D7B7",
-    )
-}
-
-// These stages also serve the original stored-validation positions: LTC
-// precedes the other tax fields, while medical expenses follow those fields.
-pub(crate) fn medical_care_issue(
-    premiums: &[MedicalCarePremium],
-) -> Option<crate::validation::ValidationIssue> {
-    premiums.iter().enumerate().find_map(|(index, premium)| {
-        premium.issue().map(|issue| issue.in_list("long_term_care", index))
-    })
-}
-
-pub(crate) fn medical_expenses_issue(expenses: i64) -> Option<crate::validation::ValidationIssue> {
-    (expenses < 0).then(|| medical_source_invalid().at_field("expenses"))
-}
-
-pub(crate) fn medical_source_amount(
-    expenses: i64,
-    premiums: &[MedicalCarePremium],
-) -> Result<i64, crate::validation::ValidationIssue> {
-    if let Some(issue) = medical_care_issue(premiums).or_else(|| medical_expenses_issue(expenses)) {
-        return Err(issue);
-    }
-    // Known source cents, checked only after the actual first source failure.
-    crate::kernel::ratio::checked_sum(
-        core::iter::once(expenses).chain(premiums.iter().map(|premium| premium.premiums)),
-    )
-    .ok_or_else(|| medical_source_invalid().at_record())
 }
 
 // Rev. Proc. 2025-32 section 4.27, source cents.
@@ -1060,7 +946,7 @@ fn health_plan(income: &FederalIncome) -> Option<&BusinessHealthInsurance> {
     match income {
         FederalIncome::Business { data } => Some(&data.health_insurance),
         FederalIncome::Partnership { data } => Some(&data.health_insurance),
-        FederalIncome::Scorp { data } => Some(&data.health_insurance),
+        FederalIncome::Scorp { data } => Some(&data.personal.health_insurance),
         _ => None,
     }
 }
@@ -1068,7 +954,7 @@ fn health_plan(income: &FederalIncome) -> Option<&BusinessHealthInsurance> {
 // Source admission includes accepted multi-activity plans and their real wage
 // links. Financial allowance owners still require their separate source feed;
 // this view does not enroll graph records in health_plan's calculation inputs.
-fn source_health_plan(income: &FederalIncome) -> Option<&BusinessHealthInsurance> {
+pub(crate) fn source_health_plan(income: &FederalIncome) -> Option<&BusinessHealthInsurance> {
     match income {
         FederalIncome::PartnershipActivities { data } => data.health_insurance.as_ref(),
         FederalIncome::ScorpActivities { data } => data.health_insurance.as_ref(),
@@ -1165,27 +1051,17 @@ pub(crate) fn policy_medical_class(
     PolicyMedicalClass::Known { medical: &source.paid - &child, child }
 }
 
-pub(crate) fn medical_costs_issue(
+pub(crate) fn policy_costs_issue(
     facts: &crate::MarketplaceFacts,
-    d: &FederalDraft,
+    people: &crate::marketplace_projection::SourcePeople<'_>,
+    policy: &crate::MarketplacePolicyRecord,
 ) -> Option<crate::validation::ValidationIssue> {
-    let family = crate::marketplace::family_people(d);
-    let (current, births) = crate::marketplace::current_people(d);
-    let people = crate::marketplace_projection::SourcePeople {
-        family: &family,
-        current: &current,
-        births: &births,
-    };
-    for (form_index, policy) in facts.forms.iter().enumerate() {
-        for (cost_index, cost) in policy.medical_costs.iter().enumerate() {
-            if let Ok(Some(source)) = crate::marketplace_projection::medical_policy_month(
-                facts, &people, policy, cost.month,
-            ) && let Some(issue) = policy_medical_cost_issue(&source, Some(cost))
-            {
-                return Some(
-                    issue.in_list("medical_costs", cost_index).in_list("forms", form_index),
-                );
-            }
+    for (cost_index, cost) in policy.medical_costs.iter().enumerate() {
+        if let Ok(Some(source)) =
+            crate::marketplace_projection::medical_policy_month(facts, people, policy, cost.month)
+            && let Some(issue) = policy_medical_cost_issue(&source, Some(cost))
+        {
+            return Some(issue.in_list("medical_costs", cost_index));
         }
     }
     None
@@ -1388,7 +1264,34 @@ pub(crate) fn calculate(
     specified_override: Option<&BTreeMap<i64, Exact>>,
     r: &mut FederalResult,
 ) -> HealthResult {
-    match calculate_with_money(
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_claims(
+        d,
+        half,
+        half_by_activity,
+        optional_earnings,
+        sep,
+        public_safety,
+        specified_override,
+        r,
+        &source_claims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn calculate_with_claims(
+    d: &FederalDraft,
+    half: [i64; 2],
+    half_by_activity: Option<&BTreeMap<i64, i64>>,
+    optional_earnings: &BTreeMap<i64, i64>,
+    sep: &crate::sep::SepResult,
+    public_safety: &crate::public_safety::PublicSafetyResult,
+    specified_override: Option<&BTreeMap<i64, Exact>>,
+    r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> HealthResult {
+    match calculate_with_money_with_claims(
         d,
         half,
         half_by_activity,
@@ -1400,6 +1303,7 @@ pub(crate) fn calculate(
         None,
         r,
         None,
+        source_claims,
     ) {
         Ok(result) => result,
         Err(issue) => panic!("known health source projection: {issue:?}"),
@@ -1418,7 +1322,34 @@ pub(crate) fn calculate_cents(
     specified_override: Option<&BTreeMap<i64, Exact>>,
     r: &mut FederalResult,
 ) -> HealthResult {
-    match calculate_with_money(
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_cents_with_claims(
+        d,
+        half,
+        half_by_activity,
+        optional_earnings,
+        sep,
+        public_safety,
+        specified_override,
+        r,
+        &source_claims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn calculate_cents_with_claims(
+    d: &FederalDraft,
+    half: [i64; 2],
+    half_by_activity: Option<&BTreeMap<i64, i64>>,
+    optional_earnings: &BTreeMap<i64, i64>,
+    sep: &crate::sep::SepResult,
+    public_safety: &crate::public_safety::PublicSafetyResult,
+    specified_override: Option<&BTreeMap<i64, Exact>>,
+    r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> HealthResult {
+    match calculate_with_money_with_claims(
         d,
         half,
         half_by_activity,
@@ -1430,12 +1361,14 @@ pub(crate) fn calculate_cents(
         None,
         r,
         None,
+        source_claims,
     ) {
         Ok(result) => result,
         Err(issue) => panic!("known health source projection: {issue:?}"),
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn calculate_with_money(
     d: &FederalDraft,
@@ -1449,6 +1382,38 @@ pub(crate) fn calculate_with_money(
     selected: Option<&crate::Section179PreparedAllocation>,
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
+) -> Result<HealthResult, CalculationIssue> {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_money_with_claims(
+        d,
+        half,
+        half_by_activity,
+        optional_earnings,
+        sep,
+        public_safety,
+        specified_override,
+        money,
+        selected,
+        r,
+        home,
+        &source_claims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn calculate_with_money_with_claims(
+    d: &FederalDraft,
+    half: [i64; 2],
+    half_by_activity: Option<&BTreeMap<i64, i64>>,
+    optional_earnings: &BTreeMap<i64, i64>,
+    sep: &crate::sep::SepResult,
+    public_safety: &crate::public_safety::PublicSafetyResult,
+    specified_override: Option<&BTreeMap<i64, Exact>>,
+    money: CalculationMoney,
+    selected: Option<&crate::Section179PreparedAllocation>,
+    r: &mut FederalResult,
+    home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<HealthResult, CalculationIssue> {
     let mut result = HealthResult::default();
     let (canonical, source_issues) =
@@ -1580,23 +1545,23 @@ pub(crate) fn calculate_with_money(
     for (owner, half_se) in half.iter().enumerate() {
         let entries: Vec<_> = d.income.iter()
             .filter(|e| !(d.setup.as_ref().is_some_and(crate::community::applies)
-                && e.owner == Owner::Spouse && matches!(e.income, FederalIncome::Partnership { .. })))
-            .filter(|e| usize::from(e.owner == Owner::Spouse) == owner)
+                && e.owner == crate::DocumentOwner::Spouses && matches!(e.income, FederalIncome::Partnership { .. })))
+            .filter(|e| usize::from(e.owner == crate::DocumentOwner::Spouses) == owner)
             .filter_map(|e| {
                 let plan = health_plan(&e.income)?;
                 let profit = match &e.income {
                     FederalIncome::Business { data } => match optional_earnings.get(&e.id) {
                         Some(amount) => *amount,
                         None => {
-                            let expenses = match crate::section179_return::expenses(d, e.id, data, selected,home).map(|expense| expense - selected.map_or(0, |allocation| allocation.ordinary_risk_adjustment(e.id))) {
+                            let expenses = match crate::section179_return::expenses_with_claims(d, e.id, data, selected,home, source_claims).map(|expense| expense - selected.map_or(0, |allocation| allocation.ordinary_limit_adjustment(e.id))) {
                                 Ok(expenses) => expenses,
                                 Err(issue) => return Some(Err(issue)),
                             };
-                            let nondeductible = match crate::clergy::nondeductible_with_section179(d, e.id, selected, home) {
+                            let nondeductible = match crate::clergy::nondeductible_with_section179_with_claims(d, e.id, selected, home, source_claims) {
                                 Ok(amount) => amount,
                                 Err(issue) => return Some(Err(issue)),
                             };
-                            let routed = match crate::federal_rules::farm_routed_income(d, owner, e.id) {
+                            let routed = match crate::federal_rules::farm_routed_income_with_claims(d, owner, e.id, source_claims) {
                                 Ok(amount) => amount,
                                 Err(issue) => return Some(Err(issue)),
                             };
@@ -1612,7 +1577,7 @@ pub(crate) fn calculate_with_money(
                             BusinessHealthInsurance::Plan { establishment: HealthEstablishment::Scorporation { wage, .. }, .. } => d.income.iter().find_map(|source| {
                                 if source.id != *wage || source.owner != e.owner { return None; }
                                 match &source.income {
-                                    FederalIncome::Wage { data } => Some(money.units(&whole(data.medicare_wages))),
+                                    FederalIncome::Wage { data } => Some(money.units(&whole(crate::FederalWage::from(data).medicare_wages))),
                                     _ => None,
                                 }
                             }).unwrap_or(0),

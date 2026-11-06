@@ -1,0 +1,111 @@
+{
+ "source": {
+  "title": "IRS MeF ATS Test Scenario 12, TY2026 Form 1040 (Sam Gardenia: 1040, Sch. 1, 2, 3, C, SE, Form 3800 + Sch. A, 4562-B, 7205, 7207, 7220, W-2)",
+  "edition": "TREASURY/IRS DRAFT Version A (forms created 2026-03 to 2026-06)",
+  "scenario": 12,
+  "url": "https://www.irs.gov/pub/irs-efile/ty26-1040-ats-scenario-12.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "6d44ae53fe842b804258ca1a49400f0cc5d15a17b6fdb0cc74c016927b54c9bf"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "W-2 box 6 entered as 1,535.23",
+   "reason": "the ATS prints whole dollars (1,535); the exact 1.45% of box 5 (105,878) is 1,535.23 and the App refuses Medicare withholding below it (triage F-1)"
+  },
+  {
+   "fact": "taxpayer birth date 1990-06-15",
+   "reason": "the scenario gives no birth date; any age 19-64 changes nothing here"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19900615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 100836,
+     "withholding": 14444,
+     "social_wages": 105878,
+     "social_tax": 6564,
+     "medicare_wages": 105878,
+     "medicare_tax": 1535.23
+    }
+   ]
+  },
+  {
+   "page": "business",
+   "receipts": 25235,
+   "expenses": {
+    "insurance": 550,
+    "legal_and_professional": 125,
+    "office": 1000,
+    "other_rent": 2500,
+    "supplies": 6532,
+    "taxes_and_licenses": 200
+   },
+   "special": true
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "1a",
+   "amount": 100836,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "8",
+   "amount": 8661,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "9",
+   "amount": 109497,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "23",
+   "amount": 1224,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope",
+ "known_gaps": [
+  {
+   "form": "7205",
+   "lines": "1-5, Schedule C line 27a",
+   "ledger": "SCHC-G6",
+   "note": "A Form 7205 designer deduction leaves the business out of the estimate (WARN_BUSINESS_LEFT_OUT); scenario-12-7205 asserts it (D-1)"
+  }
+ ],
+ "expect_mismatch": [
+  {
+   "form": "1040",
+   "line": "8",
+   "class": "D",
+   "triage": "D-1"
+  },
+  {
+   "form": "1040",
+   "line": "9",
+   "class": "D",
+   "triage": "D-1"
+  },
+  {
+   "form": "1040",
+   "line": "23",
+   "class": "D",
+   "triage": "D-1"
+  }
+ ],
+ "expected_notes": [
+  "WARN_BUSINESS_LEFT_OUT"
+ ],
+ "expected_note": "The same facts as scenario-12 with the Form 7205 designer deduction declared as a special treatment: the App leaves the business out, so Schedule 1 line 3, Schedule 2 line 4 and everything after them differ from the source (D-1, ledger SCHC-G6)."
+}

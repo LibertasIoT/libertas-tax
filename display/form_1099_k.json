@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 995000, "rule": {"select": "^<Form1099KPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_BROKER_YEAR", "fields": ["calendar_year", "corrected"]}, {"fields": ["payer", "filer_telephone", "filer_is_pse", "filer_is_epf_or_other", "payment_card", "third_party_network"]}, {"fields": ["recipient", "pse_name_and_telephone", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "card_not_present", "cash_tips", "tip_occupation_codes", "merchant_category_code", "payment_transactions", "withholding"]}, {"fields": ["january", "february", "march", "april", "may", "june"]}, {"fields": ["july", "august", "september", "october", "november", "december"]}, {"fields": ["state_details"]}]}}
+  ]
+}

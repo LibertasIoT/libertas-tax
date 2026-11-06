@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 269000, "rule": {"select": "^<QsbsSale>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_QSBS_SALES", "fields": ["source_issuer", "source_recipient", "issuer", "lots", "reporting", "withholding"]}]}},
+    {"order": 270000, "rule": {"select": "^<QsbsSale>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_QSBS_SALES", "fields": ["source_issuer", "source_recipient", "issuer", "lots", "reporting", "withholding"]}]}}
+  ]
+}

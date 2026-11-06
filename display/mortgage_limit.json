@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 281000, "rule": {"select": "^<MortgageLoan>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["property", "lender", "incurred", "details"]}, {"ratio": 1, "fields": ["interest", "outstanding_principal", "refund_of_interest", "mortgage_insurance_premiums", "points"]}]}},
+    {"order": 538000, "rule": {"select": "^<MortgageRefundOrigin>", "flatten": true}},
+    {"order": 651000, "rule": {"select": "^<MortgageInterestRefund>", "flatten": true}},
+    {"order": 652000, "rule": {"select": "^<MortgagePoints>", "flatten": true}},
+    {"order": 653000, "rule": {"select": "^<MortgageLender>", "flatten": true}},
+    {"order": 654000, "rule": {"select": "^<MortgageAverageBalance>", "flatten": true}}
+  ]
+}

@@ -1,10 +1,9 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
-use crate::tests::support::builders::k1res::{
-    documents, input, ordinary_multi_current_scorp_qbi_parent,
-};
-use crate::tests::support::client::income_pages::catalog_preview_document;
+use crate::tests::cross::interview::accepted;
+use crate::tests::support::builders::k1res::expected_input;
+use crate::tests::support::builders::k1res::{documents, ordinary_multi_current_scorp_qbi_parent};
 use crate::tests::support::client::k1res::ordinary_multi_current_scorp_qbi_session;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::*;
 
 #[test]
@@ -28,21 +27,17 @@ fn current_scorp_component_statement_preserves_taxable_income_and_native_lifecyc
     let dirty = session.dirty;
     let native_ids: Vec<_> =
         crate::k1_activity::source(&saved.income[index].income).unwrap().ids().collect();
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     let row = documents(&mut request)
         .iter()
-        .position(|row| matches!(row.document, IncomeDocument::K1ScorpActivities(_)))
+        .position(|row| matches!(row.document, crate::K1Document::K1ScorpActivities(_)))
         .unwrap();
-    let mut preview = catalog_preview_document(documents(&mut request)[row].document.clone());
-    let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-    *preview_id = id;
-    assert!(matches!(
-        send(&mut session, preview),
-        Reply::Response(P::IncomePreview { preview: Some(600_000), .. })
-    ));
+
     assert_eq!(session.draft, saved);
     assert_eq!(session.dirty, dirty);
-    let IncomeDocument::K1ScorpActivities(page) = &mut documents(&mut request)[row].document else {
+    let crate::K1Document::K1ScorpActivities(page) = &mut documents(&mut request)[row].document
+    else {
         unreachable!()
     };
     let K1ComponentStatementPage::Entered { source } = &mut page.activities.statement else {
@@ -61,13 +56,16 @@ fn current_scorp_component_statement_preserves_taxable_income_and_native_lifecyc
     };
     *current_income = 200_000;
     assert!(matches!(
-        send(&mut session, crate::tests::support::client::estimate_documents_from_save(&request)),
-        Reply::Response(P::IncomeRunningEstimate { .. })
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            crate::tests::support::client::estimate_documents_from_save(&request)
+        ),
+        Reply::Response(P::Review { .. })
     ));
     assert_eq!(session.draft, saved);
     assert_eq!(session.dirty, dirty);
-    accepted(&send(&mut session, request));
-    assert_eq!(session.draft.revision, saved.revision + 1);
+    accepted(&send_fixture(&mut session, request));
+    assert_eq!(session.draft.revision, saved.revision + 2);
     assert_eq!(session.draft.next_id, saved.next_id);
     assert_eq!(
         crate::k1_activity::source(&session.draft.income[index].income)
@@ -79,15 +77,15 @@ fn current_scorp_component_statement_preserves_taxable_income_and_native_lifecyc
     let corrected = supported(&session.draft);
     assert_eq!(value(&corrected, "agi"), 66_000);
     assert_eq!(value(&corrected, "qbi_deduction"), 400);
-    let accepted_source = input(&session.draft.income[index].income);
+    let accepted_source = expected_input(&session.draft, &session.draft.income[index]);
     let mut cold = restart(session.draft.clone());
-    let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let mut reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     let reopened_source = documents(&mut reopened)
         .iter()
-        .find(|row| matches!(row.document, IncomeDocument::K1ScorpActivities(_)))
+        .find(|row| matches!(row.document, crate::K1Document::K1ScorpActivities(_)))
         .unwrap();
     assert_eq!(reopened_source.document, accepted_source);
-    accepted(&send(&mut cold, reopened));
+    accepted(&send_fixture(&mut cold, reopened));
     assert_eq!(supported(&cold.draft), corrected);
     assert_eq!(
         crate::k1_activity::source(&cold.draft.income[index].income)
@@ -169,7 +167,7 @@ fn current_scorp_statement_uses_shared_current_sstb_and_wage_limits() {
         .iter_mut()
         .find(|entry| matches!(entry.income, FederalIncome::Wage { .. }))
         .unwrap();
-    *wage_entry = wage(wage_entry.id, wage_entry.owner, 60_000_000, 650_000);
+    *wage_entry = wage(wage_entry.id, wage_entry.owner.owned(), 60_000_000, 650_000);
     let index = session
         .draft
         .income

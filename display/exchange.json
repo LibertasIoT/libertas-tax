@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"order": 407000, "rule": {"select": "^<RentalExchange>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_EXCHANGE_DATES", "fields": ["transferred", "identified", "received", "extended"]}, {"title": "DISPLAY_EXCHANGE_RECEIVED", "fields": ["replacement", "cash_received", "other_received", "debt_relieved"]}, {"title": "DISPLAY_EXCHANGE_GIVEN", "fields": ["debt_assumed", "cash_paid", "expenses", "land_value"]}, {"title": "DISPLAY_EXCHANGE_OTHER_SIDE", "fields": ["party", "special"]}]}},
+    {"order": 408000, "rule": {"select": "^<RentalExchange>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_EXCHANGE_DATES", "fields": ["transferred", "identified", "received", "extended"]}, {"title": "DISPLAY_EXCHANGE_RECEIVED", "fields": ["replacement", "cash_received", "other_received", "debt_relieved"]}, {"title": "DISPLAY_EXCHANGE_GIVEN", "fields": ["debt_assumed", "cash_paid", "expenses", "land_value"]}, {"title": "DISPLAY_EXCHANGE_OTHER_SIDE", "fields": ["party", "special"]}]}},
+    {"order": 409000, "rule": {"select": "^<ReplacementUse>", "flatten": true}},
+    {"order": 410000, "rule": {"select": "^<ExchangeParty>", "flatten": true}},
+    {"order": 411000, "rule": {"select": "^<RelatedDisposal>", "flatten": true}},
+    {"order": 630000, "rule": {"select": "^<RelatedExchange>", "flatten": {"name_row": false}}},
+    {"order": 795000, "rule": {"select": "^<RelatedExchange>.property", "promote": true}}
+  ]
+}

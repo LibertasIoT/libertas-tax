@@ -2,7 +2,10 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use libertas::LibertasUser;
 
-use crate::{FederalDraft, TaxAppData, TaxDataKey};
+use crate::{
+    FederalDraft, FederalIncome, FederalIncomeEntry, PartnerPersonalRecords,
+    StoredPartnershipDocument, StoredScorpDocument, TaxAppData, TaxDataKey,
+};
 
 // This pure adapter owns only FederalDraft.income. A native FederalSale is
 // already one semantic sale under its FederalIncomeEntry.id. The native
@@ -58,7 +61,25 @@ pub fn project(
                     kind: 7,
                     id: entry.id,
                 },
-                TaxAppData::IncomeDocument { position, entry: entry.clone() },
+                match &entry.income {
+                    crate::FederalIncome::Partnership { data } if data.source.is_some() => {
+                        let record = crate::StoredPartnershipDocument::from_entry(entry)
+                            .ok_or(IncomeRecordError::UnexpectedRecord)?;
+                        TaxAppData::PartnershipDocument { position, record }
+                    }
+                    crate::FederalIncome::Scorp { .. } => {
+                        let record = crate::StoredScorpDocument::from_entry(entry)
+                            .ok_or(IncomeRecordError::UnexpectedRecord)?;
+                        TaxAppData::ScorpDocument { position, record }
+                    }
+                    crate::FederalIncome::Broker { .. } => {
+                        let mut stored = entry.clone();
+                        stored.printed = None;
+                        stored.state_source = None;
+                        TaxAppData::IncomeDocument { position, entry: stored }
+                    }
+                    _ => TaxAppData::IncomeDocument { position, entry: entry.clone() },
+                },
             ))
         })
         .collect()
@@ -89,9 +110,32 @@ pub fn assemble(
         if owner != user || tax_year != draft.tax_year || record_copy != copy {
             return Err(IncomeRecordError::WrongNamespace);
         }
-        let TaxAppData::IncomeDocument { position, entry } = value else {
-            return Err(IncomeRecordError::UnexpectedRecord);
+        let (position, mut entry) = match value {
+            TaxAppData::IncomeDocument { position, entry } => {
+                if matches!(&entry.income,crate::FederalIncome::Partnership {data} if data.source.is_some())
+                {
+                    return Err(IncomeRecordError::UnexpectedRecord);
+                }
+                if matches!(&entry.income, crate::FederalIncome::Scorp { .. }) {
+                    return Err(IncomeRecordError::UnexpectedRecord);
+                }
+                (position, entry)
+            }
+            TaxAppData::ScorpDocument { position, record } => {
+                (position, record.into_entry().map_err(|_| IncomeRecordError::UnexpectedRecord)?)
+            }
+            TaxAppData::PartnershipDocument { position, record } => {
+                (position, record.into_entry().map_err(|_| IncomeRecordError::UnexpectedRecord)?)
+            }
+            _ => return Err(IncomeRecordError::UnexpectedRecord),
         };
+        if let crate::FederalIncome::Broker { data } = &entry.income {
+            if entry.printed.is_some() || entry.state_source.is_some() {
+                return Err(IncomeRecordError::UnexpectedRecord);
+            }
+            entry.printed = Some(data.printed_names());
+            entry.state_source = crate::IncomeStateSource::from_document(&data.income_source());
+        }
         if kind != 7 {
             return Err(IncomeRecordError::UnexpectedRecord);
         }
@@ -110,4 +154,71 @@ pub fn assemble(
     }
     draft.income = entries.into_values().collect();
     Ok(())
+}
+
+impl StoredScorpDocument {
+    pub(crate) fn from_entry(entry: &FederalIncomeEntry) -> Option<Self> {
+        let FederalIncome::Scorp { data } = &entry.income else { return None };
+        let source = data.clone();
+        source.admission_issue().map_or(Some(()), |_| None)?;
+        Some(Self {
+            id: entry.id,
+            label: entry.label.clone(),
+            owner: entry.owner.owned(),
+            community: entry.community,
+            state_source: entry.state_source.clone(),
+            refund_management: entry.refund_management,
+            source,
+        })
+    }
+    pub(crate) fn into_entry(self) -> Result<FederalIncomeEntry, &'static str> {
+        if let Some(issue) = self.source.admission_issue() {
+            return Err(issue.key);
+        }
+        Ok(FederalIncomeEntry {
+            id: self.id,
+            label: self.label,
+            owner: crate::DocumentOwner::from(self.owner),
+            community: self.community,
+            printed: Some(self.source.printed_names()),
+            state_source: self.state_source,
+            refund_management: self.refund_management,
+            income: FederalIncome::Scorp { data: self.source },
+        })
+    }
+}
+
+impl StoredPartnershipDocument {
+    pub(crate) fn from_entry(entry: &FederalIncomeEntry) -> Option<Self> {
+        let FederalIncome::Partnership { data } = &entry.income else { return None };
+        let mut source = data.source.as_deref()?.clone();
+        source.bind_accepted_child_ids(data);
+        source.admission_issue().map_or(Some(()), |_| None)?;
+        Some(Self {
+            id: entry.id,
+            label: entry.label.clone(),
+            owner: entry.owner.owned(),
+            community: entry.community,
+            state_source: entry.state_source.clone(),
+            refund_management: entry.refund_management,
+            source,
+            personal: PartnerPersonalRecords::from_calculation(data)?,
+        })
+    }
+    pub(crate) fn into_entry(self) -> Result<FederalIncomeEntry, &'static str> {
+        if let Some(issue) = self.source.admission_issue() {
+            return Err(issue.key);
+        }
+        let printed = Some(self.source.printed_names());
+        Ok(FederalIncomeEntry {
+            id: self.id,
+            label: self.label,
+            owner: crate::DocumentOwner::from(self.owner),
+            community: self.community,
+            printed,
+            state_source: self.state_source,
+            refund_management: self.refund_management,
+            income: FederalIncome::Partnership { data: self.source.calculation(&self.personal) },
+        })
+    }
 }

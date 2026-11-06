@@ -13,10 +13,21 @@ pub(in crate::tests) fn roth_withdrawal(
     date: u32,
 ) -> FederalIncomeEntry {
     let mut e = income(FederalIncome::Roth {
-        data: RothWithdrawal {
+        data: roth_source(RothWithdrawal {
+            form_boxes: Default::default(),
+            box_2a: amount * 100,
+            box_3: 0,
+            box_6: 0,
+            box_8a: 0,
+            box_8b_percent: None,
+            box_9a_percent: None,
+            box_9b: None,
+            box_10: 0,
+            box7: crate::DistributionCodes::CODE_J.0,
+            ira: false,
+            trump: false,
             sequence: None,
             rolled_over: 0,
-            simple_early: false,
             disaster: DisasterDistribution::No,
             exception: None,
             repaid: None,
@@ -25,9 +36,9 @@ pub(in crate::tests) fn roth_withdrawal(
             withholding: 12300,
             code: RothCode::Early,
             inherited: InheritedLink::No,
-        },
+        }),
     });
-    e.owner = owner;
+    e.owner = crate::DocumentOwner::from(owner);
     e
 }
 
@@ -64,6 +75,7 @@ pub(in crate::tests) fn roth_hsa_funding(
 pub(in crate::tests) fn roth_earlier_funding() -> FederalDraft {
     let mut d = roth_hsa_funding(600, 800, 700, 0);
     if let FederalIncome::Roth { data } = &mut d.income[1].income {
+        let mut data = edit_roth(data);
         data.distributed = 20260615;
     }
     let transfer = &mut d.adjustments.as_mut().unwrap().hsa[0].funding[0];
@@ -73,7 +85,7 @@ pub(in crate::tests) fn roth_earlier_funding() -> FederalDraft {
     add(&mut d, roth_withdrawal(Owner::Taxpayer, 200, 20260915));
     for entry in &mut d.income {
         if let FederalIncome::Roth { data } = &mut entry.income {
-            data.withholding = 0;
+            data.form.withholding = Some(0);
         }
     }
     d
@@ -108,9 +120,12 @@ pub(in crate::tests) fn inherited_roth_payment(
 ) -> FederalIncomeEntry {
     let mut e = roth_withdrawal(owner, gross, 20260601);
     let FederalIncome::Roth { data } = &mut e.income else { unreachable!() };
+    let mut data = edit_roth(data);
     data.code = RothCode::ExceptionApplies;
+    data.box7 = crate::DistributionCodes::CODE_T.0;
     data.withholding = 2000;
     data.inherited = crate::InheritedLink::Yes { account };
+    drop(data);
     e
 }
 // The record and one payment that names it, in dollars. Returns the record's identity.

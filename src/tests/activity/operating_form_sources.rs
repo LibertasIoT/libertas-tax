@@ -49,7 +49,7 @@ fn unit19_schedule_one_business_forms_preserve_community_and_statutory_sources()
     nonfarm.community = CommunityShare::Community;
     add(&mut d, nonfarm);
     let mut farm = income(raised_farm(40000, 10000));
-    farm.owner = Owner::Spouse;
+    farm.owner = crate::DocumentOwner::Spouses;
     farm.community = CommunityShare::Community;
     add(&mut d, farm);
     let r = supported(&d);
@@ -60,7 +60,9 @@ fn unit19_schedule_one_business_forms_preserve_community_and_statutory_sources()
 
     let mut d = complete(FederalStatus::Single);
     let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.statutory_employee = true;
+    drop(data);
     add(&mut d, income(cash_business(10000)));
     let r = supported(&d);
     assert_eq!(value(&r, "schedule_1_business_income"), 70000);
@@ -75,8 +77,13 @@ fn routed_farm() -> FederalDraft {
     add(
         &mut d,
         income(FederalIncome::Cooperative {
-            data: FederalCooperative { patronage: 2_000_000, ..Default::default() },
+            data: cooperative_source(FederalCooperative {
+                patronage: 2_000_000,
+                ..Default::default()
+            }),
         }),
     );
+    let farm = d.income[0].id;
+    claim_last_cooperative(&mut d, farm);
     d
 }

@@ -11,8 +11,8 @@ pub(in crate::tests) fn mortgage_certificate_credit(
             number: "MCC-TEST".into(),
             issue_date: 20200115,
             interest: MortgageInterestSource::Certified { amount: interest },
-            rate_hundredths_percent: rate,
-            ownership_basis_points: ownership,
+            rate: crate::kernel::natural::natural(i64::from(rate), 100),
+            ownership_share: crate::kernel::natural::natural(i64::from(ownership), 100),
             eligible: true,
             history: MortgageCertificateHistory::Original,
         }),
@@ -85,7 +85,14 @@ pub(in crate::tests) fn ordinary_subsidy_facts() -> MortgageSubsidyFacts {
 // Preserve the former ItemizedExpenses helper's automatic-comparison setup.
 pub(in crate::tests) fn fixture_mortgage_interest(deductions: &mut FederalDeductions, amount: i64) {
     itemized(deductions);
-    deductions.set_mortgage_interest(amount);
+    let mut source = mortgage_source(native_income::first_lender_mortgage(
+        amount,
+        10_000_000,
+        AverageBalance::Statements { average: 10_000_000 },
+    ));
+    source.id = 1;
+    source.property = "Synthetic home".into();
+    deductions.mortgage = vec![source];
 }
 
 pub(in crate::tests) fn identified_mortgages(mut loans: Vec<MortgageLoan>) -> Vec<MortgageLoan> {

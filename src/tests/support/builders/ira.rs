@@ -67,17 +67,24 @@ pub(in crate::tests) fn qtp_roth_form(
     transfer: &crate::ira::QtpTransfer,
 ) -> FederalIncomeEntry {
     let mut entry = income(FederalIncome::EducationDistribution {
-        data: FederalEducationDistribution {
+        data: education_distribution_source(FederalEducationDistribution {
+            recipient_not_beneficiary: false,
+            coverdell_basis_start: None,
+            coverdell_contributions: 0,
+            redeposited: 0,
+            taxable_transfer_part: 0,
+            roth_rollover: Some(transfer.rollover.clone()),
+            late_rollovers: None,
             gross: transfer.amount(),
             account: EducationAccount::Qtp {
                 earnings: transfer.earnings,
                 basis: transfer.contributions,
             },
-            transfer: Q1099Transfer::RothIra { rollover: transfer.rollover.clone() },
-            beneficiary: FederalEducationBeneficiary::Recipient,
-        },
+            transfer: Q1099Transfer::RothIra,
+            beneficiary: Some(FederalEducationBeneficiary::Recipient),
+        }),
     });
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry
 }
 
@@ -88,9 +95,9 @@ pub(in crate::tests) fn set_qtp_roth(
     transfers: &[crate::ira::QtpTransfer],
 ) {
     d.income.retain(|e| {
-        e.owner != owner
+        e.owner != crate::DocumentOwner::from(owner)
             || !matches!(&e.income, FederalIncome::EducationDistribution { data }
-                if matches!(data.transfer, Q1099Transfer::RothIra { .. }))
+                if matches!(Q1099::from(&data.form).transfer, Q1099Transfer::RothIra))
     });
     for transfer in transfers {
         add(d, qtp_roth_form(owner, transfer));
@@ -202,22 +209,33 @@ pub(in crate::tests) fn inherited_payment(
     gross: i64,
 ) -> FederalIncomeEntry {
     let mut e = income(FederalIncome::Retirement {
-        data: FederalRetirement {
+        data: retirement_source(FederalRetirement {
+            form_boxes: Default::default(),
+            trump: false,
+            box_2a: gross * 100,
+            box_3: 0,
+            box_6: 0,
+            box_8a: 0,
+            box_8b_percent: None,
+            box_9a_percent: None,
+            ira: (RetirementKind::Inherited).ira()
+                && (crate::DistributionCodes::CODE_4.0) & crate::DistributionCodes::CODE_N.0 == 0,
             box_9b: None,
             box_10: 0,
+            box_10_basis: None,
             disability: DisabilityIncome::None,
             disability_wages: crate::DisabilityWages::None,
             kind: RetirementKind::Inherited,
             gross: gross * 100,
-            taxable: RetirementTaxable::Inherited { account, payer: gross * 100 },
+            taxable: Some(RetirementTaxable::Inherited { account }),
             withholding: 12300,
             box7: crate::DistributionCodes::CODE_4.0,
-            ordinary_distribution: RetirementTreatment::Ordinary,
+            ordinary_distribution: Some(RetirementTreatment::Ordinary),
             disaster: crate::DisasterDistribution::No,
             after_death: None,
-        },
+        }),
     });
-    e.owner = owner;
+    e.owner = crate::DocumentOwner::from(owner);
     e
 }
 // The record and one payment that names it, in dollars. Returns the record's identity.

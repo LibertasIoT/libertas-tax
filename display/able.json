@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 396000, "rule": {"select": "^<AbleTreatment>", "flatten": true}},
+    {"order": 397000, "rule": {"select": "^<AbleWork>", "flatten": true}},
+    {"order": 398000, "rule": {"select": "^<AbleRollover>", "flatten": true}}
+  ]
+}

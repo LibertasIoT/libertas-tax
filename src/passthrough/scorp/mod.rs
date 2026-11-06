@@ -1,130 +1,14 @@
-use crate::kernel::carry::{Amount, Cents};
-// Coverage update B9-7 R11/R12 (2026-10-11): uncomputed K-1 credits and
-//   oil/gas depletion leave only the benefit out, with one scoped notice;
-//   code AX credit recapture remains refused. Accepted facts survive the
-//   estimate and reopen; no unclaimed depletion reduces basis or SE earnings.
-//   Sources: 2025 final K-1 instructions (1065/1120-S), credit code AX and
-//   depletion code 20T/17R; tests/k1_items and tests/interview k1_benefit_*.
-// Coverage update B9-7 R7 (2026-10-11): box 6 royalties and box 12 code I
-//   reach Schedule E Part I through the shared basis and at-risk ledger, outside
-//   Form 8582, QBI and SE. Shared portfolio income increases stock basis and
-//   amount at risk; separate AMT balances determine the AMT deduction.
-//   Sources: i1120ssk (2025 final and 2026 draft of September 18), Schedule E
-//   (2026 draft, created May 6). tests/k1_items k1_royalty_*.
-// Coverage: Schedule K-1 (1120S) — Partial (audited 2026-09-24).
-//   Lines: Boxes 1, 4, 5a/5b, 8a–8c/9 (portfolio capital and business 1231 records), 13 code O, 15
-//   code F, 16 A–D; Form 7203 stock/debt basis, loan-repayment gains, at-risk, passive, QBI (199A
-//   statement), independent AMT basis. Refused via basis_complete gate: rental boxes 2/3,
-//   boxes 10–12 items, other credits, foreign/PTEP, farming, stock dispositions, debt
-//   forgiveness, ownership termination.
-//   Evidence: scorp.rs, scorp_basis.rs, scorp_risk.rs, scorp_qbi.rs, scorp_1231.rs,
-//   scorp_capital.rs, scorp_amt.rs, federal_rules.rs; tests/passthrough/passthrough.rs
-//   scorp_interview_preserves_source_and_shows_basis_without_claiming_return_coverage,
-//   scorp_statement_uses_allocated_wages_and_ubia_for_high_income_limit,
-//   scorp_tax_exempt_sources_release_loss_without_becoming_business_income;
-//   tests/passthrough/scorp_stock_basis.rs debt_regulation_examples_one_and_two_preserve_separate_notes;
-//   sources i1120ssk, i7203.
-//   Unit T2-31 (2026-09-26): box 12 code A cash contributions (ScorpK1.cash_charity) reach Schedule
-//   A line 11 or the non-itemizer line 12f cap with the partnership gifts, reduce stock then debt
-//   basis as their own Form 7203 Part III class (CHARITY_INDEX), and stay outside Form 6198, Form
-//   8582 and QBI; a gift limited by basis (CHARITY_LIMITED) or joined by a prior cash carryover is
-//   refused by name. Box 16 code D above stock basis is capital gain on Form 8949/Schedule D with
-//   ScorpK1.stock_term (regular and AMT basis separately; Form 4952 investment gain only without
-//   material participation) and Form 6198 line 2a income; refused by name: an unknown holding
-//   period, a passive or unclassified activity (Form 8582 allocation) and modified AGI above the
-//   NIIT threshold for a non-trading business (Form 8960 line 5c adjustment). Every other box with
-//   an amount is listed in ScorpK1.unentered (ScorpK1Item) and refused by name: boxes 2/3, 10,
-//   12 other codes, 13 other codes (incl. H), 14 and 16F, 15
-//   beyond the AMT record and code F, 17 codes other than V, multiple activities. Box 16 code E is
-//   the loan-repayment record. STORAGE_FORMAT 46. Tests: tests/passthrough/passthrough.rs
-//   shareholder_k1_items_and_distribution_above_basis_reach_the_return_by_hand,
-//   shareholder_cash_gift_exactly_absorbed_by_basis_is_allowed_and_one_dollar_more_is_refused,
-//   shareholder_cash_gift_above_the_non_itemizer_cap_is_limited_to_1000,
-//   shareholder_distribution_equal_to_basis_has_no_gain_and_one_dollar_more_is_capital_gain,
-//   shareholder_distribution_gain_meets_the_investment_tax_threshold,
-//   shareholder_boxes_not_calculated_and_passive_distribution_gain_are_refused_by_name.
-//   Unit T2-29b (2026-09-26): ScorpK1.section179 (box 11) is one Form 4562 line 6 item of the
-//   shareholder's own Part I (section179.rs): line 8 without the line 2 phaseout (Reg.
-//   1.179-2(b)(3)), line 11 with the materially participating shareholder's box 1 net after basis
-//   and at-risk limits (Reg. 1.179-2(c)(3)). The full box 11 amount is its own Form 7203 Part III
-//   class (SECTION179_INDEX, Reg. 1.179-3(h)(1)) for regular and AMT basis; the line 12 share reaches
-//   Schedule E line 28 column (j) and reduces the statement's ordinary QBI (ScorpQbiStatement::
-//   activities); the line 13 carryover is reported per K-1. Refused by name: a share suspended by
-//   basis (SECTION179_LIMITED) or above the remaining amount at risk (Form 6198), a shareholder
-//   without established material participation (Form 8582), a share above the dollar limit; box
-//   17 codes K/L stay in ScorpK1Item::OtherInformation. ScorpK1Item::Section179 is removed.
-//   STORAGE_FORMAT 55. Tests: tests/passthrough/passthrough.rs
-//   shareholder_section179_reaches_form_4562_schedule_e_basis_and_qbi_by_hand,
-//   shareholder_section179_exactly_absorbed_by_basis_is_allowed_and_one_dollar_more_is_refused,
-//   shareholder_section179_without_material_participation_is_refused_by_name; sources i4562,
-//   i1120ssk, Reg. 1.179-2, 1.179-3, i8995.
-//   Unit T2-31p (2026-09-27): the Schedule K-1 topic's Form 1120-S kind (k1_page.rs K1Scorp) writes
-//   this record; RareSituation::PassThrough is removed. New stored ScorpK1.section179_carryover
-//   (question C13, Form 4562 line 10; see depreciation.rs). ScorpK1::schedule_e_amount is the
-//   page row's amount: Schedule E after basis, at-risk and the activity's own passive loss, blank
-//   while refused or while it depends on the return (section 179, a net passive loss, section
-//   1231 items). STORAGE_FORMAT 62.
-//   Not-sure audit batch 7 (2026-10-05): risk and passive are required records; QBI loss
-//   histories (ScorpLossQbi.at_risk/passive) are required lists; participation year counts are
-//   required; ScorpLoan.repayment_term is required, NoRepayment for an open account or a note
-//   with nothing repaid (SCORP_LOAN_REPAYMENT_TERM on both sides). No box 17 code V statement
-//   (qbi_statement None) omits current reported QBI (Reg. 1.199A-6(b)(3)(iii)) with
-//   WARN_K1_QBI_NO_STATEMENT, or leaves a current loss out with WARN_K1_QBI_LOSS_NO_STATEMENT.
-//   Original-year qualified suspended losses still count when actually allowed (i8995,
-//   Reg. 1.199A-3(b)(1)(iv)); they do not require a new current statement. STORAGE_FORMAT 84.
-//   Batch 7 non-nullable QBI tracking (2026-10-05): loss_qbi and property_qbi are plain records,
-//   zero and empty when nothing applies. Personal histories survive NoStatement imports in
-//   separate non-imported records (STORAGE_FORMAT 86): only histories with actual prior loss
-//   balances participate; unrelated retained histories are structurally checked but inactive.
-//   Current reported QBI is projected to zero without a statement, while released historical
-//   qualified losses retain their original-year status. Missing applicable history omits its
-//   QBI loss character with WARN_SCORP_QBI_HISTORY_LEFT_OUT; supplied mismatches remain invalid.
-//   Tests: income_navigation no_statement_missing_history_warns_for_each_actual_suspension_stage,
-//   no_statement_partial_history_omits_only_its_character_and_rejects_supplied_mismatch,
-//   no_statement_negative_current_loss_still_counts_released_qualified_history and
-//   no_statement_unrelated_histories_remain_inactive_and_retained; interview
-//   k1_1120s_import_no_statement_preserves_personal_records_after_save_and_reopen.
-//   Unit k1-rentals (2026-10-09): boxes 2 and 3 are calculated (k1_rental.rs): ScorpK1.rentals and
-//   ScorpAmt.rentals (box amounts and 2025 Form 8582 carryovers per tax system) raise stock basis
-//   (Form 7203 lines 3b/3c) and Form 6198 income; their losses are Form 7203 lines 36/37
-//   (RENTAL_INDEX, after section 179) and Form 6198 losses of the one activity; a rental loss
-//   either limit suspends is refused by name. ScorpK1.rental_facts: participation (a shareholder
-//   may be Active) and the section 199A rental amounts. The passive history confirmation also
-//   covers the rental carryovers (unknowns.rs). ScorpK1Item::Rentals is renamed RentalDisposition
-//   (refused by name); MultipleActivities narrows to box 18 or a box 19 statement with two
-//   activities of one kind. schedule_e_amount is blank with rentals. Tests: tests/passthrough/k1_rental.rs
-//   fixture_e_*, fixture_f_*; tests/passthrough/interview.rs k1_1120s_rentals_map_onto_the_record_and_reopen_unchanged.
-//   Unit k3 (2026-10-09): box 16 code F foreign taxes (ScorpK1.foreign_taxes) are a Form 7203 Part III
-//   line 46 deduction class of their own (FOREIGN_TAX_INDEX, after section 179; sections 1366(a)(1)(A)
-//   and 1367(a)(2)(B)) and are never read by Form 1116: the credit is figured from the Schedule K-3 on
-//   ScorpK1.schedule_k3 (schedule_k3.rs, which owns the Coverage: Schedule K-3 block). A share
-//   limited by stock and debt basis is refused by name (FOREIGN_TAX_LIMITED). RENTAL_INDEX moves
-//   to 8. ScorpK1Item::International is removed; the K-3 items ForeignCorporations and
-//   DisallowedDeduction carry its refusal key. Tests: tests/foreign/foreign.rs k3_general_category_*.
-//   Unit form-3468 (2026-10-09): ScorpK1.investment_property (box 13 code E; box 17 codes C, D, AV) and
-//   investment_confirmed (Form 3468, investment_credit.rs) reach Form 3800 Part III lines 4k, 4a and
-//   1v like the partnership's, and the section 50(c)(5) reduction lowers the stock basis
-//   (StockBasis.credit_reduction, Form 7203 line 8c, never carried); the recapture code (box 17
-//   code G) stays refused.
-//   Unit B8 (2026-10-10): the index constants (CHARITY_INDEX ... RENTAL_INDEX) and the three basis
-//   refusals (CHARITY_LIMITED, SECTION179_LIMITED, FOREIGN_TAX_LIMITED) are gone. ScorpK1::class_input
-//   (scorp_capital.rs) builds one class input per K-1 and tax system from the K1LossClass catalog:
-//   box 1, 2 and 3 losses, the three capital classes, section 1231, box 11 section 179, box 12 code
-//   A gifts and box 16 code F foreign taxes, each with its basis carry and at-risk carry (new:
-//   ScorpK1.carried, ScorpAmt.carried; Form 7203 Part III column (b)). Form 7203 Part III and Form
-//   6198 share each limit pro rata across them and ScorpRiskResult.ledger (LossLedger) says what each
-//   allowed and held back; the held-back part carries to 2027 (NOTE_K1_LOSS_CARRYFORWARD, AMT twin
-//   NOTE_K1_AMT_CLASS_CARRYFORWARD). The basis-allowed section 179 is the Form 4562 line 6 item and
-//   the basis-allowed gift is the Schedule A / section 170(p) gift. Tests: tests/passthrough/k1_loss.rs.
-//   Unit B9-1 (2026-10-10): the box 10 and box 12 codes (k1_items.rs; ScorpK1.income and
-//   deductions), the sale of all the shares (ScorpK1.disposition, disposal(): proceeds less the
-//   ending stock basis, Form 8949 by stock_term) and the distribution above stock basis without
-//   its passive refusal (a passive gain is taken as not passive, WARN_K1_GAIN_NOT_PASSIVE).
-//   basis_complete becomes basis_complete(): ScorpK1.special lists the remaining situations.
-//   Stored-shape change (STORAGE_FORMAT bumped by the dispatcher). Tests: tests/passthrough/k1_items.rs.
-
+// Coverage: Schedule K-1 (Form 1120-S), shareholder Form 7203 and existing
+// basis -> at-risk -> passive -> excess-business-loss owners. Native records
+// retain independent regular and AMT stock/debt/carryover history, loan gain
+// character, rentals, section 179 sales, credits, QBI and supported Schedule K-3.
+// Paper and personal record projection: scorp_source.rs and k1_page.rs.
+// Evidence: tests/passthrough/{interview,scorp_stock_basis,k1_items,k1_sale_amt}.rs.
+// Sources: https://www.irs.gov/instructions/i1120ssk
+// https://www.irs.gov/instructions/i7203
 use crate::FederalResult;
 use crate::k1_loss::{K1LossClass, LossLedger};
+use crate::kernel::carry::{Amount, Cents};
 use crate::kernel::phase;
 use crate::scorp_basis::{BasisError, BasisResult, LoanKind, ShareholderLoan, StockBasis};
 use alloc::{borrow::Cow, vec::Vec};
@@ -154,7 +38,8 @@ pub struct ScorpNoteRepayment {
     pub date: u32,
     /// Principal repaid
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub principal: i64,
 }
 
@@ -178,9 +63,9 @@ pub enum ScorpNoteHolding {
         advanced: u32,
         /// Principal repayments during 2026
         /// These must total the principal repaid on the loan record. Their dates determine short- or long-term treatment; list order does not affect the result.
+        #[libertas_size(min = 1)]
         /// ----
         /// Repayment
-        #[libertas_size(min = 1)]
         payments: Vec<ScorpNoteRepayment>,
     },
 }
@@ -294,19 +179,23 @@ pub struct ScorpLoan {
     pub repayment_term: ScorpNoteHolding,
     /// Opening principal owed
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub principal: i64,
     /// Opening adjusted debt basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: i64,
     /// Principal advanced during the year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub advances: i64,
     /// Principal repaid during the year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub repayments: i64,
 }
 
@@ -316,7 +205,8 @@ pub struct ScorpPassiveHistory {
     /// Ordinary losses suspended by passive limits at the end of 2025
     /// From the retained activity worksheet. These losses already passed basis and at-risk limits; do not include those separate balances here.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub loss: i64,
     /// Same continuing activity, with no special passive rules
     /// Confirm no disposition, grouping change, self-charged interest, significant-participation income recharacterization or other special passive rule. Current participation determines whether older passive losses first offset this activity’s current income. Additional cases need their separate worksheets. It covers the box 2 and box 3 rental activities' carryovers too. The prior-year Form 8582 worksheets for these activities show it; No leaves the suspended losses out of this estimate.
@@ -421,7 +311,10 @@ pub(crate) fn cash_charity(d: &crate::FederalDraft) -> i64 {
     d.income
         .iter()
         .filter_map(|e| match &e.income {
-            crate::FederalIncome::Scorp { data } => Some(data.allowed_cash_charity()),
+            crate::FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                Some(data.allowed_cash_charity())
+            }
             _ => None,
         })
         .sum()
@@ -441,8 +334,16 @@ pub enum ScorpTradeKind {
 
 /// S-corporation K-1 and shareholder basis records
 /// Enter one ordinary nonfarming U.S. business of one corporation and one shareholder per document. Complete regular and AMT basis, at-risk, participation and QBI records before return totals can be shown. Other shareholder items and special transactions require their separate worksheets. Employee W-2 wages belong in a separate wage document.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct ScorpK1 {
+    /// Accepted personal AMT choice in the transient calculation projection.
+    #[libertas_hidden]
+    #[libertas_read_only]
+    #[libertas_default($null)]
+    pub amt_record_choice: Option<bool>,
+    /// Independent eligible-small-business answer, retained when the printed credit changes.
+    #[libertas_default($null)]
+    pub research_credit_line: Option<crate::BusinessCredit>,
     /// Entity's reporting tax period
     /// The actual beginning and ending dates of the entity year reported by this K-1. Leave unknown when its source records do not establish the period.
     pub reporting_period: Option<crate::K1EntityTaxPeriod>,
@@ -453,29 +354,35 @@ pub struct ScorpK1 {
     /// Box 1 ordinary business income or loss
     /// Enter the signed K-1 amount before shareholder loss limits.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub ordinary: i64,
     /// Box 4 portfolio interest income
     /// Taxable interest from this K-1, excluded from passive operating income and QBI. Do not repeat it in an interest document. Confirm its at-risk activity allocation below.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub interest: i64,
     /// Box 5a ordinary dividends
     /// Include the qualified portion entered below. Do not repeat these dividends in another income document. This is portfolio income, not corporate operating income or QBI.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub dividends: i64,
     /// Box 5b qualified dividends included in box 5a
     /// Only dividends eligible for qualified-dividend treatment on this return. Included once in ordinary dividends, with preferential rates determined by the return calculation.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub qualified_dividends: i64,
     /// Box 6 royalties
     /// Reported on Schedule E line 4. Box 12 code I deductions belong in the deductions list.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub royalties: i64,
     /// Optional portfolio capital amounts and suspended-loss records
@@ -486,9 +393,9 @@ pub struct ScorpK1 {
     pub section1231: Option<crate::K1Section1231>,
     /// Section 179 property the entity sold
     /// Each property on the fully taxable sale statement; use this tax system's depreciation. Do not include installment sales, exchanges, casualties or theft.
+    #[libertas_unordered]
     /// ----
     /// Property
-    #[libertas_unordered]
     pub section179_sales: Vec<crate::K1Section179Sale>,
     /// Rental activities — boxes 2 and 3
     pub rentals: crate::K1RentalAmounts,
@@ -504,13 +411,20 @@ pub struct ScorpK1 {
     pub trade_kind: ScorpTradeKind,
     /// Opening stock basis
     /// From the prior stock-basis worksheet; exclude shareholder debt.
+    /// [NullText]
+    /// Opening basis is not established yet
+    /// [SetText]
+    /// Established opening basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub opening: i64,
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub opening: Option<i64>,
     /// Capital contributions and additional stock basis
     /// Exclude loans; use adjusted tax basis rather than fair market value for contributed property.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub additions: i64,
     /// Box 16 code A tax-exempt interest
     /// Include specified private-activity bond interest reported separately below. Do not repeat this K-1 amount in an interest document. This increases shareholder basis and is reported on Form 1040 line 2a.
@@ -521,7 +435,8 @@ pub struct ScorpK1 {
     /// Specified private-activity bond interest included above
     /// From the K-1 box 15 code F statement. Enter only the portion that is an AMT preference, already included in box 16 code A. Do not repeat it in another interest document or AMT adjustment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub private_activity: i64,
     /// Box 16 code B other tax-exempt income
@@ -542,12 +457,14 @@ pub struct ScorpK1 {
     /// Prior ordinary business losses suspended by basis
     /// From Form 7203 column (e), ordinary business loss. Exclude losses already allowed through basis but suspended by at-risk or passive limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_loss: i64,
     /// Prior nondeductible expense carryforward
     /// Only from a continuing losses-first election; otherwise enter zero.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_nondeductible: i64,
     /// Continuing election to apply losses before nondeductible expenses
     /// Regulations section 1.1367-1(g). This records an election already effective for the corporation; choosing Yes here does not file an election.
@@ -586,19 +503,22 @@ pub struct ScorpK1 {
     /// Section 179 deduction — box 11
     /// Your share of the corporation's section 179 expense. It joins your own elections on Form 4562 Part I under your dollar and business-income limits and reduces your stock basis in full this year even when part is carried to 2027. Enter zero when the box is empty.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179: i64,
     /// Section 179 deduction from this K-1 you could not deduct in 2025
     /// Your 2025 Form 4562 line 13 carryover of this corporation's section 179 amounts. It joins Form 4562 line 10 without reducing your basis again. Enter zero when there is none.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179_carryover: i64,
     /// Part of this section 179 carryover belonging to property the entity sold
     /// From your own Form 4562 carryover records, not the K-1. This amount restores the sold property's basis and is no longer available as a deduction.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179_carryover_sold: i64,
     /// Foreign taxes paid or accrued — box 16 code F
@@ -633,24 +553,28 @@ pub struct ScorpK1 {
     /// Final K-1
     pub final_k1: bool,
     /// Other income — box 10
-    /// ----
-    /// Box 10 amount
     // Tax structure: one row per distinct Form 1120-S income code in the fixed catalog.
     #[libertas_size(max = 7)]
+    /// ----
+    /// Box 10 amount
     pub income: Vec<crate::ScorpIncome>,
     /// Other deductions — box 12 codes other than A
-    /// ----
-    /// Box 12 amount
     // Tax structure: one row per distinct Form 1120-S deduction code in the fixed catalog.
     #[libertas_size(max = 20)]
+    /// ----
+    /// Box 12 amount
     pub deductions: Vec<crate::ScorpDeduction>,
     /// What happened to the shares in 2026
-    pub disposition: crate::K1Disposition,
+    /// [NullText]
+    /// What happened to this interest is not answered yet
+    /// [SetText]
+    /// What happened to this interest is
+    pub disposition: Option<crate::K1Disposition>,
     /// Situations this App does not calculate
-    /// ----
-    /// Situation
     // Tax structure: one row per distinct S-corporation special situation in the fixed catalog.
     #[libertas_size(max = 3)]
+    /// ----
+    /// Situation
     pub special: Vec<crate::ScorpSpecial>,
     /// AMT section 179 income-limit carryover history
     /// From your own prior AMT Form 4562 records, independently of the regular carryover. Leave absent when unavailable; enter actual zero amounts when the AMT carryover is zero.
@@ -861,12 +785,8 @@ impl ScorpK1 {
         // combine native i64 sources and transfer their dollars back to cents.
         let money = |v: i64| (0..=100000000000).contains(&v);
         self.health_insurance.valid()
-            && crate::K1Credit::valid_list(&self.credits)
+            && crate::K1Credit::source_valid_list(&self.credits)
             && crate::K1InvestmentProperty::valid_list(&self.investment_property)
-            && (self.investment_property.iter().all(|p| p.own_form().is_some())
-                || self.investment_confirmed.is_some())
-            && (!self.credits.iter().any(|credit| credit.code.housing())
-                || self.housing_confirmed.is_some())
             && (-capacity.limit()..=capacity.limit()).contains(&self.ordinary)
             && [
                 self.withholding,
@@ -874,7 +794,6 @@ impl ScorpK1 {
                 self.dividends,
                 self.qualified_dividends,
                 self.royalties,
-                self.opening,
                 self.additions,
                 self.exempt,
                 self.exempt_interest,
@@ -886,6 +805,7 @@ impl ScorpK1 {
             ]
             .into_iter()
             .all(money)
+            && self.opening.is_none_or(money)
             && self.capital.as_ref().is_none_or(|v| v.valid())
             && self.section1231.as_ref().is_none_or(|v| v.valid())
             && crate::K1Section179Sale::valid_source_list(&self.section179_sales)
@@ -911,13 +831,16 @@ impl ScorpK1 {
                 .is_none_or(|history| history.rule().is_none())
             && money(self.foreign_taxes)
             && self.carried.valid()
-            && self.schedule_k3.as_ref().is_none_or(crate::ScheduleK3::valid)
+            && self.schedule_k3.as_ref().is_none_or(|k3| k3.valid_with_mode(check_sale_carry))
             && crate::ScorpIncome::valid_list(&self.income)
             && crate::ScorpDeduction::valid_list(&self.deductions)
             && crate::ScorpSpecial::valid_list(&self.special)
-            && self.disposition.valid()
+            && self.disposition.as_ref().is_none_or(crate::K1Disposition::valid)
             && ScorpLoan::sources_valid(self.loans.iter())
-            && self.amt.as_ref().is_none_or(|v| v.valid(self))
+            && self
+                .amt
+                .as_ref()
+                .is_none_or(|v| if check_sale_carry { v.valid(self) } else { v.source_valid(self) })
             && self.qbi_statement.as_ref().is_none_or(|v| v.valid(self))
             && self.loss_qbi.valid_retained()
             && self.property_qbi.valid_retained()
@@ -933,19 +856,19 @@ impl ScorpK1 {
                         property.passive_loss,
                     ])
                 }))
-            && if self.loss_tracking() {
+            && if check_sale_carry && self.loss_tracking() {
                 let source = self.qbi_projection();
                 source.loss_qbi.valid(&source)
             } else {
                 true
             }
-            && if self.property_tracking() {
+            && if check_sale_carry && self.property_tracking() {
                 let source = self.qbi_projection();
                 source.property_qbi.valid(&source)
             } else {
                 true
             }
-            && self.risk.valid(self)
+            && if check_sale_carry { self.risk.valid(self) } else { self.risk.source_valid() }
             && self.participation.as_ref().is_none_or(|v| v.valid())
             && (0..=100000000000).contains(&self.passive.loss)
     }
@@ -1052,6 +975,12 @@ impl ScorpK1 {
         events: Option<&ScorpEvents>,
         capacity: crate::scorp_amt::ScorpSourceCapacity,
     ) -> Result<ScorpActivity, (&'static str, &'static str)> {
+        if self.disposition.is_none() {
+            return Err(crate::k1_totals::DISPOSITION_NEEDED);
+        }
+        if self.rental_facts.participation.is_none() && self.rental_participation_needed() {
+            return Err(crate::k1_rental::PARTICIPATION_NEEDED);
+        }
         let classification = self.nonpassive();
         if classification == crate::participation::Participation::Unavailable {
             return Err((
@@ -1085,7 +1014,7 @@ impl ScorpK1 {
         let current =
             phase::floor(self.ordinary, 0) - risk.ledger.risk_allowed[K1LossClass::Ordinary].get();
         let prior = history.loss;
-        let disposed = self.disposition.ended();
+        let disposed = self.disposition.as_ref().is_some_and(crate::K1Disposition::ended);
         let items = self.k1_items().flows(&risk.ledger).activity();
         let nonpassive = classification == crate::participation::Participation::Yes;
         let rental_property_losses =
@@ -1157,6 +1086,10 @@ impl ScorpK1 {
         })
     }
 
+    pub(crate) fn rental_participation_needed(&self) -> bool {
+        self.rentals.participation_needed(&self.credits, &self.investment_property)
+    }
+
     // The box 2 and 3 rental activities of this tax system's record, after
     // its basis and at-risk limits have allowed them (the ledger of this
     // K-1 in the same tax system).
@@ -1173,7 +1106,7 @@ impl ScorpK1 {
             ledger,
             false,
             professional_status,
-            self.disposition.ended(),
+            self.disposition.as_ref().is_some_and(crate::K1Disposition::ended),
             group_disposed,
         )
     }
@@ -1294,9 +1227,13 @@ impl ScorpK1 {
 
     // The K-1's Form 7203 inputs, built once: stock basis before the debt
     // stage (the shareholder loans are separate inputs, `shareholder_loans`).
-    fn stock_basis<'a>(&self, losses: &'a crate::k1_loss::LossAmounts) -> StockBasis<'a> {
+    fn stock_basis<'a>(
+        &self,
+        losses: &'a crate::k1_loss::LossAmounts,
+        opening: i64,
+    ) -> StockBasis<'a> {
         StockBasis {
-            opening: Amount::<Cents>::new(self.opening).expect("bounded basis result"),
+            opening: Amount::<Cents>::new(opening).expect("bounded basis result"),
             additions: Amount::<Cents>::new(self.additions).expect("bounded basis result"),
             income: Amount::<Cents>::new(
                 phase::floor(self.ordinary, 0)
@@ -1346,6 +1283,12 @@ impl ScorpK1 {
         &self,
         capacity: crate::scorp_amt::ScorpSourceCapacity,
     ) -> Result<BasisResult, (&'static str, &'static str)> {
+        let opening = self.opening.ok_or((
+            "DOCUMENT_K1_OPENING_BASIS",
+            crate::fixture_english!(
+                "Enter the actual opening basis, including zero when it is zero."
+            ),
+        ))?;
         if !self.valid_with_sale_carry(true, capacity) {
             return Err(inconsistent());
         }
@@ -1360,7 +1303,7 @@ impl ScorpK1 {
         }
         let loans = self.shareholder_loans();
         let losses = self.class_input().basis();
-        let stock = self.stock_basis(&losses);
+        let stock = self.stock_basis(&losses, opening);
         let basis = stock.with_loans(&loans).map_err(|e| match e {
             BasisError::Overflow => ("ISSUE_FEDERAL_RULES_REVIEW_THE_DOCUMENT_AMOUNTS__THEY_MUST_17724C26", crate::fixture_english!("Review the document amounts; they must be within the supported input range.")),
             BasisError::Invalid => ("ISSUE_SCORP_THE_STOCK_DEBT_BASIS_RECORDS_ARE_INCONSISTENT_9799BBBB", crate::fixture_english!("The stock/debt basis records are inconsistent.")),
@@ -1382,7 +1325,7 @@ impl ScorpK1 {
         if !self.basis_complete()
             || self.rentals.any()
             || !self.k1_items().is_empty()
-            || self.disposition != crate::K1Disposition::Kept
+            || self.disposition != Some(crate::K1Disposition::Kept)
             || self.carried.waits_for_return_forms()
             || !self.unentered.is_empty()
             || self.section179 != 0
@@ -1400,7 +1343,8 @@ impl ScorpK1 {
     // Whether the activity items are in the passive pool: the activity is
     // passive and the whole interest was not disposed of (section 469(g)).
     pub(crate) fn items_in_pool(&self) -> bool {
-        self.nonpassive() != crate::participation::Participation::Yes && !self.disposition.ended()
+        self.nonpassive() != crate::participation::Participation::Yes
+            && !self.disposition.as_ref().is_some_and(crate::K1Disposition::ended)
     }
 
     // The box 10 and box 12 codes of this K-1.
@@ -1508,7 +1452,7 @@ impl ScorpK1 {
             distribution_gain: basis.distribution_gain.get(),
             ..Default::default()
         };
-        if let crate::K1Disposition::Sold { proceeds } = &self.disposition {
+        if let Some(crate::K1Disposition::Sold { proceeds }) = &self.disposition {
             disposal.sold = true;
             disposal.proceeds = *proceeds;
             disposal.basis = basis.stock.get();
@@ -1804,6 +1748,8 @@ crate::community::divide_record!(ScorpK1 {
     ],
     gains: [disposition],
     facts: [
+        amt_record_choice,
+        research_credit_line,
         reporting_period,
         qbi_aggregation_group,
         health_insurance,

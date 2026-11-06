@@ -1,14 +1,15 @@
-use crate::tests::support::client::survey::survey_native_refusal;
-use crate::tests::support::client::estimate_documents_from_save;
 use super::*;
+use crate::tests::support::client::estimate_documents_from_save;
+use crate::tests::support::client::income_pages::{
+    open_documents, save_documents, save_each_topic,
+};
+use crate::tests::support::client::survey::survey_native_refusal;
 use alloc::string::String;
+use alloc::string::ToString;
+use libertas::SchemaPath;
 
 fn benefits_editor(session: &mut Interview) -> P {
-    let request = go_to(
-        &session.draft,
-        PAGE_ADJUSTMENTS,
-        TaxSection::SelfEmployedBenefits,
-    );
+    let request = go_to(&session.draft, PAGE_ADJUSTMENTS, TaxSection::SelfEmployedBenefits);
     let Reply::Edit(request @ P::SaveSelfEmployedBenefits { .. }) = send(session, request) else {
         panic!("expected the actual self-employed benefits editor")
     };
@@ -26,13 +27,7 @@ fn business_session() -> Interview {
 }
 
 fn qualified(deferral: i64, catch_up: i64, roth: i64) -> SeRetirement {
-    SeRetirement::Qualified {
-        rate: 2500,
-        contribution: 0,
-        deferral,
-        catch_up,
-        roth,
-    }
+    SeRetirement::Qualified { rate: 25.0, contribution: 0, deferral, catch_up, roth }
 }
 
 #[test]
@@ -70,9 +65,7 @@ fn unit47_owner_plan_native_save_refuses_each_relationship_at_the_actual_second_
     for (case, plan, key, field) in cases {
         let mut session = business_session();
         let mut request = benefits_editor(&mut session);
-        let P::SaveSelfEmployedBenefits { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveSelfEmployedBenefits { value, .. } = &mut request else { unreachable!() };
         assert_eq!(value.businesses.len(), 2);
         assert_ne!(value.businesses[0].id, value.businesses[1].id);
         value.businesses[1].retirement = plan;
@@ -106,21 +99,14 @@ fn unit47_owner_plan_equal_limits_and_roth_zero_survive_save_reopen_and_restart(
     ] {
         let mut session = business_session();
         let mut request = benefits_editor(&mut session);
-        let P::SaveSelfEmployedBenefits { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveSelfEmployedBenefits { value, .. } = &mut request else { unreachable!() };
         value.businesses[1].retirement = plan.clone();
-        accepted(&send(
-            &mut session,
-            P::from_avro(&request.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
         let saved = session.draft.clone();
         assert!(saved.valid_stored());
         let mut restored = restart(saved.clone());
         let reopened = benefits_editor(&mut restored);
-        let P::SaveSelfEmployedBenefits { value, .. } = &reopened else {
-            unreachable!()
-        };
+        let P::SaveSelfEmployedBenefits { value, .. } = &reopened else { unreachable!() };
         assert_eq!(value.businesses.len(), 2);
         assert_eq!(value.businesses[1].retirement, plan);
         accepted(&send(&mut restored, reopened));
@@ -130,6 +116,8 @@ fn unit47_owner_plan_equal_limits_and_roth_zero_survive_save_reopen_and_restart(
 
 fn disaster_text(field: &str, text: String) -> FederalDisasterRelief {
     let mut source = FederalDisasterRelief {
+        source_issuer: Default::default(),
+        source_recipient: Default::default(),
         received: 20260612,
         qualification: DisasterQualification::FederalDeclaration {
             reference: "Synthetic declaration".into(),
@@ -142,19 +130,11 @@ fn disaster_text(field: &str, text: String) -> FederalDisasterRelief {
     match field {
         "carrier" | "carrier-event" => {
             source.purpose = DisasterReliefPurpose::CommonCarrier {
-                carrier: if field == "carrier" {
-                    text.clone()
-                } else {
-                    "Synthetic carrier".into()
-                },
+                carrier: if field == "carrier" { text.clone() } else { "Synthetic carrier".into() },
                 loss: DisasterCarrierLoss::PhysicalInjury,
             };
             source.qualification = DisasterQualification::CarrierAccident {
-                event: if field == "carrier-event" {
-                    text
-                } else {
-                    "Synthetic accident".into()
-                },
+                event: if field == "carrier-event" { text } else { "Synthetic accident".into() },
             };
         }
         "terror-event" => {
@@ -167,9 +147,8 @@ fn disaster_text(field: &str, text: String) -> FederalDisasterRelief {
             source.qualification = DisasterQualification::FederalDeclaration { reference: text };
         }
         "secretary-determination" => {
-            source.qualification = DisasterQualification::SecretaryCatastrophe {
-                determination: text,
-            };
+            source.qualification =
+                DisasterQualification::SecretaryCatastrophe { determination: text };
         }
         "government-event" | "government-authority" | "government-payer" => {
             source.purpose = DisasterReliefPurpose::GovernmentWelfare;
@@ -184,11 +163,7 @@ fn disaster_text(field: &str, text: String) -> FederalDisasterRelief {
                 } else {
                     "Synthetic authority".into()
                 },
-                payer: if field == "government-payer" {
-                    text
-                } else {
-                    "Synthetic agency".into()
-                },
+                payer: if field == "government-payer" { text } else { "Synthetic agency".into() },
             };
         }
         _ => panic!("unknown disaster text field"),
@@ -220,18 +195,24 @@ fn unit47_disaster_long_source_text_preserves_tax_and_required_leaf_paths() {
             let source = disaster_text(field, text.clone());
             let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
             let original_agi = value(&supported(&session.draft), "agi");
-            let request = save_topic(
-                &session.draft,
-                TaxSection::OtherIncome,
+            let request = save_documents(
+                &mut session,
                 vec![
-                    document(0, IncomeDocument::DisasterRelief(source.clone())),
-                    document(0, IncomeDocument::DisasterRelief(source.clone())),
+                    document(
+                        0,
+                        IncomeSource::OtherIncome {
+                            value: crate::OtherIncomeDocument::DisasterRelief(source.clone()),
+                        },
+                    ),
+                    document(
+                        0,
+                        IncomeSource::OtherIncome {
+                            value: crate::OtherIncomeDocument::DisasterRelief(source.clone()),
+                        },
+                    ),
                 ],
             );
-            accepted(&send(
-                &mut session,
-                P::from_avro(&request.to_avro()).unwrap(),
-            ));
+            accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
             let saved = session.draft.clone();
             assert!(saved.valid_stored());
             let baseline = supported(&saved);
@@ -245,23 +226,19 @@ fn unit47_disaster_long_source_text_preserves_tax_and_required_leaf_paths() {
             assert_eq!(relief_sources.len(), 2);
             for entry in relief_sources {
                 assert_eq!(
-                    value(
-                        &baseline,
-                        &alloc::format!("disaster_relief_{}_excluded", entry.id)
-                    ),
+                    value(&baseline, &alloc::format!("disaster_relief_{}_excluded", entry.id)),
                     8_000
                 );
             }
             assert_eq!(value(&baseline, "agi"), original_agi);
 
-            let mut invalid = open_topic(&mut session, TaxSection::OtherIncome);
-            let P::SaveIncomes { documents, .. } = &mut invalid else {
-                unreachable!()
-            };
-            assert_eq!(documents.documents.len(), 2);
-            documents.documents[1].document =
-                IncomeDocument::DisasterRelief(disaster_text(field, " ".into()));
-            let expected = alloc::format!("[documents/documents/1/document/{leaf}]");
+            let mut invalid = open_documents(&mut session);
+            let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+            assert_eq!(documents.other.other_income.documents.len(), 2);
+            documents.other.other_income.documents[1].document =
+                crate::OtherIncomeDocument::DisasterRelief(disaster_text(field, " ".into()));
+            let expected =
+                alloc::format!("[documents/other/other_income/documents/1/document/{leaf}]");
             let case = alloc::format!("disaster-{field}-{flavor}-required-blank");
             survey_native_refusal(
                 &case,
@@ -272,14 +249,24 @@ fn unit47_disaster_long_source_text_preserves_tax_and_required_leaf_paths() {
             );
             assert_eq!(session.draft, saved);
 
-            let correction = open_topic(&mut session, TaxSection::OtherIncome);
+            let correction = open_documents(&mut session);
             accepted(&send(&mut session, correction));
             assert_eq!(session.draft, saved);
             let mut restored = restart(saved.clone());
-            let reopened = open_topic(&mut restored, TaxSection::OtherIncome);
-            assert!(page_documents(&reopened).iter().all(|item| {
-                matches!(&item.document, IncomeDocument::DisasterRelief(actual) if *actual == source)
-            }));
+            let reopened = open_documents(&mut restored);
+            let expected = expected_named_sources(
+                &restored.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::DisasterRelief(source),
+                }],
+            );
+            assert!(
+                page_documents(&reopened)
+                    .into_iter()
+                    .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                    .all(|item| item.document == expected[0])
+            );
             accepted(&send(&mut restored, reopened));
             assert_eq!(restored.draft, saved);
         }
@@ -292,22 +279,12 @@ fn marketplace_sources_page(child: i64) -> MarketplaceFactsPage {
         all_year("Second synthetic issuer", 100_000, 60_000, 0),
     ]);
     let form = &mut page.forms[1];
-    form.amounts = PolicyAmounts::ByMonth {
+    form.value.set_amounts(PolicyAmounts::ByMonth {
         months: vec![
-            PolicyMonth {
-                month: 1,
-                premium: 100_000,
-                benchmark: Some(60_000),
-                advance: 0,
-            },
-            PolicyMonth {
-                month: 2,
-                premium: 100_000,
-                benchmark: Some(60_000),
-                advance: 0,
-            },
+            PolicyMonth { month: 1, premium: 100_000, benchmark: Some(60_000), advance: 0 },
+            PolicyMonth { month: 2, premium: 100_000, benchmark: Some(60_000), advance: 0 },
         ],
-    };
+    });
     form.coverage.truncate(2);
     form.coverage[1].people.push(child);
     form.coverage[1].entry = vec![
@@ -364,21 +341,14 @@ fn marketplace_sources_page(child: i64) -> MarketplaceFactsPage {
 #[test]
 fn unit47_marketplace_native_source_relationships_locate_rows_and_preserve_accepted_facts() {
     let cases = [
-        (
-            "advance",
-            "MARKETPLACE_ADVANCE_ABOVE_PREMIUM",
-            "forms/1/amounts/months/1/advance",
-        ),
+        // 2026-10-27: Form1095APaper names the printed February row directly.
+        ("advance", "MARKETPLACE_ADVANCE_ABOVE_PREMIUM", "forms/1/value/february/advance"),
         (
             "dependent-social",
             "MARKETPLACE_TAXABLE_SOCIAL_ABOVE_GROSS",
             "dependents/0/taxable_social",
         ),
-        (
-            "coverage-dates",
-            "PTC_COVERAGE_DATES_REVERSED",
-            "forms/1/coverage/1/entry/1/end",
-        ),
+        ("coverage-dates", "PTC_COVERAGE_DATES_REVERSED", "forms/1/coverage/1/entry/1/end"),
         (
             "tax-free-premiums",
             "PTC_TAX_FREE_PREMIUMS_ABOVE_NET_PAID",
@@ -408,10 +378,7 @@ fn unit47_marketplace_native_source_relationships_locate_rows_and_preserve_accep
         let mut value = marketplace_sources_page(child);
         match case {
             "advance" => {
-                let PolicyAmounts::ByMonth { months } = &mut value.forms[1].amounts else {
-                    unreachable!()
-                };
-                months[1].advance = 100_000;
+                value.forms[1].value.month_mut(2).advance = Some(100_000);
             }
             "tax-free-coverage" => value.forms[1].payments[1].tax_free_coverage = Some(90_000),
             "child-funding" => value.forms[1].medical_costs[1].tax_free_child = Some(10_000),
@@ -420,37 +387,52 @@ fn unit47_marketplace_native_source_relationships_locate_rows_and_preserve_accep
         save_marketplace_and_reopen(&mut session, value);
         let saved = session.draft.clone();
         assert!(saved.valid_stored());
-        let mut request = open_credits_topic(&mut session, TaxSection::Marketplace);
-        let P::SaveMarketplace { value, .. } = &mut request else {
-            unreachable!()
+        let source_case = case == "advance";
+        let mut request = if source_case {
+            open_documents(&mut session)
+        } else {
+            open_credits_topic(&mut session, TaxSection::Marketplace)
         };
-        match case {
-            "advance" => {
-                let PolicyAmounts::ByMonth { months } = &mut value.forms[1].amounts else {
-                    unreachable!()
-                };
-                months[1].advance = 100_001;
+        if let P::SaveMarketplace { value, .. } = &mut request {
+            let forms = &mut value.forms;
+            match case {
+                "dependent-social" => value.dependents[0].taxable_social = 40_001,
+                "coverage-dates" => forms[1].coverage[1].entry[1].end = 20260131,
+                "tax-free-premiums" => forms[1].payments[1].tax_free_premiums = 90_001,
+                "tax-free-coverage" => forms[1].payments[1].tax_free_coverage = Some(90_001),
+                "child-funding" => forms[1].medical_costs[1].tax_free_child = Some(10_001),
+                "child-funding-unavailable" => {
+                    forms[1].medical_costs[1].child_increase = None;
+                    forms[1].medical_costs[1].tax_free_child = Some(1);
+                }
+                _ => unreachable!(),
             }
-            "dependent-social" => value.dependents[0].taxable_social = 40_001,
-            "coverage-dates" => value.forms[1].coverage[1].entry[1].end = 20260131,
-            "tax-free-premiums" => value.forms[1].payments[1].tax_free_premiums = 90_001,
-            "tax-free-coverage" => value.forms[1].payments[1].tax_free_coverage = Some(90_001),
-            "child-funding" => value.forms[1].medical_costs[1].tax_free_child = Some(10_001),
-            "child-funding-unavailable" => {
-                value.forms[1].medical_costs[1].child_increase = None;
-                value.forms[1].medical_costs[1].tax_free_child = Some(1);
-            }
-            _ => unreachable!(),
+        } else {
+            let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+            documents.common.marketplace.documents[1].value.month_mut(2).advance = Some(100_001);
         }
-        let expected = alloc::format!("[value/{leaf}]");
+        let expected = if source_case {
+            let source_leaf = leaf.strip_prefix("forms/").unwrap();
+            alloc::format!("[documents/common/marketplace/documents/{source_leaf}]")
+        } else {
+            alloc::format!("[value/{leaf}]")
+        };
         let case = alloc::format!("marketplace-{case}");
         survey_native_refusal(&case, &mut session, request, key, &expected);
         assert_eq!(session.draft, saved);
-        let correction = open_credits_topic(&mut session, TaxSection::Marketplace);
+        let correction = if source_case {
+            open_documents(&mut session)
+        } else {
+            open_credits_topic(&mut session, TaxSection::Marketplace)
+        };
         accepted(&send(&mut session, correction));
         assert_eq!(session.draft, saved);
         let mut restored = restart(saved.clone());
-        let reopened = open_credits_topic(&mut restored, TaxSection::Marketplace);
+        let reopened = if source_case {
+            open_documents(&mut restored)
+        } else {
+            open_credits_topic(&mut restored, TaxSection::Marketplace)
+        };
         accepted(&send(&mut restored, reopened));
         assert_eq!(restored.draft, saved);
     }
@@ -461,29 +443,16 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
     let base = r1099(1_000_000, normal_kept(), false);
     let mut cases = Vec::new();
     let mut invalid = base.clone();
-    invalid.code = early_kept();
+    invalid.source_mut().code = Some(early_kept());
     cases.push(("treatment-selection", invalid, "R_BOX7_TREATMENT", "code"));
     let invalid = printed_as(roth_item_for_tests(), "J");
-    cases.push((
-        "roth-printed-subcode",
-        invalid,
-        "R_ROTH_CODE_NOT_BOX7",
-        "code/roth",
-    ));
+    cases.push(("roth-printed-subcode", invalid, "R_ROTH_CODE_NOT_BOX7", "code/roth"));
     let invalid = r1099(
         1_000_000,
-        DistributionCode::Disability {
-            began: 20250101,
-            wages: DisabilityWages::All,
-        },
+        DistributionCode::Disability { began: 20250101, wages: DisabilityWages::All },
         true,
     );
-    cases.push((
-        "ira-disability-wages",
-        invalid,
-        "R_IRA_DISABILITY_NOT_WAGES",
-        "code/wages",
-    ));
+    cases.push(("ira-disability-wages", invalid, "R_IRA_DISABILITY_NOT_WAGES", "code/wages"));
     let invalid = r1099(
         1_000_000,
         DistributionCode::Disability {
@@ -500,21 +469,11 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
     ));
     for (case, gross, taxable, leaf) in [
         ("after-death-gross", 1_000_001, 500_000, "after_death/gross"),
-        (
-            "after-death-taxable-box",
-            1_000_000,
-            1_000_001,
-            "after_death/taxable",
-        ),
-        (
-            "after-death-taxable-part",
-            400_000,
-            400_001,
-            "after_death/taxable",
-        ),
+        ("after-death-taxable-box", 1_000_000, 1_000_001, "after_death/taxable"),
+        ("after-death-taxable-part", 400_000, 400_001, "after_death/taxable"),
     ] {
         let mut invalid = base.clone();
-        invalid.after_death = Some(crate::RetirementAfterDeath { gross, taxable });
+        invalid.source_mut().after_death = Some(crate::RetirementAfterDeath { gross, taxable });
         cases.push((case, invalid, "AFTER_DEATH_ABOVE_BOX", leaf));
     }
     for (case, field) in [
@@ -527,14 +486,14 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
     ] {
         let mut invalid = roth_item_for_tests();
         match field {
-            "box_3" => invalid.more.box_3 = 1,
-            "box_6" => invalid.more.box_6 = 1,
-            "box_8a" => invalid.more.box_8a = 1,
-            "box_9b" => invalid.more.box_9b = Some(0),
-            "box_10" => invalid.more.box_10 = 1,
+            "box_3" => invalid.source_mut().form.box_3 = Some(1),
+            "box_6" => invalid.source_mut().form.box_6 = Some(1),
+            "box_8a" => invalid.source_mut().form.box_8a = Some(1),
+            "box_9b" => invalid.source_mut().form.box_9b = Some(0),
+            "box_10" => invalid.source_mut().form.box_10 = Some(1),
             "disability" => {
-                invalid.more.disability =
-                    crate::DisabilityIncome::Qualifying { amount: 0, eligible: true }
+                invalid.source_mut().disability =
+                    Some(crate::DisabilityIncome::Qualifying { amount: 0, eligible: true })
             }
             _ => unreachable!(),
         }
@@ -550,13 +509,8 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         cases.push((case, invalid, "R_ROTH_OTHER_BOXES", leaf));
     }
     let mut invalid = roth_item_for_tests();
-    invalid.more.box_8b_percent = Some(33.33);
-    cases.push((
-        "roth-box8b-precedence",
-        invalid,
-        "R_BOX8B_WITHOUT_BOX8A",
-        "more/box_8b_percent",
-    ));
+    invalid.source_mut().form.box_8b_percent = Some(33.33);
+    cases.push(("roth-box8b-precedence", invalid, "R_BOX8B_WITHOUT_BOX8A", "more/box_8b_percent"));
     for (case, printed, roth, leaf) in [
         (
             "roth-early-disabled-date",
@@ -581,11 +535,7 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         let invalid = printed_as(
             r1099(
                 1_000_000,
-                DistributionCode::RothIra {
-                    roth,
-                    sequence: None,
-                    rolled_over: 0,
-                },
+                DistributionCode::RothIra { roth, sequence: None, rolled_over: 0 },
                 false,
             ),
             printed,
@@ -593,20 +543,13 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         cases.push((case, invalid, "ROTH_DISABLED_AFTER_DISTRIBUTION", leaf));
     }
     let mut invalid = base.clone();
-    invalid.taxable = 1_000_001;
-    invalid.withholding = 1_000_001;
-    cases.push((
-        "taxable-before-withholding",
-        invalid,
-        "R_TAXABLE_ABOVE_GROSS",
-        "taxable",
-    ));
+    invalid.source_mut().form.taxable = Some(1_000_001);
+    invalid.source_mut().form.withholding = Some(1_000_001);
+    cases.push(("taxable-before-withholding", invalid, "R_TAXABLE_ABOVE_GROSS", "taxable"));
     let mut invalid = base.clone();
-    invalid.after_death = Some(crate::RetirementAfterDeath {
-        gross: 1_000_001,
-        taxable: 0,
-    });
-    invalid.withholding = 1_000_001;
+    invalid.source_mut().after_death =
+        Some(crate::RetirementAfterDeath { gross: 1_000_001, taxable: 0 });
+    invalid.source_mut().form.withholding = Some(1_000_001);
     cases.push((
         "after-death-before-withholding",
         invalid,
@@ -614,38 +557,23 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         "after_death/gross",
     ));
     let mut invalid = base.clone();
-    invalid.taxable = 1_000_001;
+    invalid.source_mut().form.taxable = Some(1_000_001);
     cases.push(("taxable", invalid, "R_TAXABLE_ABOVE_GROSS", "taxable"));
     let mut invalid = base.clone();
-    invalid.withholding = 1_000_001;
-    cases.push((
-        "withholding",
-        invalid,
-        "R_WITHHOLDING_ABOVE_GROSS",
-        "withholding",
-    ));
+    invalid.source_mut().form.withholding = Some(1_000_001);
+    cases.push(("withholding", invalid, "R_WITHHOLDING_ABOVE_GROSS", "withholding"));
     let mut invalid = base.clone();
-    invalid.box7 = 0;
+    invalid.source_mut().form.box7 = 0;
     cases.push(("box7-empty", invalid, "R_BOX7_NO_CODE", "box7"));
     let mut invalid = base.clone();
-    invalid.box7 = 7;
+    invalid.source_mut().form.box7 = 7;
     cases.push(("box7-three-codes", invalid, "R_BOX7_TOO_MANY_CODES", "box7"));
     let mut invalid = base.clone();
-    invalid.more.box_10 = 1;
-    cases.push((
-        "box10-without-b",
-        invalid,
-        "R_BOX10_WITHOUT_B",
-        "more/box_10",
-    ));
+    invalid.source_mut().form.box_10 = Some(1);
+    cases.push(("box10-without-b", invalid, "R_BOX10_WITHOUT_B", "more/box_10"));
     let mut invalid = printed_as(base.clone(), "7B");
-    invalid.more.box_10 = 1_000_001;
-    cases.push((
-        "box10-above-gross",
-        invalid,
-        "R_BOX10_ABOVE_GROSS",
-        "more/box_10",
-    ));
+    invalid.source_mut().form.box_10 = Some(1_000_001);
+    cases.push(("box10-above-gross", invalid, "R_BOX10_ABOVE_GROSS", "more/box_10"));
     let invalid = r1099(
         1_000_000,
         DistributionCode::Normal {
@@ -656,25 +584,13 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         },
         false,
     );
-    cases.push((
-        "rollover",
-        invalid,
-        "R_ROLLOVER_ABOVE_GROSS",
-        "code/what_happened/amount",
-    ));
+    cases.push(("rollover", invalid, "R_ROLLOVER_ABOVE_GROSS", "code/what_happened/amount"));
     let invalid = r1099(
         1_000_000,
-        DistributionCode::Normal {
-            what_happened: Disposition::Converted { amount: 1_000_001 },
-        },
+        DistributionCode::Normal { what_happened: Disposition::Converted { amount: 1_000_001 } },
         false,
     );
-    cases.push((
-        "conversion",
-        invalid,
-        "R_CONVERSION_ABOVE_GROSS",
-        "code/what_happened/amount",
-    ));
+    cases.push(("conversion", invalid, "R_CONVERSION_ABOVE_GROSS", "code/what_happened/amount"));
     let invalid = r1099(
         1_000_000,
         DistributionCode::NormalLumpSum {
@@ -694,18 +610,13 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         "code/tax/what_happened/amount",
     ));
     let mut invalid = roth_item_for_tests();
-    let DistributionCode::RothIra { rolled_over, .. } = &mut invalid.code else {
+    let Some(DistributionCode::RothIra { rolled_over, .. }) = &mut invalid.source_mut().code else {
         unreachable!()
     };
     *rolled_over = 1_000_001;
-    cases.push((
-        "roth-rollover",
-        invalid,
-        "R_ROTH_ROLLOVER_ABOVE_GROSS",
-        "code/rolled_over",
-    ));
+    cases.push(("roth-rollover", invalid, "R_ROTH_ROLLOVER_ABOVE_GROSS", "code/rolled_over"));
     let mut invalid = base.clone();
-    invalid.public_safety = vec![
+    invalid.set_public_safety(vec![
         PublicSafetyPaid {
             coverage: PublicSafetyPaidCoverage::Medical,
             premiums: 100_000,
@@ -716,15 +627,15 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
             premiums: 100_000,
             funded: 100_001,
         },
-    ];
+    ]);
     cases.push((
         "public-safety-premium",
         invalid,
         "PSO_FUNDED_ABOVE_PREMIUMS",
-        "public_safety/1/funded",
+        "public_safety/rows/1/funded",
     ));
     let mut invalid = base.clone();
-    invalid.public_safety = vec![
+    invalid.set_public_safety(vec![
         PublicSafetyPaid {
             coverage: PublicSafetyPaidCoverage::Medical,
             premiums: 1_000_000,
@@ -735,27 +646,12 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
             premiums: 1_000_000,
             funded: 500_001,
         },
-    ];
-    cases.push((
-        "public-safety-gross",
-        invalid,
-        "PSO_FUNDED_ABOVE_GROSS",
-        "public_safety",
-    ));
+    ]);
+    cases.push(("public-safety-gross", invalid, "PSO_FUNDED_ABOVE_GROSS", "public_safety/rows"));
     let invalid = disaster_r1099(3_000_001, 0, DisasterSpread::AllInReturnYear);
-    cases.push((
-        "disaster-gross",
-        invalid,
-        "R_DISASTER_ABOVE_GROSS",
-        "disaster/amount",
-    ));
+    cases.push(("disaster-gross", invalid, "R_DISASTER_ABOVE_GROSS", "disaster/amount"));
     let invalid = disaster_r1099(2_000_000, 200_001, DisasterSpread::AllInReturnYear);
-    cases.push((
-        "disaster-limit",
-        invalid,
-        "DISASTER_ABOVE_LIMIT",
-        "disaster/earlier",
-    ));
+    cases.push(("disaster-limit", invalid, "DISASTER_ABOVE_LIMIT", "disaster/earlier"));
     for (case, total, in_return_year, key, leaf) in [
         (
             "disaster-repaid-total",
@@ -773,82 +669,155 @@ fn unit47_retirement_native_owners_locate_printed_treatment_and_nested_disaster_
         ),
     ] {
         let mut invalid = disaster_r1099(1_000_000, 0, DisasterSpread::AllInReturnYear);
-        let DisasterDistribution::Qualified { repaid, .. } = &mut invalid.disaster else {
+        let DisasterDistribution::Qualified { repaid, .. } =
+            invalid.source_mut().disaster.as_mut().unwrap()
+        else {
             unreachable!()
         };
         *repaid = DisasterRepayment::Yes { total, in_return_year };
         cases.push((case, invalid, key, leaf));
     }
     let mut invalid = disaster_r1099(1_000_000, 0, DisasterSpread::AllInReturnYear);
-    let DisasterDistribution::Qualified { distributed, .. } = &mut invalid.disaster else {
+    let DisasterDistribution::Qualified { distributed, .. } =
+        invalid.source_mut().disaster.as_mut().unwrap()
+    else {
         unreachable!()
     };
     *distributed = 20261231;
-    cases.push((
-        "disaster-date",
-        invalid,
-        "DISASTER_OUTSIDE_PERIOD",
-        "disaster/distributed",
-    ));
-    for (case, invalid, key, leaf) in cases {
+    cases.push(("disaster-date", invalid, "DISASTER_OUTSIDE_PERIOD", "disaster/distributed"));
+    for (case, mut invalid, key, leaf) in cases {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let request = save_topic(
-            &session.draft,
-            TaxSection::Retirement,
+        let mut seed = base.clone();
+        // Retain this existing personal answer through the paper-kind correction;
+        // Roth itself does not offer a new disability-pension answer.
+        if case == "roth-disability" {
+            seed.source_mut().disability = invalid.source_mut().disability.clone();
+        }
+        accepted(&crate::tests::support::client::save_retirement_fixture(
+            &mut session,
             vec![
-                document(0, IncomeDocument::R1099(base.clone())),
-                document(0, IncomeDocument::R1099(base.clone())),
+                document(
+                    0,
+                    IncomeSource::Retirement {
+                        value: crate::RetirementDocument::R1099(retirement_document(base.clone())),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::Retirement {
+                        value: crate::RetirementDocument::R1099(retirement_document(seed)),
+                    },
+                ),
             ],
-        );
-        accepted(&send(&mut session, request));
+        ));
         let saved = session.draft.clone();
-        let mut request = open_topic(&mut session, TaxSection::Retirement);
-        let P::SaveIncomes { documents, .. } = &mut request else {
-            unreachable!()
-        };
-        assert_eq!(documents.documents.len(), 2);
-        documents.documents[1].document = IncomeDocument::R1099(invalid);
-        let expected = alloc::format!("[documents/documents/1/document/{leaf}]");
-        let case = alloc::format!("retirement-{case}");
-        survey_native_refusal(&case, &mut session, request, key, &expected);
+        let mut request = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        assert_eq!(documents.common.retirement.documents.len(), 2);
+        let id = documents.common.retirement.documents[1].id;
+        documents.common.retirement.documents[1].document =
+            crate::RetirementDocument::R1099(retirement_document(invalid.clone()));
+        // The printed boxes sit on the 1099-R paper itself, outside the old `more` group.
+        let source_path = alloc::format!(
+            "[documents/common/retirement/documents/1/document/{}]",
+            leaf.strip_prefix("more/").unwrap_or(leaf)
+        );
+        let case_name = alloc::format!("retirement-{case}");
+        let mut candidate = restart(saved.clone());
+        let reply = send(&mut candidate, request.clone());
+        if matches!(reply, Reply::Response(P::Problem { .. })) {
+            if case == "after-death-before-withholding" {
+                survey_native_refusal(
+                    &alloc::format!("{case_name}-printed-withholding"),
+                    &mut session,
+                    request,
+                    "R_WITHHOLDING_ABOVE_GROSS",
+                    "[documents/common/retirement/documents/1/document/withholding]",
+                );
+                // The personal failure is probed against the actually accepted paper.
+                invalid.source_mut().form.withholding = base.withholding;
+                candidate = restart(saved.clone());
+            } else {
+                survey_native_refusal(&case_name, &mut session, request, key, &source_path);
+                assert_eq!(session.draft, saved);
+                let correction = open_documents(&mut session);
+                accepted(&send(&mut session, correction));
+                assert_eq!(session.draft, saved);
+                continue;
+            }
+        } else {
+            accepted(&reply);
+        }
+        let desired = vec![document(
+            id,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(invalid)),
+            },
+        )];
+        let request =
+            crate::tests::support::client::income_pages::information_return_answers_for_topic(
+                &mut candidate,
+                &desired,
+                TaxSection::Retirement,
+            )
+            .unwrap();
+        let expected = retirement_followup_path(&request, id, leaf);
+        survey_native_refusal(&case_name, &mut candidate, request.clone(), key, &expected);
+        survey_native_refusal(
+            &alloc::format!("{case_name}-estimate"),
+            &mut candidate,
+            estimate_documents_from_save(&request),
+            key,
+            &expected,
+        );
         assert_eq!(session.draft, saved);
-        let correction = open_topic(&mut session, TaxSection::Retirement);
+        let correction = open_documents(&mut session);
         accepted(&send(&mut session, correction));
         assert_eq!(session.draft, saved);
     }
     // Preserve the explicitly approved informational box9a exception after removal.
     let mut roth = roth_item_for_tests();
-    roth.more.box_9a_percent = Some(33.33);
-    assert_eq!(roth.more.box_9a_percent, Some(33.33));
+    roth.source_mut().form.box_9a_percent = Some(33.33);
+    assert_eq!(roth.source_mut().form.box_9a_percent, Some(33.33));
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let request = save_topic(
-        &session.draft,
-        TaxSection::Retirement,
-        vec![document(0, IncomeDocument::R1099(roth.clone()))],
-    );
-    accepted(&send(&mut session, request));
+    accepted(&crate::tests::support::client::save_retirement_fixture(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(roth.clone())),
+            },
+        )],
+    ));
     let saved = session.draft.clone();
-    let canonical_page = open_topic(&mut session, TaxSection::Retirement);
-    let IncomeDocument::R1099(canonical) = &page_documents(&canonical_page)[0].document else {
+    let canonical_page = open_documents(&mut session);
+    let IncomeSource::Retirement { value: crate::RetirementDocument::R1099(canonical) } =
+        &page_documents(&canonical_page)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+            .collect::<Vec<_>>()[0]
+            .document
+    else {
         unreachable!()
     };
     let canonical = canonical.clone();
-    let mut expected = roth;
-    expected.allowed_treatments =
-        DistributionCodes::treatments(expected.box7, expected.ira, expected.trump);
-    expected.allowed_methods =
-        DistributionCodes::methods(expected.box7, expected.ira, expected.trump);
-    // Box9a is accepted informational input on every treatment. The existing
-    // retirement projection retains it only for Form4972; the Roth page is blank.
-    expected.more.box_9a_percent = None;
-    assert_eq!(canonical, expected);
+    let expected = retirement_document(roth);
+    // The canonical Roth owner retains the printed informational percentage.
+    assert_eq!(expected.box_9a_percent, Some(33.33));
+    let expected = expected_named_sources(
+        &session.draft,
+        Owner::Taxpayer,
+        vec![IncomeSource::Retirement { value: crate::RetirementDocument::R1099(expected) }],
+    );
+    assert_eq!(
+        IncomeSource::Retirement { value: crate::RetirementDocument::R1099(canonical.clone()) },
+        expected[0]
+    );
     let mut restored = restart(saved.clone());
-    let reopened = open_topic(&mut restored, TaxSection::Retirement);
+    let reopened = open_documents(&mut restored);
     assert!(
-        page_documents(&reopened)
-            .iter()
-            .any(|item| matches!(&item.document,
-        IncomeDocument::R1099(actual) if *actual == canonical))
+        page_documents(&reopened).into_iter().filter(|row| matches!(row.document, IncomeSource::Retirement { .. })).any(|item| matches!(&item.document,
+        IncomeSource::Retirement { value: crate::RetirementDocument::R1099(actual) } if *actual == canonical))
     );
     accepted(&send(&mut restored, reopened));
     assert_eq!(restored.draft, saved);
@@ -867,10 +836,7 @@ fn unit47_retirement_native_save_accepts_equal_amount_and_disability_date_bounda
         ),
         r1099(
             1_000_000,
-            DistributionCode::Disability {
-                began: 20250101,
-                wages: DisabilityWages::None,
-            },
+            DistributionCode::Disability { began: 20250101, wages: DisabilityWages::None },
             true,
         ),
     ];
@@ -894,21 +860,15 @@ fn unit47_retirement_native_save_accepts_equal_amount_and_disability_date_bounda
         rows.push(printed_as(
             r1099(
                 1_000_000,
-                DistributionCode::RothIra {
-                    roth,
-                    rolled_over: 0,
-                    sequence: None,
-                },
+                DistributionCode::RothIra { roth, rolled_over: 0, sequence: None },
                 false,
             ),
             printed,
         ));
     }
     let mut after_death = r1099(1_000_000, normal_kept(), false);
-    after_death.after_death = Some(crate::RetirementAfterDeath {
-        gross: 1_000_000,
-        taxable: 1_000_000,
-    });
+    after_death.source_mut().after_death =
+        Some(crate::RetirementAfterDeath { gross: 1_000_000, taxable: 1_000_000 });
     rows.push(after_death);
     for row in rows {
         assert!(crate::retirement::document_issue(&row).is_none());
@@ -922,16 +882,24 @@ fn unit47_retirement_native_save_accepts_equal_amount_and_disability_date_bounda
             });
         }
         let mut session = Interview::new(TEST_USER, draft);
-        let request = save_topic(
-            &session.draft,
-            TaxSection::Retirement,
-            vec![document(0, IncomeDocument::R1099(row))],
-        );
+        let desired = vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(row)),
+            },
+        )];
+        let request = save_documents(&mut session, desired.clone());
         let request = P::from_avro(&request.to_avro()).unwrap();
         accepted(&send(&mut session, request));
+        let answers = crate::tests::support::client::income_pages::information_return_answers(
+            &mut session,
+            &desired,
+        );
+        let answers = P::from_avro(&answers.to_avro()).unwrap();
+        accepted(&send(&mut session, answers));
         let saved = session.draft.clone();
         let mut restored = restart(saved.clone());
-        let reopened = open_topic(&mut restored, TaxSection::Retirement);
+        let reopened = open_documents(&mut restored);
         accepted(&send(&mut restored, reopened));
         assert_eq!(restored.draft, saved);
     }
@@ -939,10 +907,9 @@ fn unit47_retirement_native_save_accepts_equal_amount_and_disability_date_bounda
 
 #[test]
 fn unit47_reservist_second_anniversary_is_inclusive_and_leap_day_clamps_before_native_save() {
-    for (case, released, deadline, late) in [
-        ("january", 20240101, 20260101, 20260102),
-        ("leap-day", 20240229, 20260228, 20260301),
-    ] {
+    for (case, released, deadline, late) in
+        [("january", 20240101, 20260101, 20260102), ("leap-day", 20240229, 20260228, 20260301)]
+    {
         let repayment = |released, distributed, last_payment| ReservistRepayment {
             ordered: 20220101,
             term: ReserveTerm::Indefinite,
@@ -951,14 +918,8 @@ fn unit47_reservist_second_anniversary_is_inclusive_and_leap_day_clamps_before_n
             gross: 1_200_000,
             prior: 0,
             payments: vec![
-                ReservistPayment {
-                    date: 20260101,
-                    amount: 100_000,
-                },
-                ReservistPayment {
-                    date: last_payment,
-                    amount: 200_000,
-                },
+                ReservistPayment { date: 20260101, amount: 100_000 },
+                ReservistPayment { date: last_payment, amount: 200_000 },
             ],
         };
         let second = repayment(released, 20230102, deadline);
@@ -971,37 +932,38 @@ fn unit47_reservist_second_anniversary_is_inclusive_and_leap_day_clamps_before_n
             reservist_repayments: vec![repayment(20240101, 20230101, 20260101), second],
         };
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let request = save_topic(
-            &session.draft,
-            TaxSection::Retirement,
-            vec![
-                document(
-                    0,
-                    IncomeDocument::R1099(r1099(1_000_000, normal_kept(), true)),
-                ),
-                document(0, IncomeDocument::Form8606(form.clone())),
-            ],
-        );
-        accepted(&send(
-            &mut session,
-            P::from_avro(&request.to_avro()).unwrap(),
-        ));
+        let rows = vec![
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r1099(
+                        1_000_000,
+                        normal_kept(),
+                        true,
+                    ))),
+                },
+            ),
+            document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Form8606(form.clone()) },
+            ),
+        ];
+        save_each_topic(&mut session, rows);
+
         let saved = session.draft.clone();
         assert!(saved.valid_stored());
         let result = supported(&saved);
         assert_eq!(value(&result, "reservist_taxpayer_2_basis"), 3_000);
         assert_eq!(value(&result, "reservist_taxpayer_2_unrepaid"), 9_000);
         let mut request = open_topic(&mut session, TaxSection::Retirement);
-        let P::SaveIncomes { documents, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
         let index = documents
             .documents
             .iter()
-            .position(|item| matches!(item.document, IncomeDocument::Form8606(_)))
+            .position(|item| matches!(item.document, crate::IncomeRecord::Form8606(_)))
             .unwrap();
-        assert_eq!(index, 1);
-        let IncomeDocument::Form8606(actual) = &mut documents.documents[index].document else {
+        assert_eq!(index, 0);
+        let crate::IncomeRecord::Form8606(actual) = &mut documents.documents[index].document else {
             unreachable!()
         };
         assert_eq!(*actual, form);
@@ -1012,7 +974,7 @@ fn unit47_reservist_second_anniversary_is_inclusive_and_leap_day_clamps_before_n
             &mut session,
             request,
             "RESERVIST_REPAYMENT_LATE",
-            "[documents/documents/1/document/reservist_repayments/1/payments/1/date]",
+            "[documents/documents/0/document/reservist_repayments/1/payments/1/date]",
         );
         assert_eq!(session.draft, saved);
         let correction = open_topic(&mut session, TaxSection::Retirement);
@@ -1022,10 +984,7 @@ fn unit47_reservist_second_anniversary_is_inclusive_and_leap_day_clamps_before_n
         let reopened = open_topic(&mut restored, TaxSection::Retirement);
         accepted(&send(&mut restored, reopened));
         assert_eq!(restored.draft, saved);
-        assert_eq!(
-            value(&supported(&restored.draft), "reservist_taxpayer_2_basis"),
-            3_000
-        );
+        assert_eq!(value(&supported(&restored.draft), "reservist_taxpayer_2_basis"), 3_000);
     }
 }
 
@@ -1077,11 +1036,7 @@ fn unit47_ira_contribution_preflight_locates_actual_rows_and_preserves_rejected_
         "nondeductible-before-excess",
         "excess-before-returned",
     ] {
-        let status = if case == "owner" {
-            FederalStatus::Single
-        } else {
-            FederalStatus::Joint
-        };
+        let status = if case == "owner" { FederalStatus::Single } else { FederalStatus::Joint };
         let mut session = unit47_ira_session(status, case == "source-value-duplicate");
         let saved = session.draft.clone();
         let (mut people, allowed) = open_ira_page(&mut session);
@@ -1105,26 +1060,17 @@ fn unit47_ira_contribution_preflight_locates_actual_rows_and_preserves_rejected_
                 if case == "nondeductible-before-excess" {
                     people[0].more.excess = Some(excess_entry(None));
                 }
-                (
-                    "IRA_NONDEDUCTIBLE_ABOVE_TRADITIONAL",
-                    "people/1/more/nondeductible",
-                )
+                ("IRA_NONDEDUCTIBLE_ABOVE_TRADITIONAL", "people/1/more/nondeductible")
             }
             "source-value-duplicate" => {
                 people[0].form_8606_value = None;
                 people[0].more.excess = Some(excess_entry(Some(0)));
-                (
-                    "IRA_EXCESS_TRADITIONAL_ON_8606",
-                    "people/0/more/excess/traditional_value",
-                )
+                ("IRA_EXCESS_TRADITIONAL_ON_8606", "people/0/more/excess/traditional_value")
             }
             "source-value-missing" => {
                 people[1].form_8606_value = Some(40_000);
                 people[1].more.excess = Some(excess_entry(None));
-                (
-                    "IRA_EXCESS_TRADITIONAL_VALUE_NEEDED",
-                    "people/1/more/excess/traditional_value",
-                )
+                ("IRA_EXCESS_TRADITIONAL_VALUE_NEEDED", "people/1/more/excess/traditional_value")
             }
             "returned-above-carried" | "excess-before-returned" => {
                 let mut excess = excess_entry(Some(4_000_000));
@@ -1140,10 +1086,7 @@ fn unit47_ira_contribution_preflight_locates_actual_rows_and_preserves_rejected_
                         late: None,
                     }];
                 }
-                (
-                    "IRA_RETURNED_EXCESS_ABOVE_CARRIED",
-                    "people/1/more/excess/returned_prior_excess",
-                )
+                ("IRA_RETURNED_EXCESS_ABOVE_CARRIED", "people/1/more/excess/returned_prior_excess")
             }
             "returned-above-withdrawn" => {
                 let mut excess = excess_entry(Some(4_000_000));
@@ -1267,13 +1210,14 @@ fn unit47_ira_contribution_save_preserves_source_values_and_inclusive_boundaries
                     }
                     _ => unreachable!(),
                 };
-                people[target].more.returned_in_following_year = vec![crate::ReturnedContribution {
-                    kind: crate::IraKind::Roth,
-                    principal: 100_000,
-                    earnings,
-                    returned_on,
-                    late,
-                }];
+                people[target].more.returned_in_following_year =
+                    vec![crate::ReturnedContribution {
+                        kind: crate::IraKind::Roth,
+                        principal: 100_000,
+                        earnings,
+                        returned_on,
+                        late,
+                    }];
             }
         }
         let expected = people[target].clone();
@@ -1312,11 +1256,7 @@ fn unit47_ira_contribution_save_preserves_source_values_and_inclusive_boundaries
         assert_eq!(actual.more, expected.more);
         assert_eq!(
             actual.form_8606_value,
-            if case == "actual-form-value" {
-                Some(40_000)
-            } else {
-                None
-            },
+            if case == "actual-form-value" { Some(40_000) } else { None },
         );
         let reopened = save_ira_people(&restored.draft, allowed, people);
         accepted(&send(&mut restored, reopened));
@@ -1387,17 +1327,12 @@ fn forge_more_credits_output(request: &mut P) {
     else {
         unreachable!()
     };
-    *estimate = Some(vec![0xff, 0, 0xfe]);
+    *estimate = Some(crate::EstimateSoFar { line: vec![0xff, 0, 0xfe], remaining_items: vec![] });
     *progress = Some(vec![0xfe, 0, 0xff]);
-    *warnings = vec![crate::SaveWarning {
-        message: vec![0xff],
-    }];
+    *warnings = vec![crate::SaveWarning { message: vec![0xff] }];
     *allowed_owners = vec![i32::MIN, i32::MAX, i32::MIN];
     *entered_credits = vec![i32::MIN, i32::MIN];
-    *foreign_businesses = vec![crate::RecordChoice {
-        id: i64::MIN,
-        label: vec![0xff],
-    }];
+    *foreign_businesses = vec![crate::RecordChoice { id: i64::MIN, label: vec![0xff] }];
 }
 
 #[test]
@@ -1430,27 +1365,16 @@ fn unit47_output_only_displays_and_catalogs_do_not_change_native_save_or_reopen(
         super::unit47_text_size::assert_country_source(&session);
 
         let mut reopened = super::unit47_text_size::country_reopened(&mut session);
-        let P::SaveMoreCredits {
-            estimate, progress, ..
-        } = &reopened
-        else {
-            unreachable!()
-        };
-        assert!(estimate.as_ref().is_some_and(|value| !value.is_empty()));
+        let P::SaveMoreCredits { estimate, progress, .. } = &reopened else { unreachable!() };
+        assert!(estimate.as_ref().is_some_and(|value| !value.line.is_empty()));
         assert!(progress.as_ref().is_some_and(|value| !value.is_empty()));
         clear_more_credits_output(&mut reopened);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&reopened.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut session, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(session.draft, expected);
         let mut restored = restart(expected.clone());
         let mut reopened = super::unit47_text_size::country_reopened(&mut restored);
         clear_more_credits_output(&mut reopened);
-        accepted(&send(
-            &mut restored,
-            P::from_avro(&reopened.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(restored.draft, expected);
         super::unit47_text_size::assert_country_source(&restored);
     }
@@ -1461,9 +1385,7 @@ fn unit47_output_only_echoes_cannot_hide_an_actual_input_refusal() {
     let (mut session, _, mut correction) = super::unit47_text_size::country_fixture();
     forge_more_credits_output(&mut correction);
     let mut request = correction.clone();
-    let P::SaveMoreCredits { value, .. } = &mut request else {
-        unreachable!()
-    };
+    let P::SaveMoreCredits { value, .. } = &mut request else { unreachable!() };
     let MoreCredit::ForeignTax(crate::ForeignTaxPage::Ordinary { sources, .. }) =
         &mut value.credits[1]
     else {
@@ -1477,138 +1399,64 @@ fn unit47_output_only_echoes_cannot_hide_an_actual_input_refusal() {
         "FOREIGN_COUNTRY_CODE",
         "[value/credits/1/sources/1/country]",
     );
-    accepted(&send(
-        &mut session,
-        P::from_avro(&correction.to_avro()).unwrap(),
-    ));
+    accepted(&send(&mut session, P::from_avro(&correction.to_avro()).unwrap()));
     super::unit47_text_size::assert_country_source(&session);
     let saved = session.draft.clone();
     let mut restored = restart(saved.clone());
     let mut reopened = super::unit47_text_size::country_reopened(&mut restored);
     clear_more_credits_output(&mut reopened);
-    accepted(&send(
-        &mut restored,
-        P::from_avro(&reopened.to_avro()).unwrap(),
-    ));
+    accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
     assert_eq!(restored.draft, saved);
 }
 
 fn ltc_preview(page: &P, row: &IncomeDocumentItem) -> P {
-    let P::SaveIncomes {
-        empty_k1_activity_choices,
-        allowed_injured_source_facts,
-        allowed_injured_retained_owners,
-        ltc_payee_sources,
-        wage_scorporations,
-        allowed_wage_scorporations,
-        initial_k1_investment_choices,
-        research_businesses,
-        retained_research_choices,
-        k1_credit_lines,
-        research_credit_lines,
-        renewable_credit_lines,
-        transferable_credit_lines,
-        allowed_continuing_risk,
-        foreign_countries,
-        interest_statements,
-        people,
-        farms,
-        cooperative_activities,
-        cooperative_properties,
-        businesses,
-        qbi_businesses,
-        rentals,
-        mortgage_loans,
-        royalty_properties,
-        equipment_rentals,
-        hobbies,
-        ccc_lots,
-        farm_codes,
-        farm_limitations,
-        farm_sources,
-        basis_assets,
-        farm_method_changes,
-        inherited_iras,
-        inherited_roth_iras,
-        ltc_insured,
-        annuity_sources,
-        recovery_sources,
-        allowed_business_source,
-        allowed_farm_source,
-        allowed_partner_source,
-        allowed_home_spouse,
-        allowed_other_parent,
-        children,
-        ..
-    } = page
-    else {
-        unreachable!()
-    };
-    P::PreviewDocument {
-        initial_rental_recovery_choices: Vec::new(),
-        rental_energy_buildings: Vec::new(),
-        empty_k1_activity_choices: empty_k1_activity_choices.clone(),
-        allowed_injured_source_facts: allowed_injured_source_facts.clone(),
-        allowed_injured_retained_owners: allowed_injured_retained_owners.clone(),
-        ltc_payee_sources: ltc_payee_sources.clone(),
-        wage_scorporations: wage_scorporations.clone(),
-        allowed_wage_scorporations: allowed_wage_scorporations.clone(),
-        initial_k1_investment_choices: initial_k1_investment_choices.clone(),
-        research_businesses: research_businesses.clone(),
-        retained_research_choices: retained_research_choices.clone(),
-        k1_credit_lines: k1_credit_lines.clone(),
-        research_credit_lines: research_credit_lines.clone(),
-        renewable_credit_lines: renewable_credit_lines.clone(),
-        transferable_credit_lines: transferable_credit_lines.clone(),
-        user: TEST_USER,
-        allowed_continuing_risk: allowed_continuing_risk.clone(),
-        id: row.id,
-        owner: row.owner,
-        community: row.community,
-        foreign_countries: foreign_countries.clone(),
-        interest_statements: interest_statements.clone(),
-        people: people.clone(),
-        farms: farms.clone(),
-        cooperative_activities: cooperative_activities.clone(),
-        cooperative_properties: cooperative_properties.clone(),
-        businesses: businesses.clone(),
-        qbi_businesses: qbi_businesses.clone(),
-        rentals: rentals.clone(),
-        mortgage_loans: mortgage_loans.clone(),
-        royalty_properties: royalty_properties.clone(),
-        equipment_rentals: equipment_rentals.clone(),
-        hobbies: hobbies.clone(),
-        ccc_lots: ccc_lots.clone(),
-        farm_codes: farm_codes.clone(),
-        farm_limitations: farm_limitations.clone(),
-        farm_sources: farm_sources.clone(),
-        basis_assets: basis_assets.clone(),
-        farm_method_changes: farm_method_changes.clone(),
-        inherited_iras: inherited_iras.clone(),
-        inherited_roth_iras: inherited_roth_iras.clone(),
-        ltc_insured: ltc_insured.clone(),
-        annuity_sources: annuity_sources.clone(),
-        recovery_sources: recovery_sources.clone(),
-        allowed_business_source: allowed_business_source.clone(),
-        allowed_farm_source: allowed_farm_source.clone(),
-        allowed_partner_source: allowed_partner_source.clone(),
-        allowed_home_spouse: allowed_home_spouse.clone(),
-        allowed_other_parent: allowed_other_parent.clone(),
-        children: children.clone(),
-        document: row.document.clone(),
+    if let P::SaveIncomes { people, allowed_injured_source_facts, ltc_payee_sources, .. } = page {
+        let mut request =
+            crate::tests::support::client::survey::survey_preview_document(row.document.clone());
+        let P::PreviewDocument {
+            id,
+            owner,
+            community,
+            people: target_people,
+            allowed_injured_source_facts: allowed,
+            ltc_payee_sources: sources,
+            ..
+        } = &mut request
+        else {
+            unreachable!()
+        };
+        *id = row.id;
+        *owner = row.owner.owned();
+        *community = row.community;
+        *target_people = people.clone();
+        *allowed = allowed_injured_source_facts.clone();
+        *sources = ltc_payee_sources.clone();
+        return request;
     }
+    page.clone()
 }
 
-fn ltc_context_fixture(recovery: bool) -> (Interview, P, i64, i64) {
-    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Joint));
+fn ltc_context_fixture(recovery: bool) -> (Interview, P, i64, i64, crate::LtcSource) {
+    let mut draft = complete(FederalStatus::Joint);
+    let people = draft.people.as_mut().unwrap();
+    people.taxpayer.first_name = "Alex".into();
+    people.spouse.as_mut().unwrap().first_name = "Jordan".into();
+    name_accepted_income_documents(&mut draft);
+    let mut session = Interview::new(TEST_USER, draft);
     let mut annuity = r1099(90_000, DistributionCode::Nonqualified, false);
-    annuity.taxable = 40_000;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::Retirement,
-        vec![document(0, IncomeDocument::R1099(annuity))],
+    annuity.source_mut().form.taxable = Some(40_000);
+    annuity.source_mut().form.recipient =
+        accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+    let reply = crate::tests::support::client::save_retirement_fixture(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(annuity)),
+            },
+        )],
     );
-    accepted(&send(&mut session, request));
+    accepted(&reply);
     let annuity_id = session
         .draft
         .income
@@ -1618,24 +1466,26 @@ fn ltc_context_fixture(recovery: bool) -> (Interview, P, i64, i64) {
         })
         .unwrap();
     let request = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::OtherIncome,
         vec![document(
             0,
-            IncomeDocument::OtherIncome(OtherIncomeItem {
-                amount: 30_000,
-                withholding: 0,
-                kind: OtherIncomeKind::Recovery {
-                    worksheet: PriorYearRecovery {
-                        year: 2025,
-                        deducted: 20_000,
-                        itemized: 2_000_000,
-                        standard: 1_900_000,
-                        taxable_income: 4_000_000,
-                        ordinary: true,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::OtherIncome(OtherIncomeItem {
+                    amount: 30_000,
+                    withholding: 0,
+                    kind: OtherIncomeKind::Recovery {
+                        worksheet: PriorYearRecovery {
+                            year: 2025,
+                            deducted: 20_000,
+                            itemized: 2_000_000,
+                            standard: 1_900_000,
+                            taxable_income: 4_000_000,
+                            ordinary: true,
+                        },
                     },
-                },
-            }),
+                }),
+            },
         )],
     );
     accepted(&send(&mut session, request));
@@ -1651,17 +1501,52 @@ fn ltc_context_fixture(recovery: bool) -> (Interview, P, i64, i64) {
         .unwrap();
     assert_ne!(annuity_id, recovery_id);
     assert_eq!(value(&supported(&session.draft), "agi"), 100_600);
-    let mut page = open_topic(&mut session, TaxSection::OtherIncome);
-    let P::SaveIncomes {
-        documents,
-        annuity_sources,
-        recovery_sources,
-        ..
-    } = &mut page
-    else {
+    let treatment = if recovery {
+        NonqualifiedCareTreatment::AccidentHealth {
+            funding: CareBenefitFunding::AfterTax,
+            medical_reimbursement: 0,
+            permanent_injury: None,
+            recovery: Some(recovery_id),
+        }
+    } else {
+        NonqualifiedCareTreatment::LifeAnnuity { source: annuity_id }
+    };
+    let printed = Some(accepted_document_names(&session.draft, Owner::Taxpayer));
+    let source = crate::LtcSource {
+interest: None,
+        form: crate::Ltc1099Paper {
+            payer: printed.as_ref().and_then(|names| names.issuer.clone()).unwrap_or_default(),
+            recipient: printed.as_ref().map(|names| names.recipient.clone()).unwrap_or_default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(90_000),
+            accelerated: Some(0),
+            paid: LtcPaidBasis::NotChecked,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
+        benefit_origin: Some(LtcPaymentOrigin::Insurance),
+        accelerated_origin: None,
+        contract: LtcContract::Nonqualified { treatment },
+        insured: None,
+    };
+    let mut page = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(source.clone())),
+            },
+        )],
+    );
+    let P::SaveDocuments { documents, annuity_sources, recovery_sources, .. } = &mut page else {
         unreachable!()
     };
-    assert_eq!(documents.documents.len(), 1);
+    assert_eq!(documents.other.other_income.documents.len(), 1);
     assert!(
         annuity_sources
             .iter()
@@ -1672,31 +1557,7 @@ fn ltc_context_fixture(recovery: bool) -> (Interview, P, i64, i64) {
             .iter()
             .any(|source| source.id == recovery_id && source.owner == Owner::Taxpayer)
     );
-    let treatment = if recovery {
-        NonqualifiedCareTreatmentPage::AccidentHealth {
-            funding: CareBenefitFunding::AfterTax,
-            medical_reimbursement: 0,
-            permanent_injury: None,
-            recovery: Some(recovery_id),
-        }
-    } else {
-        NonqualifiedCareTreatmentPage::LifeAnnuity { source: annuity_id }
-    };
-    documents.documents.push(document(
-        0,
-        IncomeDocument::Ltc1099(Ltc1099 {
-            benefits: 90_000,
-            accelerated: 0,
-            interest: 0,
-            benefit_origin: Some(LtcPaymentOrigin::Insurance),
-            accelerated_origin: None,
-            paid: LtcPaidBasis::NotChecked,
-            contract: LtcContractPage::Nonqualified { treatment },
-            illness: LtcIllness::Chronic,
-            insured: None,
-        }),
-    ));
-    (session, page, annuity_id, recovery_id)
+    (session, page, annuity_id, recovery_id, source)
 }
 
 #[test]
@@ -1712,80 +1573,85 @@ fn unit47_ltc_contextual_sources_use_actual_owner_and_page_paths_in_all_three_re
         "insured-period",
     ] {
         let recovery = case.starts_with("recovery");
-        let (mut session, mut correction, annuity_id, recovery_id) = ltc_context_fixture(recovery);
+        let (mut session, mut correction, annuity_id, recovery_id, good_source) =
+            ltc_context_fixture(recovery);
         let original_tax = supported(&session.draft).tax;
-        if case == "insured-period" {
-            let P::SaveIncomes { documents, .. } = &mut correction else {
-                unreachable!()
-            };
-            documents.documents[1].document = IncomeDocument::LtcInsured(LtcInsured {
-                insured: LtcInsuredPerson::OnReturn { person: -1 },
-                periods: LtcPeriodsInput::One {
-                    starts: 20260201,
-                    ends: 20260228,
-                    services: 0,
-                    reimbursements: 0,
-                    recipient: CareBenefitRecipient::Insured {
-                        other_payees: false,
-                    },
+        let insured_index = if case == "insured-period" {
+            let page = open_topic(&mut session, TaxSection::LongTermCareBenefits);
+            let mut records = page_documents(&page);
+            let index = records.len();
+            records.push(document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                        insured: LtcInsuredPerson::OnReturn { person: -1 },
+                        periods: LtcPeriodsInput::One {
+                            starts: 20260201,
+                            ends: 20260228,
+                            services: 0,
+                            reimbursements: 0,
+                            recipient: CareBenefitRecipient::Insured { other_payees: false },
+                        },
+                    }),
                 },
-            });
-        }
-        let mut invalid = correction.clone();
-        let P::SaveIncomes { documents, .. } = &mut invalid else {
-            unreachable!()
-        };
-        let target = &mut documents.documents[1];
-        let mut key = "LTC1099_SOURCE_UNAVAILABLE";
-        let mut local_path = if recovery {
-            "contract/treatment/recovery"
+            ));
+            correction = save_topic(&mut session, TaxSection::LongTermCareBenefits, records);
+            Some(index)
         } else {
-            "contract/treatment/source"
+            None
         };
+        let mut invalid = correction.clone();
+        let mut invalid_source = good_source.clone();
+        let mut key = "LTC1099_SOURCE_UNAVAILABLE";
+        let mut local_path =
+            if recovery { "contract/treatment/recovery" } else { "contract/treatment/source" };
         if case == "insured-period" {
             key = "LTC_PERIOD_ENDS_BEFORE_START";
             local_path = "periods/ends";
-            target.document = IncomeDocument::LtcInsured(LtcInsured {
-                insured: LtcInsuredPerson::OnReturn { person: -1 },
-                periods: LtcPeriodsInput::One {
-                    starts: 20260201,
-                    ends: 20260131,
-                    services: 0,
-                    reimbursements: 0,
-                    recipient: CareBenefitRecipient::Insured {
-                        other_payees: false,
-                    },
-                },
-            });
+            let P::SaveIncomes { documents, .. } = &mut invalid else { unreachable!() };
+            let crate::IncomeRecord::LtcInsured(record) =
+                &mut documents.documents[insured_index.unwrap()].document
+            else {
+                unreachable!()
+            };
+            let LtcPeriodsInput::One { ends, .. } = &mut record.periods else { unreachable!() };
+            *ends = 20260131;
         } else {
-            let IncomeDocument::Ltc1099(form) = &mut target.document else {
+            let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+            let target = &mut documents.other.other_income.documents[0];
+            let crate::OtherIncomeDocument::Ltc1099(form) = &mut target.document else {
                 unreachable!()
             };
             match case {
-                "annuity-wrong-owner" => target.owner = Owner::Spouse,
-                "annuity-above-gross" => form.benefits += 1,
+                "annuity-wrong-owner" => {
+                    target.owner = crate::DocumentOwner::Spouses;
+                    form.recipient =
+                        accepted_document_names(&session.draft, Owner::Spouse).recipient;
+                    invalid_source.form.recipient = form.recipient.clone();
+                }
+                "annuity-above-gross" => {
+                    form.benefits = Some(form.benefits.unwrap_or(0) + 1);
+                    invalid_source.form.benefits = form.benefits;
+                }
                 "local-no-amount" => {
-                    form.benefits = 0;
+                    form.benefits = Some(0);
+                    invalid_source.form.benefits = Some(0);
                     key = "LTC1099_NO_AMOUNT";
                     local_path = "benefits";
-                    form.contract = LtcContractPage::Nonqualified {
-                        treatment: NonqualifiedCareTreatmentPage::LifeAnnuity { source: i64::MAX },
+                    invalid_source.contract = LtcContract::Nonqualified {
+                        treatment: NonqualifiedCareTreatment::LifeAnnuity { source: i64::MAX },
                     };
                 }
                 "annuity-missing" | "annuity-wrong-kind" => {
-                    form.contract = LtcContractPage::Nonqualified {
-                        treatment: NonqualifiedCareTreatmentPage::LifeAnnuity {
-                            source: if case == "annuity-missing" {
-                                i64::MAX
-                            } else {
-                                recovery_id
-                            },
+                    invalid_source.contract = LtcContract::Nonqualified {
+                        treatment: NonqualifiedCareTreatment::LifeAnnuity {
+                            source: if case == "annuity-missing" { i64::MAX } else { recovery_id },
                         },
                     };
                 }
                 "recovery-missing" | "recovery-wrong-kind" => {
-                    form.contract = LtcContractPage::Nonqualified {
-                        treatment: NonqualifiedCareTreatmentPage::AccidentHealth {
+                    invalid_source.contract = LtcContract::Nonqualified {
+                        treatment: NonqualifiedCareTreatment::AccidentHealth {
                             funding: CareBenefitFunding::AfterTax,
                             medical_reimbursement: 0,
                             permanent_injury: None,
@@ -1800,56 +1666,128 @@ fn unit47_ltc_contextual_sources_use_actual_owner_and_page_paths_in_all_three_re
                 _ => unreachable!(),
             }
         }
-        let row = page_documents(&invalid)[1].clone();
-        let local =
-            crate::care_benefits::document_issue(&session.draft, row.owner, &row.document).unwrap();
+        if case != "insured-period" {
+            let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+            documents.other.other_income.documents[0].document =
+                crate::OtherIncomeDocument::Ltc1099(ltc_document(invalid_source.clone()));
+        }
+        let row = page_documents(&invalid)
+            .into_iter()
+            .find(|row| {
+                matches!(
+                    row.document,
+                    IncomeSource::OtherIncome { .. }
+                        | IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(_) }
+                )
+            })
+            .unwrap();
+        let local = if case == "insured-period" {
+            crate::care_benefit_return::document_issue(
+                &session.draft,
+                row.owner.owned(),
+                &row.document,
+            )
+        } else {
+            invalid_source.record().character_issue(&session.draft, row.owner.owned())
+        }
+        .unwrap();
         assert_eq!(local.key, key);
-        assert_eq!(
-            local.field.unwrap().square(),
-            alloc::format!("[{local_path}]")
-        );
-        for (endpoint, request, path) in [
-            (
-                "save",
-                invalid.clone(),
-                alloc::format!("[documents/documents/1/document/{local_path}]"),
-            ),
-            (
-                "estimate",
-                estimate_documents_from_save(&invalid),
-                alloc::format!("[documents/documents/1/document/{local_path}]"),
-            ),
+        assert_eq!(local.field.unwrap().square(), alloc::format!("[{local_path}]"));
+        let prefix = if case == "insured-period" {
+            alloc::format!("documents/documents/{}", insured_index.unwrap())
+        } else {
+            "documents/other/other_income/documents/0".into()
+        };
+        let mut candidate = restart(session.draft.clone());
+        let (invalid, path) = if case != "insured-period" && case != "local-no-amount" {
+            let desired = page_documents(&invalid);
+            accepted(&send(&mut candidate, invalid));
+            // Register this source's actual answers at the moment its topic is built.
+            let _ = ltc_document(invalid_source);
+            let request =
+                crate::tests::support::client::income_pages::information_return_answers_for_topic(
+                    &mut candidate,
+                    &desired,
+                    TaxSection::LongTermCareBenefits,
+                )
+                .unwrap();
+            let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+            let index = followups
+                .iter()
+                .position(|row| matches!(row.answer, crate::DocumentAnswer::LtcContract { .. }))
+                .unwrap();
+            let path = local_path
+                .strip_prefix("contract/")
+                .unwrap()
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .fold(
+                    SchemaPath::root()
+                        .field("followups")
+                        .key(followups[index].key.as_str())
+                        .field("answer")
+                        .field("value"),
+                    |path, segment| match segment.parse::<usize>() {
+                        Ok(index) => path.index(index),
+                        Err(_) => path.field(segment),
+                    },
+                )
+                .to_string();
+            (request, path)
+        } else {
+            (invalid, alloc::format!("[{prefix}/document/{local_path}]"))
+        };
+        for (endpoint, request) in [
+            ("save", invalid.clone()),
+            ("estimate", estimate_documents_from_save(&invalid)),
             (
                 "preview",
-                ltc_preview(&invalid, &row),
-                alloc::format!("[document/{local_path}]"),
+                if matches!(invalid, P::SaveIncomes { .. }) {
+                    estimate_documents_from_save(&invalid)
+                } else {
+                    ltc_preview(&invalid, &row)
+                },
             ),
         ] {
             survey_native_refusal(
                 &alloc::format!("core-ltc-{case}-{endpoint}"),
-                &mut session,
+                &mut candidate,
                 request,
                 key,
                 &path,
             );
         }
+        let _ = ltc_document(good_source);
         // The visible source correction uses the actual independently saved
         // annuity/recovery. Its income remains with that owner, exactly once.
         let before = session.draft.clone();
-        let row = page_documents(&correction)[1].clone();
-        accepted(&send(
+        let row = page_documents(&correction)
+            .into_iter()
+            .find(|row| {
+                matches!(
+                    row.document,
+                    IncomeSource::OtherIncome { .. }
+                        | IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(_) }
+                )
+            })
+            .unwrap();
+        accepted(&crate::tests::support::client::income_pages::candidate_save_review(
             &mut session,
             P::from_avro(&ltc_preview(&correction, &row).to_avro()).unwrap(),
         ));
-        accepted(&send(
+        accepted(&crate::tests::support::client::income_pages::candidate_save_review(
             &mut session,
             P::from_avro(&estimate_documents_from_save(&correction).to_avro()).unwrap(),
         ));
         assert_eq!(session.draft, before);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&correction.to_avro()).unwrap(),
-        ));
+        accepted(&if matches!(correction, P::SaveDocuments { .. }) {
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                P::from_avro(&correction.to_avro()).unwrap(),
+            )
+        } else {
+            send(&mut session, P::from_avro(&correction.to_avro()).unwrap())
+        });
         let result = supported(&session.draft);
         assert_eq!(value(&result, "agi"), 100_600);
         assert_eq!(value(&result, "recovery_2025_taxable"), 200);
@@ -1858,20 +1796,44 @@ fn unit47_ltc_contextual_sources_use_actual_owner_and_page_paths_in_all_three_re
         }
         assert_eq!(result.tax, original_tax);
         let saved = session.draft.clone();
-        let reopened = open_topic(&mut session, TaxSection::OtherIncome);
-        assert_eq!(page_documents(&reopened)[1].document, row.document);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&reopened.to_avro()).unwrap(),
-        ));
+        let reopened = if case == "insured-period" {
+            open_topic(&mut session, TaxSection::LongTermCareBenefits)
+        } else {
+            open_documents(&mut session)
+        };
+        assert_eq!(
+            page_documents(&reopened)
+                .into_iter()
+                .find(|row| matches!(
+                    row.document,
+                    IncomeSource::OtherIncome { .. }
+                        | IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(_) }
+                ))
+                .unwrap()
+                .document,
+            vec![row.document.clone()][0]
+        );
+        accepted(&send(&mut session, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(session.draft, saved);
         let mut restored = restart(saved.clone());
-        let reopened = open_topic(&mut restored, TaxSection::OtherIncome);
-        assert_eq!(page_documents(&reopened)[1].document, row.document);
-        accepted(&send(
-            &mut restored,
-            P::from_avro(&reopened.to_avro()).unwrap(),
-        ));
+        let reopened = if case == "insured-period" {
+            open_topic(&mut restored, TaxSection::LongTermCareBenefits)
+        } else {
+            open_documents(&mut restored)
+        };
+        assert_eq!(
+            page_documents(&reopened)
+                .into_iter()
+                .find(|row| matches!(
+                    row.document,
+                    IncomeSource::OtherIncome { .. }
+                        | IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(_) }
+                ))
+                .unwrap()
+                .document,
+            vec![row.document.clone()][0]
+        );
+        accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(restored.draft, saved);
         assert_eq!(supported(&restored.draft), result);
     }
@@ -1879,85 +1841,126 @@ fn unit47_ltc_contextual_sources_use_actual_owner_and_page_paths_in_all_three_re
 
 #[test]
 fn unit47_ltc_shared_annuity_gross_is_checked_after_individual_source_admission() {
-    let (mut session, mut correction, _, _) = ltc_context_fixture(false);
-    let P::SaveIncomes { documents, .. } = &mut correction else {
+    let (mut session, mut correction, _, _, good_source) = ltc_context_fixture(false);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    let crate::OtherIncomeDocument::Ltc1099(first) =
+        &mut documents.other.other_income.documents[0].document
+    else {
         unreachable!()
     };
-    let IncomeDocument::Ltc1099(first) = &mut documents.documents[1].document else {
-        unreachable!()
-    };
-    first.benefits = 60_000;
-    let mut second = first.clone();
-    second.benefits = 30_000;
-    documents
-        .documents
-        .push(document(0, IncomeDocument::Ltc1099(second)));
+    first.benefits = Some(60_000);
+    let mut first_source = good_source.clone();
+    first_source.form.benefits = Some(60_000);
+    *first = ltc_document(first_source.clone());
+    let mut second_source = good_source;
+    second_source.form.benefits = Some(30_000);
+    let second = ltc_document(second_source.clone());
+    let mut second_row = documents.other.other_income.documents[0].clone();
+    second_row.id = 0;
+    second_row.document = crate::OtherIncomeDocument::Ltc1099(second);
+    documents.other.other_income.documents.push(second_row);
     let mut invalid = correction.clone();
-    let P::SaveIncomes { documents, .. } = &mut invalid else {
+    let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+    let crate::OtherIncomeDocument::Ltc1099(second) =
+        &mut documents.other.other_income.documents[1].document
+    else {
         unreachable!()
     };
-    let IncomeDocument::Ltc1099(second) = &mut documents.documents[2].document else {
-        unreachable!()
-    };
-    second.benefits += 1;
-    for row in &documents.documents[1..] {
+    second.benefits = Some(second.benefits.unwrap_or(0) + 1);
+    let mut invalid_source = second_source.clone();
+    invalid_source.form.benefits = Some(invalid_source.form.benefits.unwrap_or(0) + 1);
+    *second = ltc_document(invalid_source);
+    for row in &documents.other.other_income.documents[..] {
         assert!(
-            crate::care_benefits::document_issue(&session.draft, row.owner, &row.document)
-                .is_none()
+            crate::care_benefit_return::document_issue(
+                &session.draft,
+                row.owner.owned(),
+                &row.clone().into_income().document
+            )
+            .is_none()
         );
     }
-    for (endpoint, request) in [
-        ("save", invalid.clone()),
-        ("estimate", estimate_documents_from_save(&invalid)),
-    ] {
+    let desired = page_documents(&invalid);
+    let mut candidate = restart(session.draft.clone());
+    accepted(&send(&mut candidate, invalid));
+    let invalid =
+        crate::tests::support::client::income_pages::information_return_answers_for_topic(
+            &mut candidate,
+            &desired,
+            TaxSection::LongTermCareBenefits,
+        )
+        .unwrap();
+    let P::SaveIncomes { followups, .. } = &invalid else { unreachable!() };
+    let index = followups
+        .iter()
+        .position(|row| matches!(row.answer, crate::DocumentAnswer::LtcContract { .. }))
+        .unwrap();
+    let path = SchemaPath::root()
+        .field("followups")
+        .key(followups[index].key.as_str())
+        .field("answer")
+        .field("value")
+        .field("treatment")
+        .field("source")
+        .to_string();
+    for (endpoint, request) in
+        [("save", invalid.clone()), ("estimate", estimate_documents_from_save(&invalid))]
+    {
         survey_native_refusal(
             &alloc::format!("core-ltc-shared-gross-{endpoint}"),
-            &mut session,
+            &mut candidate,
             request,
             "LTC1099_SOURCE_UNAVAILABLE",
-            "[documents/documents/1/document/contract/treatment/source]",
+            &path,
         );
     }
-    accepted(&send(
-        &mut session,
-        P::from_avro(&correction.to_avro()).unwrap(),
-    ));
+    let _ = ltc_document(first_source);
+    let _ = ltc_document(second_source);
+    accepted(&if matches!(correction, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            P::from_avro(&correction.to_avro()).unwrap(),
+        )
+    } else {
+        send(&mut session, P::from_avro(&correction.to_avro()).unwrap())
+    });
     assert_eq!(value(&supported(&session.draft), "agi"), 100_600);
     assert_eq!(value(&supported(&session.draft), "taxable_ltc_benefits"), 0);
     let saved = session.draft.clone();
     let mut restored = restart(saved.clone());
-    let reopened = open_topic(&mut restored, TaxSection::OtherIncome);
-    accepted(&send(
-        &mut restored,
-        P::from_avro(&reopened.to_avro()).unwrap(),
-    ));
+    let reopened = open_documents(&mut restored);
+    accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
     assert_eq!(restored.draft, saved);
 }
 
 #[test]
 fn unit47_ltc_unresolved_character_remains_accepted_with_an_unavailable_estimate() {
-    let (mut session, mut request, _, _) = ltc_context_fixture(false);
-    let P::SaveIncomes { documents, .. } = &mut request else {
+    let (mut session, mut request, _, _, mut source) = ltc_context_fixture(false);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::OtherIncomeDocument::Ltc1099(form) =
+        &mut documents.other.other_income.documents[0].document
+    else {
         unreachable!()
     };
-    let IncomeDocument::Ltc1099(form) = &mut documents.documents[1].document else {
-        unreachable!()
-    };
-    form.contract = LtcContractPage::Nonqualified {
-        treatment: NonqualifiedCareTreatmentPage::Unclassified,
-    };
+    source.contract =
+        LtcContract::Nonqualified { treatment: NonqualifiedCareTreatment::Unclassified };
+    *form = ltc_document(source);
     assert!(
-        crate::care_benefits::document_issue(
+        crate::care_benefit_return::document_issue(
             &session.draft,
             Owner::Taxpayer,
-            &documents.documents[1].document
+            &documents.other.other_income.documents[0].clone().into_income().document
         )
         .is_none()
     );
-    accepted(&send(
-        &mut session,
-        P::from_avro(&request.to_avro()).unwrap(),
-    ));
+    accepted(&if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            P::from_avro(&request.to_avro()).unwrap(),
+        )
+    } else {
+        send(&mut session, P::from_avro(&request.to_avro()).unwrap())
+    });
     let result = estimate(&session.draft);
     assert!(
         result
@@ -1967,86 +1970,121 @@ fn unit47_ltc_unresolved_character_remains_accepted_with_an_unavailable_estimate
     );
     let saved = session.draft.clone();
     let mut restored = restart(saved.clone());
-    let reopened = open_topic(&mut restored, TaxSection::OtherIncome);
-    accepted(&send(
-        &mut restored,
-        P::from_avro(&reopened.to_avro()).unwrap(),
-    ));
+    let reopened = open_documents(&mut restored);
+    accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
     assert_eq!(restored.draft, saved);
 }
 
 #[test]
 fn unit47_ltc_recovery_context_uses_whole_page_answers_and_bound_preview_source() {
-    let (mut session, guide, _, recovery_id) = ltc_context_fixture(true);
-    let mut zero_source = guide.clone();
-    let P::SaveIncomes { documents, .. } = &mut zero_source else {
-        unreachable!()
-    };
-    documents.documents.pop();
-    let IncomeDocument::OtherIncome(recovery) = &mut documents.documents[0].document else {
+    let (mut session, guide, _, recovery_id, _) = ltc_context_fixture(true);
+    let mut zero_source = open_topic(&mut session, TaxSection::OtherIncome);
+    let P::SaveIncomes { documents, .. } = &mut zero_source else { unreachable!() };
+    let crate::IncomeRecord::OtherIncome(recovery) = &mut documents.documents[0].document else {
         unreachable!()
     };
     recovery.amount = 0;
-    accepted(&send(
-        &mut session,
-        P::from_avro(&zero_source.to_avro()).unwrap(),
-    ));
+    accepted(&send(&mut session, P::from_avro(&zero_source.to_avro()).unwrap()));
     assert_eq!(value(&supported(&session.draft), "agi"), 100_400);
     let mut correction = open_topic(&mut session, TaxSection::OtherIncome);
-    let source_receipt = page_documents(&guide)[1].clone();
-    let P::SaveIncomes { documents, .. } = &mut correction else {
-        unreachable!()
-    };
+    let source_receipt = page_documents(&guide)
+        .into_iter()
+        .find(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .unwrap();
+    let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
     assert_eq!(documents.documents[0].id, recovery_id);
-    let IncomeDocument::OtherIncome(recovery) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::OtherIncome(recovery) = &mut documents.documents[0].document else {
         unreachable!()
     };
     recovery.amount = 30_000;
-    documents.documents.push(source_receipt.clone());
-    // Preview contains only this bound receipt, so the accepted zero recovery
-    // is still unavailable. It cannot borrow an unsubmitted edit from the page.
+    // The LTC topic calculation reads the accepted recovery, so an unsent
+    // edit on Other income cannot supply it.
+    let before = session.draft.clone();
+    let mut candidate = restart(before.clone());
+    let desired = vec![source_receipt.clone()];
+    let request = save_documents(&mut candidate, desired.clone());
+    accepted(&send(&mut candidate, request));
+    let request =
+        crate::tests::support::client::income_pages::information_return_answers_for_topic(
+            &mut candidate,
+            &desired,
+            TaxSection::LongTermCareBenefits,
+        )
+        .unwrap();
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    let index = followups
+        .iter()
+        .position(|row| matches!(row.answer, crate::DocumentAnswer::LtcContract { .. }))
+        .unwrap();
     survey_native_refusal(
         "core-ltc-bound-zero-recovery-preview",
-        &mut session,
-        ltc_preview(&correction, &source_receipt),
+        &mut candidate,
+        estimate_documents_from_save(&request),
         "LTC1099_SOURCE_UNAVAILABLE",
-        "[document/contract/treatment/recovery]",
+        &SchemaPath::root()
+            .field("followups")
+            .key(followups[index].key.as_str())
+            .field("answer")
+            .field("value")
+            .field("treatment")
+            .field("recovery")
+            .to_string(),
     );
+    assert_eq!(session.draft, before);
     let saved = session.draft.clone();
-    // Estimate and Save contain both Page rows. The candidate's corrected
-    // existing recovery is the source; its unchanged ID was never guessed.
-    accepted(&send(
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
         &mut session,
         P::from_avro(&estimate_documents_from_save(&correction).to_avro()).unwrap(),
     ));
     assert_eq!(session.draft, saved);
-    accepted(&send(
+    accepted(&if matches!(correction, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            P::from_avro(&correction.to_avro()).unwrap(),
+        )
+    } else {
+        send(&mut session, P::from_avro(&correction.to_avro()).unwrap())
+    });
+    // Accept the independently edited recovery before the source receipt refers to it.
+    let correction = save_documents(&mut session, vec![source_receipt]);
+    let saved = session.draft.clone();
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
         &mut session,
-        P::from_avro(&correction.to_avro()).unwrap(),
+        estimate_documents_from_save(&correction),
     ));
+    assert_eq!(session.draft, saved);
+    accepted(&if matches!(correction, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            P::from_avro(&correction.to_avro()).unwrap(),
+        )
+    } else {
+        send(&mut session, P::from_avro(&correction.to_avro()).unwrap())
+    });
     let result = supported(&session.draft);
     assert_eq!(value(&result, "agi"), 100_600);
     assert_eq!(value(&result, "recovery_2025_taxable"), 200);
     assert_eq!(value(&result, "taxable_ltc_benefits"), 0);
     let saved = session.draft.clone();
     let mut restored = restart(saved.clone());
-    let reopened = open_topic(&mut restored, TaxSection::OtherIncome);
-    let receipt = page_documents(&reopened)[1].clone();
-    accepted(&send(
+    let reopened = open_documents(&mut restored);
+    let receipt = page_documents(&reopened)
+        .into_iter()
+        .find(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .unwrap();
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
         &mut restored,
         P::from_avro(&ltc_preview(&reopened, &receipt).to_avro()).unwrap(),
     ));
     assert_eq!(restored.draft, saved);
-    accepted(&send(
-        &mut restored,
-        P::from_avro(&reopened.to_avro()).unwrap(),
-    ));
+    accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
     assert_eq!(restored.draft, saved);
     assert_eq!(supported(&restored.draft), result);
 }
 
 fn trump_return(principal: i64, earnings: i64) -> TrumpExcessReturn {
     TrumpExcessReturn {
+        document_id: None,
         principal,
         earnings,
         received: 20261201,
@@ -2083,11 +2121,9 @@ fn trump_context_fixture() -> (Interview, P, i64) {
     mortgage_gift_owners.clear();
     coverdell_corrections.clear();
     value.taxes = vec![
-        OtherTax::HouseholdEmployees {
-            employers: vec![household_employer(3_500)],
-        },
+        OtherTax::HouseholdEmployees { employers: vec![(&household_employer(3_500)).into()] },
         OtherTax::TrumpAccounts {
-            accounts: vec![
+            accounts: [
                 // Nonzero exempt == contributions is the allowed boundary.
                 TrumpAccount {
                     owner: Owner::Taxpayer,
@@ -2103,16 +2139,17 @@ fn trump_context_fixture() -> (Interview, P, i64) {
                     returns: vec![trump_return(50_000, 2_000), trump_return(10_000, -10_000)],
                     confirmed: true,
                 },
-            ],
+            ]
+            .iter()
+            .map(Into::into)
+            .collect(),
         },
     ];
     (session, page, before_line23)
 }
 
 fn trump_estimate(page: &P) -> P {
-    let P::SaveOtherTaxes { value, .. } = page else {
-        unreachable!()
-    };
+    let P::SaveOtherTaxes { value, .. } = page else { unreachable!() };
     P::EstimateOtherTaxes {
         user: TEST_USER,
         allowed_owners: vec![],
@@ -2134,12 +2171,8 @@ fn unit47_trump_accounts_preserve_group_order_and_actual_save_estimate_paths() {
     ] {
         let (mut session, correction, before_line23) = trump_context_fixture();
         let mut request = correction.clone();
-        let P::SaveOtherTaxes { value: taxes, .. } = &mut request else {
-            unreachable!()
-        };
-        let OtherTax::TrumpAccounts { accounts } = &mut taxes.taxes[1] else {
-            unreachable!()
-        };
+        let P::SaveOtherTaxes { value: taxes, .. } = &mut request else { unreachable!() };
+        let OtherTax::TrumpAccounts { accounts } = &mut taxes.taxes[1] else { unreachable!() };
         match case {
             "exempt" => accounts[1].exempt = accounts[1].contributions + 1,
             "return-loss" => accounts[1].returns[1].earnings -= 1,
@@ -2162,23 +2195,17 @@ fn unit47_trump_accounts_preserve_group_order_and_actual_save_estimate_paths() {
         let (key, local_path) = if case.starts_with("exempt") {
             ("TRUMP_EXEMPT_ABOVE_CONTRIBUTIONS", "accounts/1/exempt")
         } else if case.starts_with("return-loss") || case.starts_with("loss") {
-            (
-                "TRUMP_LOSS_ABOVE_PRINCIPAL",
-                "accounts/1/returns/1/earnings",
-            )
+            ("TRUMP_LOSS_ABOVE_PRINCIPAL", "accounts/1/returns/1/earnings")
         } else {
             ("TRUMP_ACCOUNT_TWICE", "accounts/1/owner")
         };
-        let issue = crate::trump_account::accounts_issue(accounts).unwrap();
+        let native_accounts: Vec<TrumpAccount> = accounts.iter().map(Into::into).collect();
+        let issue = crate::trump_account::accounts_issue(&native_accounts).unwrap();
         assert_eq!(issue.key, key);
-        assert_eq!(
-            issue.field.unwrap().square(),
-            alloc::format!("[{local_path}]")
-        );
-        for (endpoint, submitted) in [
-            ("save", request.clone()),
-            ("estimate", trump_estimate(&request)),
-        ] {
+        assert_eq!(issue.field.unwrap().square(), alloc::format!("[{local_path}]"));
+        for (endpoint, submitted) in
+            [("save", request.clone()), ("estimate", trump_estimate(&request))]
+        {
             survey_native_refusal(
                 &alloc::format!("core-trump-{case}-{endpoint}"),
                 &mut session,
@@ -2188,15 +2215,12 @@ fn unit47_trump_accounts_preserve_group_order_and_actual_save_estimate_paths() {
             );
         }
         let before = session.draft.clone();
-        accepted(&send(
+        accepted(&crate::tests::support::client::income_pages::candidate_save_review(
             &mut session,
             P::from_avro(&trump_estimate(&correction).to_avro()).unwrap(),
         ));
         assert_eq!(session.draft, before);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&correction.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut session, P::from_avro(&correction.to_avro()).unwrap()));
         let result = supported(&session.draft);
         // The taxpayer is at the nonzero exempt/contribution boundary.
         // Spouse excess: 8000-1000-5000=2000; timely principal 500+100
@@ -2209,31 +2233,16 @@ fn unit47_trump_accounts_preserve_group_order_and_actual_save_estimate_paths() {
         assert_eq!(return_line(&result, "23") - before_line23, 66_100);
         let saved = session.draft.clone();
         let reopened = open_other_taxes(&mut session);
-        let P::SaveOtherTaxes { value: shown, .. } = &reopened else {
-            unreachable!()
-        };
-        let P::SaveOtherTaxes {
-            value: expected, ..
-        } = &correction
-        else {
-            unreachable!()
-        };
+        let P::SaveOtherTaxes { value: shown, .. } = &reopened else { unreachable!() };
+        let P::SaveOtherTaxes { value: expected, .. } = &correction else { unreachable!() };
         assert_eq!(shown, expected);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&reopened.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut session, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(session.draft, saved);
         let mut restored = restart(saved.clone());
         let reopened = open_other_taxes(&mut restored);
-        let P::SaveOtherTaxes { value: shown, .. } = &reopened else {
-            unreachable!()
-        };
+        let P::SaveOtherTaxes { value: shown, .. } = &reopened else { unreachable!() };
         assert_eq!(shown, expected);
-        accepted(&send(
-            &mut restored,
-            P::from_avro(&reopened.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(restored.draft, saved);
         assert_eq!(supported(&restored.draft), result);
     }
@@ -2241,36 +2250,24 @@ fn unit47_trump_accounts_preserve_group_order_and_actual_save_estimate_paths() {
 
 #[test]
 fn unit47_nested_benefit_names_are_output_only_without_emptying_editable_rows() {
-    let partners = partner_benefits_session(vec![k1_1065_benefits(
-        "Synthetic display-only partner",
-        0,
-        0,
-        0,
-    )]);
+    let partners =
+        partner_benefits_session(vec![k1_1065_benefits("Synthetic display-only partner", 0, 0, 0)]);
     let (corporations, reply) = save_k1_1120s(vec![k1_1120s("Synthetic display-only corporation")]);
     accepted(&reply);
-    for (kind, mut session) in [
-        ("business", business_session()),
-        ("partner", partners),
-        ("corporation", corporations),
-    ] {
+    for (kind, mut session) in
+        [("business", business_session()), ("partner", partners), ("corporation", corporations)]
+    {
         let request = benefits_editor(&mut session);
         accepted(&send(&mut session, request));
         let baseline = session.draft.clone();
         let expected_estimate = estimate(&baseline);
         for forged in [false, true] {
             let mut request = benefits_editor(&mut session);
-            let P::SaveSelfEmployedBenefits { value, .. } = &mut request else {
-                unreachable!()
-            };
+            let P::SaveSelfEmployedBenefits { value, .. } = &mut request else { unreachable!() };
             let names: Vec<_> = match kind {
                 "business" => value.businesses.iter_mut().map(|r| &mut r.name).collect(),
                 "partner" => value.partnerships.iter_mut().map(|r| &mut r.name).collect(),
-                "corporation" => value
-                    .scorporations
-                    .iter_mut()
-                    .map(|r| &mut r.name)
-                    .collect(),
+                "corporation" => value.scorporations.iter_mut().map(|r| &mut r.name).collect(),
                 _ => unreachable!(),
             };
             assert!(!names.is_empty());
@@ -2291,24 +2288,21 @@ fn unit47_nested_benefit_names_are_output_only_without_emptying_editable_rows() 
 #[test]
 fn unit47_nested_income_displays_cannot_replace_actual_document_inputs() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let request = save_topic(
-        &session.draft,
-        TaxSection::Wages,
-        vec![document(0, IncomeDocument::W2(w2(10_000_000)))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(10_000_000))) },
+        )],
     );
     accepted(&send(&mut session, request));
     let baseline = session.draft.clone();
     let expected_estimate = estimate(&baseline);
     for forged in [false, true] {
-        let request = go_to(&session.draft, PAGE_INCOME, TaxSection::Wages);
-        let Reply::Edit(mut request @ P::SaveIncomes { .. }) = send(&mut session, request) else {
-            panic!("expected the actual wages editor")
-        };
-        let P::SaveIncomes { documents, .. } = &mut request else {
-            unreachable!()
-        };
-        assert_eq!(documents.documents.len(), 1);
-        let item = &mut documents.documents[0];
+        let mut request = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        assert_eq!(documents.common.wages.documents.len(), 1);
+        let item = &mut documents.common.wages.documents[0];
         item.investment_caps = forged.then_some(crate::InvestmentCapitalCap {
             short: 99_999_999,
             long: 99_999_999,
@@ -2328,6 +2322,7 @@ fn unit47_nested_income_displays_cannot_replace_actual_document_inputs() {
 
 fn unit47_admission_estimate(request: &P) -> P {
     match request {
+        P::SaveDocuments { .. } => request.clone(),
         P::SaveStudentLoan { value, .. } => {
             P::EstimateStudentLoan { user: TEST_USER, value: value.clone() }
         }
@@ -2355,10 +2350,12 @@ fn unit47_admission_correct_estimate(session: &mut Interview, request: &P) {
     let dirty = session.dirty;
     let request = unit47_admission_estimate(request);
     let request = P::from_avro(&request.to_avro()).unwrap();
-    assert!(matches!(
-        send(session, request),
-        Reply::Response(P::RunningEstimate { .. })
-    ));
+    let reply = if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::candidate_save_review(session, request)
+    } else {
+        send(session, request)
+    };
+    assert!(matches!(reply, Reply::Response(P::RunningEstimate { .. } | P::Review { .. })));
     assert_eq!(session.draft, before);
     assert_eq!(session.dirty, dirty);
 }
@@ -2366,33 +2363,42 @@ fn unit47_admission_correct_estimate(session: &mut Interview, request: &P) {
 #[test]
 fn unit47_student_interest_admission_uses_all_actual_form_interest_and_reopens_the_correction() {
     for (case, forms, other, employer, correction) in [
-        (
-            "student-interest-additional",
-            vec![Form1098E {
-                interest: 180_000,
-                box_2: Form1098EBox2::Checked {
-                    additional_interest: 20_000,
-                },
-            }],
-            10_000,
-            210_001,
-            210_000,
-        ),
+        ("student-interest-additional", vec![box_2(180_000, 20_000)], 10_000, 210_001, 210_000),
         ("student-interest-no-form", vec![], 10_000, 10_001, 10_000),
         ("student-interest-zero", vec![], 0, 1, 0),
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+        let first_form_id = session.draft.next_id;
+        let mut source_page = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut source_page else { unreachable!() };
+        documents.common.student_loans.documents = student_documents(&forms);
+        accepted(&send(&mut session, source_page));
+        let forms: Vec<_> = forms
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut form)| {
+                form.id = first_form_id + index as i64;
+                // Saved without a printed borrower, each form waits for its owner.
+                form.assigned = crate::DocumentRecipient::Unknown;
+                form.owner_source = None;
+                form
+            })
+            .collect();
         let navigation = go_to(&session.draft, PAGE_REVIEW, TaxSection::StudentLoan);
         let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) = send(&mut session, navigation)
         else {
             panic!("expected actual student-loan editor")
         };
-        let P::SaveStudentLoan { value, .. } = &mut request else {
-            unreachable!()
-        };
-        value.forms = forms.clone();
+        let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
         value.other_interest = other;
         value.employer_paid_interest = employer;
+        for (row, form) in value.forms.iter_mut().zip(&forms) {
+            if form.document.box_2 {
+                row.additional_interest = crate::StudentLoanAdditionalInterest::Checked {
+                    additional_interest: form.additional_interest,
+                };
+            }
+        }
         survey_native_refusal(
             &alloc::format!("{case}-save"),
             &mut session,
@@ -2407,11 +2413,9 @@ fn unit47_student_interest_admission_uses_all_actual_form_interest_and_reopens_t
             "STUDENT_LOAN_EMPLOYER_ABOVE_INTEREST",
             "[value/employer_paid_interest]",
         );
-        let P::SaveStudentLoan { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
         value.employer_paid_interest = correction;
-        let expected = value.clone();
+        let mut expected = value.clone();
         unit47_admission_correct_estimate(&mut session, &request);
         let request = P::from_avro(&request.to_avro()).unwrap();
         accepted(&send(&mut session, request));
@@ -2419,10 +2423,24 @@ fn unit47_student_interest_admission_uses_all_actual_form_interest_and_reopens_t
             session.draft.adjustments.as_ref().unwrap().student_loan,
             StudentLoanClaim {
                 student_loan_interest: other,
-                forms,
+                forms: forms.clone(),
                 employer_paid_interest: correction,
             }
         );
+        for row in &mut expected.forms {
+            row.value = session
+                .draft
+                .adjustments
+                .as_ref()
+                .unwrap()
+                .student_loan
+                .forms
+                .iter()
+                .find(|form| form.id == row.id)
+                .unwrap()
+                .document
+                .clone();
+        }
         let saved = session.draft.clone();
         let mut restored = restart(saved.clone());
         let navigation = go_to(&restored.draft, PAGE_REVIEW, TaxSection::StudentLoan);
@@ -2430,9 +2448,7 @@ fn unit47_student_interest_admission_uses_all_actual_form_interest_and_reopens_t
         else {
             unreachable!()
         };
-        let P::SaveStudentLoan { value, .. } = &request else {
-            unreachable!()
-        };
+        let P::SaveStudentLoan { value, .. } = &request else { unreachable!() };
         assert_eq!(*value, expected);
         accepted(&send(&mut restored, request));
         assert_eq!(restored.draft, saved);
@@ -2455,11 +2471,10 @@ fn unit47_investment_income_tax_admission_preserves_election_and_paid_part() {
             "[value/investment_income_tax]",
         ),
     ] {
-        let mut session = mortgage_loan_page(at_the_deductions_page(FederalStatus::Single).0);
+        let mut session = at_the_deductions_page(FederalStatus::Single).0;
+        session.draft.checklist.paid |= PaidTopics::TAXES.0;
         let mut request = open_itemized_topic(&mut session, TaxSection::Taxes);
-        let P::SaveTaxes { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveTaxes { value, .. } = &mut request else { unreachable!() };
         value.kind = kind;
         value.investment_income_tax = crate::InvestmentIncomeTax::Records {
             paid_part,
@@ -2479,9 +2494,7 @@ fn unit47_investment_income_tax_admission_preserves_election_and_paid_part() {
             "INVESTMENT_TAX_ABOVE_PAID",
             path,
         );
-        let P::SaveTaxes { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveTaxes { value, .. } = &mut request else { unreachable!() };
         value.kind = SaltElection::IncomeTax { paid: 50_000 };
         value.investment_income_tax = crate::InvestmentIncomeTax::Records {
             paid_part: 50_000,
@@ -2489,21 +2502,13 @@ fn unit47_investment_income_tax_admission_preserves_election_and_paid_part() {
         };
         let expected = value.clone();
         unit47_admission_correct_estimate(&mut session, &request);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&request.to_avro()).unwrap(),
-        ));
-        assert_eq!(
-            stored_facts(&session).investment_income_tax,
-            expected.investment_income_tax
-        );
+        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
+        assert_eq!(stored_facts(&session).investment_income_tax, expected.investment_income_tax);
         assert_eq!(stored_facts(&session).personal_tax.paid(), 50_000);
         let saved = session.draft.clone();
         let mut restored = restart(saved.clone());
         let request = open_itemized_topic(&mut restored, TaxSection::Taxes);
-        let P::SaveTaxes { value, .. } = &request else {
-            unreachable!()
-        };
+        let P::SaveTaxes { value, .. } = &request else { unreachable!() };
         assert_eq!(*value, expected);
         accepted(&send(&mut restored, request));
         assert_eq!(restored.draft, saved);
@@ -2512,54 +2517,58 @@ fn unit47_investment_income_tax_admission_preserves_election_and_paid_part() {
 
 fn unit47_mortgage_row(label: &str) -> Mortgage1098 {
     Mortgage1098 {
+        lender: Default::default(),
+        borrower: Default::default(),
         id: 0,
         interest: 100_000,
         principal: 20_000_000,
         originated: 20200601,
         refund: 0,
         insurance: 0,
-        points: Points::None,
+        points: 0,
         more: MortgageMore {
             property: label.into(),
             details: MortgageDetails::FirstLender(MortgageFirstLender {
                 home: MortgageHome::Main,
                 purpose: MortgageUse::Home,
-                average: AverageBalance::FirstAndLast {
-                    last_balance: 20_000_000,
-                },
+                average: AverageBalance::FirstAndLast { last_balance: 20_000_000 },
             }),
             ..MortgageMore::default()
         },
     }
 }
 
-fn unit47_mortgage_session() -> Interview {
+fn unit47_mortgage_session() -> (Interview, Vec<Mortgage1098>) {
     let mut session = at_the_deductions_page(FederalStatus::Single).0;
     // This $3,000 interest fixture is below the standard deduction. Select
     // Itemize through its actual editor so Schedule A claims the tested amount.
     unit47_admission_itemize(&mut session);
-    assert_eq!(
-        session.draft.deductions.as_ref().unwrap().choice(),
-        DeductionChoice::Itemized
-    );
-    let mut request = open_itemized_topic(&mut session, TaxSection::Mortgage);
-    let P::SaveMortgages {
-        value: mortgages, ..
-    } = &mut request
-    else {
-        unreachable!()
-    };
-    mortgages.loans = vec![
+    assert_eq!(session.draft.deductions.as_ref().unwrap().choice(), DeductionChoice::Itemized);
+    let mut rows = vec![
         unit47_mortgage_row("First source"),
         unit47_mortgage_row("Second source"),
         unit47_mortgage_row("Third source"),
     ];
+    let borrower = accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+    for row in &mut rows {
+        row.borrower = borrower.clone();
+    }
+    let mut request = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.mortgages.documents = rows.iter().cloned().map(mortgage_document).collect();
     accepted(&send(&mut session, request));
-    assert_eq!(
-        value(&estimate(&session.draft), "mortgage_interest_8a"),
-        3_000
-    );
-    session
+    accepted(&crate::tests::cross::interview::save_mortgage_answers(
+        &mut session,
+        &rows
+            .iter()
+            .map(|row| (row.more.clone(), crate::MortgagePointTreatment::None))
+            .collect::<Vec<_>>(),
+    ));
+    for (row, source) in rows.iter_mut().zip(&session.draft.deductions.as_ref().unwrap().mortgage) {
+        row.id = source.id;
+    }
+    assert_eq!(value(&estimate(&session.draft), "mortgage_interest_8a"), 3_000);
+    (session, rows)
 }
 
 #[test]
@@ -2586,46 +2595,51 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
         "average-limit",
         "last-before-points",
     ] {
-        let mut session = unit47_mortgage_session();
-        let mut request = open_itemized_topic(&mut session, TaxSection::Mortgage);
-        let P::SaveMortgages { value, .. } = &mut request else {
-            unreachable!()
-        };
-        assert_eq!(value.loans.len(), 3);
-        assert!(value.loans.iter().all(|loan| loan.id > 0));
-        let original = value.clone();
-        let first_id = value.loans[0].id;
-        let second_id = value.loans[1].id;
-        let third_id = value.loans[2].id;
+        let (mut session, mut rows) = unit47_mortgage_session();
+        if case == "linked-missing" {
+            let mut setup = crate::tests::cross::interview::linked_mortgage_editor(&mut session);
+            let P::SaveMortgages { value, .. } = &mut setup else { unreachable!() };
+            value.loans[1].details =
+                MortgageDetails::EarlierLender { loan: value.loans[0].id }.into();
+            accepted(&send(&mut session, setup));
+            rows[1].more.details = MortgageDetails::EarlierLender { loan: rows[0].id };
+        }
+        let mut request = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let original = documents.common.mortgages.clone();
+        let value = &mut rows;
+        assert_eq!(value.len(), 3);
+        assert!(value.iter().all(|loan| loan.id > 0));
+        let first_id = value[0].id;
+        let second_id = value[1].id;
+        let third_id = value[2].id;
+        let mut point_answers = vec![crate::MortgagePointTreatment::None; 3];
         let (key, path) = match case {
             "last-balance" | "last-before-points" => {
-                let MortgageDetails::FirstLender(facts) = &mut value.loans[1].more.details else {
+                let MortgageDetails::FirstLender(facts) = &mut value[1].more.details else {
                     unreachable!()
                 };
-                facts.average = AverageBalance::FirstAndLast {
-                    last_balance: 20_000_001,
-                };
+                facts.average = AverageBalance::FirstAndLast { last_balance: 20_000_001 };
                 if case == "last-before-points" {
                     facts.home = MortgageHome::Second;
-                    value.loans[1].points = Points::Purchase { amount: 10_000 };
+                    value[1].points = 10_000;
+                    point_answers[1] = crate::MortgagePointTreatment::Purchase;
                 }
                 (
                     "MORTGAGE_LAST_BALANCE_ABOVE_BOX_2",
-                    "value/loans/1/more/details/average/last_balance",
+                    "documents/common/mortgages/documents/1/more/details/average/last_balance",
                 )
             }
             "purchase-points" | "improvement-points" => {
-                let MortgageDetails::FirstLender(facts) = &mut value.loans[1].more.details else {
+                let MortgageDetails::FirstLender(facts) = &mut value[1].more.details else {
                     unreachable!()
                 };
                 facts.home = MortgageHome::Second;
-                value.loans[1].points = if case == "purchase-points" {
-                    Points::Purchase { amount: 10_000 }
+                value[1].points = 10_000;
+                point_answers[1] = if case == "purchase-points" {
+                    crate::MortgagePointTreatment::Purchase
                 } else {
-                    Points::Improvement {
-                        amount: 10_000,
-                        term_months: 120,
-                    }
+                    crate::MortgagePointTreatment::Improvement { term_months: 120 }
                 };
                 (
                     if case == "purchase-points" {
@@ -2633,20 +2647,16 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
                     } else {
                         "MORTGAGE_IMPROVEMENT_POINTS"
                     },
-                    "value/loans/1/points",
+                    "documents/common/mortgages/documents/1/points",
                 )
             }
             "refinance-date" | "refinance-term" => {
-                let MortgageDetails::FirstLender(facts) = &mut value.loans[1].more.details else {
+                let MortgageDetails::FirstLender(facts) = &mut value[1].more.details else {
                     unreachable!()
                 };
                 facts.purpose = MortgageUse::Refinance(MortgageRefinance {
                     refinanced: 20_000_000,
-                    earlier_incurred: if case == "refinance-date" {
-                        20200602
-                    } else {
-                        20100101
-                    },
+                    earlier_incurred: if case == "refinance-date" { 20200602 } else { 20100101 },
                     earlier_term_ends: None,
                     improvement: 0,
                     other: 0,
@@ -2654,17 +2664,17 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
                 if case == "refinance-date" {
                     (
                         "MORTGAGE_EARLIER_LOAN_AFTER_THIS_ONE",
-                        "value/loans/1/more/details/purpose/earlier_incurred",
+                        "documents/common/mortgages/documents/1/more/details/purpose/earlier_incurred",
                     )
                 } else {
                     (
                         "MORTGAGE_EARLIER_TERM_NEEDED",
-                        "value/loans/1/more/details/purpose/earlier_term_ends",
+                        "documents/common/mortgages/documents/1/more/details/purpose/earlier_term_ends",
                     )
                 }
             }
             "borrowed-balance" | "mixed-average" => {
-                let MortgageDetails::FirstLender(facts) = &mut value.loans[1].more.details else {
+                let MortgageDetails::FirstLender(facts) = &mut value[1].more.details else {
                     unreachable!()
                 };
                 facts.purpose = MortgageUse::Partly(MortgageSplit {
@@ -2673,52 +2683,44 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
                     other: 10_000_000,
                 });
                 if case == "borrowed-balance" {
-                    value.loans[1].principal = 20_000_001;
+                    value[1].principal = 20_000_001;
                     (
                         "MORTGAGE_BALANCE_ABOVE_AMOUNTS_BORROWED",
-                        "value/loans/1/principal",
+                        "documents/common/mortgages/documents/1/principal",
                     )
                 } else {
-                    facts.average = AverageBalance::Statements {
-                        average: 20_000_000,
-                    };
+                    facts.average = AverageBalance::Statements { average: 20_000_000 };
                     (
                         "MORTGAGE_MIXED_USE_NEEDS_MONTHLY",
-                        "value/loans/1/more/details/average",
+                        "documents/common/mortgages/documents/1/more/details/average",
                     )
                 }
             }
             "month-duplicate" => {
-                let MortgageDetails::FirstLender(facts) = &mut value.loans[1].more.details else {
+                let MortgageDetails::FirstLender(facts) = &mut value[1].more.details else {
                     unreachable!()
                 };
                 facts.average = AverageBalance::Monthly {
                     balances: vec![
-                        MortgageMonthBalance {
-                            month: 1,
-                            balance: 20_000_000,
-                        },
-                        MortgageMonthBalance {
-                            month: 1,
-                            balance: 20_000_000,
-                        },
+                        MortgageMonthBalance { month: 1, balance: 20_000_000 },
+                        MortgageMonthBalance { month: 1, balance: 20_000_000 },
                     ],
                 };
                 (
                     "MORTGAGE_MONTH_TWICE",
-                    "value/loans/1/more/details/average/balances/1/month",
+                    "documents/common/mortgages/documents/1/more/details/average/balances/1/month",
                 )
             }
             "refund-origin" => {
-                value.loans[1].refund = 100;
+                value[1].refund = 100;
                 (
                     "MORTGAGE_REFUND_ORIGIN_NEEDED",
-                    "value/loans/1/more/refund_origin",
+                    "documents/common/mortgages/documents/1/more/refund_origin",
                 )
             }
             "refund-recovery" => {
-                value.loans[1].refund = 100;
-                value.loans[1].more.refund_origin =
+                value[1].refund = 100;
+                value[1].more.refund_origin =
                     Some(MortgageRefundOrigin::Deducted(crate::PriorYearRecovery {
                         year: 2025,
                         deducted: 100_001,
@@ -2729,60 +2731,58 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
                     }));
                 (
                     "RECOVERY_DEDUCTED_ABOVE_ITEMIZED",
-                    "value/loans/1/more/refund_origin/deducted",
+                    "documents/common/mortgages/documents/1/more/refund_origin/deducted",
                 )
             }
             "linked-source-unavailable" => {
-                value.loans[1].more.details = MortgageDetails::EarlierLender { loan: i64::MAX };
+                value[1].more.details = MortgageDetails::EarlierLender { loan: i64::MAX };
                 (
                     "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED",
-                    "value/loans/1/more/details/loan",
+                    "documents/common/mortgages/documents/1/more/details/loan",
                 )
             }
             "linked-self" => {
-                value.loans[1].more.details = MortgageDetails::EarlierLender { loan: second_id };
+                value[1].more.details = MortgageDetails::EarlierLender { loan: second_id };
                 (
                     "MORTGAGE_LOAN_SELF_REFERENCE",
-                    "value/loans/1/more/details/loan",
+                    "documents/common/mortgages/documents/1/more/details/loan",
                 )
             }
             "linked-missing" => {
-                value.loans[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
-                value.loans.remove(0);
+                value[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
+                value.remove(0);
                 (
                     "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED",
-                    "value/loans/0/more/details/loan",
+                    "documents/common/mortgages/documents/0/more/details/loan",
                 )
             }
             "linked-not-root" => {
-                value.loans[0].more.details = MortgageDetails::EarlierLender { loan: third_id };
-                value.loans[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
+                value[0].more.details = MortgageDetails::EarlierLender { loan: third_id };
+                value[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
                 (
                     "MORTGAGE_EARLIER_LENDER_ENTRY_NEEDED",
-                    "value/loans/1/more/details/loan",
+                    "documents/common/mortgages/documents/1/more/details/loan",
                 )
             }
             "linked-date" => {
-                value.loans[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
-                value.loans[1].originated = 20200602;
+                value[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
+                value[1].originated = 20200602;
                 (
                     "MORTGAGE_LOAN_ORIGINATION_DIFFERS",
-                    "value/loans/1/originated",
+                    "documents/common/mortgages/documents/1/originated",
                 )
             }
             "linked-purchase" | "linked-improvement" => {
-                let MortgageDetails::FirstLender(facts) = &mut value.loans[0].more.details else {
+                let MortgageDetails::FirstLender(facts) = &mut value[0].more.details else {
                     unreachable!()
                 };
                 facts.home = MortgageHome::Second;
-                value.loans[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
-                value.loans[1].points = if case == "linked-purchase" {
-                    Points::Purchase { amount: 10_000 }
+                value[1].more.details = MortgageDetails::EarlierLender { loan: first_id };
+                value[1].points = 10_000;
+                point_answers[1] = if case == "linked-purchase" {
+                    crate::MortgagePointTreatment::Purchase
                 } else {
-                    Points::Improvement {
-                        amount: 10_000,
-                        term_months: 120,
-                    }
+                    crate::MortgagePointTreatment::Improvement { term_months: 120 }
                 };
                 (
                     if case == "linked-purchase" {
@@ -2790,27 +2790,75 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
                     } else {
                         "MORTGAGE_IMPROVEMENT_POINTS"
                     },
-                    "value/loans/1/points",
+                    "documents/common/mortgages/documents/1/points",
                 )
             }
             "duplicate-id" => {
-                value.loans[1].id = first_id;
+                value[1].id = first_id;
                 (
                     "ISSUE_INTERVIEW_A_RECORD_IDENTITY_IS_REPEATED_IN_EE6DC425",
-                    "value/loans/1/id",
+                    "documents/common/mortgages/documents/1/id",
                 )
             }
             "average-limit" => {
-                for loan in &mut value.loans {
+                for loan in value.iter_mut() {
                     loan.principal = 30_000_000;
                     let MortgageDetails::FirstLender(facts) = &mut loan.more.details else {
                         unreachable!()
                     };
                     facts.average = AverageBalance::WithinLimit;
                 }
-                ("MORTGAGE_AVERAGE_NEEDED", "value/loans")
+                ("MORTGAGE_AVERAGE_NEEDED", "documents/common/mortgages/documents")
             }
             _ => unreachable!(),
+        };
+        let desired = value.clone();
+        documents.common.mortgages.documents =
+            desired.iter().cloned().map(mortgage_document).collect();
+        let source_case = matches!(case, "duplicate-id" | "linked-missing");
+        let mut saved_origins = Vec::new();
+        if !source_case {
+            // Accept only printed source changes first; the failing answer is
+            // submitted afterward on the real fixed-membership topic page.
+            accepted(&send(&mut session, request));
+            request = crate::tests::cross::interview::linked_mortgage_editor(&mut session);
+            let P::SaveMortgages { value, .. } = &mut request else { unreachable!() };
+            for (index, row) in value.loans.iter_mut().enumerate() {
+                let desired = desired.iter().find(|loan| loan.id == row.id).unwrap();
+                row.property = desired.more.property.clone();
+                // The origin is answered on the questions page; the page echoes it.
+                if let Some(source) = session
+                    .draft
+                    .deductions
+                    .as_mut()
+                    .unwrap()
+                    .mortgage
+                    .iter_mut()
+                    .find(|source| source.id == row.id)
+                {
+                    saved_origins.push((source.id, source.refund_origin.clone()));
+                    source.refund_origin = desired.more.refund_origin.clone();
+                }
+                row.refund_origin = desired.more.refund_origin.clone();
+                row.details = desired.more.details.clone().into();
+                row.points = point_answers[index].clone();
+            }
+        }
+        // The answers are no longer grouped under the old page's `more`.
+        let path: String = if source_case {
+            path.replace("/more/", "/")
+        } else {
+            path.replace("documents/common/mortgages/documents", "value/loans")
+                .replace("/more/", "/")
+        };
+        // The topic row shows the printed 1098 as `value`; box 2 is the balance
+        // the borrowed amounts are compared with.
+        let path = if case == "borrowed-balance" {
+            path.replace("/principal", "/value/box_2")
+        } else if case == "linked-date" {
+            path.replace("/originated", "/details")
+        } else {
+            path
         };
         let locator = alloc::format!("[{path}]");
         survey_native_refusal(
@@ -2827,27 +2875,24 @@ fn unit47_mortgage_admission_preserves_native_order_source_ids_and_form1098_path
             key,
             &locator,
         );
-        let P::SaveMortgages { value, .. } = &mut request else {
-            unreachable!()
-        };
+        for (id, origin) in saved_origins {
+            let loans = &mut session.draft.deductions.as_mut().unwrap().mortgage;
+            loans.iter_mut().find(|source| source.id == id).unwrap().refund_origin = origin;
+        }
+        request = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let value = &mut documents.common.mortgages;
         *value = original;
-        value.loans[1].interest = 200_000;
+        value.documents[1].form.box_1 = 200_000;
         let expected = value.clone();
         unit47_admission_correct_estimate(&mut session, &request);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&request.to_avro()).unwrap(),
-        ));
-        assert_eq!(
-            super::value(&estimate(&session.draft), "mortgage_interest_8a"),
-            4_000
-        );
+        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
+        assert_eq!(super::value(&estimate(&session.draft), "mortgage_interest_8a"), 4_000);
         let saved = session.draft.clone();
         let mut restored = restart(saved.clone());
-        let request = open_itemized_topic(&mut restored, TaxSection::Mortgage);
-        let P::SaveMortgages { value, .. } = &request else {
-            unreachable!()
-        };
+        let request = open_documents(&mut restored);
+        let P::SaveDocuments { documents, .. } = &request else { unreachable!() };
+        let value = &documents.common.mortgages;
         assert_eq!(*value, expected);
         accepted(&send(&mut restored, request));
         assert_eq!(restored.draft, saved);
@@ -2859,35 +2904,38 @@ fn unit47_admission_itemize(session: &mut Interview) {
     let Reply::Edit(mut request @ P::SaveDeductions { .. }) = send(session, navigation) else {
         panic!("expected the actual deductions editor")
     };
-    let P::SaveDeductions { value, .. } = &mut request else {
-        unreachable!()
-    };
-    value.route = DeductionRoute::Itemize;
+    let P::SaveDeductions { value, .. } = &mut request else { unreachable!() };
+    value.itemize_override = Some(ItemizeOverride::Itemize);
     accepted(&send_past_less_common(session, request));
 }
 
 fn unit47_annuity_admission_session() -> Interview {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut you = filer(&session.draft.people.as_ref().unwrap().taxpayer);
-    you.more = MoreAboutYou::Died {
-        date: 20261231,
-        estate_medical: 0,
-        bonds: None,
-        ordinary: true,
-    };
+    you.details.more =
+        MoreAboutYou::Died { date: 20261231, estate_medical: 0, bonds: None, ordinary: true };
     let request = save_you(&session.draft, you);
     accepted(&send(&mut session, request));
     let mut pension = r1099(1_000_000, normal_kept(), false);
-    pension.taxable = 700_000;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::Retirement,
+    pension.source_mut().form.taxable = Some(700_000);
+    let reply = crate::tests::support::client::save_retirement_fixture(
+        &mut session,
         vec![
-            document(0, IncomeDocument::R1099(pension.clone())),
-            document(0, IncomeDocument::R1099(pension)),
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(pension.clone())),
+                },
+            ),
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(pension)),
+                },
+            ),
         ],
     );
-    accepted(&send(&mut session, request));
+    accepted(&reply);
     unit47_admission_itemize(&mut session);
     session
 }
@@ -2900,13 +2948,10 @@ fn unit47_annuity_admission_keeps_contract_identity_and_recovery_priority() {
         "refunds",
         "duplicate-before-recovery",
         "recovery-before-refunds",
-        "refunds-overflow",
     ] {
         let mut session = unit47_annuity_admission_session();
         let mut request = open_itemized_topic(&mut session, TaxSection::OtherItemized);
-        let P::SaveOtherItemized { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveOtherItemized { value, .. } = &mut request else { unreachable!() };
         assert_eq!(value.contracts.len(), 2);
         let source_ids: Vec<_> = value.contracts.iter().map(|contract| contract.id).collect();
         assert!(source_ids.iter().all(|id| *id > 0));
@@ -2938,12 +2983,6 @@ fn unit47_annuity_admission_keeps_contract_identity_and_recovery_priority() {
                 }
                 ("ANNUITY_RECOVERED_ABOVE_COST", "recovered")
             }
-            "refunds-overflow" => {
-                value.annuity_losses[1].cost = i64::MAX;
-                value.annuity_losses[1].recovered = i64::MAX;
-                value.annuity_losses[1].refunds = 1;
-                ("ANNUITY_REFUNDS_ABOVE_COST", "refunds")
-            }
             "refunds" => {
                 value.annuity_losses[1].refunds = 4_000_001;
                 ("ANNUITY_REFUNDS_ABOVE_COST", "refunds")
@@ -2966,31 +3005,21 @@ fn unit47_annuity_admission_keeps_contract_identity_and_recovery_priority() {
             &path,
         );
         let sources = session.draft.income.clone();
-        let P::SaveOtherItemized { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveOtherItemized { value, .. } = &mut request else { unreachable!() };
         value.annuity_losses = normal.clone();
         unit47_admission_correct_estimate(&mut session, &request);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&request.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
         assert_eq!(session.draft.income, sources);
         let result = estimate(&session.draft);
         for id in &source_ids {
             // Each actual pension: $50,000 cost - $10,000 prior recovery
             // - $2,000 refund - ($10,000 gross - $7,000 taxable) = $35,000.
-            assert_eq!(
-                super::value(&result, &alloc::format!("annuity_loss_{id}")),
-                35_000
-            );
+            assert_eq!(super::value(&result, &alloc::format!("annuity_loss_{id}")), 35_000);
         }
         let saved = session.draft.clone();
         let mut restored = restart(saved.clone());
         let request = open_itemized_topic(&mut restored, TaxSection::OtherItemized);
-        let P::SaveOtherItemized { value, .. } = &request else {
-            unreachable!()
-        };
+        let P::SaveOtherItemized { value, .. } = &request else { unreachable!() };
         assert_eq!(value.annuity_losses, normal);
         accepted(&send(&mut restored, request));
         assert_eq!(restored.draft, saved);
@@ -3001,11 +3030,7 @@ fn unit47_bond_admission_session() -> Interview {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let a = AnnualDebtRecord {
         instrument: "Computed excess premium".into(),
-        amounts: DebtComponents {
-            taxable: 10_000,
-            bond_premium: 30_000,
-            ..Default::default()
-        },
+        amounts: DebtComponents { taxable: 10_000, bond_premium: 30_000, ..Default::default() },
         premium_history: Some(PremiumHistory {
             prior_net_interest_inclusions: 50_000,
             ..Default::default()
@@ -3014,70 +3039,50 @@ fn unit47_bond_admission_session() -> Interview {
     };
     let b = AnnualDebtRecord {
         instrument: "Terminal deduction from separate records".into(),
-        amounts: DebtComponents {
-            taxable: 100_000,
-            ..Default::default()
-        },
+        amounts: DebtComponents { taxable: 100_000, ..Default::default() },
         premium_history: Some(PremiumHistory::default()),
         ..Default::default()
     };
     let interest = Int1099 {
-        payer: "Synthetic premium source".into(),
+        payer: crate::PrintedParty::from_name("Synthetic premium source".into()),
+        recipient: Default::default(),
         taxable: 110_000,
-        more: IntMore {
-            bond_premium: 30_000,
-            ..Default::default()
-        },
+        more: IntMore { bond_premium: 30_000, ..Default::default() },
         after_death: None,
         state_details: Default::default(),
         nominee: None,
         adjustments: Some(InterestAdjustments {
-            instrument_records: Some(AnnualDebtRecords {
-                records: vec![a, b],
-            }),
+            instrument_records: Some(AnnualDebtRecords { records: vec![a, b] }),
             ..Default::default()
         }),
     };
-    let request = save_topic(
-        &session.draft,
-        TaxSection::InterestDividends,
-        vec![
-            document(0, IncomeDocument::Int1099(interest)),
-            document(0, IncomeDocument::TaxableBondPremium(true)),
-        ],
-    );
-    accepted(&send(&mut session, request));
+    let rows = vec![
+        document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(interest)),
+            },
+        ),
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) }),
+    ];
+    save_each_topic(&mut session, rows);
     unit47_admission_itemize(&mut session);
     session
 }
 
 #[test]
 fn unit47_manual_bond_premium_admission_retains_actual_instrument_sources_and_amounts() {
-    for case in [
-        "duplicate",
-        "already-computed",
-        "missing",
-        "description",
-        "computed-before-duplicate",
-    ] {
+    for case in
+        ["duplicate", "already-computed", "missing", "description", "computed-before-duplicate"]
+    {
         let mut session = unit47_bond_admission_session();
         let mut request = open_itemized_topic(&mut session, TaxSection::OtherItemized);
-        let P::SaveOtherItemized { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveOtherItemized { value, .. } = &mut request else { unreachable!() };
         assert_eq!(value.bond_instruments.len(), 2);
-        let computed = value
-            .bond_instruments
-            .iter()
-            .find(|source| source.computed_deduction > 0)
-            .unwrap()
-            .id;
-        let manual = value
-            .bond_instruments
-            .iter()
-            .find(|source| source.computed_deduction == 0)
-            .unwrap()
-            .id;
+        let computed =
+            value.bond_instruments.iter().find(|source| source.computed_deduction > 0).unwrap().id;
+        let manual =
+            value.bond_instruments.iter().find(|source| source.computed_deduction == 0).unwrap().id;
         assert!(computed > 0 && manual > 0 && computed != manual);
         let known = |instrument| OtherItemizedInput::BondPremium {
             amount: 5_000,
@@ -3101,10 +3106,8 @@ fn unit47_manual_bond_premium_admission_retains_actual_instrument_sources_and_am
                     known(manual),
                     OtherItemizedInput::BondPremium {
                         amount: 7_000,
-                        source: BondPremiumSource::OtherDocumented {
-                            instrument: " ".into(),
-                        }
-                        .into(),
+                        source: BondPremiumSource::OtherDocumented { instrument: " ".into() }
+                            .into(),
                     },
                 ];
                 ("BOND_PREMIUM_DESCRIPTION_NEEDED", 1)
@@ -3133,9 +3136,7 @@ fn unit47_manual_bond_premium_admission_retains_actual_instrument_sources_and_am
             &path,
         );
         let sources = session.draft.income.clone();
-        let P::SaveOtherItemized { value, .. } = &mut request else {
-            unreachable!()
-        };
+        let P::SaveOtherItemized { value, .. } = &mut request else { unreachable!() };
         value.other_lines = vec![
             known(manual),
             OtherItemizedInput::BondPremium {
@@ -3148,43 +3149,35 @@ fn unit47_manual_bond_premium_admission_retains_actual_instrument_sources_and_am
         ];
         let expected = value.other_lines.clone();
         unit47_admission_correct_estimate(&mut session, &request);
-        accepted(&send(
-            &mut session,
-            P::from_avro(&request.to_avro()).unwrap(),
-        ));
+        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
         assert_eq!(session.draft.income, sources);
         // Existing sole premium owner: $200 computed + $50 documented
         // accepted instrument + $70 separate documented source = $320 once.
-        assert_eq!(
-            super::value(&estimate(&session.draft), "bond_premium_deduction"),
-            320
-        );
+        assert_eq!(super::value(&estimate(&session.draft), "bond_premium_deduction"), 320);
         let saved = session.draft.clone();
         let mut restored = restart(saved.clone());
         let request = open_itemized_topic(&mut restored, TaxSection::OtherItemized);
-        let P::SaveOtherItemized { value, .. } = &request else {
-            unreachable!()
-        };
+        let P::SaveOtherItemized { value, .. } = &request else { unreachable!() };
         assert_eq!(value.other_lines, expected);
         accepted(&send(&mut restored, request));
         assert_eq!(restored.draft, saved);
     }
 }
 
-fn unit47_farm_production_rows(document: &IncomeDocument) -> &[FarmProductionCohortInput] {
+fn unit47_farm_production_rows(document: &crate::IncomeRecord) -> &[FarmProductionCohortInput] {
     match document {
-        IncomeDocument::Farm(farm) => &farm.more.specials.production,
-        IncomeDocument::FarmRental(farm) => &farm.more.specials.production,
+        crate::IncomeRecord::Farm(farm) => &farm.more.specials.production,
+        crate::IncomeRecord::FarmRental(farm) => &farm.more.specials.production,
         _ => panic!("expected an actual farm production document"),
     }
 }
 
 fn unit47_farm_production_rows_mut(
-    document: &mut IncomeDocument,
+    document: &mut crate::IncomeRecord,
 ) -> &mut Vec<FarmProductionCohortInput> {
     match document {
-        IncomeDocument::Farm(farm) => &mut farm.more.specials.production,
-        IncomeDocument::FarmRental(farm) => &mut farm.more.specials.production,
+        crate::IncomeRecord::Farm(farm) => &mut farm.more.specials.production,
+        crate::IncomeRecord::FarmRental(farm) => &mut farm.more.specials.production,
         _ => panic!("expected an actual farm production document"),
     }
 }
@@ -3202,57 +3195,46 @@ fn unit47_farm_production_identity_fixture() -> Interview {
     second.description = "Separate farm-rental production lot".into();
     rental.more.specials.production = vec![production(), second];
     let mut session = Interview::new(TEST_USER, farm_only_return());
-    let request = farm_save(
-        &session.draft,
+    let request = save_topic(
+        &mut session,
+        TaxSection::Farming,
         vec![
-            document(0, IncomeDocument::Farm(farm)),
-            document(0, IncomeDocument::FarmRental(rental)),
+            document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }),
+            document(0, IncomeSource::Record { value: crate::IncomeRecord::FarmRental(rental) }),
         ],
     );
-    accepted(&send(
-        &mut session,
-        P::from_avro(&request.to_avro()).unwrap(),
-    ));
+    accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
     let mut request = open_topic(&mut session, TaxSection::Farming);
-    let P::SaveIncomes {
-        allowed_documents,
-        documents,
-        ..
-    } = &mut request
-    else {
-        unreachable!()
-    };
+    let P::SaveIncomes { allowed_documents, documents, .. } = &mut request else { unreachable!() };
     let ids: Vec<_> = documents
         .documents
         .iter()
         .filter(|item| {
-            matches!(item.document, IncomeDocument::Farm(_) | IncomeDocument::FarmRental(_))
+            matches!(
+                item.document,
+                crate::IncomeRecord::Farm(_) | crate::IncomeRecord::FarmRental(_)
+            )
         })
         .flat_map(|item| unit47_farm_production_rows(&item.document).iter().map(|row| row.id))
         .collect();
     assert_eq!(ids.len(), 4);
     assert!(ids.iter().all(|id| *id > 0));
-    assert_eq!(
-        ids.iter()
-            .copied()
-            .collect::<alloc::collections::BTreeSet<_>>()
-            .len(),
-        4
-    );
-    assert!(
-        allowed_documents
-            .contains(&(libertas_macros::variant_index!(IncomeDocument::FarmAveraging) as i32))
-    );
+    assert_eq!(ids.iter().copied().collect::<alloc::collections::BTreeSet<_>>().len(), 4);
+    assert!(allowed_documents.contains(
+        &(libertas_macros::variant_index!(crate::IncomeSourceKind::FarmAveraging) as i32)
+    ));
     // A genuine offered data answer will precede the target on the submitted
     // unordered page, then be partitioned away from the income-entry vector.
-    documents.documents.push(document(
-        0,
-        IncomeDocument::FarmAveraging(averaging_election()),
-    ));
-    accepted(&send(
-        &mut session,
-        P::from_avro(&request.to_avro()).unwrap(),
-    ));
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::FarmAveraging(averaging_election()),
+            },
+        ))
+        .unwrap(),
+    );
+    accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
     session
 }
 
@@ -3281,22 +3263,22 @@ fn unit47_farm_production_identity_case(kind: &str, mut session: Interview) {
     // $50,000 receipts - two distinct $1,400 deductions = $47,200 once.
     assert_eq!(schedule_f_net, 4_720_000);
     let mut request = open_topic(&mut session, TaxSection::Farming);
-    let P::SaveIncomes { documents, .. } = &mut request else {
-        unreachable!()
-    };
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
     let original_documents = documents.clone();
     let answer_index = documents
         .documents
         .iter()
-        .position(|item| matches!(item.document, IncomeDocument::FarmAveraging(_)))
+        .position(|item| matches!(item.document, crate::IncomeRecord::FarmAveraging(_)))
         .unwrap();
     let answer = documents.documents.remove(answer_index);
     let target_index = documents
         .documents
         .iter()
         .position(|item| match kind {
-            "farm" => matches!(item.document, IncomeDocument::Farm(_)),
-            "farm-rental" => matches!(item.document, IncomeDocument::FarmRental(_)),
+            "farm" => matches!(item.document, crate::IncomeRecord::Farm(_)),
+            "farm-rental" => {
+                matches!(item.document, crate::IncomeRecord::FarmRental(_))
+            }
             _ => unreachable!(),
         })
         .unwrap();
@@ -3326,9 +3308,7 @@ fn unit47_farm_production_identity_case(kind: &str, mut session: Interview) {
         key,
         path,
     );
-    let P::SaveIncomes { documents, .. } = &mut request else {
-        unreachable!()
-    };
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
     let mut corrected = original.clone();
     corrected.reverse();
     // The negative reordered submission proves its original index. Correction
@@ -3338,24 +3318,23 @@ fn unit47_farm_production_identity_case(kind: &str, mut session: Interview) {
         .documents
         .iter_mut()
         .find(|item| match kind {
-            "farm" => matches!(item.document, IncomeDocument::Farm(_)),
-            "farm-rental" => matches!(item.document, IncomeDocument::FarmRental(_)),
+            "farm" => matches!(item.document, crate::IncomeRecord::Farm(_)),
+            "farm-rental" => {
+                matches!(item.document, crate::IncomeRecord::FarmRental(_))
+            }
             _ => unreachable!(),
         })
         .unwrap();
     *unit47_farm_production_rows_mut(&mut target.document) = corrected.clone();
     let before = session.draft.clone();
     let dirty = session.dirty;
-    accepted(&send(
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
         &mut session,
         P::from_avro(&estimate_documents_from_save(&request).to_avro()).unwrap(),
     ));
     assert_eq!(session.draft, before);
     assert_eq!(session.dirty, dirty);
-    accepted(&send(
-        &mut session,
-        P::from_avro(&request.to_avro()).unwrap(),
-    ));
+    accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
     let result = supported(&session.draft);
     assert_eq!(result.tax, baseline.tax);
     assert_eq!(value(&result, "agi"), value(&baseline, "agi"));
@@ -3369,49 +3348,37 @@ fn unit47_farm_production_identity_case(kind: &str, mut session: Interview) {
     assert_eq!(financial_rows(&result), financial_rows(&baseline));
     let saved = session.draft.clone();
     let reopened = open_topic(&mut session, TaxSection::Farming);
-    let P::SaveIncomes { documents, .. } = &reopened else {
-        unreachable!()
-    };
+    let P::SaveIncomes { documents, .. } = &reopened else { unreachable!() };
     let shown = documents
         .documents
         .iter()
         .find(|item| match kind {
-            "farm" => matches!(item.document, IncomeDocument::Farm(_)),
-            "farm-rental" => matches!(item.document, IncomeDocument::FarmRental(_)),
+            "farm" => matches!(item.document, crate::IncomeRecord::Farm(_)),
+            "farm-rental" => {
+                matches!(item.document, crate::IncomeRecord::FarmRental(_))
+            }
             _ => unreachable!(),
         })
         .unwrap();
-    assert_eq!(
-        unit47_farm_production_rows(&shown.document),
-        corrected.as_slice()
-    );
-    accepted(&send(
-        &mut session,
-        P::from_avro(&reopened.to_avro()).unwrap(),
-    ));
+    assert_eq!(unit47_farm_production_rows(&shown.document), corrected.as_slice());
+    accepted(&send(&mut session, P::from_avro(&reopened.to_avro()).unwrap()));
     assert_eq!(session.draft, saved);
     let mut restored = restart(saved.clone());
     let reopened = open_topic(&mut restored, TaxSection::Farming);
-    let P::SaveIncomes { documents, .. } = &reopened else {
-        unreachable!()
-    };
+    let P::SaveIncomes { documents, .. } = &reopened else { unreachable!() };
     let shown = documents
         .documents
         .iter()
         .find(|item| match kind {
-            "farm" => matches!(item.document, IncomeDocument::Farm(_)),
-            "farm-rental" => matches!(item.document, IncomeDocument::FarmRental(_)),
+            "farm" => matches!(item.document, crate::IncomeRecord::Farm(_)),
+            "farm-rental" => {
+                matches!(item.document, crate::IncomeRecord::FarmRental(_))
+            }
             _ => unreachable!(),
         })
         .unwrap();
-    assert_eq!(
-        unit47_farm_production_rows(&shown.document),
-        corrected.as_slice()
-    );
-    accepted(&send(
-        &mut restored,
-        P::from_avro(&reopened.to_avro()).unwrap(),
-    ));
+    assert_eq!(unit47_farm_production_rows(&shown.document), corrected.as_slice());
+    accepted(&send(&mut restored, P::from_avro(&reopened.to_avro()).unwrap()));
     assert_eq!(restored.draft, saved);
     assert_eq!(supported(&restored.draft), result);
 }

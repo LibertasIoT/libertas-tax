@@ -1,6 +1,6 @@
 // IRC 220(e)(2), 223(e)(2), and incorporated 408(e)(2)/(4).
 use crate::MedicalAccountWithdrawal;
-use crate::federal_rules::valid_date;
+use crate::dates::source_valid_date as valid_date;
 use crate::kernel::ratio::exact::{Exact, whole};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
@@ -19,7 +19,8 @@ pub enum MedicalDeemed {
         /// Fair market value of all account assets on January 1, 2026
         /// Use January 1 value, not the later transaction value. The deemed distribution occurs on January 1 for age and disability exceptions.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         january_value: i64,
     },
     /// Assets pledged as loan security

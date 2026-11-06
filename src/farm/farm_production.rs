@@ -227,7 +227,7 @@ pub(crate) fn report(
                 continue;
             };
             let suffix = if amt { "amt_retained_basis" } else { "retained_basis" };
-            crate::kernel::lines::line_cents(
+            crate::line_emission::line_cents(
                 r,
                 &format!("farm_{id}_production_{}_{suffix}", cohort.id),
                 values[2],

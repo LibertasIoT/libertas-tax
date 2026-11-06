@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 447000, "rule": {"select": "^<FarmConservation>", "flatten": true}}
+  ]
+}

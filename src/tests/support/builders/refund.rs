@@ -159,10 +159,12 @@ pub(in crate::tests) fn multiple_prior_and_current_refund_draft(count: usize) ->
     };
     add(
         &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: (count as i64 + 1) * 10_000,
-            withholding: 0,
-            history: multiple_prior_and_current_refund_history(count),
+        income(FederalIncome::GovernmentPayment {
+            data: tax_refund_source(FederalTaxRefund {
+                amount: (count as i64 + 1) * 10_000,
+                withholding: 0,
+                history: multiple_prior_and_current_refund_history(count),
+            }),
         }),
     );
     d
@@ -179,10 +181,12 @@ pub(in crate::tests) fn current_year_refund_draft(
     };
     add(
         &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: 40_000,
-            withholding: 0,
-            history: prior_and_current_refund_history(gross_current_paid),
+        income(FederalIncome::GovernmentPayment {
+            data: tax_refund_source(FederalTaxRefund {
+                amount: 40_000,
+                withholding: 0,
+                history: prior_and_current_refund_history(gross_current_paid),
+            }),
         }),
     );
     d

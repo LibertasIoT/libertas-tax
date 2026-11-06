@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::cross::interview::{accepted, from_review, open_topic};
+use crate::tests::cross::interview::{accepted, from_review, open_document_center, open_topic};
 use crate::tests::support::assert::injured_credit::r8_credit_relevance::estimate;
 use crate::tests::support::client::injured_credit::r8_credit_relevance::stored_restart;
 
@@ -56,7 +56,8 @@ fn r8_adoption_person_allocation_does_not_establish_refund_fund_property() {
             check(&d);
             let ids = d.income.clone();
             let mut s = restart(d);
-            let p = open_topic(&mut s, TaxSection::Wages);
+            crate::tests::support::client::admit_native_fixture_facts(&mut s);
+            let p = open_document_center(&mut s);
             accepted(&send(&mut s, p));
             let Reply::Edit(p) = from_review(&mut s, TaxSection::MoreCredits) else { panic!() };
             accepted(&send(&mut s, p));
@@ -95,14 +96,17 @@ fn r8_known_zero_overpayment_does_not_require_texas_management() {
         let mut d = injured_return((22500, 0), (0, 0), 0, a);
         let mut e = income(FederalIncome::EmployeeWages {
             data: EmployeeWages {
+                source_issuer: Default::default(),
+                source_recipient: Default::default(),
                 wages: 750000,
                 withholding: 250,
                 form1099: true,
-                reason: EmployeeWageReason::Ss8Pending { filed_on: 20260501 },
-                complete: true,
+                payroll: crate::EmployeePayrollSource::Form8919 {
+                    reason: EmployeeWageReason::Ss8Pending { filed_on: 20260501 },
+                },
             },
         });
-        e.owner = Owner::Spouse;
+        e.owner = crate::DocumentOwner::Spouses;
         e.label.clear();
         add(&mut d, e);
         for e in &mut d.income {
@@ -142,6 +146,9 @@ fn r8_known_zero_overpayment_does_not_require_texas_management() {
         // A source Save with no manager answer is valid here. Keep the exact
         // response as evidence before acceptance; no fake answer/minimum.
         let mut s = restart(d);
+        crate::tests::support::client::admit_native_fixture_facts(&mut s);
+        let p = open_document_center(&mut s);
+        accepted(&send(&mut s, p));
         let p = open_topic(&mut s, TaxSection::Wages);
         accepted(&send(&mut s, p));
         let restored = stored_restart(s.draft);
@@ -177,7 +184,8 @@ fn r8_unavailable_ordinary_result_keeps_management_unknown_and_income_saveable()
     let ids = d.income.clone();
     let mut s = restart(d);
     assert!(s.draft.payments.is_none());
-    let p = open_topic(&mut s, TaxSection::Wages);
+    crate::tests::support::client::admit_native_fixture_facts(&mut s);
+    let p = open_document_center(&mut s);
     accepted(&send(&mut s, p));
     let d = stored_restart(s.draft);
     for e in &ids {
@@ -201,49 +209,49 @@ fn r8_omitted_ordinary_source_does_not_establish_positive_refund_applicability()
         let mut d = injured_return((22500, 0), (0, 0), 0, a);
         let mut e = income(FederalIncome::EmployeeWages {
             data: EmployeeWages {
+                source_issuer: Default::default(),
+                source_recipient: Default::default(),
                 wages: 750000,
                 withholding: 250,
                 form1099: true,
-                reason: EmployeeWageReason::Ss8Pending { filed_on: 20260501 },
-                complete: false,
+                payroll: crate::EmployeePayrollSource::Unavailable,
             },
         });
-        e.owner = Owner::Spouse;
+        e.owner = crate::DocumentOwner::Spouses;
         e.label.clear();
         e.refund_management = management;
         add(&mut d, e);
         for e in &mut d.income {
             e.community = CommunityShare::Community;
         }
-        let check = |d: &FederalDraft| {
-            let r = supported(d);
-            assert_eq!(value(&r, "agi"), 30000);
-            // Actual prototype result omits unconfirmed coverage. This is
-            // explicitly NOT a legal zero payroll liability or a whole-return
-            // refund: its owning omission scope must remain unavailable.
-            assert_eq!(
-                (r.tax, r.payments, r.refund, r.balance),
-                (Some(0), Some(300), Some(300), Some(0))
-            );
-            assert!(!r.financial_source_scope_complete);
-            let source = d
-                .income
-                .iter()
-                .find(|e| matches!(e.income, FederalIncome::EmployeeWages { .. }))
-                .unwrap();
-            assert_eq!(crate::injured_spouse::management_needed(d, &r, source), None);
-            let mut plain = d.clone();
-            plain.injured_spouse = None;
-            let ordinary = supported(&plain);
-            assert_eq!(r.return_lines, ordinary.return_lines);
-            assert_eq!(
-                (r.tax, r.payments, r.refund, r.balance),
-                (ordinary.tax, ordinary.payments, ordinary.refund, ordinary.balance)
-            );
-        };
+        let check =
+            |d: &FederalDraft| {
+                let r = crate::federal_rules::estimate(d);
+                assert_eq!(value(&r, "agi"), 30000);
+                assert_eq!(r.tax, None);
+                assert_eq!(r.state, ResultState::Incomplete);
+                let source = d
+                    .income
+                    .iter()
+                    .find(|entry| matches!(entry.income, FederalIncome::EmployeeWages { .. }))
+                    .unwrap();
+                assert!(r.issues.iter().any(|issue| issue.display.key
+                    == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE"
+                    && issue.context == crate::interview::income_issue_context(source)));
+                let mut plain = d.clone();
+                plain.injured_spouse = None;
+                let ordinary = crate::federal_rules::estimate(&plain);
+                assert_eq!(
+                    (r.tax, r.payments, r.refund, r.balance),
+                    (ordinary.tax, ordinary.payments, ordinary.refund, ordinary.balance)
+                );
+            };
         check(&d);
         let old = d.income.clone();
         let mut s = restart(d);
+        crate::tests::support::client::admit_native_fixture_facts(&mut s);
+        let p = open_document_center(&mut s);
+        accepted(&send(&mut s, p));
         let p = open_topic(&mut s, TaxSection::Wages);
         accepted(&send(&mut s, p));
         let d = stored_restart(s.draft);

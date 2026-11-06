@@ -7,13 +7,65 @@ use crate::tests::support::builders::survey::survey_uncatalogued_document as una
 // confirmation Yes.
 use super::*;
 use crate::tests::cross::interview::{
-    accepted, document, open_topic, page_documents, r1099, save_topic,
+    accepted, document, open_documents, open_topic, page_documents as all_page_documents, r1099,
+    save_documents, save_topic,
 };
 use crate::{
     AnnuityBalance, ChildAnnuity, ChildAnnuityPayment, LegacyAnnuity, PropertyRollover,
     RailroadRecipient, RailroadRecovery, RailroadRepayment, Rrb1099R, TaxableMethod as M,
 };
 
+fn page_documents(page: &P) -> Vec<IncomeDocumentItem> {
+    all_page_documents(page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+        .collect()
+}
+fn observed(
+    s: &mut Interview,
+) -> (Vec<crate::IncomeRecordItem>, Vec<crate::RetirementDocumentRow>) {
+    let P::SaveIncomes { documents: records, .. } = open_topic(s, TaxSection::Retirement) else {
+        panic!("expected the retirement records")
+    };
+    let P::SaveDocuments { documents: sources, .. } = open_documents(s) else {
+        panic!("expected the document center")
+    };
+    (records.documents, sources.common.retirement.documents)
+}
+fn assert_fixture(s: &mut Interview, fixture: &[IncomeDocumentItem]) {
+    let (records, sources) = observed(s);
+    // Each editor preserves its declared fixture order; identities never imply order.
+    let want_records: Vec<_> = fixture
+        .iter()
+        .filter_map(|row| match &row.document {
+            IncomeSource::Record { value } => {
+                Some((row.owner.owned(), value.clone(), row.community, row.refund_management))
+            }
+            _ => None,
+        })
+        .collect();
+    let want_sources: Vec<_> = fixture
+        .iter()
+        .filter_map(|row| {
+            match expected_named_source(&s.draft, row.owner.owned(), row.document.clone()) {
+                IncomeSource::Retirement { value } => {
+                    Some((row.owner, value, row.community, row.refund_management))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    let shown_records: Vec<_> = records
+        .into_iter()
+        .map(|row| (row.owner, row.document, row.community, row.refund_management))
+        .collect();
+    let shown_sources: Vec<_> = sources
+        .into_iter()
+        .map(|row| (row.owner, row.document, row.community, row.refund_management))
+        .collect();
+    assert_eq!(shown_records, want_records);
+    assert_eq!(shown_sources, want_sources);
+}
 fn filer(birth: u32) -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.birth_date = birth;
@@ -27,10 +79,11 @@ fn form(
     taxable: i64,
     code: DistributionCode,
     method: M,
-) -> R1099 {
+) -> R1099Answered {
     let mut r = printed_as(r1099(gross * 100, code, ira), printed);
-    r.taxable = taxable * 100;
-    r.more.taxable_method = method;
+    r.source_mut().form.taxable = Some(taxable * 100);
+    r.source_mut().form.taxable_not_determined = !matches!(method, M::BoxTwoA);
+    r.source_mut().taxable_method = Some(method);
     r
 }
 fn normal() -> DistributionCode {
@@ -39,39 +92,77 @@ fn normal() -> DistributionCode {
 fn early() -> DistributionCode {
     DistributionCode::Early { what_happened: Disposition::Kept, exception: EarlyException::None }
 }
-// Saves the rows on the Retirement page and returns the session.
-fn save(d: &FederalDraft, rows: Vec<R1099>) -> Interview {
+// Saves payer rows through their source editor and returns the session.
+fn save(d: &FederalDraft, rows: Vec<R1099Answered>) -> Interview {
     let mut s = Interview::new(TEST_USER, d.clone());
-    let documents = rows.into_iter().map(|r| document(0, IncomeDocument::R1099(r))).collect();
-    accepted(&send(&mut s, save_topic(d, TaxSection::Retirement, documents)));
+    let documents = rows
+        .into_iter()
+        .map(|r| {
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    accepted(&{
+        let request = save_documents(&mut s, documents.clone());
+        send(&mut s, request)
+    });
+    crate::tests::support::client::income_pages::save_information_return_answers(
+        &mut s, &documents,
+    );
     s
 }
 // The key of the Problem a save of these rows is refused with.
-fn refusal(d: &FederalDraft, rows: Vec<R1099>) -> alloc::vec::Vec<u8> {
+fn refusal(d: &FederalDraft, rows: Vec<R1099Answered>) -> alloc::vec::Vec<u8> {
     let mut s = Interview::new(TEST_USER, d.clone());
-    let documents = rows.into_iter().map(|r| document(0, IncomeDocument::R1099(r))).collect();
-    let Reply::Response(P::Problem { message, .. }) =
-        send(&mut s, save_topic(d, TaxSection::Retirement, documents))
-    else {
-        panic!("expected a refused save")
+    let documents = rows
+        .into_iter()
+        .map(|r| {
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let request = save_documents(&mut s, documents.clone());
+    let before = s.draft.clone();
+    let reply = send(&mut s, request);
+    if let Reply::Response(P::Problem { message, .. }) = reply {
+        assert_eq!(s.draft, before);
+        return message;
+    }
+    let before = s.draft.clone();
+    let request =
+        crate::tests::support::client::income_pages::information_return_answers(&mut s, &documents);
+    let Reply::Response(P::Problem { message, .. }) = send(&mut s, request) else {
+        panic!("expected a refused topic save")
     };
-    assert_eq!(s.draft, *d);
+    assert_eq!(s.draft, before);
     message
 }
 fn key(k: &str) -> alloc::vec::Vec<u8> {
     libertas::libertas_formatted_text(k, &[])
 }
-fn stored(s: &Interview) -> &FederalRetirement {
+fn stored(s: &Interview) -> FederalRetirement {
     let FederalIncome::Retirement { data } = &s.draft.income[1].income else {
         panic!("a retirement record")
     };
-    data
+    FederalRetirement::from(data)
 }
 // Saves, estimates, reopens the page and saves it unchanged: the records are the same.
 fn round_trips(s: &Interview) {
     let mut again = restart(s.draft.clone());
-    let request = open_topic(&mut again, TaxSection::Retirement);
+    let request = open_documents(&mut again);
     accepted(&send(&mut again, request));
+    let request = open_topic(&mut again, TaxSection::Retirement);
+    if !all_page_documents(&request).is_empty() {
+        accepted(&send(&mut again, request));
+    }
     assert_eq!(again.draft, s.draft);
 }
 
@@ -309,7 +400,7 @@ fn f3_pre_1982_withdrawal_orders_investment_first() {
         vec![form("1D", false, 18_000, 18_000, early(), M::Pre1982Withdrawal { data: legacy })],
     );
     assert_eq!(stored(&s).kind, RetirementKind::Nonqualified);
-    assert_eq!(stored(&s).ordinary_distribution, RetirementTreatment::Early);
+    assert_eq!(stored(&s).ordinary_distribution, Some(RetirementTreatment::Early));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5b"), 800_000);
     assert_eq!(value(&r, "early_distribution_tax"), 200);
@@ -343,9 +434,14 @@ fn f4_whole_contract_ended_surrender_loss_gift_and_unconfirmed() {
     assert_eq!(return_line(&r, "5b"), 0);
     let r = supported(&save(&d, vec![whole(50_000, 35_000, true)]).draft);
     assert_eq!(return_line(&r, "5b"), 1_500_000);
-    let r = supported(&save(&d, vec![whole(30_000, 22_000, false)]).draft);
+    let s = save(&d, vec![whole(30_000, 22_000, false)]);
+    let before = stored(&s);
+    assert!(before.form_boxes.taxable_not_determined);
+    let r = supported(&s.draft);
     assert!(noted(&r, "WARN_RETIREMENT_BASIS_LEFT_OUT"));
     assert_eq!(return_line(&r, "5b"), 3_000_000);
+    assert_eq!(stored(&s), before);
+    round_trips(&s);
 }
 
 // F5: a withdrawal from an employer plan before annuity payments (Pub. 575, Ann Brown and Ryan).
@@ -531,14 +627,14 @@ fn f10_property_sold_and_rolled_over() {
     };
     let d = filer(19600301);
     let s = save(&d, vec![sold(60_000, 45_000, false)]);
-    assert!(matches!(stored(&s).taxable, RetirementTaxable::PropertyProceeds { .. }));
+    assert!(matches!(stored(&s).taxable, Some(RetirementTaxable::PropertyProceeds { .. })));
     assert_eq!(
         stored(&s).ordinary_distribution,
-        RetirementTreatment::Rollover {
+        Some(RetirementTreatment::Rollover {
             destination: crate::RolloverDestination::Ira,
             amount: 4_500_000,
             early: false
-        }
+        })
     );
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5b"), 1_250_000);
@@ -566,8 +662,11 @@ fn f11_code_6_exchange_shows_nothing_on_the_return() {
     let d = filer(19600301);
     let before = supported(&d);
     let s = save(&d, vec![form("6", false, 80_000, 0, DistributionCode::Exchange, M::BoxTwoA)]);
-    assert_eq!(stored(&s).ordinary_distribution, RetirementTreatment::Ordinary);
-    assert_eq!(stored(&s).taxable, RetirementTaxable::Payer { amount: 0 });
+    assert_eq!(stored(&s).ordinary_distribution, Some(RetirementTreatment::Ordinary));
+    assert_eq!(
+        (stored(&s).taxable.clone(), stored(&s).box_2a),
+        (Some(RetirementTaxable::Payer), 0)
+    );
     let r = supported(&s.draft);
     assert_eq!(line_or_zero(&r, "5a"), 0);
     assert_eq!(line_or_zero(&r, "5b"), 0);
@@ -586,12 +685,90 @@ fn f11_code_6_exchange_shows_nothing_on_the_return() {
 fn f12_nua_through_the_payers_box_2a() {
     let d = filer(19600301);
     let mut row = form("7", false, 100_000, 55_000, normal(), M::BoxTwoA);
-    row.more.box_6 = 4_500_000;
+    row.source_mut().form.box_6 = Some(4_500_000);
     let s = save(&d, vec![row]);
-    assert_eq!(stored(&s).taxable, RetirementTaxable::Payer { amount: 5_500_000 });
+    assert_eq!(
+        (stored(&s).taxable.clone(), stored(&s).box_2a),
+        (Some(RetirementTaxable::Payer), 5_500_000)
+    );
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5a"), 10_000_000);
     assert_eq!(return_line(&r, "5b"), 5_500_000);
+}
+
+// Instructions for Form 1099-R (2026), boxes 2a and 2b: use a settled payer
+// amount rather than a second annuity worksheet; corrections rederive the choice.
+#[test]
+fn settled_box_2a_replaces_the_method_after_a_paper_correction() {
+    let d = filer(19600301);
+    let row = form(
+        "7",
+        false,
+        100_000,
+        55_000,
+        normal(),
+        M::Simplified { data: simplified_cost(20_000) },
+    );
+    let mut s = save(&d, vec![row]);
+    let P::SaveIncomes { followups, .. } = open_topic(&mut s, TaxSection::Retirement) else {
+        unreachable!()
+    };
+    assert!(
+        followups
+            .iter()
+            .any(|row| matches!(row.answer, crate::DocumentAnswer::RetirementMethod { .. }))
+    );
+    // Pub. 575 Table 1: 260 payments at age 65; $20,000 / 260 =
+    // $76.92 monthly exclusion, $923.04 for twelve months, taxable $99,077.
+    assert_eq!(return_line(&supported(&s.draft), "5b"), 9_907_700);
+    let mut documents = all_page_documents(&open_documents(&mut s));
+    let paper = documents
+        .iter_mut()
+        .find_map(|row| match &mut row.document {
+            IncomeSource::Retirement { value: RetirementDocument::R1099(paper) } => Some(paper),
+            _ => None,
+        })
+        .unwrap();
+    paper.taxable_not_determined = false;
+    let request = save_documents(&mut s, documents);
+    accepted(&send(&mut s, request));
+    let P::SaveIncomes { followups, .. } = open_topic(&mut s, TaxSection::Retirement) else {
+        unreachable!()
+    };
+    assert!(
+        !followups
+            .iter()
+            .any(|row| matches!(row.answer, crate::DocumentAnswer::RetirementMethod { .. }))
+    );
+    assert_eq!(stored(&s).taxable, Some(RetirementTaxable::Payer));
+    assert_eq!(return_line(&supported(&s.draft), "5b"), 5_500_000);
+    round_trips(&s);
+}
+
+#[test]
+fn settled_box_2a_only_narrows_non_ira_reported_amounts() {
+    let mut row = form("7", false, 100_000, 55_000, normal(), M::BoxTwoA);
+    assert_eq!(DistributionCodes::methods(&row), vec![0]);
+    row.source_mut().taxable_method = Some(M::Simplified { data: simplified_cost(20_000) });
+    assert_eq!(FederalRetirement::from(&row.into_source()).taxable, Some(RetirementTaxable::Payer));
+    let mut row = form("7", false, 100_000, 55_000, normal(), M::BoxTwoA);
+    row.source_mut().form.taxable = Some(0);
+    assert_eq!(DistributionCodes::methods(&row), vec![0]);
+    row.source_mut().form.taxable = None;
+    assert_eq!(DistributionCodes::methods(&row), vec![0, 1, 2, 4, 5]);
+    row.source_mut().form.taxable = Some(5_500_000);
+    row.source_mut().form.taxable_not_determined = true;
+    assert_eq!(DistributionCodes::methods(&row), vec![0, 1, 2, 4, 5]);
+    row.source_mut().form.ira = true;
+    assert_eq!(DistributionCodes::methods(&row), vec![0]);
+    assert_eq!(row.source_mut().taxable_method, Some(M::BoxTwoA));
+    // A legacy unanswered method cannot leave an invisible required question.
+    row.source_mut().taxable_method = None;
+    assert_eq!(row.effective_taxable_method(), Some(&M::BoxTwoA));
+    row.source_mut().ira_basis = true;
+    assert_eq!(FederalRetirement::from(&*row).taxable, Some(RetirementTaxable::IraBasis));
+    let row = R1099Answered::new(row.into_source(), Vec::new());
+    assert_eq!(row.taxable_method, Some(M::BoxTwoA));
 }
 
 // F13: code D printed with a numeric code leads to that code's branch and the kind comes from box
@@ -648,11 +825,11 @@ fn d_with_1_2_3_4_or_7_computes_and_reopens() {
     assert_eq!(value(&r, "early_distribution_tax"), 400);
 }
 
-// Box7Options replies the methods the row's codes allow; a method outside the set is refused
+// Actual topic rows expose the methods their printed codes allow; a method outside the set is refused
 // on the server (R_BOX2B_METHOD).
 #[test]
 fn the_box_2b_methods_follow_the_box_7a_codes() {
-    let mut s = Interview::new(TEST_USER, filer(19600301));
+    let s = Interview::new(TEST_USER, filer(19600301));
     let pension = vec![0, 1, 2, 4, 5];
     let survivor = vec![0, 1, 2, 4, 5, 8, 9];
     let annuity = vec![0, 2, 3, 4, 6, 7];
@@ -674,19 +851,24 @@ fn the_box_2b_methods_follow_the_box_7a_codes() {
         ("Q", false, false, vec![0]),
         ("4", false, true, vec![0]),
     ] {
-        let reply =
-            send(&mut s, P::Box7Options { user: TEST_USER, box7: box7(printed), ira, trump });
-        let Reply::Response(P::Box7Treatments { allowed_methods, .. }) = reply else {
-            panic!("expected the methods for {printed}")
-        };
+        let (_, allowed_methods, _) = retirement_question_catalog(&s, box7(printed), ira, trump, 0);
         assert_eq!(allowed_methods, methods, "{printed} {ira} {trump}");
     }
     // An IRA takes only box 2a; a nonqualified annuity has no Simplified Method.
     let d = filer(19600301);
     let simplified = M::Simplified { data: simplified_cost(20_000) };
+    // The IRA's sole method has no question to submit; its native validator must still
+    // refuse an incompatible supplied method rather than silently normalize it.
     assert_eq!(
-        refusal(&d, vec![form("7", true, 1_000, 1_000, normal(), simplified.clone())]),
-        key("R_BOX2B_METHOD")
+        DistributionCodes::treatment_rule(&form(
+            "7",
+            true,
+            1_000,
+            1_000,
+            normal(),
+            simplified.clone()
+        )),
+        Some("R_BOX2B_METHOD")
     );
     assert_eq!(
         refusal(&d, vec![form("7D", false, 1_000, 1_000, normal(), simplified)]),
@@ -694,24 +876,48 @@ fn the_box_2b_methods_follow_the_box_7a_codes() {
     );
 }
 
-fn rrb(box_4: i64, box_5: i64, box_6: i64, recipient: RailroadRecipient) -> Rrb1099R {
-    Rrb1099R {
-        box_4: box_4 * 100,
-        box_5: box_5 * 100,
-        box_6: box_6 * 100,
-        gross: (box_4 + box_5 + box_6) * 100,
-        box_8: 0,
-        withholding: 200_000,
-        recipient,
+fn rrb(box_4: i64, box_5: i64, box_6: i64, recipient: RailroadRecipient) -> RailroadSource {
+    RailroadSource {
+        form: Rrb1099R {
+            issuer: Default::default(),
+            claim_number_and_payee_code: alloc::string::String::new(),
+            recipient: Default::default(),
+            medicare_premiums: Some(0),
+            box_3: None,
+            box_4: Some(box_4 * 100),
+            box_5: Some(box_5 * 100),
+            box_6: Some(box_6 * 100),
+            gross: (box_4 + box_5 + box_6) * 100,
+            box_8: Some(0),
+            withholding: Some(200_000),
+        },
+        recipient_kind: Some(recipient),
         repayments: vec![],
     }
 }
-fn save_rrb(d: &FederalDraft, form: Rrb1099R) -> Interview {
+fn save_rrb(d: &FederalDraft, form: RailroadSource) -> Interview {
     let mut s = Interview::new(TEST_USER, d.clone());
-    accepted(&send(
+    accepted(&{
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::Rrb1099R(railroad_document(form.clone())),
+                },
+            )],
+        );
+        send(&mut s, request)
+    });
+    crate::tests::support::client::income_pages::save_information_return_answers(
         &mut s,
-        save_topic(d, TaxSection::Retirement, vec![document(0, IncomeDocument::Rrb1099R(form))]),
-    ));
+        &[document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::Rrb1099R(railroad_document(form)),
+            },
+        )],
+    );
     s
 }
 fn simplified_recovery() -> RailroadRecovery {
@@ -734,12 +940,15 @@ fn f9_rrb_1099_r_own_spouse_and_survivor_annuities() {
     let FederalIncome::Retirement { data } = &s.draft.income[1].income else {
         panic!("a retirement record")
     };
-    assert_eq!(data.kind, RetirementKind::Pension);
-    assert_eq!(data.box7, DistributionCodes::CODE_7.0);
-    assert_eq!(data.ordinary_distribution, RetirementTreatment::Ordinary);
+    assert_eq!(crate::FederalRetirement::from(data).kind, RetirementKind::Pension);
+    assert_eq!(crate::FederalRetirement::from(data).box7, DistributionCodes::CODE_7.0);
+    assert_eq!(
+        crate::FederalRetirement::from(data).ordinary_distribution,
+        Some(RetirementTreatment::Ordinary)
+    );
     assert!(matches!(
-        &data.taxable,
-        RetirementTaxable::Railroad { contributory: 2_400_000, basis: Some(_), .. }
+        &crate::FederalRetirement::from(data).taxable,
+        Some(RetirementTaxable::Railroad { contributory: 2_400_000, basis: Some(_), .. })
     ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5a"), 2_760_000);
@@ -750,10 +959,19 @@ fn f9_rrb_1099_r_own_spouse_and_survivor_annuities() {
     // The page reopens as the RRB-1099-R, exactly as entered.
     let reopened = |s: &Interview| {
         let mut again = restart(s.draft.clone());
-        let page = open_topic(&mut again, TaxSection::Retirement);
+        let page = open_documents(&mut again);
         page_documents(&page)[0].document.clone()
     };
-    assert_eq!(reopened(&s), IncomeDocument::Rrb1099R(own_form));
+    assert_eq!(
+        reopened(&s),
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::Rrb1099R(railroad_document(own_form))
+            }
+        )
+    );
     // (b) A spouse annuity recovers nothing.
     let d62 = filer(19640301);
     let spouse = rrb(24_000, 1_200, 2_400, RailroadRecipient::Spouse);
@@ -762,35 +980,57 @@ fn f9_rrb_1099_r_own_spouse_and_survivor_annuities() {
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "5b"), 2_760_000);
     // It reopens as a spouse annuity with boxes 5 and 6 as entered (box 6 nonzero).
-    assert_eq!(reopened(&s), IncomeDocument::Rrb1099R(spouse_form));
+    assert_eq!(
+        reopened(&s),
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::Rrb1099R(railroad_document(spouse_form))
+            }
+        )
+    );
     // (c) A survivor annuity stores the death exception.
     let survivor = rrb(
         24_000,
         1_200,
         2_400,
-        RailroadRecipient::Survivor { died: 20251102, recovery: simplified_recovery() },
+        RailroadRecipient::Survivor {
+            died: 20251102,
+            distributed: 20261231,
+            recovery: simplified_recovery(),
+        },
     );
     let survivor_form = survivor.clone();
     let s = save_rrb(&d, survivor);
-    assert_eq!(reopened(&s), IncomeDocument::Rrb1099R(survivor_form));
+    assert_eq!(
+        reopened(&s),
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::Rrb1099R(railroad_document(survivor_form))
+            }
+        )
+    );
     let FederalIncome::Retirement { data } = &s.draft.income[1].income else {
         panic!("a retirement record")
     };
     assert_eq!(
-        data.ordinary_distribution,
-        RetirementTreatment::Exception {
+        crate::FederalRetirement::from(data).ordinary_distribution,
+        Some(RetirementTreatment::Exception {
             second: None,
             distributed: 20261231,
             facts: RetirementException::Death { died: 20251102 },
             early_simple: false
-        }
+        })
     );
     assert_eq!(return_line(&supported(&s.draft), "5b"), 2_667_700);
     round_trips(&s);
     // (d) Box 8 by the year the benefits were paid reaches the repayment comparison.
     let mut own =
         rrb(24_000, 1_200, 2_400, RailroadRecipient::Employee { recovery: RailroadRecovery::None });
-    own.box_8 = 350_000;
+    own.form.box_8 = Some(350_000);
     own.repayments =
         vec![RailroadRepayment { received_year: 2024, amount: 350_000, contributory: true }];
     let s = save_rrb(&d, own);
@@ -802,22 +1042,38 @@ fn f9_rrb_1099_r_own_spouse_and_survivor_annuities() {
 #[test]
 fn rrb_1099_r_rules_reject_on_the_server_and_import_reads_boxes_4_to_9() {
     let d = filer(19600301);
-    let reject = |mut f: Rrb1099R, k: &str| {
+    let reject = |mut f: RailroadSource, k: &str| {
         let mut s = Interview::new(TEST_USER, d.clone());
-        let reply = send(
-            &mut s,
-            save_topic(
-                &d,
-                TaxSection::Retirement,
+        if k != "RRB_BOX7_NOT_SUM" {
+            let mut corrected = f.clone();
+            if corrected.repayments.is_empty() {
+                corrected.repayments.push(RailroadRepayment {
+                    received_year: 2024,
+                    amount: corrected.box_8.unwrap_or(0),
+                    contributory: true,
+                });
+            } else {
+                corrected.form.box_8 =
+                    Some(corrected.repayments.iter().map(|row| row.amount).sum());
+            }
+            crate::tests::support::client::railroad_answer_case(k, &mut s, None, f, corrected, k);
+            return;
+        }
+        let reply = {
+            let request = crate::tests::support::client::income_pages::save_documents(
+                &mut s,
                 vec![document(
                     0,
-                    IncomeDocument::Rrb1099R({
-                        f.withholding = f.withholding.min(f.gross);
-                        f
-                    }),
+                    IncomeSource::Retirement {
+                        value: crate::RetirementDocument::Rrb1099R({
+                            f.form.withholding = Some(f.withholding.unwrap_or(0).min(f.gross));
+                            railroad_document(f)
+                        }),
+                    },
                 )],
-            ),
-        );
+            );
+            send(&mut s, request)
+        };
         let Reply::Response(P::Problem { message, .. }) = reply else {
             panic!("expected a problem for {k}")
         };
@@ -825,28 +1081,36 @@ fn rrb_1099_r_rules_reject_on_the_server_and_import_reads_boxes_4_to_9() {
     };
     let employee = RailroadRecipient::Employee { recovery: RailroadRecovery::None };
     let mut sum = rrb(24_000, 1_200, 2_400, employee.clone());
-    sum.gross += 100;
+    sum.form.gross += 100;
     reject(sum, "RRB_BOX7_NOT_SUM");
     let mut with_rows = rrb(24_000, 1_200, 2_400, employee.clone());
     with_rows.repayments =
         vec![RailroadRepayment { received_year: 2024, amount: 100, contributory: true }];
     reject(with_rows, "RRB_REPAYMENTS_WITHOUT_BOX_8");
     let mut unsplit = rrb(24_000, 1_200, 2_400, employee.clone());
-    unsplit.box_8 = 100;
+    unsplit.form.box_8 = Some(100);
     reject(unsplit, "RRB_BOX_8_NOT_SPLIT");
     let mut mismatch = rrb(24_000, 1_200, 2_400, employee);
-    mismatch.box_8 = 300;
+    mismatch.form.box_8 = Some(300);
     mismatch.repayments =
         vec![RailroadRepayment { received_year: 2024, amount: 200, contributory: true }];
     reject(mismatch, "RRB_REPAYMENTS_NOT_BOX_8");
-    // Import: boxes 4-9 are document-sourced, whose annuity it is and the years are not, and
+    // Import: printed parties and boxes 3-9 are document-sourced; annuity kind and years are not, and
     // boxes 10 and 11 are an error.
-    let model = include_str!("../../federal/federal_model.rs");
-    let page = &model[model.find("pub struct Rrb1099R {").unwrap()..];
+    let model = crate::federal_model::HUB_SOURCE;
+    let page = &model[model.find("pub struct FormRrb1099RPaper {").unwrap()..];
     let page = &page[..page.find("\n}").unwrap()];
-    for field in
-        ["pub box_4", "pub box_5", "pub box_6", "pub gross", "pub box_8", "pub withholding"]
-    {
+    for field in [
+        "pub issuer",
+        "pub recipient:",
+        "pub box_3",
+        "pub box_4",
+        "pub box_5",
+        "pub box_6",
+        "pub gross",
+        "pub box_8",
+        "pub withholding",
+    ] {
         let at = page.find(field).unwrap();
         let attrs = &page[..at];
         assert!(
@@ -854,9 +1118,12 @@ fn rrb_1099_r_rules_reject_on_the_server_and_import_reads_boxes_4_to_9() {
             "{field}"
         );
     }
-    for field in ["pub recipient", "pub repayments"] {
-        let at = page.find(field).unwrap();
-        let attrs = &page[..at];
+    let answers = &model[model.find("pub struct RailroadSource {").unwrap()..];
+    let answers = &answers[..answers.find("\n}").unwrap()];
+    for field in ["pub recipient_kind", "pub repayments"] {
+        assert!(!page.contains(field), "{field} is a separate topic answer");
+        let at = answers.find(field).unwrap();
+        let attrs = &answers[..at];
         assert!(
             !attrs[attrs.rfind("///").unwrap()..].contains("libertas_llm_doc_field"),
             "{field}"
@@ -869,12 +1136,10 @@ fn rrb_1099_r_rules_reject_on_the_server_and_import_reads_boxes_4_to_9() {
 
 // ---- Form 1099-R box 7c: Trump accounts (section 530A(d)(6) and (d)(4)) ----
 
-fn trump_row(printed: &str, gross: i64, taxable: i64, code: DistributionCode) -> R1099 {
+fn trump_row(printed: &str, gross: i64, taxable: i64, code: DistributionCode) -> R1099Answered {
     let mut r = form(printed, false, gross, taxable, code, M::BoxTwoA);
-    r.trump = true;
-    r.allowed_treatments = DistributionCodes::treatments(r.box7, false, true);
-    r.allowed_methods = DistributionCodes::methods(r.box7, false, true);
-    r
+    r.source_mut().form.trump = true;
+    printed_as(r, printed)
 }
 
 // The account's value at the child's death less its basis is the acquirer's income: code 4 with
@@ -883,18 +1148,35 @@ fn trump_row(printed: &str, gross: i64, taxable: i64, code: DistributionCode) ->
 fn trump_account_death_is_the_acquirers_income() {
     let d = filer(19600301);
     let before = supported(&d);
-    let mut row = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: false });
-    row.withholding = 1_000;
+    let mut row = trump_row(
+        "4",
+        1_500,
+        500,
+        DistributionCode::TrumpDeath { estate: false, basis: Some(100_000) },
+    );
+    row.source_mut().form.withholding = Some(1_000);
     let s = save(&d, vec![row.clone()]);
     let FederalIncome::TrumpDeath { data } = &s.draft.income[1].income else {
         panic!("a Trump account death")
     };
     assert_eq!(
-        *data,
+        TrumpDeathAcquisition::from(data),
         TrumpDeathAcquisition {
+            form_boxes: Default::default(),
+            box_2a: crate::kernel::ratio::positive((150_000) - (100_000)),
+            box_3: 0,
+            box_6: 0,
+            box_8a: 0,
+            box_8b_percent: None,
+            box_9a_percent: None,
+            box_9b: None,
+            box_10: 0,
+            box7: crate::DistributionCodes::CODE_4.0,
+            ira: false,
+            trump: true,
             beneficiary_estate: false,
             value: 150_000,
-            basis: 100_000,
+            basis: Some(100_000),
             withholding: 1_000,
         }
     );
@@ -907,10 +1189,24 @@ fn trump_account_death_is_the_acquirers_income() {
     assert_eq!(r.payments, Some(before.payments.unwrap() + 1_000));
     // The page reopens as the 1099-R it was.
     let mut again = restart(s.draft.clone());
-    let page = open_topic(&mut again, TaxSection::Retirement);
-    assert_eq!(page_documents(&page)[0].document, IncomeDocument::R1099(row));
+    let page = open_documents(&mut again);
+    assert_eq!(
+        page_documents(&page)[0].document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(row))
+            }
+        )
+    );
     // The estate case is the child's final return: a living adult is refused by name.
-    let estate = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: true });
+    let estate = trump_row(
+        "4",
+        1_500,
+        500,
+        DistributionCode::TrumpDeath { estate: true, basis: Some(100_000) },
+    );
     let s = save(&d, vec![estate]);
     let r = estimate(&s.draft);
     assert_eq!(r.state, ResultState::Unsupported);
@@ -925,31 +1221,43 @@ fn trump_account_transfer_to_the_able_account_is_not_income() {
     assert!(matches!(
         &s.draft.income[1].income,
         FederalIncome::TrumpAbleRollover { data }
-            if data.amount == 200_000 && data.transferred == 20260801
+            if TrumpAbleRollover::from(data).amount == 200_000 && TrumpAbleRollover::from(data).transferred == 20260801
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "trump_able_rollover_2_gross"), 2_000);
     assert_eq!(value(&r, "agi"), value(&baseline, "agi"));
     let mut again = restart(s.draft.clone());
-    let page = open_topic(&mut again, TaxSection::Retirement);
-    assert_eq!(page_documents(&page)[0].document, IncomeDocument::R1099(row));
-    // Rules: box 2a is zero, the branches need box 7c, box 7c is not box 7b, and a returned
-    // excess (code 8) goes on Other taxes.
+    let page = open_documents(&mut again);
+    assert_eq!(
+        page_documents(&page)[0].document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(row))
+            }
+        )
+    );
+    // Rules: box 2a is zero, the branches need box 7c, and box 7c is not box 7b.
     let taxable = trump_row("G", 2_000, 1, DistributionCode::TrumpToAble { transferred: 20260801 });
     assert_eq!(refusal(&d, vec![taxable]), key("R_TRUMP_ABLE_TAXABLE"));
-    let mut no_7c = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: false });
-    no_7c.trump = false;
+    let mut no_7c = trump_row(
+        "4",
+        1_500,
+        500,
+        DistributionCode::TrumpDeath { estate: false, basis: Some(100_000) },
+    );
+    no_7c.source_mut().form.trump = false;
     assert_eq!(refusal(&d, vec![no_7c]), key("R_BOX7_TREATMENT"));
-    let mut ira = trump_row("4", 1_500, 500, DistributionCode::TrumpDeath { estate: false });
-    ira.ira = true;
-    ira.code = DistributionCode::Other;
-    ira.allowed_treatments = DistributionCodes::treatments(ira.box7, true, true);
+    let mut ira = trump_row(
+        "4",
+        1_500,
+        500,
+        DistributionCode::TrumpDeath { estate: false, basis: Some(100_000) },
+    );
+    ira.source_mut().form.ira = true;
+    ira.source_mut().code = Some(DistributionCode::Other);
     assert_eq!(refusal(&d, vec![ira]), key("R_TRUMP_AND_IRA"));
-    let mut excess = trump_row("4", 1_500, 1_500, DistributionCode::TrumpDeath { estate: false });
-    excess.box7 = box7("8");
-    excess.code = DistributionCode::Other;
-    excess.allowed_treatments = DistributionCodes::treatments(excess.box7, false, true);
-    assert_eq!(refusal(&d, vec![excess]), key("R_TRUMP_EXCESS_ON_OTHER_TAXES"));
 }
 
 // ---- Form 1099-R code 4 with box 7b: the Inherited IRA record ----
@@ -979,12 +1287,12 @@ fn roth_record(
         },
     }
 }
-fn inherited_row(account: Option<i64>, gross: i64) -> R1099 {
+fn inherited_row(account: Option<i64>, gross: i64) -> R1099Answered {
     let mut r = printed_as(r1099(gross * 100, DistributionCode::Inherited { account }, true), "4");
-    r.withholding = 12_300;
+    r.source_mut().form.withholding = Some(12_300);
     r
 }
-fn inherited_roth_row(account: Option<i64>, gross: i64) -> R1099 {
+fn inherited_roth_row(account: Option<i64>, gross: i64) -> R1099Answered {
     printed_as(
         r1099(
             gross * 100,
@@ -1001,23 +1309,79 @@ fn inherited_roth_row(account: Option<i64>, gross: i64) -> R1099 {
         "T",
     )
 }
+fn record_request(s: &mut Interview, rows: Vec<IncomeDocumentItem>) -> P {
+    let mut request = open_topic(s, TaxSection::Retirement);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    for row in rows {
+        let mut row = crate::IncomeRecordItem::from_income(row).unwrap();
+        let old = documents.documents.iter_mut().find(|old| {
+            if row.id != 0 {
+                old.id == row.id
+            } else {
+                old.owner == row.owner
+                    && matches!(
+                        &row.document,
+                        crate::IncomeRecord::Form8606(_) | crate::IncomeRecord::RothHistory(_)
+                    )
+                    && core::mem::discriminant(&old.document)
+                        == core::mem::discriminant(&row.document)
+            }
+        });
+        if let Some(old) = old {
+            row.id = old.id;
+            *old = row;
+        } else {
+            documents.documents.push(row);
+        }
+    }
+    request
+}
 fn save_items(d: &FederalDraft, items: Vec<IncomeDocumentItem>) -> Interview {
     let mut s = Interview::new(TEST_USER, d.clone());
-    accepted(&send(&mut s, save_topic(d, TaxSection::Retirement, items)));
+    let (records, sources): (Vec<_>, Vec<_>) =
+        items.into_iter().partition(|row| matches!(row.document, IncomeSource::Record { .. }));
+    let (prior, later): (Vec<_>, Vec<_>) = records.into_iter().partition(|row| {
+        !matches!(row.document, IncomeSource::Record { value: crate::IncomeRecord::Qcd(_) })
+    });
+    if !prior.is_empty() {
+        let request = record_request(&mut s, prior);
+        accepted(&send(&mut s, request));
+    }
+    if !sources.is_empty() {
+        let request = save_documents(&mut s, sources.clone());
+        accepted(&send(&mut s, request));
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut s, &sources,
+        );
+    }
+    if !later.is_empty() {
+        let request = record_request(&mut s, later);
+        accepted(&send(&mut s, request));
+    }
     s
 }
 fn record_item(owner: Owner, id: i64, record: InheritedIraAccount) -> IncomeDocumentItem {
-    unanswered_document(owner, id, IncomeDocument::InheritedIra(record))
+    unanswered_document(
+        owner,
+        id,
+        IncomeSource::Record { value: crate::IncomeRecord::InheritedIra(record) },
+    )
 }
-fn row_item(owner: Owner, row: R1099) -> IncomeDocumentItem {
-    unanswered_document(owner, 0, IncomeDocument::R1099(row))
+fn row_item(owner: Owner, row: R1099Answered) -> IncomeDocumentItem {
+    unanswered_document(
+        owner,
+        0,
+        IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(row)),
+        },
+    )
 }
 fn catalog(page: &P) -> &[RecordChoice] {
-    let P::SaveIncomes { inherited_iras, .. } = page else { panic!("the income page") };
+    let P::SaveDocuments { inherited_iras, .. } = page else { panic!("the income page") };
     inherited_iras
 }
 fn roth_catalog(page: &P) -> &[RecordChoice] {
-    let P::SaveIncomes { inherited_roth_iras, .. } = page else { panic!("the income page") };
+    let P::SaveDocuments { inherited_roth_iras, .. } = page else { panic!("the income page") };
     inherited_roth_iras
 }
 
@@ -1033,12 +1397,18 @@ fn inherited_ira_record_and_its_1099_r_on_one_page() {
         record_item(Owner::Taxpayer, 0, traditional("Pat Sample", 5_000, 40_000)),
         row_item(Owner::Taxpayer, inherited_row(None, 10_000)),
     ];
-    let s = save_items(&d, sent.clone());
+    let mut s = save_items(&d, sent.clone());
     let FederalIncome::Retirement { data } = &s.draft.income[2].income else {
         panic!("a retirement record")
     };
-    assert_eq!(data.taxable, RetirementTaxable::Inherited { account: None, payer: 1_000_000 });
-    assert_eq!(data.kind, RetirementKind::Inherited);
+    assert_eq!(
+        (
+            crate::FederalRetirement::from(data).taxable.clone(),
+            crate::FederalRetirement::from(data).box_2a
+        ),
+        (Some(RetirementTaxable::Inherited { account: None }), 1_000_000)
+    );
+    assert_eq!(crate::FederalRetirement::from(data).kind, RetirementKind::Inherited);
     assert_eq!(s.draft.income[1].label, "Pat Sample");
     let r = supported(&s.draft);
     assert_eq!(value(&r, "inherited_ira_2_basis_recovered"), 1_000);
@@ -1048,12 +1418,12 @@ fn inherited_ira_record_and_its_1099_r_on_one_page() {
     assert_eq!(value(&r, "early_distribution_tax"), 0);
     assert_eq!(r.payments.unwrap() - before.payments.unwrap(), 12_300);
     round_trips(&s);
-    // The page reopens as it was entered, with the record in its catalog.
+    // Each editor reopens with the same accepted identities and payloads.
+    let saved = observed(&mut s);
     let mut again = restart(s.draft.clone());
-    let page = open_topic(&mut again, TaxSection::Retirement);
-    let shown: Vec<_> = page_documents(&page).iter().map(|i| i.document.clone()).collect();
-    let want: Vec<_> = sent.iter().map(|i| i.document.clone()).collect();
-    assert_eq!(shown, want);
+    let page = open_documents(&mut again);
+    assert_eq!(observed(&mut again), saved);
+    assert_fixture(&mut again, &sent);
     let choices = catalog(&page);
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0].id, 2);
@@ -1080,7 +1450,7 @@ fn inherited_choices_round_trip_through_the_catalog_and_use_their_own_basis() {
     );
     d = first.draft.clone();
     let mut s = Interview::new(TEST_USER, d.clone());
-    let page = open_topic(&mut s, TaxSection::Retirement);
+    let page = open_documents(&mut s);
     // Each field is offered only the records of its own kind (F3, 2026-10-09):
     // the traditional ones for a code 4 payment or a QCD gift, the Roth one for
     // an inherited Roth withdrawal.
@@ -1100,15 +1470,17 @@ fn inherited_choices_round_trip_through_the_catalog_and_use_their_own_basis() {
         unanswered_document(
             Owner::Taxpayer,
             0,
-            IncomeDocument::Qcd(QcdGift {
-                split_interest: false,
-                date: 20260601,
-                amount: 500_000,
-                inherited: Some(2),
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Qcd(QcdGift {
+                    split_interest: false,
+                    date: 20260601,
+                    amount: 500_000,
+                    inherited: Some(2),
+                }),
+            },
         ),
     ];
-    let s = save_items(&d, items.clone());
+    let mut s = save_items(&d, items.clone());
     let r = supported(&s.draft);
     assert_eq!(value(&r, "inherited_ira_3_basis_remaining"), 8_000);
     assert_eq!(value(&r, "inherited_roth_4_regular_recovered"), 1_000);
@@ -1118,14 +1490,10 @@ fn inherited_choices_round_trip_through_the_catalog_and_use_their_own_basis() {
         s.draft.adjustments.as_ref().unwrap().qualified_charity[0].payments[0].inherited,
         Some(2)
     );
+    let saved = observed(&mut s);
     let mut again = restart(s.draft.clone());
-    let page = open_topic(&mut again, TaxSection::Retirement);
-    let mut shown: Vec<_> = page_documents(&page).iter().map(|i| i.document.clone()).collect();
-    let mut want: Vec<_> = items.iter().map(|i| i.document.clone()).collect();
-    let order = |d: &IncomeDocument| alloc::format!("{d:?}");
-    shown.sort_by_key(order);
-    want.sort_by_key(order);
-    assert_eq!(shown, want);
+    assert_eq!(observed(&mut again), saved);
+    assert_fixture(&mut again, &items);
 }
 
 #[test]
@@ -1160,14 +1528,14 @@ fn an_inherited_payment_naming_another_filers_or_the_other_kinds_record_is_refus
         ],
     );
     let d = first.draft;
-    let items = |row: R1099| {
+    let items = |row: R1099Answered| {
         vec![
             record_item(Owner::Spouse, 2, traditional("Pat Sample", 5_000, 40_000)),
             record_item(Owner::Taxpayer, 3, roth_record("Kim Sample", 2022, 1_000, 2_500)),
             row_item(Owner::Taxpayer, row),
         ]
     };
-    let issue = |row: R1099, k: &str| {
+    let issue = |row: R1099Answered, k: &str| {
         let s = save_items(&d, items(row));
         let r = estimate(&s.draft);
         assert_eq!(r.state, ResultState::Unsupported, "{k}");
@@ -1213,7 +1581,7 @@ fn an_inherited_roth_first_year_after_the_year_of_death_is_refused_with_its_key(
     for (first_year, allowed) in [(2025, true), (2026, false)] {
         let mut s = Interview::new(TEST_USER, d.clone());
         let page = save_topic(
-            &d,
+            &mut s,
             TaxSection::Retirement,
             vec![record_item(Owner::Taxpayer, 0, roth_record("Kim Sample", first_year, 0, 0))],
         );
@@ -1243,20 +1611,300 @@ fn a_form_8606_does_not_take_over_an_inherited_ira_payment() {
             unanswered_document(
                 Owner::Taxpayer,
                 0,
-                IncomeDocument::Form8606(Form8606 {
-                    adjustment: 0,
-                    reservist_repayments: vec![],
-                    basis: 500_000,
-                    year_end: 900_000,
-                }),
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Form8606(Form8606 {
+                        adjustment: 0,
+                        reservist_repayments: vec![],
+                        basis: 500_000,
+                        year_end: 900_000,
+                    }),
+                },
             ),
         ],
     );
     let FederalIncome::Retirement { data } = &s.draft.income[2].income else {
         panic!("a retirement record")
     };
-    assert_eq!(data.taxable, RetirementTaxable::Inherited { account: None, payer: 1_000_000 });
+    assert_eq!(
+        (
+            crate::FederalRetirement::from(data).taxable.clone(),
+            crate::FederalRetirement::from(data).box_2a
+        ),
+        (Some(RetirementTaxable::Inherited { account: None }), 1_000_000)
+    );
     let r = supported(&s.draft);
     assert_eq!(value(&r, "inherited_ira_2_basis_recovered"), 1_000);
     assert_eq!(return_line(&r, "4b"), 900_000);
+}
+
+#[test]
+fn special_retirement_kinds_keep_corrected_paper_boxes_and_personal_elections() {
+    use crate::tests::support::client::income_pages::{
+        information_return_answers, save_information_return_answers,
+    };
+    let rows = [
+        form(
+            "J",
+            false,
+            1_500,
+            1_500,
+            DistributionCode::RothIra {
+                roth: crate::RothIraCode::Early {
+                    distributed: 20260601,
+                    exception: None,
+                    repaid: None,
+                },
+                rolled_over: 0,
+                sequence: None,
+            },
+            M::BoxTwoA,
+        ),
+        trump_row(
+            "4",
+            1_500,
+            500,
+            DistributionCode::TrumpDeath { estate: false, basis: Some(100_000) },
+        ),
+        trump_row("G", 1_500, 0, DistributionCode::TrumpToAble { transferred: 20260801 }),
+    ];
+    for original in rows {
+        let mut session = save(&filer(19600301), vec![original.clone()]);
+        let entry = session
+            .draft
+            .income
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.income,
+                    FederalIncome::Roth { .. }
+                        | FederalIncome::TrumpDeath { .. }
+                        | FederalIncome::TrumpAbleRollover { .. }
+                )
+            })
+            .unwrap()
+            .clone();
+        let mut corrected = original.clone();
+        corrected.source_mut().form.box_6 = Some(200);
+        corrected.source_mut().form.box_8a = Some(300);
+        corrected.source_mut().form.box_8b_percent = Some(25.0);
+        corrected.source_mut().form.box_9a_percent = Some(50.0);
+        corrected.source_mut().form.box_9b = Some(400);
+        corrected.source_mut().form.box_10 = Some(500);
+        corrected.source_mut().form.withholding = Some(600);
+        let row = |source| {
+            vec![document(
+                entry.id,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(source)),
+                },
+            )]
+        };
+        let request = save_documents(&mut session, row(corrected.clone()));
+        accepted(&send(&mut session, request));
+        assert!(session.draft.valid_stored());
+        session = restart(session.draft);
+        let page = open_documents(&mut session);
+        let actual = all_page_documents(&page).into_iter().find(|row| row.id == entry.id).unwrap();
+        let IncomeSource::Retirement { value: crate::RetirementDocument::R1099(actual) } =
+            actual.document
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (
+                actual.gross,
+                actual.taxable,
+                actual.withholding,
+                actual.box7,
+                actual.ira,
+                actual.trump
+            ),
+            (
+                corrected.gross,
+                corrected.taxable,
+                Some(600),
+                corrected.box7,
+                corrected.ira,
+                corrected.trump
+            )
+        );
+        assert_eq!(
+            (
+                actual.box_6,
+                actual.box_8a,
+                actual.box_8b_percent,
+                actual.box_9a_percent,
+                actual.box_9b,
+                actual.box_10
+            ),
+            (Some(200), Some(300), Some(25.0), Some(50.0), Some(400), Some(500))
+        );
+        let accepted_code =
+            match &session.draft.income.iter().find(|row| row.id == entry.id).unwrap().income {
+                FederalIncome::Roth { data }
+                | FederalIncome::TrumpDeath { data }
+                | FederalIncome::TrumpAbleRollover { data } => &data.code,
+                _ => unreachable!(),
+            };
+        assert_eq!(*accepted_code, original.code);
+        let Reply::Response(P::Review { remaining_items, .. }) =
+            send(&mut session, P::ReviewAccepted { user: TEST_USER })
+        else {
+            unreachable!()
+        };
+        let request = information_return_answers(&mut session, &row(corrected));
+        if matches!(original.code, Some(DistributionCode::RothIra { .. })) {
+            assert!(remaining_items.iter().any(|row| row.section == TaxSection::Retirement));
+            let before = session.draft.clone();
+            let Reply::Response(P::Problem { message, .. }) = send(&mut session, request) else {
+                unreachable!()
+            };
+            assert_eq!(message, key("R_ROTH_OTHER_BOXES"));
+            assert_eq!(session.draft, before);
+        } else {
+            // The original Trump owner permits these unused printed boxes.
+            accepted(&send(&mut session, request));
+        }
+        let request = save_documents(&mut session, row(original.clone()));
+        accepted(&send(&mut session, request));
+        save_information_return_answers(&mut session, &row(original));
+        assert_eq!(session.draft.income.iter().find(|row| row.id == entry.id).unwrap(), &entry);
+    }
+}
+
+#[test]
+fn trump_death_missing_actual_basis_round_trips_and_requires_topic_answer() {
+    use crate::tests::support::client::income_pages::{
+        information_return_answers, save_information_return_answers,
+    };
+    let original = trump_row(
+        "4",
+        1_500,
+        500,
+        DistributionCode::TrumpDeath { estate: false, basis: Some(100_000) },
+    );
+    let mut session = save(&filer(19600301), vec![original.clone()]);
+    let entry = session
+        .draft
+        .income
+        .iter_mut()
+        .find(|entry| matches!(entry.income, FederalIncome::TrumpDeath { .. }))
+        .unwrap();
+    let id = entry.id;
+    let FederalIncome::TrumpDeath { data } = &mut entry.income else { unreachable!() };
+    let Some(DistributionCode::TrumpDeath { basis, .. }) = &mut data.code else { unreachable!() };
+    *basis = None;
+    assert_eq!(TrumpDeathAcquisition::from(&*data).taxable(), None);
+    assert_eq!(TrumpDeathAcquisition::from(&*data).box_2a, 50_000);
+    session = restart(session.draft);
+    let request = open_documents(&mut session);
+    accepted(&send(&mut session, request));
+    let entry = session.draft.income.iter().find(|entry| entry.id == id).unwrap();
+    assert!(
+        matches!(&entry.income, FederalIncome::TrumpDeath { data } if TrumpDeathAcquisition::from(data).basis.is_none() && TrumpDeathAcquisition::from(data).box_2a == 50_000)
+    );
+    let Reply::Response(P::Review { remaining_items, .. }) =
+        send(&mut session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        unreachable!()
+    };
+    assert!(remaining_items.iter().any(|row| row.section == TaxSection::Retirement));
+    let mut missing = original.clone();
+    missing.source_mut().code = Some(DistributionCode::TrumpDeath { estate: false, basis: None });
+    let rows = |source| {
+        vec![document(
+            id,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(source)),
+            },
+        )]
+    };
+    let request = information_return_answers(&mut session, &rows(missing));
+    let before = session.draft.clone();
+    let Reply::Response(P::Problem { message, .. }) = send(&mut session, request) else {
+        unreachable!()
+    };
+    assert_eq!(message, key("R_TRUMP_BASIS_NEEDED"));
+    assert_eq!(session.draft, before);
+    save_information_return_answers(&mut session, &rows(original));
+    assert_eq!(value(&supported(&session.draft), "trump_death_taxable_income"), 500);
+}
+
+// G-34 and G-35 (Smith round 3): an own employee annuity with the Simplified Method started
+// 2026-06-01, 7 months, one recipient, aged 65, box 3 $8,400. The empty cost takes box 3 and the age
+// comes from the owner's date of birth: the page raises nothing, the figures equal the entered ones.
+fn rrb_own_basis(cost: Option<i64>, duration: PensionDuration) -> RailroadSource {
+    let mut own = rrb(
+        2_100,
+        0,
+        0,
+        RailroadRecipient::Employee {
+            recovery: RailroadRecovery::SimplifiedMethod {
+                data: PensionBasis {
+                    started: 20260601,
+                    cost,
+                    months: 7,
+                    history: PensionHistory::New { duration },
+                    ..simplified_cost(0)
+                },
+            },
+        },
+    );
+    own.form.box_3 = Some(840_000);
+    own
+}
+#[test]
+fn rrb_simplified_method_takes_box_3_cost_and_the_owner_age() {
+    let d = filer(19600801);
+    let entered = save_rrb(&d, rrb_own_basis(Some(840_000), PensionDuration::Single { age: 65 }));
+    let derived = save_rrb(&d, rrb_own_basis(None, PensionDuration::Own { age: None }));
+    let FederalIncome::Retirement { data } = &derived.draft.income[1].income else {
+        panic!("a retirement record")
+    };
+    let crate::RetirementSource::Rrb1099R(source) = data else { panic!("an RRB-1099-R") };
+    let Some(RailroadRecipient::Employee {
+        recovery: RailroadRecovery::SimplifiedMethod { data: basis },
+    }) = &source.recipient_kind
+    else {
+        panic!("the Simplified Method")
+    };
+    // The cost stays empty (it follows box 3); the age is the owner's on 2026-06-01.
+    assert_eq!(basis.cost, None);
+    assert_eq!(
+        basis.history,
+        PensionHistory::New { duration: PensionDuration::Own { age: Some(65) } }
+    );
+    let (entered, derived) = (supported(&entered.draft), supported(&derived.draft));
+    assert_eq!(return_line(&derived, "5b"), return_line(&entered, "5b"));
+    assert!(return_line(&derived, "5b") < 210_000);
+}
+
+#[test]
+fn pension_age_follows_the_birth_date_and_the_start() {
+    let mut basis = simplified_cost(8_400);
+    basis.started = 20260601;
+    basis.history = PensionHistory::New { duration: PensionDuration::Own { age: None } };
+    // Born 1960-08-01: 65 on 2026-06-01, 66 after the birthday; a start before birth refuses.
+    basis.follow_birth(Some(19600801));
+    assert_eq!(
+        basis.history,
+        PensionHistory::New { duration: PensionDuration::Own { age: Some(65) } }
+    );
+    basis.started = 20260901;
+    basis.follow_birth(Some(19600801));
+    assert_eq!(
+        basis.history,
+        PensionHistory::New { duration: PensionDuration::Own { age: Some(66) } }
+    );
+    assert!(!basis.lacks_birth(Some(19600801)));
+    assert!(basis.lacks_birth(None));
+    assert!(basis.lacks_birth(Some(20270101)));
+    // An entered age is the person's own and is never replaced.
+    basis.history = PensionHistory::New { duration: PensionDuration::Single { age: 15 } };
+    basis.follow_birth(Some(19600801));
+    assert_eq!(
+        basis.history,
+        PensionHistory::New { duration: PensionDuration::Single { age: 15 } }
+    );
+    assert!(!basis.lacks_birth(None));
 }

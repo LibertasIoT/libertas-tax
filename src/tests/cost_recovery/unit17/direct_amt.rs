@@ -24,7 +24,7 @@ fn unit17_direct_amt_carry_actual_editor_save_reopen_restart_and_clear() {
     for index in 0..3 {
         let mut row = asset(2_000_000, 20250101, AssetClass::Five);
         row.acquired = Some(20250101);
-        row.history = AssetHistory::Continuing {
+        row.gds_mut().unwrap().history = AssetHistory::Continuing {
             prior_depreciation: if index == 2 { 1_200_000 } else { 1_100_000 },
             first_year_179: 1_000_000,
             first_year_bonus: 0,
@@ -39,7 +39,7 @@ fn unit17_direct_amt_carry_actual_editor_save_reopen_restart_and_clear() {
     let value = if kind == "farm" {
         let mut page = crate::tests::cross::interview::cash_farm(10_000_000, 0);
         page.assets = pages;
-        IncomeDocument::Farm(page)
+        IncomeSource::Record { value: crate::IncomeRecord::Farm(page) }
     } else {
         let mut page = business(10_000_000);
         page.business_code = Some(541990);
@@ -48,6 +48,7 @@ fn unit17_direct_amt_carry_actual_editor_save_reopen_restart_and_clear() {
                 .into_iter()
                 .map(|asset| Vehicle {
                     method: VehicleMethod::Actual {
+                        macrs_source: None,
                         id: 0,
                         history_details: None,
                         cost: asset.cost,
@@ -58,9 +59,9 @@ fn unit17_direct_amt_carry_actual_editor_save_reopen_restart_and_clear() {
                         business_miles: 10_000,
                         operating_costs: 0,
                         loan_interest: 0,
-                        passenger_automobile: false,
+                        kind: crate::VehicleKind::HeavyTruckVan,
                         earlier_business_percent: None,
-                        history: asset.history,
+                        history: asset.gds().unwrap().history.clone(),
                         disposal: AssetDisposal::No,
                         amt_section179_income_carry: asset
                             .amt_section179_income_carry
@@ -72,9 +73,9 @@ fn unit17_direct_amt_carry_actual_editor_save_reopen_restart_and_clear() {
         } else {
             page.assets = pages;
         }
-        IncomeDocument::Business(page)
+        IncomeSource::Record { value: crate::IncomeRecord::Business(page) }
     };
-    let mut request = save_topic(&session.draft, topic, vec![document(0, value)]);
+    let mut request = save_topic(&mut session, topic, vec![document(0, value)]);
     let write = |name: &str, value: &P| {
         if let Ok(directory) = std::env::var("TAX_UNIT17_AMT_CARRY_DIR") {
             let mut bytes = Vec::new();
@@ -148,7 +149,7 @@ fn unit17_direct_amt_carry_question_uses_actual_missing_source_only() {
     };
     assert_eq!(asset.amt_carry_choices(), vec![0]);
     let unknown: CanonicalAssetPage = asset.clone().into();
-    assert_eq!(unknown.amt_section179_income_carry, None);
+    assert_eq!(unknown.macrs().unwrap().amt_section179_income_carry, None);
     let unchanged: BusinessAsset = unknown.into();
     assert_eq!(unchanged, asset);
     asset.history_details = Some(direct_amt_carry_history());
@@ -156,21 +157,21 @@ fn unit17_direct_amt_carry_question_uses_actual_missing_source_only() {
     assert_eq!(asset.amt_section179_carry(), Ok(30_000));
     assert!(asset.amt_carry_choices().is_empty());
     let page: CanonicalAssetPage = asset.clone().into();
-    assert!(page.allowed_amt_carry.is_empty());
-    assert_eq!(page.amt_section179_income_carry, None);
+    assert!(page.macrs().unwrap().allowed_amt_carry.is_empty());
+    assert_eq!(page.macrs().unwrap().amt_section179_income_carry, None);
     let unchanged: BusinessAsset = page.into();
     assert_eq!(unchanged, asset);
     asset.amt_section179_income_carry = Some(30_000);
     let page: CanonicalAssetPage = asset.clone().into();
-    assert!(page.allowed_amt_carry.is_empty());
-    assert_eq!(page.amt_section179_income_carry, None);
+    assert!(page.macrs().unwrap().allowed_amt_carry.is_empty());
+    assert_eq!(page.macrs().unwrap().amt_section179_income_carry, None);
     let unchanged: BusinessAsset = page.into();
     assert_eq!(unchanged, asset);
     // An authoritative correction to an inapplicable history withdraws only
     // the separate carry answer; it does not invent a year or zero balance.
     let mut page: CanonicalAssetPage = asset.into();
-    page.financial.history = new.history;
-    page.financial.history_details = None;
+    page.macrs_mut().unwrap().financial.history = new.history;
+    page.macrs_mut().unwrap().financial.history_details = None;
     let corrected: BusinessAsset = page.into();
     assert_eq!(corrected.amt_section179_income_carry, None);
 
@@ -208,30 +209,41 @@ fn unit17_direct_amt_carry_question_uses_actual_missing_source_only() {
     records.years[0].section179_allowed = 1_000_000;
     records.carryovers[0].amount = 0;
     records.years[0].amt = 160_000;
-    page.financial.history_details = Some(records.clone());
+    page.macrs_mut().unwrap().financial.history_details = Some(records.clone());
+    let rental_energy_buildings =
+        crate::source_associations::SourceAssociations::new(&session.draft)
+            .physical_building_choices();
     let Reply::Response(P::CanonicalAssetAmtCarryChoices { allowed }) = send(
         &mut session,
-        P::CanonicalAssetAmtCarryOptions { user: TEST_USER, financial: page.financial.clone() },
+        P::CanonicalAssetAmtCarryOptions {
+            rental_energy_buildings,
+            user: TEST_USER,
+            financial: page.macrs().unwrap().financial.clone(),
+        },
     ) else {
         panic!("ordinary source calculation")
     };
     assert!(allowed.is_empty());
-    page.allowed_amt_carry = allowed;
-    page.amt_section179_income_carry = None;
+    page.macrs_mut().unwrap().allowed_amt_carry = allowed;
+    page.macrs_mut().unwrap().amt_section179_income_carry = None;
     let corrected: BusinessAsset = page.clone().into();
     assert!(corrected.valid());
     assert_eq!(corrected.amt_section179_income_carry, None);
     assert_eq!(corrected.amt_section179_carry(), Ok(40_000));
     assert_eq!(corrected.history_details.as_ref(), Some(&records));
     let mut forged = page.clone();
-    forged.amt_section179_income_carry = AssetAmt179CarryAnswer::from_amount(Some(30_000));
+    forged.macrs_mut().unwrap().amt_section179_income_carry =
+        AssetAmt179CarryAnswer::from_amount(Some(30_000));
     let forged: BusinessAsset = forged.into();
     assert!(!forged.valid());
     assert_eq!(forged.amt_section179_carry(), Err(()));
     let request = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::Rentals,
-        vec![document(income_id, IncomeDocument::Rental(rental))],
+        vec![document(
+            income_id,
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(rental) },
+        )],
     );
     accepted(&send(&mut session, request));
     let (_, _, stored) = stored_rentals(&session).remove(0);
@@ -240,7 +252,7 @@ fn unit17_direct_amt_carry_question_uses_actual_missing_source_only() {
     assert_eq!(stored.assets[0].amt_section179_carry(), Ok(40_000));
     assert_eq!(stored.assets[0].history_details.as_ref(), Some(&records));
     let reopened = reopened_rentals(session.draft.clone()).remove(0).0;
-    assert_eq!(reopened.assets[0].amt_section179_income_carry, None);
-    assert_eq!(reopened.assets[0].financial.amt_section179_carry(), Ok(40_000));
+    assert_eq!(reopened.assets[0].macrs().unwrap().amt_section179_income_carry, None);
+    assert_eq!(reopened.assets[0].macrs().unwrap().financial.amt_section179_carry(), Ok(40_000));
     assert_rentals_round_trip(&mut session, &[reopened]);
 }

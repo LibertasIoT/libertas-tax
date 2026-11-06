@@ -85,7 +85,7 @@ use crate::kernel::carry::{Amount, Cents};
 //   section179_business_income_limit_includes_materially_participated_k1_income; sources i4562,
 //   i1065sk1, Reg. 1.179-2, 1.179-3, i8995.
 //   Unit T2-29p (2026-09-27): the interview enters this K-1 on the Schedule K-1 topic
-//   (k1_page.rs K1Partnership); the PassThrough situation covers S corporations only. C9: with an
+//   (k1_page.rs K1PartnershipPaper); the PassThrough situation covers S corporations only. C9: with an
 //   Unknown opening at-risk history the Form 6198 stage is skipped (PartnerRiskRecord::
 //   without_history, risk_end None) when the year's losses entering it do not exceed the activity's
 //   income, no at-risk carryover or unrecaptured deducted loss exists and box 12 is zero; otherwise
@@ -113,7 +113,10 @@ use crate::kernel::carry::{Amount, Cents};
 //   activity (result_with, calculate_with, without_history); PartnerK1.rental_facts holds the box 2
 //   participation (NotActive, Active, Professional) and the section 199A rental amounts. A limited
 //   partner cannot be Active (section 469(i)(6)(C); valid, PARTNER_LIMITED_NOT_ACTIVE). Refused by
-//   name: a rental loss limited by basis or at risk, a PTP's rentals, a rental disposition
+//   name: an unsupported rental disposition or unresolved rental-property character.
+//   Kept passive PTP box 2/3 amounts share only their own PTP's passive pool;
+//   professional, property, disposition and rental-QBI combinations retain located boundaries.
+//   A rental disposition
 //   (PartnerK1Item::Rentals renamed RentalDisposition). MultipleActivities narrows to box 22 or a
 //   box 23 statement with two activities of one kind. The at-risk debt includes the partner's
 //   qualified nonrecourse financing (section 465(b)(6)). Unit form-3468 (2026-10-09):
@@ -177,13 +180,20 @@ use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PartnerBasisRecord {
     /// Tax basis at the beginning of the partnership year
+    /// [NullText]
+    /// Opening basis is not established yet
+    /// [SetText]
+    /// Established opening basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub opening: i64,
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub opening: Option<i64>,
     /// Cash capital contributions during the year
     /// Exclude guaranteed payments, loans and liability shares entered separately.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub contributions: i64,
     /// Beginning allocated partnership liabilities, K-1 item K1
     /// Include recourse and nonrecourse shares for outside basis. This does not establish that any debt is at risk.
@@ -197,12 +207,14 @@ pub struct PartnerBasisRecord {
     /// Partnership liabilities personally assumed during the year
     /// From the assumption records; the App combines this with the change in allocated liabilities.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub assumed: i64,
     /// Personal liabilities assumed by the partnership
     /// Exclude amounts already included in the allocated-liability change.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub transferred: i64,
     /// Cash distributions during the year
     /// Include insurance premiums charged against distributions, before subtracting them from the cash actually delivered to you. Exclude guaranteed payments and debt relief entered separately. Property and marketable-security distributions need their own treatment.
@@ -212,12 +224,14 @@ pub struct PartnerBasisRecord {
     /// Ordinary loss suspended only by outside basis through 2025
     /// Exclude at-risk and passive carryovers; those already passed the basis limit.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_loss: i64,
     /// Nondeductible expense carry from the retained partner-basis worksheet
     /// Exclude any at-risk-only expense carry. This reduces basis when absorbed; it is not a tax deduction.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_nondeductible: i64,
     /// Complete ordinary cash and liability records
     /// Confirm annual worksheet ordering applies, no property contributions or distributions, sales, acquisitions, liquidations, section 743(b), special allocations, foreign basis adjustments or unentered basis adjustments. Business interest needs its own loss class, which is not entered here. No leaves this K-1 out of the estimate with a notice; that situation is not supported.
@@ -227,7 +241,6 @@ pub struct PartnerBasisRecord {
 impl PartnerBasisRecord {
     fn valid_amounts(&self, ordinary: i64, exempt: i64, nondeductible: i64) -> bool {
         let amounts = [
-            self.opening,
             self.contributions,
             self.opening_liabilities,
             self.ending_liabilities,
@@ -241,7 +254,8 @@ impl PartnerBasisRecord {
         ];
         // Arithmetic safety: result_with and disposal_of retain native basis,
         // gain and liability arithmetic before k1_totals cents transfers.
-        amounts.into_iter().all(|a| (0..=100000000000).contains(&a))
+        self.opening.is_none_or(|a| (0..=100000000000).contains(&a))
+            && amounts.into_iter().all(|a| (0..=100000000000).contains(&a))
             && (-100000000000..=100000000000).contains(&ordinary)
     }
     // The ordinary class alone (tests): the box 1 result and the retained
@@ -253,6 +267,9 @@ impl PartnerBasisRecord {
         exempt: i64,
         nondeductible: i64,
     ) -> Result<PartnerBasisResult, (&'static str, &'static str)> {
+        if !self.valid_amounts(ordinary, exempt, nondeductible) {
+            return Err(PartnerPlan::INCOMPLETE);
+        }
         let mut plan = PartnerPlan::default();
         plan.input.current[K1LossClass::Ordinary] =
             Amount::<Cents>::new((-ordinary).max(0)).expect("validated source class cents");
@@ -278,12 +295,18 @@ impl PartnerBasisRecord {
         nondeductible: i64,
         plan: &PartnerPlan,
     ) -> Result<PartnerBasisResult, (&'static str, &'static str)> {
-        if !self.complete || !self.valid_amounts(ordinary, exempt, nondeductible) {
+        let opening = self.opening.ok_or((
+            "DOCUMENT_K1_OPENING_BASIS",
+            crate::fixture_english!(
+                "Enter the actual opening basis, including zero when it is zero."
+            ),
+        ))?;
+        if !self.complete || !self.valid_amounts(0, exempt, nondeductible) {
             return Err(PartnerPlan::INCOMPLETE);
         }
-        let losses = plan.input.basis();
+        let losses = plan.input.checked_basis().ok_or(PartnerPlan::RANGE)?;
         PartnerBasis {
-            opening: Amount::<Cents>::new(self.opening).expect("bounded basis result"),
+            opening: Amount::<Cents>::new(opening).expect("bounded basis result"),
             contributions: Amount::<Cents>::new(self.contributions).expect("bounded basis result"),
             opening_liabilities: Amount::<Cents>::new(self.opening_liabilities)
                 .expect("bounded basis result"),
@@ -293,8 +316,13 @@ impl PartnerBasisRecord {
                 .expect("bounded basis result"),
             personal_liabilities_transferred: Amount::<Cents>::new(self.transferred)
                 .expect("bounded basis result"),
-            income: Amount::<Cents>::new(phase::floor(ordinary, 0) + exempt + plan.basis_income)
-                .expect("bounded basis result"),
+            income: Amount::<Cents>::new(
+                phase::floor(ordinary, 0)
+                    .checked_add(exempt)
+                    .and_then(|income| income.checked_add(plan.basis_income))
+                    .ok_or(PartnerPlan::RANGE)?,
+            )
+            .expect("nonnegative basis income"),
             cash_distributions: Amount::<Cents>::new(self.distributions)
                 .expect("bounded basis result"),
             distributed_property_basis: Amount::<Cents>::new(0).expect("bounded basis result"),
@@ -321,7 +349,7 @@ impl PartnerBasisRecord {
 // record in the basis and at-risk limits.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct PartnerItems<'a> {
-    pub separate: Option<&'a PartnerSeparateItems>,
+    pub separate: Option<&'a PartnerSeparateTotals>,
     // Box 12, in cents.
     pub section179: i64,
     pub section179_carryover: i64,
@@ -332,7 +360,7 @@ pub(crate) struct PartnerItems<'a> {
     pub credit_reduction: i64,
     // Unit B9-1: the box 11 and box 13 codes, and what happened to the
     // interest (the sale or liquidation of all of it).
-    pub income_codes: &'a [crate::PartnerIncome],
+    pub income_codes: &'a [crate::PartnerIncomeTotal],
     pub deduction_codes: &'a [crate::PartnerDeduction],
     pub disposition: Option<&'a crate::K1Disposition>,
     pub sale: Option<&'a crate::PartnerSaleParts>,
@@ -411,6 +439,12 @@ impl PartnerPlan {
         disposal
     }
 
+    pub(crate) const RANGE: (&'static str, &'static str) = (
+        crate::k1_activity::ordinary::RANGE_KEY,
+        crate::fixture_english!(
+            "Review the document amounts; they must be within the supported input range."
+        ),
+    );
     const INCOMPLETE: (&'static str, &'static str) = (
         "ISSUE_PARTNERSHIP_COMPLETE_THE_ORDINARY_PARTNER_BASIS_SOURCE_RECORDS_FCA2848B",
         crate::fixture_english!(
@@ -429,21 +463,24 @@ pub enum PartnerParticipation {
     /// Limited-partner restrictions apply
     /// Only the more-than-500-hour, five-of-ten-year or personal-service-history tests can establish material participation.
     Limited {
-        /// Combined qualifying work by the partner and spouse, in minutes
+        /// Combined qualifying work by the partner and spouse
         /// Exclude investor-only work and work performed to evade the passive-loss rules.
         #[libertas_number(min = 0)]
+        #[libertas_physical_unit("minute")]
         minutes: u32,
-        /// Material-participation years among 2016 through 2025
-        /// Count them from your 2016 through 2025 returns: the years Schedule E Part II line 28 reported this activity as nonpassive (column (i) or (k)) because you materially participated. Do not establish those years solely through the historical five-of-ten test. Enter zero when there were none.
+        /// Material participation among 2016 through 2025
+        /// Count the returns from 2016 through 2025 on which Schedule E Part II line 28 reported this activity as nonpassive (column (i) or (k)) because you materially participated. Do not establish those solely through the historical five-of-ten test. Enter zero when there were none.
         // Tax structure: the 2016–2025 lookback contains ten tax years.
         #[libertas_number(min = 0, max = 10)]
+        #[libertas_physical_unit("year")]
         prior_ten: u32,
         /// This is a personal-service activity
         /// Health, law, engineering, architecture, accounting, actuarial science, performing arts, consulting or another field where capital is not a material income-producing factor (Reg. §1.469-5T(d)).
         personal_service: bool,
-        /// Earlier material-participation years in this personal-service activity
-        /// Count them from your earlier returns: every year before 2026 that Schedule E Part II reported this activity as nonpassive (line 28 column (i) or (k)) because you materially participated. Enter zero when there were none or when it is not a personal-service activity.
+        /// Earlier material participation in this personal-service activity
+        /// Count them from your earlier returns: every return before 2026 that Schedule E Part II reported this activity as nonpassive (line 28 column (i) or (k)) because you materially participated. Enter zero when there were none or when it is not a personal-service activity.
         #[libertas_number(min = 0)]
+        #[libertas_physical_unit("year")]
         service_years: u32,
     },
 }
@@ -482,48 +519,58 @@ pub struct PartnerRiskRecord {
     /// Beginning allocated liabilities for which this partner is at risk
     /// The recourse part from financing and recourse records, plus the share of qualified nonrecourse financing secured by real property (K-1 item K1), excluding related-party and protected borrowing. Do not copy the full K-1 liability total automatically.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub opening_debt: i64,
     /// Ending allocated liabilities for which this partner is at risk
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub ending_debt: i64,
     /// Cash contributions financed with amounts not at risk
     /// Included in the basis record's contributions. Exclude amounts already identified in the debt allocation.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub excluded_contributions: i64,
     /// Cash distributions returning previously excluded investment
     /// Included in the basis record's distributions; never count the same funds twice.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub excluded_distributions: i64,
     /// Previously at-risk cash investment newly protected against loss
     /// Exclude casualty or tort insurance and debt changes already entered.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub protected: i64,
     /// Previously excluded cash investment no longer protected
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub released: i64,
     /// Ordinary loss suspended only by at-risk limits through 2025
     /// Already passed outside basis; do not enter it again as a basis carryover.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_loss: i64,
     /// Nondeductible expenses suspended only by at-risk limits
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_nondeductible: i64,
     /// Cumulative previously deducted losses for recapture
     /// After 1978, excluding this year and losses never deducted.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub deducted: i64,
     /// At-risk recapture already reported in prior years
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub recaptured: i64,
     /// Complete ordinary financing records
     /// Tax-exempt income belongs to this activity. No unentered prior recapture deduction, guaranteed payments other than separately entered current service and capital payments, separately stated activity items, distributions producing gain or other special financing. These records determine the at-risk stage only; passive and return-level limits still apply. No leaves this K-1 out of the estimate with a notice; that situation is not supported.
@@ -709,12 +756,7 @@ impl PartnerRiskRecord {
         let investment = investment
             .checked_add(exempt)
             .and_then(|value| value.checked_add(risk_exempt))
-            .ok_or((
-                crate::k1_activity::ordinary::RANGE_KEY,
-                crate::fixture_english!(
-                    "Review the document amounts; they must be within the supported input range."
-                ),
-            ))?;
+            .ok_or(PartnerPlan::RANGE)?;
         Ok(Some(investment))
     }
 
@@ -739,8 +781,13 @@ impl PartnerRiskRecord {
         // sale of the whole interest is income of the K-1's one Form 6198
         // activity (i6198 lines 2a to 2c).
         let disposal = plan.disposal_of(&basis);
-        let plan =
-            &PartnerPlan { risk_income: plan.risk_income + disposal.activity_gain(), ..*plan };
+        let plan = &PartnerPlan {
+            risk_income: plan
+                .risk_income
+                .checked_add(disposal.activity_gain())
+                .ok_or(PartnerPlan::RANGE)?,
+            ..*plan
+        };
         let financing = PartnerRiskFinancing {
             contributions: source.contributions,
             distributions: source.distributions,
@@ -748,7 +795,7 @@ impl PartnerRiskRecord {
             ending_liabilities: source.ending_liabilities,
             assumed: source.assumed,
             transferred: source.transferred,
-            has_prior: source.opening != 0
+            has_prior: source.opening.is_some_and(|value| value != 0)
                 || source.opening_liabilities != 0
                 || source.prior_loss != 0
                 || source.prior_nondeductible != 0
@@ -758,6 +805,7 @@ impl PartnerRiskRecord {
             return self.without_history(basis, ordinary, plan, disposal);
         };
         let income = phase::floor(ordinary, 0);
+        let activity_income = income.checked_add(plan.risk_income).ok_or(PartnerPlan::RANGE)?;
         // Form 6198 treats the K-1's portfolio income and capital gains or
         // losses as items of the one partnership activity: income raises the
         // loss allowance and capital losses share it. The box 13 code A gift
@@ -765,7 +813,7 @@ impl PartnerRiskRecord {
         // outside the at-risk stage. Prior risk carries have already reduced
         // basis. Do not limit them twice.
         let stage = limit_classes(
-            Amount::new(income + plan.risk_income).expect("nonnegative activity income"),
+            Amount::new(activity_income).expect("nonnegative activity income"),
             Amount::new(phase::floor(investment, 0)).expect("nonnegative risk capacity"),
             &basis.allowed,
             &plan.input.risk_carry,
@@ -789,7 +837,7 @@ impl PartnerRiskRecord {
             };
             close_economic_account(
                 investment,
-                income + plan.risk_income - stage.allowed_total.get(),
+                activity_income - stage.allowed_total.get(),
                 SourceFact::Reported(history),
             )
             .map_err(|_| crate::kernel::carry::LedgerError::InvalidAmount)
@@ -838,6 +886,7 @@ impl PartnerRiskRecord {
         disposal: crate::k1_items::Disposal,
     ) -> Result<PartnerOrdinaryResult, (&'static str, &'static str)> {
         let income = phase::floor(ordinary, 0);
+        let activity_income = income.checked_add(plan.risk_income).ok_or(PartnerPlan::RANGE)?;
         let losses: i64 = K1LossClass::ALL
             .into_iter()
             .filter(|class| class.at_risk())
@@ -848,7 +897,8 @@ impl PartnerRiskRecord {
             || self.deducted != self.recaptured
             || plan.section179_cents != 0
             || basis.allowed[K1LossClass::Section179].get() != 0
-            || losses + basis.nondeductible_used.get() > income + plan.risk_income
+            || losses.checked_add(basis.nondeductible_used.get()).ok_or(PartnerPlan::RANGE)?
+                > activity_income
         {
             return Err(("ISSUE_PARTNER_AT_RISK_HISTORY_NEEDED", Self::HISTORY_NEEDED));
         }
@@ -880,6 +930,8 @@ pub struct PartnerActivityRecord {
     /// Ordinary business income or loss, K-1 box 1
     /// For AMT use the documented amount after that system's activity adjustments. Positive is income and negative is loss. Other separately stated items are not included here.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub ordinary: i64,
     /// Tax-exempt income belonging to this activity
     #[libertas_money("USD", 2)]
@@ -894,16 +946,14 @@ pub struct PartnerActivityRecord {
     /// Prior ordinary loss suspended only by passive limits
     /// These losses already passed basis and at-risk limits. Retain this tax system's balance; exclude those other carryovers. No disposition, inheritance, gift or change in activity grouping.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub passive_loss: i64,
     /// Rental activities — boxes 2 and 3
-    #[libertas_foldable(initially_open = false)]
     pub rentals: crate::K1RentalAmounts,
     /// Losses carried because of your basis or amount at risk — rentals, section 179, gifts and foreign taxes
-    #[libertas_foldable(initially_open = false)]
     pub carried: crate::K1LossCarryforwards,
     /// Capital losses carried because of your basis or amount at risk
-    #[libertas_foldable(initially_open = false)]
     pub capital_carried: crate::PartnerCapitalCarry,
     /// Business property of the box 1 activity
     /// The business parts of boxes 10 and 9c and their separate loss carryovers. Rental property belongs with its rental activity, not here.
@@ -911,7 +961,6 @@ pub struct PartnerActivityRecord {
     /// This activity has no section 1231 business-property records
     /// [SetText]
     /// The activity's section 1231 business-property records are
-    #[libertas_foldable(initially_open = false)]
     #[libertas_default($null)]
     pub section1231: Option<crate::K1Section1231>,
 }
@@ -922,15 +971,18 @@ pub struct PartnerActivityRecord {
 pub struct PartnerSeHistory {
     /// Self-employment portion of the basis-only loss carry
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: i64,
     /// Self-employment portion of the at-risk-only loss carry
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk: i64,
     /// Self-employment portion of the passive-only loss carry
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub passive: i64,
 }
 
@@ -965,7 +1017,8 @@ impl PartnerSeGross {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PartnerFuelTaxCredit {
     /// Partner-share gallon and cost records for the supported Form 4136 lines, including any registered issuer's government-card sales
-    pub fuels: FederalFuelLines,
+    // Boxed: inline, these lines would set the size of every income source and record value.
+    pub fuels: alloc::boxed::Box<FederalFuelLines>,
     /// K-1 statement and underlying fuel, cost, use and no-duplicate-claim records are complete
     /// Check the attached K-1 fuel statement and underlying use and cost records. No claims no fuel tax credit from this K-1.
     pub statement_complete: bool,
@@ -990,7 +1043,8 @@ impl PartnerFuelTaxCredit {
 pub struct PartnerPriorFuelCredit {
     /// Fuel credit claimed on the 2025 Form 1040, in dollars and cents
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub claimed_credit: i64,
     /// The 2025 Form 4136 credit was claimed on a 2025 return filed in 2026
     /// The 2025 return's filing date shows it. No leaves this recovery out of the estimate with a notice; that situation is not supported.
@@ -1075,6 +1129,103 @@ impl PartnerPriorFuelCredit {
 pub struct PartnerSeparateItems {
     /// Interest income — box 5
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub interest: i64,
+    /// Ordinary dividends — box 6a
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub dividends: i64,
+    /// Qualified dividends — box 6b
+    /// The part of box 6a taxed at capital-gain rates.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub qualified_dividends: i64,
+    /// Box 7 royalties
+    /// Reported on Schedule E line 4. Box 13 code I deductions belong in the deductions list.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub royalties: i64,
+    /// Net short-term capital gain or loss — box 8
+    /// Enter a loss as a negative amount.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
+    #[libertas_default(0)]
+    pub short: i64,
+    /// Net long-term capital gain or loss — box 9a
+    /// Enter a loss as a negative amount. Include the collectibles and unrecaptured section 1250 amounts below; they are parts of this box, not additional gains.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
+    #[libertas_default(0)]
+    pub long: i64,
+    /// Collectibles (28%) gain or loss — box 9b
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
+    #[libertas_default(0)]
+    pub collectibles: i64,
+    /// Unrecaptured section 1250 gain from selling a partnership interest — box 9c statement
+    /// The part of box 9c the partnership's statement shows as coming from the sale of an interest in another partnership.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub unrecaptured_partnership: i64,
+    /// Unrecaptured section 1250 gain from estates, trusts, mutual funds or REITs — box 9c statement
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub unrecaptured_fund: i64,
+    /// Cash contributions (60%) — box 13 code A
+    /// The partnership's cash gifts to charities, deducted on Schedule A like your own cash gifts.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub cash_charity: i64,
+    /// Backup withholding — box 15 code O
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub backup_withholding: i64,
+    /// Tax-exempt interest income — box 18 code A
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub exempt_interest: i64,
+    /// Foreign taxes paid or accrued — box 21
+    /// They reduce your basis. The credit is figured from the Schedule K-3.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub foreign_taxes: i64,
+}
+
+impl PartnerSeparateItems {
+    pub(crate) const INVALID: &'static str = crate::fixture_english!(
+        "Review the separately stated Schedule K-1 (1065) amounts: box 6b cannot exceed box 6a."
+    );
+}
+
+/// Separately stated partnership amounts projected from accepted source records.
+/// Coded-box totals retain every admitted source cent before partner-level limits.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct PartnerSeparateTotals {
+    /// Interest income — box 5
+    #[libertas_money("USD", 2)]
     #[libertas_number(min = 0)]
     #[libertas_default(0)]
     pub interest: i64,
@@ -1144,35 +1295,27 @@ pub struct PartnerSeparateItems {
     pub foreign_taxes: i64,
 }
 
-impl PartnerSeparateItems {
-    pub(crate) const INVALID: &'static str = crate::fixture_english!(
-        "Review the separately stated Schedule K-1 (1065) amounts: box 6b cannot exceed box 6a."
-    );
+impl PartnerSeparateTotals {
     pub(crate) fn valid(&self) -> bool {
-        // Arithmetic safety: basis_income/risk_income combine native signed
-        // portfolio components before k1_totals cents transfers.
-        let signed = -100000000000..=100000000000;
-        let amount = 0..=100000000000;
-        [self.short, self.long, self.collectibles].iter().all(|v| signed.contains(v))
-            && [
-                self.interest,
-                self.dividends,
-                self.qualified_dividends,
-                self.royalties,
-                self.unrecaptured_partnership,
-                self.unrecaptured_fund,
-                self.cash_charity,
-                self.backup_withholding,
-                self.exempt_interest,
-                self.foreign_taxes,
-            ]
-            .iter()
-            .all(|v| amount.contains(v))
+        [
+            self.interest,
+            self.dividends,
+            self.qualified_dividends,
+            self.royalties,
+            self.unrecaptured_partnership,
+            self.unrecaptured_fund,
+            self.cash_charity,
+            self.backup_withholding,
+            self.exempt_interest,
+            self.foreign_taxes,
+        ]
+        .into_iter()
+        .all(|amount| amount >= 0)
             && self.qualified_dividends <= self.dividends
     }
 
     // Basis worksheet line 4: the positive separately stated items.
-    fn basis_income(&self) -> i64 {
+    fn basis_income(&self) -> Option<i64> {
         [
             self.interest,
             self.dividends,
@@ -1182,11 +1325,11 @@ impl PartnerSeparateItems {
             self.exempt_interest,
         ]
         .into_iter()
-        .sum()
+        .try_fold(0i64, i64::checked_add)
     }
 
     // Taxable portfolio income and capital gains of the activity (Form 6198).
-    fn risk_income(&self) -> i64 {
+    fn risk_income(&self) -> Option<i64> {
         [
             self.interest,
             self.dividends,
@@ -1195,7 +1338,7 @@ impl PartnerSeparateItems {
             phase::floor(self.long, 0),
         ]
         .into_iter()
-        .sum()
+        .try_fold(0i64, i64::checked_add)
     }
 }
 
@@ -1208,7 +1351,7 @@ pub enum PartnerK1Item {
     /// Rental property disposed of by installment sale, exchange, casualty or theft, or to a related buyer
     /// Reported with box 2 or 3 on the partnership's statement, in box 10 or in box 20.
     RentalDisposition,
-    /// Other income or loss — box 11 codes not entered above
+    /// Dividend equivalents or other income — box 6c or box 11 codes not calculated
     OtherIncome,
     /// Deductions — box 13 code O
     OtherDeductions,
@@ -1229,8 +1372,8 @@ pub enum PartnerK1Item {
     OtherInformation,
     /// Cooperative items on the section 199A statement — box 20 code Z
     CooperativeQbi,
-    /// More than one activity of one kind — box 22, or box 23
-    /// Box 22 checked, or a box 23 statement listing more than one trade or business, more than one rental real estate activity or more than one other rental activity.
+    /// Separate activity allocations — box 22 or box 23
+    /// A checked box needs the distinct-activity statement document. This single-paper document also retains statements identifying more than one activity of the same kind.
     MultipleActivities,
 }
 
@@ -1262,7 +1405,7 @@ impl PartnerK1Item {
             Self::OtherIncome => (
                 "ISSUE_PARTNER_K1_OTHER_INCOME",
                 crate::fixture_english!(
-                    "Schedule K-1 (1065) box 11 codes B, D, I, L, M, N, O, P and ZZ, a code A portfolio loss or REMIC residual interest, a code C straddle, a code F section 743(b) adjustment to another item and gambling of a gambling business are not calculated."
+                    "Schedule K-1 (1065) box 6c dividend equivalents, box 11 codes B, D, I, L, M, N, O, P and ZZ, a code A portfolio loss or REMIC residual interest, a code C straddle, a code F section 743(b) adjustment to another item and gambling of a gambling business are not calculated."
                 ),
             ),
             Self::OtherDeductions => (
@@ -1295,7 +1438,7 @@ impl PartnerK1Item {
             Self::OtherInformation => (
                 "ISSUE_PARTNER_K1_OTHER_INFORMATION",
                 crate::fixture_english!(
-                    "Schedule K-1 (1065) box 20 recapture, look-back interest, section 179 dispositions other than fully taxable sales, installment and section 1260 interest, precontribution gain, section 1061, inversion gain and section 48A–48D items (codes F through M, O through S, W, AL for a U.S. transferor, AM, AP, AS through AU, and ZZ with an amount) are not calculated."
+                    "Schedule K-1 (1065) box 20 investment income or expense totals requiring separate Form 4952 reconciliation (codes A and B), recapture, look-back interest, section 179 dispositions other than fully taxable sales, installment and section 1260 interest, precontribution gain, section 1061, inversion gain and section 48A–48D items (codes F through M, O through S, W, AL for a U.S. transferor, AM, AP, AS through AU, and ZZ with an amount) are not calculated."
                 ),
             ),
             Self::CooperativeQbi => (
@@ -1328,8 +1471,22 @@ pub(crate) fn cash_charity(d: &crate::FederalDraft) -> i64 {
 
 /// Partnership K-1 ordinary-business records
 /// Form 1065, not Form 1120-S. Preserve the payer's documents and separate tax-system histories. Additional items need their own calculation before a complete return can be produced.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PartnerK1 {
+    /// Actual paper source, when this view came from an entered document.
+    /// Source records are stored through the ordinary income-record projection.
+    #[libertas_default($null)]
+    pub source: Option<alloc::boxed::Box<crate::PartnershipSource>>,
+    /// Your eligible-small-business treatment for the partnership research credit.
+    #[libertas_default($null)]
+    pub research_credit_line: Option<crate::BusinessCredit>,
+    /// The accepted AMT-record choice in a transient source projection.
+    /// The source record stores the personal AMT enum; this tag retains its
+    /// choice when separate records happen to equal regular records.
+    #[libertas_hidden]
+    #[libertas_read_only]
+    #[libertas_default($null)]
+    pub amt_record_choice: Option<bool>,
     /// Entity's reporting tax period
     /// The actual beginning and ending dates of the entity year reported by this K-1. Leave unknown when its source records do not establish the period.
     pub reporting_period: Option<crate::K1EntityTaxPeriod>,
@@ -1340,27 +1497,38 @@ pub struct PartnerK1 {
     /// Your gross income from a services-only partnership business
     /// For Form 8615 and the dependent standard deduction when your personal services produced the income and capital was not material. Use your allocable gross income before ordinary business expenses, supported by partnership records. Exclude the separately entered guaranteed service payment; the App adds that payment once. K-1 box 1 net income or box 14 SE earnings is not a substitute. Absent, the income is taken as capital-produced, with a note. Other income-source classes do not use this field.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross_personal_services: Option<i64>,
     /// Guaranteed payments for personal services — K-1 box 4a
     /// Current-year compensation for services actually rendered, including partnership-paid or reimbursed health premiums reported as service payments, also included in box 14 code A. Keep separate from box 1, basis contributions and distributions. Enter zero when none. Enter capital payments separately. Deferred compensation and retirement/liquidation payments require additional records and are outside this source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub guaranteed_services: i64,
     /// Guaranteed payments for use of capital — K-1 box 4b
     /// Current-year cash payments for capital used by this continuing U.S. trade or business. Keep separate from box 1, loans, contributions and distributions. Enter zero when none. Exclude deferred compensation, retiring-partner payments, property payments and amounts from nonbusiness investment activities; those require additional records. General-partner SE treatment includes this amount in box 14 code A; limited-partner SE treatment excludes it.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub guaranteed_capital: i64,
     /// Separate AMT activity and retained records
     /// Leave absent if not established. Absence never means the AMT adjustment is zero.
     pub alternative: Option<PartnerActivityRecord>,
-    pub participation: PartnerParticipation,
+    /// [NullText]
+    /// Participation is not established yet
+    /// [SetText]
+    /// Participation is
+    pub participation: Option<PartnerParticipation>,
     /// Business classification for passive losses and investment tax
     pub trade_kind: crate::ScorpTradeKind,
     /// Limited-partner treatment under section 1402(a)(13) is established
     /// This is a separate self-employment classification, not the section 469 passive classification above or an automatic result of an LLC label. The K-1's general or limited partner checkbox and the partnership agreement show it.
-    pub limited_for_se: bool,
+    /// [NullText]
+    /// Self-employment classification is not established yet
+    /// [SetText]
+    /// Limited-partner treatment for self-employment tax applies
+    pub limited_for_se: Option<bool>,
     /// Net earnings or loss from self-employment, K-1 box 14 code A
     /// Enter the reported amount before partner-level adjustments and the Schedule SE percentage. Enter zero only when established from the K-1 and accompanying statements; leave absent when unresolved. This is not box 1 income, a cash distribution or the final Schedule SE result. A reported loss remains subject to deductible-loss limits.
     #[libertas_money("USD", 2)]
@@ -1392,7 +1560,8 @@ pub struct PartnerK1 {
     /// Included health premiums charged against cash distributions
     /// Premiums under partnership-named policies paid on your behalf and charged against your distributions, not deducted by the partnership or reported as guaranteed income. Include them in the coverage records and in cash distributions in both regular and AMT basis records. This is a subset of those amounts, not another distribution or premium. Do not include these premiums in the taxable health subset above. Enter zero when none; partner-named policies require reimbursement and guaranteed-payment reporting instead.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub health_distributions: i64,
     /// Pensions and IRAs — K-1 box 13 code R
     /// Payments the partnership made for you to an IRA, a qualified plan, a SEP or a SIMPLE IRA. The plan is answered below. Enter zero when the box is empty.
@@ -1410,7 +1579,7 @@ pub struct PartnerK1 {
     pub prior_fuel_credit: Option<PartnerPriorFuelCredit>,
     /// Interest, dividends, capital gains, cash gifts and tax-exempt interest
     /// Leave absent when the K-1 has none of these boxes.
-    pub separate: Option<PartnerSeparateItems>,
+    pub separate: Option<PartnerSeparateTotals>,
     /// Schedule K-3 — K-1 box 16
     /// Leave absent when box 16 is not checked.
     pub schedule_k3: Option<crate::ScheduleK3>,
@@ -1420,19 +1589,22 @@ pub struct PartnerK1 {
     /// Section 179 deduction — box 12
     /// Your share of the partnership's section 179 expense. It joins your own elections on Form 4562 Part I under your dollar and business-income limits, reduces your outside basis in full this year even when part is carried to 2027, and reduces your box 14 code A earnings as a general partner. Enter zero when the box is empty.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179: i64,
     /// Section 179 deduction from this K-1 you could not deduct in 2025
     /// The unused part of this partnership's earlier section 179 amounts carried from your 2025 return because of the business income limit. It already reduced your basis in the partnership; it joins this year's section 179 under this year's limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179_carryover: i64,
     /// Part of this section 179 carryover belonging to property the entity sold
     /// From your own Form 4562 carryover records, not the K-1. This amount restores the sold property's basis and is no longer available as a deduction.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section179_carryover_sold: i64,
     /// Other boxes on this K-1 with an amount
@@ -1453,16 +1625,16 @@ pub struct PartnerK1 {
     /// Final K-1
     pub final_k1: bool,
     /// Other income — box 11
-    /// ----
-    /// Box 11 amount
     // Tax structure: one row per distinct Form 1065 income code in the fixed catalog.
     #[libertas_size(max = 12)]
-    pub income: alloc::vec::Vec<crate::PartnerIncome>,
-    /// Other deductions — box 13 codes other than A, M, O and R
     /// ----
-    /// Box 13 amount
+    /// Box 11 amount
+    pub income: alloc::vec::Vec<crate::PartnerIncomeTotal>,
+    /// Other deductions — box 13 codes other than A, M, O and R
     // Tax structure: one row per distinct Form 1065 deduction code in the fixed catalog.
     #[libertas_size(max = 25)]
+    /// ----
+    /// Box 13 amount
     pub deductions: alloc::vec::Vec<crate::PartnerDeduction>,
     /// Interest and additional tax on deferred compensation — box 20 code AI
     #[libertas_money("USD", 2)]
@@ -1479,14 +1651,18 @@ pub struct PartnerK1 {
     #[libertas_default($null)]
     pub interest_term: Option<crate::GainTerm>,
     /// What happened to the interest in 2026
-    pub disposition: crate::K1Disposition,
+    /// [NullText]
+    /// What happened to this interest is not answered yet
+    /// [SetText]
+    /// What happened to this interest is
+    pub disposition: Option<crate::K1Disposition>,
     /// Parts of the gain on the sale — box 20 codes AB, AC and AD
     pub sale: crate::PartnerSaleParts,
     /// Situations this App does not calculate
-    /// ----
-    /// Situation
     // Tax structure: one row per distinct partnership special situation in the fixed catalog.
     #[libertas_size(max = 5)]
+    /// ----
+    /// Situation
     pub special: alloc::vec::Vec<crate::PartnerSpecial>,
     /// This is a publicly traded partnership under section 7704(b)
     /// Its section 199A statement reports current-year qualified income or loss and the actual specified-service classification, with no wages or unadjusted property basis. Apply current specified-service income limits once before eligible income or loss joins qualified REIT dividends (Form 8995 line 6 / Form 8995-A line 28), without a wage/UBIA limit or aggregation, and carries forward with them. Historical qualified-loss statements and suspended basis/at-risk/passive balances still need their actual source worksheets. Separately reported PTP items need their actual business and specified-service source classification. Leave false for an ordinary (non-PTP) partnership interest.
@@ -1597,7 +1773,7 @@ impl PartnerActivityRecord {
         &self,
         items: &PartnerItems,
     ) -> Result<crate::k1_items::K1Items, (&'static str, &'static str)> {
-        Ok(items.k1().with_sales(&self.sale_results(items)?))
+        items.k1().checked_with_sales(&self.sale_results(items)?).ok_or(PartnerPlan::RANGE)
     }
 
     // The class input of this record in its tax system (unit B8): this
@@ -1631,10 +1807,17 @@ impl PartnerActivityRecord {
         // Unit B9-1: code F and code V adjust the box 1 business, so they are
         // part of box 1 for every purpose here.
         let k1 = self.source_k1_items(items)?;
-        let ordinary = self.ordinary + k1.box_one();
+        let ordinary = self
+            .ordinary
+            .checked_add(k1.checked_box_one().ok_or(PartnerPlan::RANGE)?)
+            .ok_or(PartnerPlan::RANGE)?;
         let input = &mut plan.input;
-        input.current[Ordinary] =
-            Amount::<Cents>::new(phase::floor(-ordinary, 0)).expect("validated source class cents");
+        input.current[Ordinary] = Amount::<Cents>::new(if ordinary < 0 {
+            ordinary.checked_neg().ok_or(PartnerPlan::RANGE)?
+        } else {
+            0
+        })
+        .expect("nonnegative ordinary loss");
         input.basis_carry[Ordinary] =
             Amount::<Cents>::new(self.basis.prior_loss).expect("validated source class cents");
         input.risk_carry[Ordinary] =
@@ -1646,8 +1829,12 @@ impl PartnerActivityRecord {
             Amount::<Cents>::new(real_estate).expect("validated source class cents");
         input.current[OtherRental] =
             Amount::<Cents>::new(other).expect("validated source class cents");
-        plan.basis_income = self.rentals.income() + k1.income();
-        plan.risk_income = self.rentals.income() + k1.income();
+        plan.basis_income = self
+            .rentals
+            .income()
+            .checked_add(k1.checked_income().ok_or(PartnerPlan::RANGE)?)
+            .ok_or(PartnerPlan::RANGE)?;
+        plan.risk_income = plan.basis_income;
         if let Some(property) = self.business_property(items)? {
             input.current[Section1231] =
                 Amount::<Cents>::new(property.loss).expect("validated source class cents");
@@ -1655,15 +1842,18 @@ impl PartnerActivityRecord {
                 Amount::<Cents>::new(property.basis_loss).expect("validated source class cents");
             input.risk_carry[Section1231] =
                 Amount::<Cents>::new(property.risk_loss).expect("validated source class cents");
-            plan.basis_income += property.gain;
-            plan.risk_income += property.gain;
+            plan.basis_income =
+                plan.basis_income.checked_add(property.gain).ok_or(PartnerPlan::RANGE)?;
+            plan.risk_income =
+                plan.risk_income.checked_add(property.gain).ok_or(PartnerPlan::RANGE)?;
         }
         input.current[Section1231] = Amount::<Cents>::new(
             input.current[Section1231].get() + (self.rentals.property_losses().iter().sum::<i64>()),
         )
         .expect("validated source class cents");
-        input.current = input.current.plus(&k1.current());
-        plan.ebie = k1.ebie();
+        let code_losses = k1.checked_current().ok_or(PartnerPlan::RANGE)?;
+        input.current = input.current.checked_plus(&code_losses).ok_or(PartnerPlan::RANGE)?;
+        plan.ebie = k1.checked_ebie().ok_or(PartnerPlan::RANGE)?;
         match items.disposition {
             Some(crate::K1Disposition::Sold { proceeds }) => {
                 plan.disposal = Some(DisposalInput {
@@ -1686,16 +1876,24 @@ impl PartnerActivityRecord {
                     PartnerSeparateItems::INVALID,
                 ));
             }
-            input.current[ShortTerm] = Amount::<Cents>::new(phase::floor(-separate.short, 0))
+            let short_loss = separate.short.checked_neg().ok_or(PartnerPlan::RANGE)?;
+            let long_loss = separate.long.checked_neg().ok_or(PartnerPlan::RANGE)?;
+            input.current[ShortTerm] = Amount::<Cents>::new(phase::floor(short_loss, 0))
                 .expect("validated source class cents");
-            input.current[LongTerm] = Amount::<Cents>::new(phase::floor(-separate.long, 0))
+            input.current[LongTerm] = Amount::<Cents>::new(phase::floor(long_loss, 0))
                 .expect("validated source class cents");
             input.current[Charity] =
                 Amount::<Cents>::new(separate.cash_charity).expect("validated source class cents");
             input.current[ForeignTaxes] =
                 Amount::<Cents>::new(separate.foreign_taxes).expect("validated source class cents");
-            plan.basis_income += separate.basis_income();
-            plan.risk_income += separate.risk_income();
+            plan.basis_income = separate
+                .basis_income()
+                .and_then(|income| plan.basis_income.checked_add(income))
+                .ok_or(PartnerPlan::RANGE)?;
+            plan.risk_income = separate
+                .risk_income()
+                .and_then(|income| plan.risk_income.checked_add(income))
+                .ok_or(PartnerPlan::RANGE)?;
             plan.risk_exempt = separate.exempt_interest;
         }
         input.basis_carry =
@@ -1714,7 +1912,9 @@ impl PartnerActivityRecord {
         let plan = self.plan(items)?;
         self.risk.calculate_with(
             &self.basis,
-            self.ordinary + items.k1().box_one(),
+            self.ordinary
+                .checked_add(items.k1().checked_box_one().ok_or(PartnerPlan::RANGE)?)
+                .ok_or(PartnerPlan::RANGE)?,
             self.exempt,
             self.nondeductible,
             &plan,
@@ -1769,8 +1969,13 @@ impl PartnerActivityRecord {
         let rental_property_losses =
             self.rentals.property_allowed(&activity.ledger)?.iter().sum::<i64>();
         let plain = PooledNets::of(net, prior, nonpassive, disposed);
-        let activity_items = self.source_k1_items(items)?.flows(&activity.ledger).activity();
-        let current_ordinary_with_items = net + activity_items.net();
+        let activity_items = self
+            .source_k1_items(items)?
+            .checked_flows(&activity.ledger)
+            .ok_or(PartnerPlan::RANGE)?
+            .activity();
+        let current_ordinary_with_items =
+            activity_items.checked_net_with(net).ok_or(PartnerPlan::RANGE)?;
         let combined = PooledNets::of(current_ordinary_with_items, prior, nonpassive, disposed);
         if let Some(property) = self.business_property(items)? {
             let current = property.gain
@@ -1852,6 +2057,8 @@ impl HealthPaymentError {
 }
 
 impl PartnerK1 {
+    const PERSONAL_NEEDED: (&'static str, &'static str) =
+        ("DOCUMENT_K1_PARTNER_RECORDS", crate::fixture_english!("Your partnership records"));
     // One tax system's ordinary activity with this K-1's separately stated
     // items in the same outside basis and at-risk amount.
     pub(crate) fn pool(
@@ -1866,6 +2073,15 @@ impl PartnerK1 {
         source: &PartnerActivityRecord,
         items: &PartnerItems,
     ) -> Result<PartnerPoolResult, (&'static str, &'static str)> {
+        if self.participation.is_none() || self.limited_for_se.is_none() {
+            return Err(Self::PERSONAL_NEEDED);
+        }
+        if self.disposition.is_none() {
+            return Err(crate::k1_totals::DISPOSITION_NEEDED);
+        }
+        if self.rental_facts.participation.is_none() && self.rental_participation_needed() {
+            return Err(crate::k1_rental::PARTICIPATION_NEEDED);
+        }
         if self.publicly_traded && source.business_property(items)?.is_some() {
             return Err((
                 "ISSUE_K1_PTP_PROPERTY",
@@ -1910,7 +2126,7 @@ impl PartnerK1 {
             ),
             income_codes: &self.income,
             deduction_codes: &self.deductions,
-            disposition: Some(&self.disposition),
+            disposition: self.disposition.as_ref(),
             sale: Some(&self.sale),
             property_disposal: None,
         }
@@ -1924,7 +2140,7 @@ impl PartnerK1 {
     // passive and the whole interest was not disposed of (section 469(g)).
     pub(crate) fn items_in_pool(&self) -> bool {
         self.material_for_losses() != crate::participation::Participation::Yes
-            && !self.disposition.ended()
+            && !self.disposition.as_ref().is_some_and(crate::K1Disposition::ended)
     }
 
     // The box 11 and box 13 codes of this K-1.
@@ -1938,8 +2154,11 @@ impl PartnerK1 {
     pub(crate) fn outcome(
         &self,
         source: &PartnerActivityRecord,
-    ) -> (crate::k1_items::K1ItemFlows, crate::k1_items::Disposal) {
-        let items = self.items_for_record(source).expect("bound K-1 tax-system record");
+    ) -> Result<
+        (crate::k1_items::K1ItemFlows, crate::k1_items::Disposal),
+        (&'static str, &'static str),
+    > {
+        let items = self.items_for_record(source)?;
         self.outcome_with_items(source, &items)
     }
 
@@ -1947,19 +2166,30 @@ impl PartnerK1 {
         &self,
         source: &PartnerActivityRecord,
         items: &PartnerItems<'_>,
-    ) -> (crate::k1_items::K1ItemFlows, crate::k1_items::Disposal) {
+    ) -> Result<
+        (crate::k1_items::K1ItemFlows, crate::k1_items::Disposal),
+        (&'static str, &'static str),
+    > {
         match source.activity_result(items) {
-            Ok(result) => (
+            Ok(result) => Ok((
                 source
-                    .source_k1_items(items)
-                    .expect("validated sale sources")
-                    .flows(&result.ledger),
+                    .source_k1_items(items)?
+                    .checked_flows(&result.ledger)
+                    .ok_or(PartnerPlan::RANGE)?,
                 result.disposal,
-            ),
-            Err(_) => (
-                source.source_k1_items(items).unwrap_or_else(|_| items.k1()).flows_whole(),
-                crate::k1_items::Disposal::default(),
-            ),
+            )),
+            Err(error) if error == PartnerPlan::RANGE => Err(error),
+            Err(_) => {
+                let codes = match source.source_k1_items(items) {
+                    Ok(codes) => codes,
+                    Err(error) if error == PartnerPlan::RANGE => return Err(error),
+                    Err(_) => items.k1(),
+                };
+                Ok((
+                    codes.checked_flows_whole().ok_or(PartnerPlan::RANGE)?,
+                    crate::k1_items::Disposal::default(),
+                ))
+            }
         }
     }
 
@@ -1967,15 +2197,20 @@ impl PartnerK1 {
     pub(crate) fn totals_facts<'a>(
         &self,
         entry: &'a crate::FederalIncomeEntry,
-    ) -> crate::k1_totals::Facts<'a> {
-        let (flows, disposal) = self.outcome(&self.regular);
+    ) -> Result<crate::k1_totals::Facts<'a>, (&'static str, &'static str)> {
+        let (flows, disposal) = self.outcome(&self.regular)?;
         let (amt_flows, amt_disposal) = match self.alternative.as_ref() {
-            Some(record) => self.outcome(record),
+            Some(record) => self.outcome(record)?,
             None => (flows.clone(), disposal),
         };
-        let (nii_activity, investment_activity) =
-            crate::k1_totals::classify(self.trade_kind, self.participation.material());
-        crate::k1_totals::Facts {
+        let (nii_activity, investment_activity) = crate::k1_totals::classify(
+            self.trade_kind,
+            self.participation.as_ref().map_or(
+                crate::participation::Participation::Unavailable,
+                PartnerParticipation::material,
+            ),
+        );
+        Ok(crate::k1_totals::Facts {
             entry,
             partner: true,
             flows,
@@ -1991,13 +2226,13 @@ impl PartnerK1 {
             deferred_tax: self.deferred_compensation_tax,
             source: "https://www.irs.gov/instructions/i1065sk1",
             k3: self.schedule_k3.is_some(),
-        }
+        })
     }
 
     // The section 751 gain (loss) of a sold interest, box 20 code AB, whole
     // cents: qualified business income with the statement's (unit B9-1).
     pub(crate) fn sale_qbi(&self) -> i64 {
-        if matches!(self.disposition, crate::K1Disposition::Sold { .. }) {
+        if matches!(self.disposition, Some(crate::K1Disposition::Sold { .. })) {
             self.sale.ordinary
         } else {
             0
@@ -2008,6 +2243,10 @@ impl PartnerK1 {
     // answers and unknowns, decision 2).
     pub(crate) fn complete(&self) -> bool {
         !self.special.iter().any(|situation| situation.whole())
+            && self
+                .source
+                .as_deref()
+                .is_none_or(|source| source.paper.contributed_built_in_property != Some(true))
     }
 
     // What one tax system's basis and at-risk limits allow and hold back of
@@ -2059,10 +2298,17 @@ impl PartnerK1 {
         })
     }
 
+    pub(crate) fn capital_gains_by_term(&self) -> [i64; 2] {
+        self.separate
+            .as_ref()
+            .map_or([0; 2], |items| [phase::floor(items.short, 0), phase::floor(items.long, 0)])
+    }
+
     // K-1 box 14: all trade/business guarantees for general partners;
     // only services actually rendered for section 1402 limited partners.
     pub(crate) fn guaranteed_se(&self) -> i64 {
-        self.guaranteed_services + if !self.limited_for_se { self.guaranteed_capital } else { 0 }
+        self.guaranteed_services
+            + if self.limited_for_se == Some(false) { self.guaranteed_capital } else { 0 }
     }
 
     pub(crate) fn health_payment_check(&self) -> Result<(), HealthPaymentError> {
@@ -2091,18 +2337,19 @@ impl PartnerK1 {
     pub(crate) fn qualified_se_gross_fits(&self, gross: i64, qualified: i64) -> bool {
         gross >= self.guaranteed_se()
             && (0..=gross - self.guaranteed_se()).contains(&qualified)
-            && (!self.limited_for_se || qualified == 0)
+            && (self.limited_for_se == Some(false) || qualified == 0)
+    }
+
+    pub(crate) fn rental_participation_needed(&self) -> bool {
+        self.regular.rentals.participation_needed(&self.credits, &self.investment_property)
     }
 
     pub(crate) fn limited_partner(&self) -> bool {
-        matches!(self.participation, PartnerParticipation::Limited { .. })
+        matches!(self.participation, Some(PartnerParticipation::Limited { .. }))
     }
 
-    // The box 2 and 3 rental activities of one tax system's record, after
-    // its basis and at-risk limits have allowed them (Self::pool). A
-    // publicly traded partnership's passive items are limited separately
-    // from the shared Form 8582 pool (i1065sk1 "Publicly traded
-    // partnerships"), which is not calculated.
+    // Box 2/3 activity classification follows the normal rental owner after
+    // basis and at-risk limits. Section 469(k) changes the receiving PAL pool.
     pub(crate) fn rental_activities(
         &self,
         source: &PartnerActivityRecord,
@@ -2112,7 +2359,25 @@ impl PartnerK1 {
     ) -> Result<alloc::vec::Vec<crate::k1_rental::RentalActivity>, (&'static str, &'static str)>
     {
         if self.publicly_traded && source.rentals.any() {
-            return Err(crate::k1_rental::PTP);
+            if source.rentals.properties().iter().any(|property| property.has_items()) {
+                return Err(crate::k1_rental::PTP_PROPERTY);
+            }
+            if self
+                .rental_facts
+                .participation
+                .is_some_and(crate::K1RentalParticipation::professional)
+            {
+                return Err(crate::k1_rental::PTP_PARTICIPATION);
+            }
+            if self.disposition != Some(crate::K1Disposition::Kept)
+                || !self.rental_facts.disposed.is_empty()
+            {
+                return Err(crate::k1_rental::PTP_DISPOSITION);
+            }
+            if self.rental_facts.real_estate_qbi.is_some() || self.rental_facts.other_qbi.is_some()
+            {
+                return Err(crate::k1_rental::PTP_QBI);
+            }
         }
         crate::k1_rental::activities(
             &source.rentals,
@@ -2120,14 +2385,65 @@ impl PartnerK1 {
             ledger,
             self.limited_partner(),
             professional_status,
-            self.disposition.ended(),
+            self.disposition.as_ref().is_some_and(crate::K1Disposition::ended),
             group_disposed,
         )
     }
 
+    // Forward the activity owner's actual post-risk cents; prior PAL has
+    // already passed basis/risk and stays distinct from current amounts.
+    pub(crate) fn ptp_rental_components(
+        &self,
+        source: &PartnerActivityRecord,
+        ledger: &LossLedger,
+    ) -> Result<alloc::vec::Vec<crate::ptp_passive::PtpPalComponent>, (&'static str, &'static str)>
+    {
+        self.rental_activities(source, ledger, false, false)?
+            .into_iter()
+            .map(|activity| {
+                let current = activity
+                    .passive
+                    .checked_add(activity.prior)
+                    .ok_or(crate::k1_rental::PTP_SOURCE)?;
+                Ok(crate::ptp_passive::PtpPalComponent {
+                    character: if activity.real_estate {
+                        K1LossClass::RentalRealEstate
+                    } else {
+                        K1LossClass::OtherRental
+                    },
+                    passive_current_cents: current,
+                    prior_passive_loss_cents: activity.prior,
+                    nonpassive_cents: activity.nonpassive,
+                })
+            })
+            .collect()
+    }
+
+    pub(crate) fn ptp_passive_activity(
+        &self,
+        id: i64,
+        source: &PartnerActivityRecord,
+        pool: &PartnerPoolResult,
+    ) -> Result<crate::ptp_passive::PtpPalActivity, (&'static str, &'static str)> {
+        let items = self.items_for_record(source)?;
+        let nonpassive =
+            self.material_for_losses() == crate::participation::Participation::Yes || items.ended();
+        let mut components = alloc::vec![crate::ptp_passive::PtpPalComponent {
+            character: K1LossClass::Ordinary,
+            passive_current_cents: if nonpassive { 0 } else { pool.current_ordinary_with_items },
+            prior_passive_loss_cents: pool.combined.prior_pool,
+            nonpassive_cents: pool.combined.nonpassive,
+        }];
+        components.extend(self.ptp_rental_components(source, &pool.activity.ledger)?);
+        Ok(crate::ptp_passive::PtpPalActivity { k1: id, source: id, components })
+    }
+
     pub(crate) fn material_for_losses(&self) -> crate::participation::Participation {
         match self.trade_kind {
-            crate::ScorpTradeKind::Ordinary => self.participation.material(),
+            crate::ScorpTradeKind::Ordinary => self.participation.as_ref().map_or(
+                crate::participation::Participation::Unavailable,
+                PartnerParticipation::material,
+            ),
             crate::ScorpTradeKind::FinancialTrading => crate::participation::Participation::Yes,
         }
     }
@@ -2205,8 +2521,15 @@ impl PartnerK1 {
         &self,
         key: &'static str,
     ) -> Option<crate::validation::ValidationIssue> {
+        self.validation_issue_with_mode(key, true)
+    }
+    pub(crate) fn validation_issue_with_mode(
+        &self,
+        key: &'static str,
+        source_alignment: bool,
+    ) -> Option<crate::validation::ValidationIssue> {
         let mut issue = None;
-        if self.valid_details(key, &mut issue) {
+        if self.valid_details(key, &mut issue, source_alignment) {
             None
         } else {
             Some(issue.unwrap_or_else(|| crate::validation::ValidationIssue::new(key)))
@@ -2218,6 +2541,7 @@ impl PartnerK1 {
         &self,
         key: &'static str,
         issue: &mut Option<crate::validation::ValidationIssue>,
+        source_alignment: bool,
     ) -> bool {
         // Saving a structurally valid record does not require every tax fact
         // to be established. Unknown facts remain visible calculation issues.
@@ -2231,44 +2555,61 @@ impl PartnerK1 {
         };
         valid(&self.regular)
             && crate::K1Section179Sale::valid_source_list(&self.section179_sales)
-            && crate::K1Section179Sale::carryover_rule(&self.section179_sales,
-                self.section179_carryover, self.section179_carryover_sold).is_none()
-            && self.alternative.as_ref().is_none_or(|_| {
-                crate::K1Section179Sale::views(&self.section179_sales, true).map_or(true, |sales| {
-                    crate::K1Section179Sale::carryover_rule(&sales, self.section179_carryover,
-                        self.section179_carryover_sold).is_none()
-                })
-            })
+            && (!source_alignment
+                || (crate::K1Section179Sale::carryover_rule(
+                    &self.section179_sales,
+                    self.section179_carryover,
+                    self.section179_carryover_sold,
+                )
+                .is_none()
+                    && self.alternative.as_ref().is_none_or(|_| {
+                        crate::K1Section179Sale::views(&self.section179_sales, true).map_or(
+                            true,
+                            |sales| {
+                                crate::K1Section179Sale::carryover_rule(
+                                    &sales,
+                                    self.section179_carryover,
+                                    self.section179_carryover_sold,
+                                )
+                                .is_none()
+                            },
+                        )
+                    })
+                    && !(self.limited_partner()
+                        && self.rental_facts.participation.is_some_and(|value| value.active()))
+                    && crate::K1Credit::issue_list_with_mode(&self.credits, true).is_none()
+                    && (self
+                        .investment_property
+                        .iter()
+                        .all(|property| property.own_form().is_some())
+                        || self.investment_confirmed.is_some())
+                    && (!self.credits.iter().any(|credit| credit.code.housing())
+                        || self.housing_confirmed.is_some())))
             && self.rental_facts.valid()
-            // Section 469(i)(6)(C): a limited partner never actively
-            // participates (PARTNER_LIMITED_NOT_ACTIVE on the page).
-            && !(self.limited_partner()
-                && self.rental_facts.participation.active())
             && self.qbi_records.valid()
-            && crate::K1Credit::valid_list(&self.credits)
+            && crate::K1Credit::source_valid_list(&self.credits)
+            && self
+                .research_credit_line
+                .is_none_or(|line| crate::K1CreditCode::Research.line_allows(line))
             && crate::K1InvestmentProperty::valid_list(&self.investment_property)
-            && (self.investment_property.iter().all(|p| p.own_form().is_some()) || self.investment_confirmed.is_some())
-            && (!self.credits.iter().any(|credit| credit.code.housing())
-                || self.housing_confirmed.is_some())
             && self.income_source.as_ref().is_none_or(|v| v.valid())
             && self.gross_personal_services.is_none_or(|v| {
                 (0..=100000000000).contains(&v)
-                    && (self.regular.ordinary <= 0 || v >= self.regular.ordinary)
+                    && (!source_alignment
+                        || self.regular.ordinary <= 0
+                        || v >= self.regular.ordinary)
             })
             && {
                 let valid = (0..=100000000000).contains(&self.guaranteed_services);
                 if !valid {
-                    *issue = Some(crate::validation::ValidationIssue::new(key).at_field("services"));
+                    *issue =
+                        Some(crate::validation::ValidationIssue::new(key).at_field("services"));
                 }
                 valid
             }
-            && [
-                self.guaranteed_capital,
-                self.health_guaranteed,
-                self.health_distributions,
-            ]
-            .into_iter()
-            .all(|v| (0..=100000000000).contains(&v))
+            && [self.guaranteed_capital, self.health_guaranteed, self.health_distributions]
+                .into_iter()
+                .all(|v| (0..=100000000000).contains(&v))
             && self.health_insurance.valid()
             && (0..=100000000000).contains(&self.pensions)
             && self.retirement.valid()
@@ -2281,30 +2622,22 @@ impl PartnerK1 {
                 *issue = v.validation_issue(self, key).map(|i| i.in_field("qbi"));
                 issue.is_none()
             })
-            && self
-                .se_gross
-                .as_ref()
-                .is_none_or(|v| (0..=100000000000).contains(&v.source().1))
+            && self.se_gross.as_ref().is_none_or(|v| (0..=100000000000).contains(&v.source().1))
             && self.alternative.as_ref().is_none_or(valid)
-            && self
-                .reported_se
-                .is_none_or(|v| (-100000000000..=100000000000).contains(&v))
-            && self
-                .separate
-                .as_ref()
-                .is_none_or(PartnerSeparateItems::valid)
-            && self
-                .schedule_k3
-                .as_ref()
-                .is_none_or(crate::ScheduleK3::valid)
+            && self.reported_se.is_none_or(|v| (-100000000000..=100000000000).contains(&v))
+            && self.separate.as_ref().is_none_or(PartnerSeparateTotals::valid)
+            && self.schedule_k3.as_ref().is_none_or(|k3| k3.valid_with_mode(source_alignment))
             && (0..=100000000000).contains(&self.section179)
             && (0..=100000000000).contains(&self.section179_carryover)
             && (0..=100000000000).contains(&self.section179_carryover_sold)
-            && self.amt_section179_income_carry.as_ref().is_none_or(|history| history.rule().is_none())
-            && crate::PartnerIncome::valid_list(&self.income)
+            && self
+                .amt_section179_income_carry
+                .as_ref()
+                .is_none_or(|history| history.rule().is_none())
+            && crate::PartnerIncomeTotal::rule(&self.income).is_none()
             && crate::PartnerDeduction::valid_list(&self.deductions)
             && crate::PartnerSpecial::valid_list(&self.special)
-            && self.disposition.valid()
+            && self.disposition.as_ref().is_none_or(crate::K1Disposition::valid)
             && self.sale.valid()
             && (0..=100000000000).contains(&self.deferred_compensation_tax)
             && (0..=100000000000).contains(&self.crp_payments)
@@ -2353,15 +2686,77 @@ impl PartnerK1 {
         suspended: Amount<Cents>,
         section179: Amount<Cents>,
     ) -> Result<PartnerSeResult, (&'static str, &'static str)> {
+        self.earned_after_passive_in(limited, pool, suspended, section179, false)
+    }
+
+    // Form 6251 Related Adjustments refigures earned-income limits, while
+    // Schedule SE and its actual half-tax deduction remain regular-tax amounts.
+    // Reuse the source-character allocator with the AMT activity's final PAL.
+    pub(crate) fn amt_earned_after_passive(
+        &self,
+        suspended: Amount<Cents>,
+        section179: Amount<Cents>,
+    ) -> Result<PartnerSeResult, (&'static str, &'static str)> {
+        let source = self.alternative.as_ref().ok_or(Self::PERSONAL_NEEDED)?;
+        self.earned_after_passive_in(self, self.pool(source)?, suspended, section179, true)
+    }
+
+    fn earned_after_passive_in(
+        &self,
+        limited: &Self,
+        pool: PartnerPoolResult,
+        suspended: Amount<Cents>,
+        section179: Amount<Cents>,
+        alternative: bool,
+    ) -> Result<PartnerSeResult, (&'static str, &'static str)> {
+        let limited_for_se = self.limited_for_se.ok_or(Self::PERSONAL_NEEDED)?;
+        let source = if alternative {
+            self.alternative.as_ref().ok_or(Self::PERSONAL_NEEDED)?
+        } else {
+            &self.regular
+        };
+        let v = if alternative {
+            limited.alternative.as_ref().ok_or(Self::PERSONAL_NEEDED)?
+        } else {
+            &limited.regular
+        };
         let suspended = suspended.get();
         let section179 = section179.get();
-        let reported = self.reported_se.ok_or((
+        let mut reported = self.reported_se.ok_or((
             "ISSUE_PARTNERSHIP_ESTABLISH_K_1_BOX_14_CODE_A_2F03EA0B",
             crate::fixture_english!("Establish K-1 box 14 code A."),
         ))? - self.guaranteed_se();
-        let v = &limited.regular;
+        if alternative {
+            let delta =
+                source.ordinary.checked_sub(self.regular.ordinary).ok_or(PartnerPlan::RANGE)?;
+            // An excluded distributive share stays excluded. A mixed box 1 /14A
+            // source does not identify which character an AMT adjustment changes.
+            if !limited_for_se && self.trade_kind == crate::ScorpTradeKind::Ordinary {
+                if delta != 0 && reported != self.regular.ordinary {
+                    return Err(Self::PERSONAL_NEEDED);
+                }
+                reported = reported.checked_add(delta).ok_or(PartnerPlan::RANGE)?;
+            }
+            // Separate AMT loss balances do not supply their SE-character
+            // subsets. The same-record choice preserves those source facts;
+            // otherwise only explicit zero retained balances establish them.
+            if self.amt_record_choice != Some(false)
+                && [
+                    source.basis.prior_loss,
+                    source.risk.prior_loss,
+                    source.passive_loss,
+                    self.regular.basis.prior_loss,
+                    self.regular.risk.prior_loss,
+                    self.regular.passive_loss,
+                ]
+                .into_iter()
+                .any(|value| value != 0)
+            {
+                return Err(Self::PERSONAL_NEEDED);
+            }
+        }
         if !self.valid()
-            || (self.limited_for_se && reported != 0)
+            || (self.limited_for_se == Some(true) && reported != 0)
             || (self.trade_kind == crate::ScorpTradeKind::FinancialTrading && reported != 0)
         {
             return Err((
@@ -2371,11 +2766,7 @@ impl PartnerK1 {
                 ),
             ));
         }
-        let totals = [
-            self.regular.basis.prior_loss,
-            self.regular.risk.prior_loss,
-            self.regular.passive_loss,
-        ];
+        let totals = [source.basis.prior_loss, source.risk.prior_loss, source.passive_loss];
         let h = &self.se_history;
         let history = [h.basis, h.risk, h.passive];
         if history.iter().zip(totals).any(|(part, total)| *part < 0 || *part > total) {
@@ -2423,7 +2814,7 @@ impl PartnerK1 {
             }
         };
         let current_se_loss = phase::floor(-reported, 0);
-        let current_ordinary_loss = phase::floor(-self.regular.ordinary, 0);
+        let current_ordinary_loss = phase::floor(-source.ordinary, 0);
         // With no ordinary suspension the unmatched part is deductible in
         // full; it is not a negative residual capacity in the allocator.
         let unmatched_loss = phase::floor(current_se_loss - current_ordinary_loss, 0);
@@ -2464,19 +2855,56 @@ impl PartnerK1 {
                 ),
             ));
         }
-        let earnings_cents = phase::floor(reported, 0)
-            + self.guaranteed_services
-            + if !self.limited_for_se { self.guaranteed_capital - section179 } else { 0 }
-            - allowed_se
-            - unmatched_loss;
-        Ok(PartnerSeResult {
+        Ok(PartnerSeResult::from_resolved(ResolvedPartnerSe {
+            reported,
+            guaranteed_services: self.guaranteed_services,
+            guaranteed_capital: self.guaranteed_capital,
+            limited_for_se,
+            section179,
+            allowed_se,
+            unmatched_loss,
+            passive_earnings,
+            basis_suspended: basis_se - after_basis,
+            risk_suspended: risk_se - after_risk,
+            passive_suspended,
+        }))
+    }
+}
+
+// Resolved source cents and the actual annual deductions admitted by the
+// activity owners. Both source models use this one final SE projection.
+pub(crate) struct ResolvedPartnerSe {
+    pub reported: i64,
+    pub guaranteed_services: i64,
+    pub guaranteed_capital: i64,
+    pub limited_for_se: bool,
+    pub section179: i64,
+    pub allowed_se: i64,
+    pub unmatched_loss: i64,
+    pub passive_earnings: i64,
+    pub basis_suspended: i64,
+    pub risk_suspended: i64,
+    pub passive_suspended: i64,
+}
+impl PartnerSeResult {
+    pub(crate) fn from_resolved(source: ResolvedPartnerSe) -> Self {
+        let earnings_cents = phase::floor(source.reported, 0)
+            + source.guaranteed_services
+            + if !source.limited_for_se {
+                source.guaranteed_capital - source.section179
+            } else {
+                0
+            }
+            - source.allowed_se
+            - source.unmatched_loss;
+        Self {
             earnings: dollars(earnings_cents),
             earnings_cents,
-            passive_earnings: dollars(passive_earnings),
-            basis_suspended: dollars(basis_se - after_basis),
-            risk_suspended: dollars(risk_se - after_risk),
-            passive_suspended: dollars(passive_suspended),
-        })
+            passive_earnings: dollars(source.passive_earnings),
+            basis_suspended: dollars(source.basis_suspended),
+            risk_suspended: dollars(source.risk_suspended),
+            passive_suspended: dollars(source.passive_suspended),
+        }
     }
 }
 
@@ -2521,8 +2949,28 @@ pub(crate) fn owner_actual_se(
     church_wages_cents: i64,
     partners: &[(i64, PartnerSeResult)],
 ) -> Result<PartnerOwnerSe, (&'static str, &'static str)> {
-    match owner_actual_se_with_section179(
+    let source_claims = crate::related_forms::effective_claimants(d);
+    owner_actual_se_with_claims(
         d,
+        owner,
+        social_wages_cents,
+        church_wages_cents,
+        partners,
+        &source_claims,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn owner_actual_se_with_claims(
+    d: &crate::FederalDraft,
+    owner: crate::Owner,
+    social_wages_cents: i64,
+    church_wages_cents: i64,
+    partners: &[(i64, PartnerSeResult)],
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<PartnerOwnerSe, (&'static str, &'static str)> {
+    match owner_actual_se_with_section179_with_claims(
+        crate::related_forms::RelatedFormContext::original(d, source_claims),
         owner,
         social_wages_cents,
         church_wages_cents,
@@ -2538,8 +2986,8 @@ pub(crate) fn owner_actual_se(
     }
 }
 
-pub(crate) fn owner_actual_se_with_section179(
-    d: &crate::FederalDraft,
+pub(crate) fn owner_actual_se_with_section179_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     owner: crate::Owner,
     social_wages_cents: i64,
     church_wages_cents: i64,
@@ -2547,11 +2995,13 @@ pub(crate) fn owner_actual_se_with_section179(
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
 ) -> Result<PartnerOwnerSe, OwnerSeIssue> {
+    let crate::related_forms::RelatedFormContext { draft: d, claims: source_claims, .. } =
+        form_context;
     let mut business_cents = 0;
     let mut partner_profit = 0;
     let mut weights = alloc::vec::Vec::new();
     let mut weights_cents = alloc::vec::Vec::new();
-    for entry in d.income.iter().filter(|e| e.owner == owner) {
+    for entry in d.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(owner)) {
         match &entry.income {
             crate::FederalIncome::Business { data }
                 if !crate::statutory_wages::business(d, entry.id) =>
@@ -2559,27 +3009,42 @@ pub(crate) fn owner_actual_se_with_section179(
                 // A farm's profit includes the Form 1099-G box 7 and 1099-PATR
                 // income routed to it (Schedule F line 9).
                 let profit = data.earned_receipts()
-                    + crate::federal_rules::farm_routed_income(
+                    + crate::federal_rules::farm_routed_income_with_claims(
                         d,
                         usize::from(owner == crate::Owner::Spouse),
                         entry.id,
+                        source_claims,
                     )?
-                    - crate::section179_return::expenses(d, entry.id, data, selected, home).map(
-                        |expense| {
-                            expense
-                                - selected.map_or(0, |allocation| {
-                                    allocation.ordinary_risk_adjustment(entry.id)
-                                })
-                        },
-                    )?
-                    - crate::clergy::business_se_exclusion_with_section179(
-                        d, entry.id, data, selected, home,
+                    - crate::section179_return::expenses_with_claims(
+                        d,
+                        entry.id,
+                        data,
+                        selected,
+                        home,
+                        source_claims,
+                    )
+                    .map(|expense| {
+                        expense
+                            - selected.map_or(0, |allocation| {
+                                allocation.ordinary_limit_adjustment(entry.id)
+                            })
+                    })?
+                    - crate::clergy::business_se_exclusion_with_section179_with_claims(
+                        d,
+                        entry.id,
+                        data,
+                        selected,
+                        home,
+                        source_claims,
                     )?;
                 business_cents += profit;
                 weights.push((entry.id, dollars(profit)));
                 weights_cents.push((entry.id, profit));
             }
-            crate::FederalIncome::Partnership { .. } => {
+            crate::FederalIncome::PartnershipActivities { data }
+                if matches!(data.ordinary_self_employment(), Ok(None)) => {}
+            crate::FederalIncome::Partnership { .. }
+            | crate::FederalIncome::PartnershipActivities { .. } => {
                 let mut found = partners.iter().filter(|(id, _)| *id == entry.id);
                 let source = found.next().ok_or(("ISSUE_PARTNERSHIP_RESOLVE_EVERY_PARTNERSHIP_S_REGULAR_SELF_EMPLOYMENT_SOURCE_6800F63B", crate::fixture_english!("Resolve every partnership's regular self-employment source before combining this owner's earnings.")))?;
                 if found.next().is_some() {
@@ -2590,12 +3055,19 @@ pub(crate) fn owner_actual_se_with_section179(
                         ),
                     ).into());
                 }
-                partner_profit +=
-                    if crate::clergy::calculate_with_section179(d, owner, selected, home)?.sect {
-                        0
-                    } else {
-                        source.1.earnings
-                    };
+                partner_profit += if crate::clergy::calculate_with_section179_with_claims(
+                    d,
+                    owner,
+                    selected,
+                    home,
+                    source_claims,
+                )?
+                .sect
+                {
+                    0
+                } else {
+                    source.1.earnings
+                };
                 weights.push((entry.id, source.1.earnings));
                 weights_cents.push((entry.id, source.1.earnings_cents));
             }
@@ -2604,7 +3076,14 @@ pub(crate) fn owner_actual_se_with_section179(
     }
     let profit = dollars(
         business_cents
-            + crate::clergy::calculate_with_section179(d, owner, selected, home)?.extra_se(),
+            + crate::clergy::calculate_with_section179_with_claims(
+                d,
+                owner,
+                selected,
+                home,
+                source_claims,
+            )?
+            .extra_se(),
     ) + partner_profit;
     // Church employee income (Schedule SE lines 5a-5b) joins line 6 beside the
     // combined line 4c (section 1402(j)(2)).
@@ -2648,6 +3127,9 @@ crate::community::divide_record!(PartnerK1 {
     ],
     gains: [sale, disposition],
     facts: [
+        source,
+        research_credit_line,
+        amt_record_choice,
         reporting_period,
         qbi_aggregation_group,
         fuel_tax_credit,
@@ -2729,6 +3211,26 @@ crate::community::divide_record!(PartnerActivityRecord {
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
 crate::community::divide_record!(PartnerSeparateItems {
+    amounts: [
+        interest,
+        dividends,
+        qualified_dividends,
+        royalties,
+        short,
+        long,
+        collectibles,
+        unrecaptured_partnership,
+        unrecaptured_fund,
+        cash_charity,
+        backup_withholding,
+        exempt_interest,
+        foreign_taxes
+    ],
+    gains: [],
+    facts: [],
+});
+
+crate::community::divide_record!(PartnerSeparateTotals {
     amounts: [
         interest,
         dividends,

@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 191000, "rule": {"select": "^<SaveEducator>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 529000, "rule": {"select": "^<Educator>", "flatten": {"name_row": false}}},
+    {"order": 581000, "rule": {"select": "^<EducatorClaim>", "flatten": true}},
+    {"order": 751000, "rule": {"select": "^<Educator>.owner", "promote": true}},
+    {"order": 827000, "rule": {"select": "^<SaveEducator.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

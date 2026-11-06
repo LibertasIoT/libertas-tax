@@ -26,25 +26,26 @@ fn unit13_reit_owner_cent_edge_keeps_true_supplement() {
                 a.injured = injured;
                 let mut d = injured_return((160000, 20000), (20000, 8000), 0, a);
                 let mut e = source(kind);
-                e.owner = Owner::Taxpayer;
+                e.owner = crate::DocumentOwner::Yours;
                 match &mut e.income {
                     FederalIncome::Partnership { data } => {
                         data.separate.as_mut().unwrap().dividends = 49;
                         data.qbi.as_mut().unwrap().reit_dividends = 49;
                     }
                     FederalIncome::Scorp { data } => {
-                        data.dividends = 49;
-                        data.qbi_statement.as_mut().unwrap().reit_dividends = 49;
+                        edit_scorp(data).dividends = 49;
+                        edit_scorp(data).qbi_statement.as_mut().unwrap().reit_dividends = 49;
                     }
                     _ => panic!(),
                 }
                 add(&mut d, e);
                 for (owner, amount) in [(Owner::Taxpayer, 249), (Owner::Spouse, 301)] {
                     let mut e = income(reit_income(0, 0, true));
-                    e.owner = owner;
+                    e.owner = crate::DocumentOwner::from(owner);
                     let FederalIncome::Dividend { data } = &mut e.income else { panic!() };
-                    data.ordinary = amount;
-                    data.section199a = ReitDividends::Reported { amount, eligible: true };
+                    edit_dividend(data).ordinary = amount;
+                    edit_dividend(data).section199a =
+                        ReitDividends::Reported { amount, eligible: Some(true) };
                     add(&mut d, e);
                 }
                 let originals = d.income.clone();

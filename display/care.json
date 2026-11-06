@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 858000, "rule": {"select": "^<PriorYearCareInput>.injured_claimants", "when_single_choice": "hide"}}
+  ]
+}

@@ -1,0 +1,69 @@
+{
+ "source": {
+  "title": "IRS MeF ATS Test Scenario 5, TY2026 Form 1040 (Sam Wheat: 1040, W-2, Form 8888)",
+  "edition": "TREASURY/IRS DRAFT Version A, Cycle 9-10 (1040), Version B, Cycle 15 (W-2)",
+  "scenario": 5,
+  "url": "https://www.irs.gov/pub/irs-efile/1040-mef-ats-scenario-5-09222026.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "fb94f6a34c6419243e2ca55a94e060a6664bc2730ebfc20cbaef1a893031b30b"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "no children, no other income, standard deduction",
+   "reason": "the scenario lists no dependents or other documents; the filing status is Single, born 1986-02-07, US citizen"
+  },
+  {
+   "fact": "W-2 box 4 entered as 3,131.62 and box 6 as 732.40",
+   "reason": "the ATS prints whole dollars (3,132 and 732); the exact 6.2% and 1.45% of 50,510 are 3,131.62 and 732.40 (rounded half-up), and the App refuses withholding above the 6.2% amount or below the 1.45% amount by more than a cent (triage F-1)"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19860207,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 50510,
+     "withholding": 10268,
+     "social_wages": 50510,
+     "social_tax": 3131.62,
+     "medicare_wages": 50510,
+     "medicare_tax": 732.4
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "1a",
+   "amount": 50510,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "12e",
+   "amount": 16100,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "25a",
+   "amount": 10268,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope",
+ "known_gaps": [
+  {
+   "form": "8888",
+   "lines": "1a-5",
+   "ledger": "none",
+   "note": "direct-deposit allocation (1,000 to savings, the rest to checking) is bank-account presentation; the App collects no account details and has no ledger row"
+  }
+ ],
+ "expected_note": "The source is inputs only: every computed 1040 line is blank. The printed figures are the W-2 boxes 1 and 2 carried to lines 1a and 25a and the single standard deduction printed in the Form 1040 line 12e margin (16,100). Computed lines (taxable income, tax, refund) need an independent hand computation (plan phase 2)."
+}

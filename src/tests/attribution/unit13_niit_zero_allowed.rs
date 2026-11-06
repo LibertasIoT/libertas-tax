@@ -8,7 +8,9 @@ fn unit13_niit_zero_allowed_has_unique_zero_owners_despite_unknown_portfolio_pay
             let d = niit_zero_fixture(49, injured, reversed);
             assert!(d.injured_spouse.as_ref().unwrap().allocations.is_empty());
             assert_niit_zero_money(&d, 0);
+            let borrowing = d.deductions.as_ref().unwrap().investment_interest.clone();
             let d = persist_niit_zero(d, 0);
+            assert_eq!(d.deductions.as_ref().unwrap().investment_interest, borrowing);
             assert!(d.injured_spouse.as_ref().unwrap().allocations.is_empty());
             let r = assert_niit_zero_money(&d, 0);
             let owners = [760, 380];

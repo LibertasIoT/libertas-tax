@@ -3,6 +3,7 @@ use crate::tests::*;
 pub(in crate::tests) fn owned_actual_vehicle(first_year: FirstYearDeduction) -> Vehicle {
     Vehicle {
         method: VehicleMethod::Actual {
+            macrs_source: None,
             id: 0,
             history_details: None,
             amt_section179_income_carry: None,
@@ -15,12 +16,44 @@ pub(in crate::tests) fn owned_actual_vehicle(first_year: FirstYearDeduction) -> 
             business_miles: 7_500,
             operating_costs: 400_000,
             loan_interest: 200_000,
-            passenger_automobile: true,
+            kind: VehicleKind::PassengerCar,
             earlier_business_percent: None,
             history: AssetHistory::New { first_year },
             disposal: AssetDisposal::No,
         },
     }
+}
+
+// Full business use isolates section 179 from personal-use allocation.
+pub(in crate::tests) fn owned_section179_vehicle(
+    kind: VehicleKind,
+    cost: i64,
+    elected: i64,
+    acquired: u32,
+) -> Vehicle {
+    let mut vehicle = owned_actual_vehicle(FirstYearDeduction::Section179 {
+        description: "Synthetic business vehicle".into(),
+        elected,
+    });
+    let VehicleMethod::Actual {
+        kind: actual_kind,
+        cost: actual_cost,
+        acquired: actual_acquired,
+        business_miles,
+        operating_costs,
+        loan_interest,
+        ..
+    } = &mut vehicle.method
+    else {
+        unreachable!()
+    };
+    *actual_kind = kind;
+    *actual_cost = cost;
+    *actual_acquired = Some(acquired);
+    *business_miles = 10_000;
+    *operating_costs = 0;
+    *loan_interest = 0;
+    vehicle
 }
 
 pub(in crate::tests) fn personal_refueling(
@@ -80,13 +113,21 @@ pub(in crate::tests) fn clean_vehicle_claim(
 }
 
 // A qualifying Schedule 1-A vehicle loan (T3-deduct).
-pub(in crate::tests) fn vehicle_loan(lender: &str, interest: i64) -> FederalVehicleInterest {
-    FederalVehicleInterest {
-        label: lender.into(),
-        interest,
+pub(in crate::tests) fn vehicle_loan(lender: &str, interest: i64) -> VehicleLoanSource {
+    VehicleLoanSource {
+        id: 0,
+        assigned: crate::DocumentRecipient::Taxpayer,
+        owner_source: Some(crate::OwnerSource::Added),
+        joint_share: None,
         business: 0,
-        original_use: true,
-        assembled_in_us: true,
+        document: vehicle_paper(FederalVehicleInterest {
+            lender: crate::PrintedParty::from_name(lender.into()),
+            borrower: Default::default(),
+            interest,
+            refund: 0,
+            original_use: true,
+            assembled_in_us: true,
+        }),
     }
 }
 
@@ -112,7 +153,7 @@ pub(in crate::tests) fn native_business_mileage(
     }
 }
 
-// Approved NRG-G1 F1: independent net Schedule C $20,000 after $4,500
+// Independent net Schedule C $20,000 after $4,500
 // ordinary first-year depreciation of $37,500 x 60% business basis.
 pub(in crate::tests) fn clean_vehicle_business_return() -> FederalDraft {
     let mut draft = complete(FederalStatus::Single);
@@ -127,7 +168,7 @@ pub(in crate::tests) fn clean_vehicle_business_return() -> FederalDraft {
         business_miles: 9_000,
         operating_costs: 0,
         loan_interest: 0,
-        passenger_automobile: true,
+        kind: crate::VehicleKind::PassengerCar,
     };
     data.assets.push(asset);
     add(&mut draft, income(source));

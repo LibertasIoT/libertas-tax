@@ -3,7 +3,7 @@
 // continues31.5years for annual/source accumulation and GDSUBIA clocks.
 // Rental tests: unit29_rental_recovery and unit29_rental_transition.
 // Actual 1993 documentary transitions share this period owner with ordinary GDS.
-// Foreign ADS and179D source fitting remain separate work.
+// Required foreign ADS retains30/40-year clocks;179D keeps its own source.
 // Original dated rental records continue their own recovery clock.
 // No current annual-rate override, new editor or old-office stored field.
 // Sources: Pub.946; PL103-66 section13151(b), 107Stat448.
@@ -13,6 +13,7 @@ pub use engine::{OfficeRecoveryDeduction, OfficeRecoveryIssue};
 
 pub(crate) fn rental_building_recovery(
     kind: &crate::RentalPropertyType,
+    location: &crate::RentalLocation,
     placed: u32,
     source: Option<&crate::Commercial1993Transition>,
     amt: bool,
@@ -23,11 +24,30 @@ pub(crate) fn rental_building_recovery(
             "Review the original building service date.",
         ));
     }
+    if placed < 19870101 && location.foreign() {
+        return Err((
+            "RENTAL_FOREIGN_RECOVERY_HISTORY_UNAVAILABLE",
+            "Supply the original historical foreign-property recovery records.",
+        ));
+    }
     if placed < 19870101 {
         return Err((
             "ISSUE_RENTAL_BUILDING_DEPRECIATION_RECORDS",
             "Review the original building recovery method.",
         ));
+    }
+    if location.foreign() {
+        if source.is_some() {
+            return Err((
+                "RENTAL_1993_TRANSITION_NOT_APPLICABLE",
+                "Domestic commercial transition records do not establish foreign ADS.",
+            ));
+        }
+        return Ok(if !kind.nonresidential() && placed >= 20180101 {
+            RentalBuildingRecovery::Ads30
+        } else {
+            RentalBuildingRecovery::Ads40
+        });
     }
     if let Some(issue) = crate::rental_recovery::source_rule(kind, placed, source) {
         return Err((issue.key, "Review the actual 1993 commercial recovery source."));

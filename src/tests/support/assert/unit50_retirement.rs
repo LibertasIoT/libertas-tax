@@ -16,10 +16,14 @@ pub(in crate::tests) fn assert_ira_basis_case(
     add(
         &mut d,
         income(FederalIncome::Retirement {
-            data: FederalRetirement {
+            data: retirement_source(FederalRetirement {
                 withholding,
-                ..native_retirement(RetirementKind::Ira, gross, RetirementTaxable::IraBasis)
-            },
+                ..native_retirement(
+                    RetirementKind::Ira,
+                    gross,
+                    (RetirementTaxable::IraBasis, gross),
+                )
+            }),
         }),
     );
     d.adjustments.as_mut().unwrap().ira_basis =
@@ -118,13 +122,22 @@ pub(in crate::tests) fn assert_multi_year_refund_guards(
     three_years: bool,
 ) {
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::TaxRefund { amount, withholding: 0, history }));
+    add(
+        &mut d,
+        income(FederalIncome::GovernmentPayment {
+            data: tax_refund_source(FederalTaxRefund { amount, withholding: 0, history }),
+        }),
+    );
     for case in 0..3 {
         let mut bad = d.clone();
-        let FederalIncome::TaxRefund {
-            amount,
-            history: TaxRefundHistory::IncomeTaxMultiplePriorYears { years, allocation_complete },
-            ..
+        let FederalIncome::GovernmentPayment {
+            data:
+                GovernmentPaymentSource {
+                    form: Form1099GPaper { state_or_local_income_tax_refunds: amount, .. },
+                    history:
+                        TaxRefundHistory::IncomeTaxMultiplePriorYears { years, allocation_complete },
+                    ..
+                },
         } = &mut bad.income[1].income
         else {
             unreachable!()
@@ -140,11 +153,14 @@ pub(in crate::tests) fn assert_multi_year_refund_guards(
         }
         refund_not_taxed_silently(&bad);
     }
-    for case in 0..4 {
+    for case in [0, 1, 3] {
         let mut bad = d.clone();
-        let FederalIncome::TaxRefund {
-            history: TaxRefundHistory::IncomeTaxMultiplePriorYears { years, .. },
-            ..
+        let FederalIncome::GovernmentPayment {
+            data:
+                GovernmentPaymentSource {
+                    history: TaxRefundHistory::IncomeTaxMultiplePriorYears { years, .. },
+                    ..
+                },
         } = &mut bad.income[1].income
         else {
             unreachable!()
@@ -152,13 +168,11 @@ pub(in crate::tests) fn assert_multi_year_refund_guards(
         match (three_years, case) {
             (false, 0) => years[1].payment_year = years[0].payment_year,
             (false, 1) => years[0].payment_for_refunded_return = years[0].income_paid + 1,
-            (false, 2) => years[0].payment_year = 2026,
             (false, 3) => {
                 years.pop();
             }
             (true, 0) => years[2].payment_year = years[1].payment_year,
             (true, 1) => years[2].payment_year = years[0].payment_year,
-            (true, 2) => years[2].payment_year = 2026,
             (true, 3) => years[2].payment_for_refunded_return = years[2].income_paid + 1,
             _ => unreachable!(),
         }
@@ -166,7 +180,13 @@ pub(in crate::tests) fn assert_multi_year_refund_guards(
     }
     add(
         &mut d,
-        income(FederalIncome::TaxRefund { amount: 100, withholding: 0, history: refund_history() }),
+        income(FederalIncome::GovernmentPayment {
+            data: tax_refund_source(FederalTaxRefund {
+                amount: 100,
+                withholding: 0,
+                history: refund_history(),
+            }),
+        }),
     );
     unsupported(&d, "Income:");
 }

@@ -17,7 +17,7 @@ fn capacity(value: i64) -> ScorpRiskStart {
 
 fn partner(ordinary: i64, opening: i64, risk: i64) -> PartnerK1 {
     let mut source = ordinary_partner_source(ordinary, true);
-    source.regular.basis.opening = opening * 100;
+    source.regular.basis.opening = Some(opening * 100);
     source.regular.risk.start = capacity(risk);
     source.alternative = Some(source.regular.clone());
     source
@@ -26,7 +26,7 @@ fn partner(ordinary: i64, opening: i64, risk: i64) -> PartnerK1 {
 fn scorp(ordinary: i64, opening: i64, risk: i64) -> ScorpK1 {
     let mut source = complete_ordinary_scorp(ordinary, true);
     source.loans.clear();
-    source.opening = opening * 100;
+    source.opening = Some(opening * 100);
     source.risk.start = capacity(risk);
     source.risk.prior_loss = 0;
     source.risk.deducted = 0;
@@ -144,7 +144,7 @@ fn k1_sale_limits_short_properties_share_other_loss_and_keep_individual_routes()
     partner.section179_sales = short_sales();
     let pool = partner.pool(&partner.regular).unwrap();
     assert_short_ledger(&pool.activity.ledger);
-    let (flows, _) = partner.outcome(&partner.regular);
+    let (flows, _) = partner.outcome(&partner.regular).unwrap();
     // 1,000,000c funds 4,400,000c; the ordinary share retains its cents.
     assert_eq!(flows.ordinary, 681_818);
     assert_eq!(flows.sales, vec![(1, false, 1_000_000), (2, false, -318_182)]);
@@ -188,8 +188,8 @@ fn k1_sale_limits_regular_and_amt_use_independent_sale_depreciation() {
     partner.alternative = Some(partner.regular.clone());
     partner.section179_sales[0].alternative.reported_amounts_mut().unwrap().depreciation =
         2_000 * 100;
-    let regular = partner.outcome(&partner.regular).0;
-    let amt = partner.outcome(partner.alternative.as_ref().unwrap()).0;
+    let regular = partner.outcome(&partner.regular).unwrap().0;
+    let amt = partner.outcome(partner.alternative.as_ref().unwrap()).unwrap().0;
     assert_eq!(regular.sales, vec![(1, true, 6_000 * 100)]);
     assert_eq!(amt.ordinary, 0);
     assert!(amt.sales.is_empty());
@@ -247,11 +247,11 @@ fn k1_sale_limits_f2b_loss_creates_business_property_without_an_entered_box() {
 fn k1_sale_limits_code_r_and_each_short_sale_keep_distinct_allowed_amounts() {
     let mut partner = partner(0, 0, 0);
     partner.section179_sales = short_sales();
-    partner.income = vec![PartnerIncome {
+    partner.income = vec![PartnerIncomeTotal {
         code: PartnerIncomeCode::SpeciallyAllocatedOrdinary,
         amount: -6_000 * 100,
     }];
-    let (flows, _) = partner.outcome(&partner.regular);
+    let (flows, _) = partner.outcome(&partner.regular).unwrap();
     // The $10,000 gain funds half of the $20,000 OtherLoss class.
     assert_eq!(flows.ordinary, 0);
     assert_eq!(
@@ -273,16 +273,19 @@ fn k1_sale_limits_code_r_and_each_short_sale_keep_distinct_allowed_amounts() {
 #[test]
 fn k1_sale_limits_passive_property_without_box_uses_one_shared_activity_and_class() {
     let mut partner = partner(-30_000, 100_000, 100_000);
-    let PartnerParticipation::General { facts } = &mut partner.participation else { panic!() };
+    let Some(PartnerParticipation::General { facts }) = &mut partner.participation else {
+        panic!()
+    };
     facts.minutes = 0;
     partner.section179_sales = long_sales();
     partner.alternative = Some(partner.regular.clone());
     let mut scorp = scorp(-30_000, 100_000, 100_000);
     scorp.participation.as_mut().unwrap().minutes = 0;
     scorp.section179_sales = long_sales();
-    for source in
-        [FederalIncome::Partnership { data: partner }, FederalIncome::Scorp { data: scorp }]
-    {
+    for source in [
+        FederalIncome::Partnership { data: partner },
+        FederalIncome::Scorp { data: crate::tests::support::builders::scorp_source(scorp) },
+    ] {
         let mut draft = complete(FederalStatus::Single);
         draft.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));
         let id = draft.next_id;
@@ -319,9 +322,10 @@ fn k1_sale_limits_sale_gain_enters_the_existing_return_wide_lookback_once() {
     partner.alternative = Some(partner.regular.clone());
     let mut scorp = scorp(0, 0, 0);
     scorp.section179_sales = vec![sale(60_000, false)];
-    for source in
-        [FederalIncome::Partnership { data: partner }, FederalIncome::Scorp { data: scorp }]
-    {
+    for source in [
+        FederalIncome::Partnership { data: partner },
+        FederalIncome::Scorp { data: crate::tests::support::builders::scorp_source(scorp) },
+    ] {
         let mut draft = complete(FederalStatus::Single);
         draft.screening.as_mut().unwrap().section1231 =
             Some(section1231_history(&[(2024, 5_000, 5_000)], &[]));

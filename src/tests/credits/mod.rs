@@ -1,6 +1,7 @@
 use super::*;
 
 pub(in crate::tests) mod bba_chapter_one;
+pub(in crate::tests) mod credit_questions;
 
 #[allow(clippy::module_inception)]
 pub(in crate::tests) mod credits;

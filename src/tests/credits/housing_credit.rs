@@ -10,12 +10,12 @@ use alloc::{format, string::ToString};
 
 pub(in crate::tests) fn housing_partner(credits: &[(K1CreditCode, i64)]) -> PartnerK1 {
     let mut data = ordinary_partner_source(0, false);
-    data.participation = PartnerParticipation::Limited {
+    data.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
+    });
     data.credits = credits
         .iter()
         .map(|(code, dollars)| K1Credit {
@@ -28,6 +28,8 @@ pub(in crate::tests) fn housing_partner(credits: &[(K1CreditCode, i64)]) -> Part
         .collect();
     // The interest was acquired after 1989 (the K-1's typed confirmation).
     data.housing_confirmed = Some(true);
+    // A housing credit is rental real estate: a limited partner is not active.
+    data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     data
 }
 
@@ -223,7 +225,7 @@ fn fixture_b_the_allowance_limits_the_credit_and_the_rest_carries_as_passive() {
 // A general partner's K-1 with box 2 = -$10,000 and active participation.
 fn general_partner(box2: i64) -> PartnerK1 {
     let mut data = ordinary_partner_source(0, false);
-    data.regular.basis.opening = 5_000_000;
+    data.regular.basis.opening = Some(5_000_000);
     data.regular.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
     data.regular.rentals = K1RentalAmounts {
         real_estate_property: Default::default(),
@@ -231,7 +233,7 @@ fn general_partner(box2: i64) -> PartnerK1 {
         real_estate: box2 * 100,
         ..Default::default()
     };
-    data.rental_facts.participation = K1RentalParticipation::Active;
+    data.rental_facts.participation = Some(K1RentalParticipation::Active);
     data.alternative = Some(data.regular.clone());
     data
 }
@@ -551,7 +553,7 @@ fn fixture_e_carryover_rules_of_the_housing_credits() {
 #[test]
 fn fixture_f_a_k1_with_a_box_2_loss_and_a_credit_is_one_activity() {
     let mut data = housing_partner(&[(K1CreditCode::LowIncomeHousingOther, 4_500)]);
-    data.regular.basis.opening = 5_000_000;
+    data.regular.basis.opening = Some(5_000_000);
     data.regular.risk.start = ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
     data.regular.rentals = K1RentalAmounts {
         real_estate_property: Default::default(),
@@ -575,7 +577,7 @@ fn fixture_f_a_k1_with_a_box_2_loss_and_a_credit_is_one_activity() {
     // A real estate professional who materially participated has a
     // nonpassive activity: the loss reduces AGI and the credit skips Form
     // 8582-CR (Part III column (e)).
-    data.rental_facts.participation = K1RentalParticipation::Professional;
+    data.rental_facts.participation = Some(K1RentalParticipation::Professional);
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 16_610_000, 0);
     add(&mut d, income(FederalIncome::Partnership { data }));
@@ -643,7 +645,7 @@ fn fixture_g_the_allowed_part_is_used_carried_back_and_carried_forward() {
         code: K1CreditCode::WorkOpportunity,
         amount: 400_000,
     }];
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     d.credits.as_mut().unwrap().business_credits = Some(BusinessCreditHistory {
         credits: Vec::new(),
         carryforwards: vec![],

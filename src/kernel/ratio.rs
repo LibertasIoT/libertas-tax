@@ -293,6 +293,24 @@ pub(crate) mod exact {
         i64::try_from(dollars_exact(cents).to_integer()).ok()
     }
 
+    /// Project an exact conserved pair in its existing output unit. Round the
+    /// selected source once, then give the other source the rounded joint's
+    /// residual. Only the final person amounts must fit their native carriers.
+    pub(crate) fn project_whole_pair(
+        exact_joint: &Exact,
+        sources: [Exact; 2],
+        first: usize,
+    ) -> Option<[i64; 2]> {
+        if first >= 2 || &(&sources[0] + &sources[1]) != exact_joint {
+            return None;
+        }
+        let selected = rounded_exact(&sources[first]);
+        let mut result = [0; 2];
+        result[first] = rounded(&selected)?;
+        result[1 - first] = rounded(&(rounded_exact(exact_joint) - selected))?;
+        Some(result)
+    }
+
     /// Project actual signed rational owner cents to an independently
     /// supplied exact joint and its reported Dollars. Check source conservation
     /// before rounding: omitted cents cannot become a guessed owner residual.

@@ -1,4 +1,4 @@
-// Coverage: Pub.936 Table1 and Schedule A mortgage interest, tax year2026 (B10-4).
+// Coverage: Pub.936 Table1 and Schedule A mortgage interest, tax year2026.
 //   Home, refinance, partly home/other and other-use proceeds; qualified main/second homes,
 //   boat/RV second homes (AMT dwelling add-back), and third homes (no personal-interest deduction).
 //   Mixed-use principal is applied monthly to equity, grandfathered, then acquisition debt.
@@ -26,10 +26,16 @@
 //   Fixtures: schedule_a_specials A/B/C/G, its A–H footing assertions, and the existing
 //   deductions/page suites for monthly allocation, points, payoff and document import.
 
+pub use crate::mortgage_source::{
+    MortgageHome, MortgageLender, MortgageMonthBalance, MortgageRefinance, MortgageRefundOrigin,
+    MortgageSplit, MortgageUse,
+};
+
 use crate::FederalResult;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
 use crate::year_constants::{
     MORTGAGE_INSURANCE_PHASEOUT_START_DOLLARS, MORTGAGE_INSURANCE_PHASEOUT_START_SEPARATE_DOLLARS,
     MORTGAGE_INSURANCE_PHASEOUT_STEP_DOLLARS, MORTGAGE_INSURANCE_PHASEOUT_STEP_SEPARATE_DOLLARS,
@@ -45,6 +51,13 @@ const SOURCE: &str = "https://www.irs.gov/pub/irs-dft/p936--dft.pdf";
 /// Enter one for each Form 1098 or loan secured by your main home, your second home or another home.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct MortgageLoan {
+    /// Printed recipient and issuer names
+    /// [NullText]
+    /// No printed names entered
+    /// [SetText]
+    /// Printed names
+    #[libertas_default($null)]
+    pub printed: Option<crate::PrintedDocumentNames>,
     /// Loan record identity
     #[libertas_hidden]
     #[libertas_read_only]
@@ -58,12 +71,14 @@ pub struct MortgageLoan {
     /// Mortgage interest paid in 2026 (Form 1098 box 1)
     /// Exclude points, mortgage insurance premiums and interest paid for a later year.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub interest: i64,
     /// Outstanding mortgage principal (Form 1098 box 2)
     /// The balance on January 1, 2026, or on the date the loan began if later.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub outstanding_principal: i64,
     /// Date of this loan (Form 1098 box 3)
     #[libertas_date_only]
@@ -75,7 +90,8 @@ pub struct MortgageLoan {
     /// Mortgage insurance premiums paid in 2026 (Form 1098 box 5)
     /// Deductible as home mortgage interest on Schedule A line 8d for 2026, reduced when your adjusted gross income is over $100,000 ($50,000 if married filing separately) and none above $109,000 ($54,500). Leave at zero when the contract was issued before 2007.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub mortgage_insurance_premiums: i64,
     /// Points paid on this loan (Form 1098 box 6)
     pub points: MortgagePoints,
@@ -107,130 +123,8 @@ pub struct MortgageLedger {
     pub average: MortgageAverageBalance,
 }
 
-/// How the loan was used
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum MortgageUse {
-    /// To buy, build or substantially improve this home
-    /// Every dollar went to buying, building or substantially improving the home that secures it. A line of credit opened before December 16, 2017 and drawn later dates from the draw: enter that date in box 3.
-    Home,
-    /// To refinance an earlier loan on this home
-    /// Paid off a loan that bought, built or improved this home, with or without more money borrowed.
-    Refinance(MortgageRefinance),
-    /// Partly for this home, partly for other things
-    /// A home equity loan or line of credit, or a loan secured by more than one property (Form 1098 box 9), used partly to buy, build or substantially improve this home.
-    Partly(MortgageSplit),
-    /// For other things only
-    /// A home equity loan or line of credit used for a car, tuition, debts or anything other than this home. Its interest is not home mortgage interest; interest on money used in your business, rental or investments is entered there.
-    Other,
-}
-
-/// Refinance
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct MortgageRefinance {
-    /// Balance of the earlier loan that this loan paid off
-    /// Only the part that was still borrowed to buy, build or improve this home; any part of the earlier loan that was not belongs in the amount for other things below.
-    #[libertas_money("USD", 2)]
-    // Temporary Unit 47 exclusion: original_amount() still sums these i64 loan parts unchecked; widen its receiver before removing this bound.
-    #[libertas_number(min = 1, max = 100000000000)]
-    pub refinanced: i64,
-    /// Date of the earlier loan
-    /// For a chain of refinances, the date of the original loan that bought, built or improved the home.
-    #[libertas_date_only]
-    // Tax-year source window: this date cannot be later than the applicable 2026 cutoff.
-    #[libertas_number(min = 19000101, max = $TAX_YEAR_END_DATE)]
-    pub earlier_incurred: u32,
-    /// Date the original loan's term ended or ends
-    /// Its scheduled final payment. When the original loan paid no principal until the end (a balloon note), the end of the first refinance's term, but not more than 30 years after that refinance. Needed when the original loan is from before October 14, 1987, or from before December 16, 2017 and this loan is later.
-    /// [NullText]
-    /// The original term is not needed for grandfathered-debt treatment
-    /// [SetText]
-    /// The original loan term ended or ends on
-    #[libertas_date_only]
-    pub earlier_term_ends: Option<u32>,
-    /// More borrowed to buy, build or substantially improve this home
-    #[libertas_money("USD", 2)]
-    // Temporary Unit 47 exclusion: original_amount() still sums these i64 loan parts unchecked; widen its receiver before removing this bound.
-    #[libertas_number(min = 0, max = 100000000000)]
-    #[libertas_default(0)]
-    pub improvement: i64,
-    /// More borrowed for other things
-    /// Cash out for anything else, including closing costs added to the loan.
-    #[libertas_money("USD", 2)]
-    // Temporary Unit 47 exclusion: original_amount() still sums these i64 loan parts unchecked; widen its receiver before removing this bound.
-    #[libertas_number(min = 0, max = 100000000000)]
-    #[libertas_default(0)]
-    pub other: i64,
-}
-
-/// Partly for this home
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct MortgageSplit {
-    /// Amount used to buy, build or substantially improve this home
-    /// For a line of credit, enter the total drawn for this use. The calculation treats the totals for each use as borrowed at the start. If you repaid principal between draws for different uses, this totals method can differ from tracing each draw.
-    #[libertas_money("USD", 2)]
-    // Temporary Unit 47 exclusion: original_amount() still sums these i64 loan parts unchecked; widen its receiver before removing this bound.
-    #[libertas_number(min = 1, max = 100000000000)]
-    pub improvement: i64,
-    /// Date you borrowed that amount
-    /// The loan's date, or for a line of credit the date of the draw (the latest one when you drew several times).
-    #[libertas_date_only]
-    // Tax-year source window: this date cannot be later than the applicable 2026 cutoff.
-    #[libertas_number(min = $MORTGAGE_ACQUISITION_FIRST_DATE, max = $TAX_YEAR_END_DATE)]
-    pub improvement_incurred: u32,
-    /// Amount used for other things
-    #[libertas_money("USD", 2)]
-    // Temporary Unit 47 exclusion: original_amount() still sums these i64 loan parts unchecked; widen its receiver before removing this bound.
-    #[libertas_number(min = 1, max = 100000000000)]
-    pub other: i64,
-}
-
-/// Home securing the loan
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum MortgageHome {
-    /// Main home
-    Main,
-    /// Second home
-    /// The one other home you choose for 2026. If you also rent it out, select this loan on the rental: the App applies the residence test from the rental's days, and when your personal use was not more than 14 days or 10% of the days rented, whichever is longer, the personal share of the interest is not deductible.
-    Second,
-    /// Second home that is a boat or recreational vehicle
-    /// With sleeping, cooking and toilet facilities. Its interest is deductible, but not for the alternative minimum tax.
-    SecondVehicle,
-    /// Another home
-    /// A third home, or a second home you do not choose for 2026. Its interest is not personally deductible home mortgage interest. For a home you also rent, keep the loan here and select it on the rental; the rental uses its acquisition-qualified interest without deducting it twice.
-    NotQualified,
-}
-
-/// Lender
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum MortgageLender {
-    /// Bank or other lender that sent a Form 1098
-    Institution,
-    /// Individual who sold you the home
-    PrivateSeller {
-        /// Seller's name
-        #[libertas_size(min = 1)]
-        name: String,
-        /// Seller's SSN or EIN
-        // Legal identifier: nine-digit SSN/EIN, allowing its printed separators.
-        #[libertas_size(min = 9, max = 11)]
-        identifying_number: String,
-        /// Seller's address
-        #[libertas_size(min = 1)]
-        address: String,
-    },
-    /// A lender that sent no Form 1098, or your share of someone else's Form 1098
-    /// Schedule A line 8b. When you and someone other than your spouse owe the loan and the Form 1098 is in that person's name, enter only the interest you paid.
-    NoForm {
-        /// Lender, or the person whose name is on the Form 1098
-        #[libertas_size(min = 1)]
-        name: String,
-    },
-}
-
 /// How the 2026 average balance is figured
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum MortgageAverageBalance {
     /// Within the Pub 936 limit
     /// Confirmed, when this loan was saved, that every loan's outstanding balance together fits the applicable limit.
@@ -239,49 +133,39 @@ pub enum MortgageAverageBalance {
     FirstAndLast {
         /// Balance on the last day of 2026 the loan was secured by this home
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         last_balance: i64,
     },
     /// Interest paid divided by the interest rate
     InterestOverRate {
-        /// Lowest annual interest rate in 2026, in thousandths of one percent
-        /// 6125 means 6.125%.
-        #[libertas_number(min = 1)]
-        rate_thousandths_percent: u32,
+        /// Lowest annual interest rate in 2026
+        #[libertas_number(min = 0.001, max = 30, step = 0.001)]
+        #[libertas_physical_unit("percent")]
+        rate: f64,
     },
     /// From the lender's statements
     Statements {
         /// Average balance
         /// Add the monthly closing or average balances and divide by the months this home qualified, or use the lender's annual average.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         average_balance: i64,
     },
     /// Month-end balances from the lender's statements
     Monthly {
         /// Month-end balances
-        /// ----
-        /// Month
         // Tax structure: one entry for each of the twelve calendar months.
         #[libertas_size(min = 1, max = 12)]
         #[libertas_unordered]
+        /// ----
+        /// Month
         balances: Vec<MortgageMonthBalance>,
     },
 }
-
-/// Month
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct MortgageMonthBalance {
-    /// Month of 2026
-    /// 1 is January.
-    // Tax structure: a calendar year has twelve months.
-    #[libertas_number(min = 1, max = 12)]
-    pub month: u32,
-    /// Balance at the end of the month
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub balance: i64,
-}
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for MortgageAverageBalance {}
 
 /// Refund of overpaid interest
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -292,25 +176,12 @@ pub enum MortgageInterestRefund {
     Yes {
         /// Refund amount (Form 1098 box 4)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
         /// What the refund repays
-        origin: MortgageRefundOrigin,
+        origin: Option<MortgageRefundOrigin>,
     },
-}
-
-/// What the box 4 refund repays
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum MortgageRefundOrigin {
-    /// Interest you paid in 2026
-    /// The lender's letter says so. It reduces this year's interest.
-    ThisYear,
-    /// Interest of an earlier year that you deducted
-    /// Only the part that lowered that year's tax is income (Schedule 1 line 8z). Enter that year's figures; a refund and other recoveries of the same year are figured together.
-    Deducted(crate::PriorYearRecovery),
-    /// Interest of an earlier year that gave no tax benefit
-    /// You took the standard deduction that year or did not deduct this interest. None of the refund is taxable.
-    NotDeducted,
 }
 
 /// Points paid to obtain this loan
@@ -322,17 +193,20 @@ pub enum MortgagePoints {
     Purchase {
         /// Points (Form 1098 box 6)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
     },
     /// Points spread over the loan's term
     Amortized {
         /// Points paid
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
-        /// Loan term in months
+        /// Loan term
         #[libertas_number(min = 1)]
+        #[libertas_physical_unit("month")]
         term_months: u32,
         /// The loan ended in 2026
         ended: bool,
@@ -341,10 +215,12 @@ pub enum MortgagePoints {
     Improvement {
         /// Points paid
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
-        /// Loan term in months
+        /// Loan term
         #[libertas_number(min = 1)]
+        #[libertas_physical_unit("month")]
         term_months: u32,
     },
 }
@@ -462,8 +338,9 @@ impl MortgageLoan {
                     .in_field("details"),
             );
         }
-        if let MortgageInterestRefund::Yes { origin: MortgageRefundOrigin::Deducted(w), .. } =
-            &self.refund_of_interest
+        if let MortgageInterestRefund::Yes {
+            origin: Some(MortgageRefundOrigin::Deducted(w)), ..
+        } = &self.refund_of_interest
             && w.deducted > w.itemized
         {
             return Some(
@@ -494,7 +371,7 @@ impl MortgageLoan {
                     *amount > 0
                         && money(*amount)
                         && match origin {
-                            MortgageRefundOrigin::Deducted(w) => w.valid(),
+                            Some(MortgageRefundOrigin::Deducted(w)) => w.valid(),
                             _ => true,
                         }
                 }
@@ -510,8 +387,9 @@ impl MortgageLoan {
             && match self.average() {
                 MortgageAverageBalance::WithinLimit => true,
                 MortgageAverageBalance::FirstAndLast { last_balance } => money(*last_balance),
-                MortgageAverageBalance::InterestOverRate { rate_thousandths_percent } => {
-                    (1..=30000).contains(rate_thousandths_percent)
+                MortgageAverageBalance::InterestOverRate { rate } => {
+                    crate::kernel::natural::exact(*rate, 1000)
+                        .is_some_and(|rate| (1..=30000).contains(&rate))
                 }
                 MortgageAverageBalance::Statements { average_balance } => money(*average_balance),
                 MortgageAverageBalance::Monthly { balances } => {
@@ -584,9 +462,11 @@ impl MortgageLoan {
             MortgageAverageBalance::FirstAndLast { last_balance } => {
                 fraction(self.outstanding_principal + last_balance, 1, 2)
             }
-            MortgageAverageBalance::InterestOverRate { rate_thousandths_percent } => {
-                fraction(self.interest_after_refund(), 100000, i64::from(*rate_thousandths_percent))
-            }
+            MortgageAverageBalance::InterestOverRate { rate } => fraction(
+                self.interest_after_refund(),
+                100000,
+                crate::kernel::natural::units(*rate, 1000),
+            ),
             MortgageAverageBalance::Statements { average_balance } => *average_balance,
             MortgageAverageBalance::Monthly { balances } => {
                 fraction(balances.iter().map(|m| m.balance).sum(), 1, 12)
@@ -595,9 +475,10 @@ impl MortgageLoan {
     }
     pub(crate) fn interest_after_refund(&self) -> i64 {
         let refund = match &self.refund_of_interest {
-            MortgageInterestRefund::Yes { amount, origin: MortgageRefundOrigin::ThisYear } => {
-                *amount
-            }
+            MortgageInterestRefund::Yes {
+                amount,
+                origin: Some(MortgageRefundOrigin::ThisYear),
+            } => *amount,
             _ => 0,
         };
         positive(self.interest - refund)
@@ -866,9 +747,7 @@ fn debt_categories(loans: &[MortgageLoan]) -> [i64; 3] {
     let mut categories = [0; 3];
     for root in loans.iter().filter(|loan| loan.ledger().is_some() && loan.qualified_home()) {
         let mut ledger = root.clone();
-        if let MortgageAverageBalance::InterestOverRate { rate_thousandths_percent } =
-            root.average()
-        {
+        if let MortgageAverageBalance::InterestOverRate { rate } = root.average() {
             let interest = loans
                 .iter()
                 .filter(|loan| canonical(loans, loan).is_some_and(|r| r.id == root.id))
@@ -879,7 +758,7 @@ fn debt_categories(loans: &[MortgageLoan]) -> [i64; 3] {
                     average_balance: fraction(
                         interest,
                         100000,
-                        i64::from(*rate_thousandths_percent),
+                        crate::kernel::natural::units(*rate, 1000),
                     ),
                 };
             }
@@ -1070,5 +949,5 @@ pub(crate) fn vehicle_insurance_premiums(loans: &[MortgageLoan], agi: i64, separ
 }
 
 fn line(result: &mut FederalResult, id: &str, amount: i64, explanation: crate::Message) {
-    crate::kernel::lines::line(result, id, amount, &["deductions.mortgage"], SOURCE, explanation);
+    crate::line_emission::line(result, id, amount, &["deductions.mortgage"], SOURCE, explanation);
 }

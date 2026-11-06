@@ -6,10 +6,9 @@ use libertas_macros::{
 };
 
 /// Stored-shape release marker. The release owner advances this before deployment.
-/// The stable single-u32 legacy marker stays readable for the isolated format-124
-/// rehearsal. Normal keyed loads use the working header's layout generation and
-/// never reset a corrupt or unknown keyed return.
-pub const STORAGE_FORMAT: u32 = 139;
+/// Keyed loads check the stable format marker before decoding the header or
+/// body and never reset a corrupt or unknown keyed return.
+pub const STORAGE_FORMAT: u32 = 218;
 
 /// Saved tax return
 /// Complete accepted pages; unfinished editor values are never stored.
@@ -22,11 +21,6 @@ pub enum TaxAppData {
     StorageFormat {
         /// Format number
         format: u32,
-    },
-    /// Accepted 2026 return
-    Draft {
-        /// Retained format-124 answers
-        draft: crate::migration124::Draft124,
     },
     /// Household structure and parent-return facts
     Household {
@@ -89,16 +83,14 @@ pub enum TaxAppData {
         /// Complete accepted section, including absence
         injured_spouse: Option<InjuredSpouseAllocation>,
     },
-    /// Accepted less-common review selections
+    /// Accepted situations people often miss and credit notices
     ReviewSelections {
-        /// Income and deduction situations
-        situations: alloc::vec::Vec<crate::RareSituation>,
-        /// Adjustment review selections
-        adjustment_refusals: alloc::vec::Vec<crate::MoreAdjustment>,
+        /// Situations people often miss
+        often_missed: crate::OftenMissed,
         /// Credit review selections
         credit_refusals: alloc::vec::Vec<crate::MoreCreditRefusal>,
-        /// Other-tax review selections
-        tax_refusals: alloc::vec::Vec<crate::OtherTaxRefusal>,
+        /// Accepted answers about income without a form, absent until saved
+        without_form: Option<crate::IncomeWithoutFormAnswers>,
     },
     /// Beneficiary-owned Coverdell excess records
     CoverdellExcessSection {
@@ -120,6 +112,15 @@ pub enum TaxAppData {
         /// Complete accepted home sources and claims in their original order
         home_sites: alloc::vec::Vec<crate::HomeOfficeSite>,
     },
+    /// One actual partnership paper, its source statements and personal records
+    PartnershipDocument {
+        /// Zero-based accepted income order
+        position: i64,
+        /// Source facts and independent records; calculation values are projected on load
+        record: crate::StoredPartnershipDocument,
+    },
+    /// One S-corporation paper, actual statements and independent personal records
+    ScorpDocument { position: i64, record: crate::StoredScorpDocument },
 }
 
 /// Household record
@@ -157,6 +158,8 @@ pub struct WorkingHeader {
     pub revision: i64,
     /// Completed sections in accepted order
     pub finished_sections: alloc::vec::Vec<crate::TaxSection>,
+    /// Documents whose rare situations no saved topic page has answered yet
+    pub situations_unanswered: alloc::vec::Vec<i64>,
     /// Review completed
     pub finished: bool,
     /// Presence of the eight optional accepted sections, in draft declaration order
@@ -168,8 +171,7 @@ pub struct WorkingHeader {
 }
 
 /// Saved return keys
-/// Working returns use the user/year namespace. The original marker and draft
-/// keys remain reserved for the isolated legacy migration.
+/// Working returns use the user/year namespace.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasExport, LibertasKeyCodec, LibertasKeyDecode)]
 pub enum TaxDataKey {
     /// Stored format marker
@@ -177,12 +179,7 @@ pub enum TaxDataKey {
         /// Return owner
         user: LibertasUser,
     },
-    /// Latest accepted return
-    Draft {
-        /// Return owner
-        user: LibertasUser,
-    },
-    // Fixed kind assignments: 1 header; 2 household; 3 filer (id 1 taxpayer,
+    // Fixed kind assignments: 0 format marker; 1 header; 2 household; 3 filer (id 1 taxpayer,
     // 2 spouse, distinct from Hub users); 4 dependent; 5 setup; 6 checklist;
     // 7 income document/semantic sale; 8 adjustments; 9 deductions; 10 credits;
     // 11 screening; 12 injured spouse; 13 review selections; 14 Coverdell;
@@ -207,7 +204,7 @@ pub enum TaxDataKey {
 impl TaxDataKey {
     /// SDK-encoded prefix covering all working and filed records for one user/year.
     /// Field boundaries are 2 (root), 10 (user), 14 (year), 22 (copy),
-    /// 24 (kind), and 32 (identity) bytes. It cannot include either user-only key.
+    /// 24 (kind), and 32 (identity) bytes. It cannot include the user-only marker key.
     pub fn return_record_prefix(
         user: LibertasUser,
         tax_year: i32,

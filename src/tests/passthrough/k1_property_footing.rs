@@ -27,6 +27,9 @@ fn mirror(source: &mut FederalIncome) {
     match source {
         FederalIncome::Partnership { data } => data.alternative = Some(data.regular.clone()),
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             let amt = amt_records(data);
             for sale in &mut data.section179_sales {
                 sale.alternative =
@@ -51,9 +54,10 @@ fn configure(
         FederalIncome::Partnership { data } => {
             data.section179_sales = rows;
             data.regular.section1231 = original;
-            data.regular.basis.opening = basis * 100;
+            data.regular.basis.opening = Some(basis * 100);
             data.regular.risk.start = start;
-            let PartnerParticipation::General { facts } = &mut data.participation else {
+            data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
+            let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
                 unreachable!()
             };
             if passive {
@@ -61,10 +65,14 @@ fn configure(
             }
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             data.section179_sales = rows;
             data.section1231 = original;
-            data.opening = basis * 100;
+            data.opening = Some(basis * 100);
             data.risk.start = start;
+            data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
             if passive {
                 data.participation.as_mut().unwrap().minutes = 0;
             }
@@ -208,6 +216,9 @@ fn k1_property_footing_independent_amt_loss_does_not_duplicate_form() {
                     200_000
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales[0].alternative.reported_amounts_mut().unwrap().depreciation =
                     200_000
             }
@@ -283,7 +294,11 @@ fn k1_property_footing_original_cents_are_preserved_and_rounded_once() {
         check(&d, id, false, &[-1], -1, -2);
         let cents = match &d.income[0].income {
             FederalIncome::Partnership { data } => data.regular.section1231.as_ref().unwrap().net,
-            FederalIncome::Scorp { data } => data.section1231.as_ref().unwrap().net,
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                data.section1231.as_ref().unwrap().net
+            }
             _ => unreachable!(),
         };
         assert_eq!(cents, -149);
@@ -306,7 +321,11 @@ fn k1_property_footing_rental_component_stays_in_original_k1_row() {
             FederalIncome::Partnership { data } => {
                 data.regular.rentals.real_estate_property = rental
             }
-            FederalIncome::Scorp { data } => data.rentals.real_estate_property = rental,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.rentals.real_estate_property = rental
+            }
             _ => unreachable!(),
         }
         mirror(&mut source);
@@ -345,12 +364,15 @@ fn k1_property_footing_whole_interest_sale_releases_only_its_own_prior_loss() {
         match &mut source {
             FederalIncome::Partnership { data } => {
                 data.final_k1 = true;
-                data.disposition = K1Disposition::Sold { proceeds: 1_000_000 };
+                data.disposition = Some(K1Disposition::Sold { proceeds: 1_000_000 });
                 data.interest_term = Some(GainTerm::Long);
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.final_k1 = true;
-                data.disposition = K1Disposition::Sold { proceeds: 1_000_000 };
+                data.disposition = Some(K1Disposition::Sold { proceeds: 1_000_000 });
                 data.stock_term = Some(GainTerm::Long);
             }
             _ => unreachable!(),

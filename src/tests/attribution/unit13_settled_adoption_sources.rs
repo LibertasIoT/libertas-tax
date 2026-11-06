@@ -19,7 +19,11 @@ fn unit13_settled_adoption_unmatched_code_t_stays_with_actual_employee() {
                 assert_eq!(value(&r, "taxable_income"), 73_800);
                 assert_eq!(r.tax, Some(836_300));
                 assert_eq!(r.refund, Some(163_700));
-                let d = save_reopen_native_sources(d, &[TaxSection::Wages], &[TaxSection::Wages]);
+                let d = save_reopen_native_sources(
+                    d,
+                    &[TaxSection::Documents],
+                    &[TaxSection::Documents],
+                );
                 let r = supported(&d);
                 let mut owners = [60_000, 40_000];
                 owners[usize::from(owner == Owner::Spouse)] += 6000;
@@ -87,8 +91,8 @@ fn unit13_settled_adoption_program_keeps_financial_owner_when_source_class_unkno
                     }
                     let d = save_reopen_native_sources(
                         d,
-                        &[TaxSection::Wages, TaxSection::MoreCredits],
-                        &[TaxSection::Wages],
+                        &[TaxSection::Documents, TaxSection::MoreCredits],
+                        &[TaxSection::Documents],
                     );
                     let r = supported(&d);
                     let mut output = FederalResult::empty(d.revision);
@@ -116,7 +120,10 @@ fn unit13_settled_adoption_program_keeps_financial_owner_when_source_class_unkno
                     facts.income_categories.unclassified_dollars = if matched { 0 } else { 11_165 };
                     let totals = actual_liability_totals(&r);
                     let projection = crate::injured_spouse::owners::project_sources(
-                        &d,
+                        crate::related_forms::RelatedFormContext::original(
+                            &d,
+                            &crate::related_forms::effective_claimants(&d),
+                        ),
                         &r,
                         d.injured_spouse.as_ref(),
                         &facts,
@@ -159,7 +166,7 @@ fn unit13_settled_adoption_program_keeps_financial_owner_when_source_class_unkno
 #[test]
 fn unit13_settled_adoption_joint_deemed_excess_remains_separately_unavailable() {
     let mut d = joint_special_needs_below_code_t_cap();
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(allocation());
     let r = supported(&d);
     assert_eq!(return_line(&r, "1a"), 10_000_000);

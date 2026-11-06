@@ -27,19 +27,22 @@ pub struct BusinessSale {
     /// Price for inventory
     /// Ordinary business income, counted with your sales.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub inventory: i64,
     /// Price for goodwill and going-concern value you built up
     /// A long-term capital gain (basis zero). Not for goodwill you bought with the business.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub goodwill: i64,
     /// Payment for your covenant not to compete
     /// Ordinary income, not subject to self-employment tax.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub covenant: i64,
     /// Purchased goodwill or other section 197 intangibles sold, an installment sale of these amounts, or an allocation the buyer reports differently

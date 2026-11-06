@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 263000, "rule": {"select": "^<GeneralAnnuity>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_ANNUITY_CONTRACT", "fields": ["started", "frequency", "duration", "qualified_age", "cost", "recovered"]}, {"title": "DISPLAY_ANNUITY_PAYMENTS", "fields": ["periodic", "received", "earlier_payments", "partial", "increase"]}, {"title": "DISPLAY_ANNUITY_RECORDS", "fields": ["eligible"]}]}},
+    {"order": 264000, "rule": {"select": "^<GeneralAnnuity>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_ANNUITY_CONTRACT", "fields": ["started", "frequency", "duration", "qualified_age", "cost", "recovered"]}, {"title": "DISPLAY_ANNUITY_PAYMENTS", "fields": ["periodic", "received", "earlier_payments", "partial", "increase"]}, {"title": "DISPLAY_ANNUITY_RECORDS", "fields": ["eligible"]}]}},
+    {"order": 265000, "rule": {"select": "^<VariableAnnuity>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_VARIABLE_CONTRACT", "fields": ["started", "age", "cost", "history", "term"]}, {"title": "DISPLAY_VARIABLE_PAYMENTS", "fields": ["frequency", "period", "payments", "earlier"]}, {"title": "DISPLAY_VARIABLE_RECORDS", "fields": ["eligible"]}]}},
+    {"order": 266000, "rule": {"select": "^<VariableAnnuity>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_VARIABLE_CONTRACT", "fields": ["started", "age", "cost", "history", "term"]}, {"title": "DISPLAY_VARIABLE_PAYMENTS", "fields": ["frequency", "period", "payments", "earlier"]}, {"title": "DISPLAY_VARIABLE_RECORDS", "fields": ["eligible"]}]}}
+  ]
+}

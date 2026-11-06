@@ -1,0 +1,77 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF pp. 27-28",
+  "example": "In-plan Roth rollover, Example (December distribution at age 57)",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "taxpayer born 1969-06-15 (age 57 in December 2026)",
+   "reason": "the example gives age 57"
+  },
+  {
+   "fact": "the distribution's 1099-R shows code 1B (early distribution with a designated Roth account)",
+   "reason": "the example gives boxes 1, 2a and 10 but not box 7a"
+  },
+  {
+   "fact": "the rollover is the first in-plan Roth rollover and has no prior-year amounts",
+   "reason": "the example: first in-plan rollover, no prior rollovers"
+  },
+  {
+   "fact": "1,500 of box 10 was not taxable when rolled in (the chart's Nontaxable column)",
+   "reason": "the example's Recapture Allocation Chart"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19690615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "G",
+     "gross": 50000,
+     "taxable": 30000
+    },
+    {
+     "doc": "pension",
+     "printed": "1B",
+     "gross": 35000,
+     "taxable": 3500,
+     "box_10": 31500,
+     "box_10_basis": 1500
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 85000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 33500,
+   "provenance": "printed"
+  },
+  {
+   "form": "Sch2",
+   "line": "5",
+   "amount": 3350,
+   "provenance": "derived",
+   "derivation": "10% (section 72(t)) of the printed Form 5329 line 1 amount 33,500; the App has no printed Form 5329 Part I line"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

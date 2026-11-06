@@ -66,7 +66,8 @@ fn tip_fica_2025_source_and_competing_adjustments_are_guarded() {
     draft.credits.as_mut().unwrap().tip_fica_carryforward = Some(invalid);
     unsupported(&draft, "Employer tip FICA");
     draft.credits.as_mut().unwrap().tip_fica_carryforward = Some(source);
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_interest_reduction());
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_interest_reduction()));
     let decrease = supported(&draft);
     // Tax5,023 minus the220 negative8978 credit reserves4,803 for3800.
     // The2,000 specified carry fits; final tax=5,023−220−2,000=2,803.
@@ -92,8 +93,12 @@ fn disability_w2_credit_preserves_income_once_and_checks_source_facts() {
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.disabled = true;
     d.income[0] = wage(1, Owner::Taxpayer, 1700000, 0);
+    let names = accepted_document_names(&d, Owner::Taxpayer);
+    prepare_income_fixture(&mut d.income[0], Some(names));
     let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.disability = DisabilityIncome::Qualifying { amount: 1700000, eligible: true };
+    drop(data);
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 17000);
     assert_eq!(return_line(&r, "1a"), 1700000);
@@ -103,8 +108,17 @@ fn disability_w2_credit_preserves_income_once_and_checks_source_facts() {
     unsupported(&d, "Disability retirement");
     d.people.as_mut().unwrap().taxpayer.disabled = true;
     let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.disability = DisabilityIncome::Qualifying { amount: 1700001, eligible: true };
-    assert!(!d.valid_stored());
+    drop(data);
+    assert!(d.valid_stored());
+    unsupported(&d, "Income");
+    let mut session = restart(d);
+    let request =
+        crate::tests::support::client::income_pages::open_topic(&mut session, TaxSection::Wages);
+    let before = session.draft.clone();
+    assert!(matches!(send(&mut session, request), Reply::Response(P::Problem { .. })));
+    assert_eq!(session.draft, before);
 }
 
 #[test]

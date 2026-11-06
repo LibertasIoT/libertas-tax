@@ -17,19 +17,19 @@ fn properties() -> Vec<crate::K1InvestmentProperty> {
         })
         .collect()
 }
-fn page(kind: &str) -> IncomeDocument {
+fn page(kind: &str) -> IncomeSource {
     match kind {
         "partner" => {
             let mut page = k1_1065("Same synthetic parent");
             page.more.investment_property = properties();
             page.more.investment_confirmed = Some(crate::K1InvestmentConfirmation::Yes);
-            IncomeDocument::K1Partnership(page)
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
         }
         "scorp" => {
             let mut page = k1_1120s("Same synthetic parent");
             page.more.investment_property = properties();
             page.more.investment_confirmed = Some(crate::K1InvestmentConfirmation::Yes);
-            IncomeDocument::K1Scorp(page)
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
         }
         "estate" => {
             let mut page = k1_1041("Same synthetic parent");
@@ -40,41 +40,48 @@ fn page(kind: &str) -> IncomeDocument {
                     activities: vec![],
                 })
                 .collect();
-            IncomeDocument::K1EstateTrust(page)
+            IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(page)) }
         }
         _ => unreachable!(),
     }
 }
-fn properties_mut(page: &mut IncomeDocument) -> Vec<&mut crate::K1InvestmentProperty> {
+fn properties_mut<R>(
+    page: &mut IncomeSource,
+    edit: impl FnOnce(Vec<&mut crate::K1InvestmentProperty>) -> R,
+) -> R {
     match page {
-        IncomeDocument::K1Partnership(page) => page.more.investment_property.iter_mut().collect(),
-        IncomeDocument::K1Scorp(page) => page.more.investment_property.iter_mut().collect(),
-        IncomeDocument::K1EstateTrust(page) => page
-            .investment_property
-            .iter_mut()
-            .map(|v| &mut v.property)
-            .collect(),
+        IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+            edit(page.statements.investment_property.iter_mut().collect())
+        }
+        IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+            edit(page.statements.investment_property.iter_mut().collect())
+        }
+        IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } => {
+            let mut page = edit_estate_document(page);
+            edit(page.investment_property.iter_mut().map(|v| &mut v.property).collect())
+        }
         _ => unreachable!(),
     }
 }
-fn reverse(page: &mut IncomeDocument) {
+fn reverse(page: &mut IncomeSource) {
     match page {
-        IncomeDocument::K1Partnership(page) => page.more.investment_property.reverse(),
-        IncomeDocument::K1Scorp(page) => page.more.investment_property.reverse(),
-        IncomeDocument::K1EstateTrust(page) => page.investment_property.reverse(),
+        IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+            page.statements.investment_property.reverse()
+        }
+        IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+            page.statements.investment_property.reverse()
+        }
+        IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } => {
+            page.statements.investment_property.reverse()
+        }
         _ => unreachable!(),
     }
 }
 fn source(session: &Interview) -> &FederalIncomeEntry {
-    session
-        .draft
-        .income
-        .iter()
-        .find(|e| !k1_property_ids(&e.income).is_empty())
-        .unwrap()
+    session.draft.income.iter().find(|e| !k1_property_ids(&e.income).is_empty()).unwrap()
 }
 fn save(session: &mut Interview, rows: Vec<IncomeDocumentItem>) -> Reply {
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, rows);
+    let request = crate::tests::support::client::income_pages::save_documents(session, rows);
     send(session, request)
 }
 #[test]
@@ -87,40 +94,37 @@ fn unit16_k1_property_ids_assign_once_and_conserve_native_basis_output() {
         let ids = k1_property_ids(&source.income);
         assert_eq!(ids, vec![3, 4]); // parent2, then the actual two properties.
         let outputs = k1_property_credit_sources(&source.income).unwrap();
-        assert_eq!(
-            outputs.iter().map(|v| v.property_id).collect::<Vec<_>>(),
-            ids
-        );
+        assert_eq!(outputs.iter().map(|v| v.property_id).collect::<Vec<_>>(), ids);
         // Native credits round3000.003/6000.003 to3000/6000; exactly half
         // of the corresponding native-dollar credits reduces basis in cents.
         assert_eq!(
-            outputs
-                .iter()
-                .map(|v| v.basis_decrease_cents)
-                .collect::<Vec<_>>(),
+            outputs.iter().map(|v| v.basis_decrease_cents).collect::<Vec<_>>(),
             vec![150_000, 300_000]
         );
         let canonical = match &source.income {
             FederalIncome::Partnership { data } => {
                 crate::investment_credit::k1_basis_decrease(&data.investment_property)
             }
-            FederalIncome::Scorp { data } => {
-                crate::investment_credit::k1_basis_decrease(&data.investment_property)
-            }
+            FederalIncome::Scorp { data } => crate::investment_credit::k1_basis_decrease(
+                &crate::ScorpK1::from(data).investment_property,
+            ),
             FederalIncome::EstateTrustPortfolio { data } => data
+                .statements
                 .investment_property
                 .iter()
                 .map(|v| v.property.basis_decrease())
                 .sum(),
             _ => unreachable!(),
         };
-        assert_eq!(
-            outputs.iter().map(|v| v.basis_decrease_cents).sum::<i64>(),
-            canonical
-        );
+        assert_eq!(outputs.iter().map(|v| v.basis_decrease_cents).sum::<i64>(), canonical);
         let result = estimate(&session.draft);
         let saved = session.draft.clone();
-        let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+        let rows = page_documents(
+            &crate::tests::support::client::income_pages::open_document_center(&mut session),
+        )
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
         accepted(&save(&mut session, rows));
         assert_eq!(session.draft, saved);
         assert_eq!(estimate(&restart(saved).draft), result);
@@ -131,28 +135,39 @@ fn unit16_k1_property_reorder_correction_and_replacement_keep_actual_identity() 
     for kind in ["partner", "scorp", "estate"] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         accepted(&save(&mut session, vec![document(0, page(kind))]));
-        let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+        let mut rows = page_documents(
+            &crate::tests::support::client::income_pages::open_document_center(&mut session),
+        )
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
         reverse(&mut rows[0].document);
-        if let crate::K1InvestmentProperty::Energy { basis, .. } =
-            properties_mut(&mut rows[0].document)
-                .into_iter()
-                .next()
-                .unwrap()
-        {
-            *basis = 3_000_001;
-        }
+        properties_mut(&mut rows[0].document, |properties| {
+            if let crate::K1InvestmentProperty::Energy { basis, .. } =
+                properties.into_iter().next().unwrap()
+            {
+                *basis = 3_000_001;
+            }
+        });
         accepted(&save(&mut session, rows));
         assert_eq!(k1_property_ids(&source(&session).income), vec![4, 3]);
         assert_eq!(
             k1_property_credit_sources(&source(&session).income).unwrap()[0].basis_decrease_cents,
             450_000
         );
-        let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+        let mut rows = page_documents(
+            &crate::tests::support::client::income_pages::open_document_center(&mut session),
+        )
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
         // Imported/replaced unkeyed rows are genuinely new sources. Neither
         // matching amount nor position may silently reuse an old property ID.
-        for p in properties_mut(&mut rows[0].document) {
-            *p.id_mut() = 0;
-        }
+        properties_mut(&mut rows[0].document, |properties| {
+            for p in properties {
+                *p.id_mut() = 0;
+            }
+        });
         accepted(&save(&mut session, rows));
         assert_eq!(k1_property_ids(&source(&session).income), vec![5, 6]);
     }
@@ -161,23 +176,19 @@ fn unit16_k1_property_reorder_correction_and_replacement_keep_actual_identity() 
 fn unit16_k1_property_foreign_duplicate_and_guessed_ids_reject_atomically() {
     for kind in ["partner", "scorp", "estate"] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        accepted(&save(
-            &mut session,
-            vec![document(0, page(kind)), document(0, page(kind))],
-        ));
-        let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+        accepted(&save(&mut session, vec![document(0, page(kind)), document(0, page(kind))]));
+        let rows = page_documents(
+            &crate::tests::support::client::income_pages::open_document_center(&mut session),
+        )
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
         let first = k1_property_ids(
-            &session
-                .draft
-                .income
-                .iter()
-                .find(|e| e.id == rows[0].id)
-                .unwrap()
-                .income,
+            &session.draft.income.iter().find(|e| e.id == rows[0].id).unwrap().income,
         );
         for bad in [first[0], session.draft.next_id, rows[0].id] {
             let mut forged = rows.clone();
-            *properties_mut(&mut forged[1].document)[0].id_mut() = bad;
+            properties_mut(&mut forged[1].document, |mut properties| *properties[0].id_mut() = bad);
             let before = session.draft.clone();
             rejected_with(
                 save(&mut session, forged),
@@ -186,8 +197,8 @@ fn unit16_k1_property_foreign_duplicate_and_guessed_ids_reject_atomically() {
             assert_eq!(session.draft, before);
         }
         let mut forged = rows;
-        let first = properties_mut(&mut forged[0].document)[0].id();
-        *properties_mut(&mut forged[0].document)[1].id_mut() = first;
+        let first = properties_mut(&mut forged[0].document, |properties| properties[0].id());
+        properties_mut(&mut forged[0].document, |mut properties| *properties[1].id_mut() = first);
         let before = session.draft.clone();
         rejected_with(
             save(&mut session, forged),
@@ -201,35 +212,32 @@ fn unit16_k1_property_actual_client_save_reopen_restart() {
     extern crate std;
     let kind = std::env::var("TAX_UNIT16_ID_KIND").unwrap_or_else(|_| "partner".into());
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let seed = open_topic(&mut session, TaxSection::PassThrough);
+    let seed = crate::tests::support::client::income_pages::open_document_center(&mut session);
     if let Ok(input) = std::env::var("TAX_UNIT16_ID_CALC_INPUT") {
         // A correction calculation belongs to the genuinely accepted first
         // Save. Restore that exact payload through the public writer so its
         // parent/property identities have the same native authorization.
         if let Ok(path) = std::env::var("TAX_UNIT16_ID_ACCEPTED") {
             let request = P::from_avro(&std::fs::read(path).unwrap()).unwrap();
-            accepted(&send(&mut session, request));
+            accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            ));
             assert_eq!(k1_property_ids(&source(&session).income), vec![3, 4]);
         }
         let request = P::from_avro(&std::fs::read(input).unwrap()).unwrap();
         let Reply::Response(response) = send(&mut session, request) else {
             panic!("normal calculation response")
         };
-        std::fs::write(
-            std::env::var("TAX_UNIT16_ID_CALC_OUTPUT").unwrap(),
-            response.to_avro(),
-        )
-        .unwrap();
+        std::fs::write(std::env::var("TAX_UNIT16_ID_CALC_OUTPUT").unwrap(), response.to_avro())
+            .unwrap();
         return;
     }
-    let mut answers = seed.clone();
-    let P::SaveIncomes { documents, .. } = &mut answers else {
-        panic!()
-    };
-    documents.documents.push(document(0, page(&kind)));
-    let dir = std::env::var("TAX_UNIT16_ID_DIR")
-        .ok()
-        .map(std::path::PathBuf::from);
+    let answers = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![document(0, page(&kind))],
+    );
+    let dir = std::env::var("TAX_UNIT16_ID_DIR").ok().map(std::path::PathBuf::from);
     if std::env::var("TAX_UNIT16_ID_SEED_ONLY").as_deref() == Ok("1") {
         let dir = dir.unwrap();
         std::fs::write(dir.join("seed.avro"), seed.to_avro()).unwrap();
@@ -241,14 +249,17 @@ fn unit16_k1_property_actual_client_save_reopen_restart() {
     } else {
         answers
     };
-    accepted(&send(&mut session, request));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     assert_eq!(k1_property_ids(&source(&session).income), vec![3, 4]);
     let result = estimate(&session.draft);
     let saved = session.draft.clone();
     session = restart(saved.clone());
     assert_eq!(session.draft, saved);
     assert_eq!(estimate(&session.draft), result);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut session);
     if let Some(dir) = &dir {
         std::fs::write(dir.join("reopened.avro"), reopened.to_avro()).unwrap();
     }
@@ -256,7 +267,10 @@ fn unit16_k1_property_actual_client_save_reopen_restart() {
     assert_eq!(session.draft, saved);
     if let Ok(path) = std::env::var("TAX_UNIT16_ID_RESAVE_PAYLOAD") {
         let request = P::from_avro(&std::fs::read(path).unwrap()).unwrap();
-        accepted(&send(&mut session, request));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
         assert_eq!(k1_property_ids(&source(&session).income), vec![4, 3]);
         assert_eq!(session.draft.next_id, saved.next_id);
         assert_eq!(
@@ -266,7 +280,8 @@ fn unit16_k1_property_actual_client_save_reopen_restart() {
         let corrected = session.draft.clone();
         session = restart(corrected.clone());
         assert_eq!(session.draft, corrected);
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
+        let reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         if let Some(dir) = &dir {
             std::fs::write(dir.join("corrected-reopened.avro"), reopened.to_avro()).unwrap();
         }
@@ -305,13 +320,10 @@ fn unit16_k1_property_all_variants_keep_identity_when_community_amounts_divide()
     ]);
     let mut page = k1_1065("Synthetic divided source");
     page.more.investment_property = properties;
-    let mut original = FederalIncome::Partnership {
-        data: page.record(),
-    };
+    let mut original = FederalIncome::Partnership { data: page.record() };
     assert!(k1_property_credit_sources(&original).is_none());
-    for (i, id) in crate::investment_credit::k1_property_ids_mut(&mut original)
-        .into_iter()
-        .enumerate()
+    for (i, id) in
+        crate::investment_credit::k1_property_ids_mut(&mut original).into_iter().enumerate()
     {
         *id = i as i64 + 10;
     }
@@ -336,9 +348,7 @@ fn unit16_k1_property_all_variants_keep_identity_when_community_amounts_divide()
         .map(|v| v.basis_decrease_cents)
         .collect::<Vec<_>>();
     assert_eq!(amounts, vec![150_000, 300_000, 2_000_000, 0, 30_000]);
-    let FederalIncome::Partnership { data } = divided.as_ref() else {
-        unreachable!()
-    };
+    let FederalIncome::Partnership { data } = divided.as_ref() else { unreachable!() };
     let crate::K1InvestmentProperty::RehabilitationRental {
         own_form: None,
         expenditures,

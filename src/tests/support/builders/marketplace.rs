@@ -82,19 +82,25 @@ pub(in crate::tests) fn marketplace_claim(
             });
         }
         for p in m.policies {
-            let at = if let Some(at) = facts.forms.iter().position(|f| f.issuer == p.label) {
+            let at = if let Some(at) = facts.forms.iter().position(|f| f.form.issuer == p.label) {
                 at
             } else {
                 let id = d.next_id;
                 d.next_id += 1;
                 facts.forms.push(MarketplacePolicyRecord {
+                    printed: None,
                     id,
-                    issuer: p.label.clone(),
-                    policy_number: "Fixture source".into(),
-                    amounts: PolicyAmounts::ByMonth { months: vec![] },
+                    form: MarketplacePolicyRecordPage {
+                        recipient: Default::default(),
+                        id,
+                        issuer: p.label.clone(),
+                        policy_number: "Fixture source".into(),
+                        amounts: PolicyAmounts::ByMonth { months: vec![] },
+                        status: MarketplaceStatementStatus::Original,
+                    }
+                    .into(),
                     lawful_premiums: vec![],
                     enrolling: MarketplaceFamilyRef::ThisReturn,
-                    status: MarketplaceStatementStatus::Original,
                     coverage: vec![],
                     allocation: vec![],
                     payments: vec![],
@@ -187,15 +193,8 @@ pub(in crate::tests) fn marketplace_claim(
                     kind,
                 });
             }
-            let PolicyAmounts::ByMonth { months } = &mut facts.forms[at].amounts else {
-                unreachable!()
-            };
-            months.push(PolicyMonth {
-                month: m.month,
-                premium: p.premium,
-                benchmark: Some(m.benchmark),
-                advance: p.advance,
-            });
+            let paper = &mut facts.forms[at].form;
+            paper.set_month(m.month, p.premium, Some(m.benchmark), p.advance);
             facts.forms[at].coverage.push(MarketplacePolicyCoverage {
                 month: m.month,
                 people: covered.clone(),
@@ -223,7 +222,8 @@ pub(in crate::tests) fn marketplace_claim(
     }
     if facts.forms.iter().any(|p| {
         (1..=12).any(|m| {
-            crate::marketplace_sources::policy_month(&p.amounts, m).is_some_and(|(_, _, a)| a > 0)
+            crate::marketplace_sources::policy_month(&p.form.amounts(), m)
+                .is_some_and(|(_, _, a)| a > 0)
         })
     }) {
         // Explicit neutral enrollment estimate facts for below-FPL fixtures.
@@ -288,7 +288,10 @@ pub(in crate::tests) fn marketplace_nonmedical_child(increase: Option<i64>) -> F
         tax_free_child: None,
     });
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     d
 }
 

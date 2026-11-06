@@ -5,7 +5,7 @@ fn section1244_limit_is_shared_across_lots_and_spouses() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, income(section1244_loss(90000, 0, 20200101)));
     let mut spouse = income(section1244_loss(25000, 0, 20200101));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "section_1244_ordinary_loss"), 100000);
@@ -114,6 +114,7 @@ fn trading_property_interest_election_uses_independent_amt_character() {
     draft.screening.as_mut().unwrap().section1231 =
         Some(section1231_history(&[(2025, 8000, 8000)], &[]));
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut data = edit_scorp(data);
         data.amt.as_mut().unwrap().section1231.as_mut().unwrap().net = 1000000;
     }
     draft.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().election =
@@ -136,7 +137,7 @@ fn qsbs_issuer_cap_is_shared_across_documents_and_spouses() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, qsb_income("Synthetic A Inc.", 10_000_000, 710_000_000, 0));
     let mut spouse = qsb_income(" synthetic a inc. ", 10_000_000, 710_000_000, 0);
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "qsbs_2_realized_gain"), 14_000_000);
@@ -146,7 +147,7 @@ fn qsbs_issuer_cap_is_shared_across_documents_and_spouses() {
 
     let mut inconsistent = d.clone();
     if let FederalIncome::QualifiedSmallBusinessSale { data } = &mut inconsistent.income[2].income {
-        data.prior_eligible_gain = 100_000_000;
+        data.prior_eligible_gain = Some(100_000_000);
     }
     unsupported(&inconsistent, "Section 1202 issuer history");
 }

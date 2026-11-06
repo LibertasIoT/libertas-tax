@@ -1,15 +1,16 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
-use crate::tests::support::builders::k1res::{documents, input};
-use crate::tests::support::client::income_pages::catalog_preview_document;
+use crate::tests::cross::interview::accepted;
+use crate::tests::support::builders::k1res::documents;
+use crate::tests::support::builders::k1res::expected_input;
 use crate::tests::support::client::k1res::financial_property_session;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::*;
 
 #[test]
 fn bound_properties_reduce_entity_basis_once_and_reach_native_credit_lifecycle() {
     for scorp in [false, true] {
         let mut session = financial_property_session(scorp);
-        let initial_review = send(&mut session, P::ReviewAccepted { user: TEST_USER });
+        let initial_review = send_fixture(&mut session, P::ReviewAccepted { user: TEST_USER });
         let saved = session.draft.clone();
         let source_index = saved
             .income
@@ -79,21 +80,21 @@ fn bound_properties_reduce_entity_basis_once_and_reach_native_credit_lifecycle()
             30_000
         );
 
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
-        assert_eq!(documents(&mut request)[0].document, input(&saved.income[source_index].income));
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        assert_eq!(
+            documents(&mut request)[0].document,
+            expected_input(&saved, &saved.income[source_index])
+        );
         let dirty = session.dirty;
-        let mut preview = catalog_preview_document(documents(&mut request)[0].document.clone());
-        let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-        *preview_id = id;
-        assert!(matches!(
-            send(&mut session, preview),
-            Reply::Response(P::IncomePreview { preview: Some(-70_000), .. })
-        ));
+
         assert_eq!(session.draft, saved);
         assert_eq!(session.dirty, dirty);
         let properties = match &mut documents(&mut request)[0].document {
-            IncomeDocument::K1PartnershipActivities(page) => &mut page.entity.investment_property,
-            IncomeDocument::K1ScorpActivities(page) => &mut page.entity.investment_property,
+            crate::K1Document::K1PartnershipActivities(page) => {
+                &mut page.entity.investment_property
+            }
+            crate::K1Document::K1ScorpActivities(page) => &mut page.entity.investment_property,
             _ => unreachable!(),
         };
         let K1InvestmentProperty::Energy { own_form: Some(own), .. } = &mut properties[0] else {
@@ -101,13 +102,16 @@ fn bound_properties_reduce_entity_basis_once_and_reach_native_credit_lifecycle()
         };
         own.amount = 40_000;
         let candidate_before = session.draft.clone();
-        let running = send(
+        let running = crate::tests::support::client::income_pages::candidate_save_review(
             &mut session,
             crate::tests::support::client::estimate_documents_from_save(&request),
         );
-        assert!(matches!(running, Reply::Response(P::IncomeRunningEstimate { .. })), "{running:?}");
+        assert!(matches!(running, Reply::Response(P::Review { .. })), "{running:?}");
         assert_eq!(session.draft, candidate_before);
-        accepted(&send(&mut session, request));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
         assert_eq!(session.draft.revision, saved.revision + 1);
         assert_eq!(session.draft.next_id, saved.next_id);
         assert_eq!(
@@ -126,16 +130,20 @@ fn bound_properties_reduce_entity_basis_once_and_reach_native_credit_lifecycle()
         assert_eq!(line_amount(&corrected, &alloc::format!("{kind}_{id}_schedule_e")), -60_000);
         assert_eq!(line_amount(&corrected, "agi"), 5_940_000);
         assert_eq!(line_amount(&corrected, "general_business_credit"), 80_000);
-        let corrected_review = send(&mut session, P::ReviewAccepted { user: TEST_USER });
+        let corrected_review = send_fixture(&mut session, P::ReviewAccepted { user: TEST_USER });
         let saved = session.draft.clone();
         let mut cold = restart(saved.clone());
-        let cold_review = send(&mut cold, P::ReviewAccepted { user: TEST_USER });
-        let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
-        assert_eq!(documents(&mut reopened)[0].document, input(&saved.income[source_index].income));
+        let cold_review = send_fixture(&mut cold, P::ReviewAccepted { user: TEST_USER });
+        let mut reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut cold);
+        assert_eq!(
+            documents(&mut reopened)[0].document,
+            expected_input(&saved, &saved.income[source_index])
+        );
         assert_eq!(estimate(&cold.draft), corrected);
-        accepted(&send(&mut cold, reopened));
+        accepted(&send_fixture(&mut cold, reopened));
         assert_eq!(cold.draft, saved);
-        let resaved_review = send(&mut cold, P::ReviewAccepted { user: TEST_USER });
+        let resaved_review = send_fixture(&mut cold, P::ReviewAccepted { user: TEST_USER });
         for (reply, credit, reduction) in [
             (initial_review, 60_000, 30_000),
             (corrected_review, 80_000, 40_000),
@@ -286,12 +294,13 @@ fn unconfirmed_properties_use_existing_admission_without_changing_accepted_facts
     for scorp in [false, true] {
         for automatic in [false, true] {
             let mut session = financial_property_session(scorp);
-            let mut request = open_topic(&mut session, TaxSection::PassThrough);
+            let mut request =
+                crate::tests::support::client::income_pages::open_document_center(&mut session);
             let (properties, confirmed) = match &mut documents(&mut request)[0].document {
-                IncomeDocument::K1PartnershipActivities(page) => {
+                crate::K1Document::K1PartnershipActivities(page) => {
                     (&mut page.entity.investment_property, &mut page.entity.investment_confirmed)
                 }
-                IncomeDocument::K1ScorpActivities(page) => {
+                crate::K1Document::K1ScorpActivities(page) => {
                     (&mut page.entity.investment_property, &mut page.entity.investment_confirmed)
                 }
                 _ => unreachable!(),
@@ -307,7 +316,10 @@ fn unconfirmed_properties_use_existing_admission_without_changing_accepted_facts
                 }
             }
             *confirmed = Some(crate::K1InvestmentConfirmation::No);
-            accepted(&send(&mut session, request));
+            accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            ));
             let saved = session.draft.clone();
             let source_index = saved
                 .income
@@ -338,12 +350,13 @@ fn unconfirmed_properties_use_existing_admission_without_changing_accepted_facts
             ));
             assert_eq!(session.draft, saved);
             let mut cold = restart(saved.clone());
-            let mut request = open_topic(&mut cold, TaxSection::PassThrough);
+            let mut request =
+                crate::tests::support::client::income_pages::open_document_center(&mut cold);
             assert_eq!(
                 documents(&mut request)[0].document,
-                input(&saved.income[source_index].income)
+                expected_input(&saved, &saved.income[source_index])
             );
-            accepted(&send(&mut cold, request));
+            accepted(&send_fixture(&mut cold, request));
             assert_eq!(cold.draft, saved);
             assert_eq!(estimate(&cold.draft), result);
         }
@@ -354,12 +367,13 @@ fn unconfirmed_properties_use_existing_admission_without_changing_accepted_facts
 fn confirmed_automatic_properties_use_the_same_bound_financial_path() {
     for scorp in [false, true] {
         let mut session = financial_property_session(scorp);
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         let (properties, confirmed) = match &mut documents(&mut request)[0].document {
-            IncomeDocument::K1PartnershipActivities(page) => {
+            crate::K1Document::K1PartnershipActivities(page) => {
                 (&mut page.entity.investment_property, &mut page.entity.investment_confirmed)
             }
-            IncomeDocument::K1ScorpActivities(page) => {
+            crate::K1Document::K1ScorpActivities(page) => {
                 (&mut page.entity.investment_property, &mut page.entity.investment_confirmed)
             }
             _ => unreachable!(),
@@ -369,7 +383,10 @@ fn confirmed_automatic_properties_use_the_same_bound_financial_path() {
             *own_form = None;
         }
         *confirmed = Some(crate::K1InvestmentConfirmation::Yes);
-        accepted(&send(&mut session, request));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
         let saved = session.draft.clone();
         let entry = saved
             .income
@@ -409,9 +426,10 @@ fn confirmed_automatic_properties_use_the_same_bound_financial_path() {
         );
         assert!(!noted(&result, "WARN_K1_INVESTMENT_CREDIT_LEFT_OUT"));
         let mut cold = restart(saved.clone());
-        let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
-        assert_eq!(documents(&mut reopened)[0].document, input(&entry.income));
-        accepted(&send(&mut cold, reopened));
+        let mut reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut cold);
+        assert_eq!(documents(&mut reopened)[0].document, expected_input(&saved, entry));
+        accepted(&send_fixture(&mut cold, reopened));
         assert_eq!(cold.draft, saved);
         assert_eq!(estimate(&cold.draft), result);
     }

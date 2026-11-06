@@ -71,12 +71,15 @@ fn participation(source: &mut FederalIncome, active: bool, trading: bool) {
     match source {
         FederalIncome::Partnership { data } => {
             data.trade_kind = kind;
-            let PartnerParticipation::General { facts } = &mut data.participation else {
+            let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
                 unreachable!()
             };
             facts.minutes = if active { 30_001 } else { 0 };
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             data.trade_kind = kind;
             data.participation.as_mut().unwrap().minutes = if active { 30_001 } else { 0 };
         }
@@ -117,6 +120,9 @@ fn k1_sale_final_amt_depreciation_difference_reaches_line_two_k_once() {
                     600_000
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales[0].alternative.reported_amounts_mut().unwrap().depreciation =
                     600_000
             }
@@ -156,13 +162,16 @@ fn k1_sale_final_mixed_forms_foot_to_schedule_one_once() {
                 short.regular.as_mut().unwrap().price = 2_100_000;
                 short.acquired = 20260101;
                 data.section179_sales.extend([loss, short]);
-                data.income.push(PartnerIncome {
+                data.income.push(PartnerIncomeTotal {
                     code: PartnerIncomeCode::SpeciallyAllocatedOrdinary,
                     amount: 500_000,
                 });
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 let mut loss = data.section179_sales[0].clone();
                 loss.regular.as_mut().unwrap().price = 1_800_000;
                 let mut short = loss.clone();
@@ -219,7 +228,7 @@ fn k1_sale_final_sale_never_adds_to_a_general_partners_reported_se() {
         else {
             unreachable!()
         };
-        data.limited_for_se = false;
+        data.limited_for_se = Some(false);
         data.reported_se = Some(1_500_000);
         let mut baseline = data.clone();
         baseline.section179_sales.clear();
@@ -301,7 +310,11 @@ fn k1_sale_final_amt_separates_passive_ordinary_and_disposition_differences() {
             FederalIncome::Partnership { data } => {
                 data.alternative.as_mut().unwrap().ordinary = 300_000
             }
-            FederalIncome::Scorp { data } => data.amt.as_mut().unwrap().adjustment = -200_000,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.amt.as_mut().unwrap().adjustment = -200_000
+            }
             _ => unreachable!(),
         }
         let (mut d, _) = draft(source);
@@ -324,6 +337,9 @@ fn k1_sale_final_f2c_multiple_properties_keep_the_exact_allocation_refusal() {
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales.push(data.section179_sales[0].clone());
                 let amt = amt_records(data);
                 for sale in &mut data.section179_sales {
@@ -351,6 +367,9 @@ fn k1_sale_final_explicit_unsupported_other_information_is_still_refused() {
                 "ISSUE_PARTNER_K1_OTHER_INFORMATION"
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.unentered.push(ScorpK1Item::OtherInformation);
                 "ISSUE_SCORP_K1_OTHER_INFORMATION"
             }

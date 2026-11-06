@@ -1,4 +1,4 @@
-// Coverage: Form 8997 and qualified opportunity funds (B9-5, 2026-10-10). QofInvestment (an
+// Coverage: Form 8997 and qualified opportunity funds. QofInvestment (an
 //   investment made from December 22, 2017 through 2025 whose deferral ends December 31, 2026:
 //   one row of Part IV of the 2025 Form 8997) and QofDeferral (a 2026 gain invested in a fund in
 //   2027 within 180 days, Form 8997 Part II). The remaining deferred gain is included on the
@@ -17,12 +17,9 @@
 //   defers nothing (WARN_QOF_DEFERRAL_NOT_ALLOWED); an unknown year-end value taxes the whole
 //   deferred gain (WARN_QOF_VALUE_ASSUMED). The 180 days cannot be checked (the model keeps no sale
 //   dates); the person confirms. Forms: 8997, 8949 (codes O, Y, Z), 4797 Part I, Schedule D.
-//   Tests: src/tests/investment/investment.rs qof_*.
-use crate::capital::Form8949Row;
 use crate::kernel::phase;
 use crate::year_constants as yc;
-use crate::{FederalDraft, FederalIncome, FederalIncomeEntry};
-use alloc::{string::String, vec::Vec};
+use alloc::string::String;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 const MAX: i64 = 100_000_000_000;
@@ -31,46 +28,114 @@ const MAX: i64 = 100_000_000_000;
 /// One for each investment in a qualified opportunity fund made before 2026 that still defers a gain: one row of Part IV of your 2025 Form 8997. The deferral ends on December 31, 2026, so the deferred gain is taxed this year, or when you sold the investment if that was earlier.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read one row of Part IV (QOF investments with deferrals held at year end) of a 2025 Form 8997, or one row of Part I of a 2026 Form 8997, exactly. If the document shows more than one row, report an error that says how many rows it shows and that each row needs its own opportunity fund entry; never add, combine, or choose among rows. Report an illegible value, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs. Never infer a value that is not printed on the form. Return column (c), the complete description of the QOF investment, as fund without truncation; report an error when it is blank. Return column (b), the date the QOF investment was acquired, as invested_on; report an error when it is blank. Read column (e) short-term deferred gain into short_term and column (f) long-term deferred gain into long_term, returning an empty string for a blank column; report an error when both are blank. For column (d), the special gain code, return None when it is blank, Section1231 for code B, Collectibles for code D, and Other for code A, C, E or F. Do not read column (a), the fund's EIN, any other part of the form, or the totals lines. Do not report whether the investment was sold, its value, or whether a special treatment applies; the filer answers those.",
-    validation = "$.document_facts",
-    doc_type = "application/pdf,image/*"
+    instruction = "Read the Name(s) shown on return and the Identifying number at the top of the form into source_recipient, with empty text for its address. Copy names and identification numbers exactly as printed, preserving masking, punctuation and leading zeros; use empty text for absent identity fields. Never infer a recipient from household names. Form 8997 has no issuer; never read the form header or the Department of the Treasury as a party. Check the actual printed Form 8997 tax year: accept only 2025 Part IV (QOF investments with deferrals held at year end) or 2026 Part I. The 2025 paper reports the deferred investment carried into the 2026 return and is not a year mismatch. Read one row from that year's indicated part exactly; reject a missing, illegible, conflicting or other printed tax year. Never rewrite the printed year or acquisition date as 2026. If the document shows more than one row, report an error that says how many rows it shows and that each row needs its own opportunity fund entry; never add, combine, or choose among rows. Report an illegible value, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs. Never infer a value that is not printed on the form. Return column (a), the QOF's EIN, as fund_ein exactly as printed, preserving punctuation and leading zeros, or empty text when it is blank. Return column (c), the complete description of the QOF investment, as fund without truncation; report an error when it is blank. Return column (b), the date the QOF investment was acquired, as invested_on; report an error when it is blank. Read column (e) short-term deferred gain into short_term and column (f) long-term deferred gain into long_term, returning an empty string for a blank column so it remains null; never substitute zero or another column's amount. Preserve an explicitly printed zero as zero. Report an error when both are blank. For column (d), the special gain code, return None when it is blank, Section1231 for code B, Collectibles for code D, Section1256 for code A, Straddle for code C, ExemptByTreaty for code E and NoninclusionTransfer for code F. Do not read any other part of the form or the totals lines. Do not report whether the investment was sold, its value, or whether a special treatment applies; the filer answers those. Read the printed calendar or tax year at the top of the form as an integer number such as 2026, or zero when it is clearly blank; never substitute the form revision year.",
+    doc_type = "application/pdf,image/*",
+    duplicate_identity = "@.source_recipient.federal_id,@.fund_ein,@.invested_on,@.gain_code,@.short_term,@.long_term",
+    form_date_order = "MonthDayYear"
 )]
-pub struct QofInvestment {
-    /// Fund and investment (Form 8997 column (c))
-    /// For example "100 shares of Example Opportunity Fund".
-    #[libertas_llm_doc_field(allow_empty = false)]
-    #[libertas_size(min = 1)]
-    pub fund: String,
+pub struct QofInvestmentPaper {
+    /// For calendar year
+    #[libertas_llm_doc_field]
+    #[libertas_default(0)]
+    pub calendar_year: u32,
+    /// Source document recipient as printed
+    #[libertas_llm_doc_field]
+    pub source_recipient: crate::PrintedParty,
+    /// EIN of the QOF (Form 8997 column (a))
+    #[libertas_llm_doc_field(allow_empty = true)]
+    #[libertas_default("")]
+    pub fund_ein: String,
     /// Date you invested (column (b))
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_date_only]
     // Tax structure: this entry reports QOF deferrals carried into 2026 from investments made through December 31, 2025.
     #[libertas_number(min = $QOF_FIRST_INVESTMENT_DATE, max = $QOF_LAST_EARLIER_INVESTMENT_DATE)]
     pub invested_on: u32,
-    /// Short-term gain still deferred (column (e))
-    #[libertas_llm_doc_field(blank = 0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub short_term: i64,
-    /// Long-term gain still deferred (column (f))
-    #[libertas_llm_doc_field(blank = 0)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub long_term: i64,
+    /// Fund and investment (column (c))
+    /// For example "100 shares of Example Opportunity Fund".
+    #[libertas_llm_doc_field(allow_empty = false)]
+    #[libertas_size(min = 1)]
+    pub fund: String,
     /// Special gain code (column (d))
     #[libertas_llm_doc_field]
     #[libertas_default(None)]
     pub gain_code: QofGainCode,
+    /// Short-term gain still deferred (column (e))
+    /// [NullText]
+    /// This printed column is blank
+    /// [SetText]
+    /// The printed deferred gain is
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub short_term: Option<i64>,
+    /// Long-term gain still deferred (column (f))
+    /// [NullText]
+    /// This printed column is blank
+    /// [SetText]
+    /// The printed deferred gain is
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub long_term: Option<i64>,
+}
+
+/// Opportunity fund investment and its current-year answers
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct QofInvestment {
+    /// Source document recipient as printed
+    pub source_recipient: crate::PrintedParty,
+    /// EIN of the QOF (Form 8997 column (a))
+    #[libertas_default("")]
+    pub fund_ein: String,
+    /// Date you invested (column (b))
+    #[libertas_date_only]
+    // Tax structure: this entry reports QOF deferrals carried into 2026 from investments made through December 31, 2025.
+    #[libertas_number(min = $QOF_FIRST_INVESTMENT_DATE, max = $QOF_LAST_EARLIER_INVESTMENT_DATE)]
+    pub invested_on: u32,
+    /// Fund and investment (column (c))
+    /// For example "100 shares of Example Opportunity Fund".
+    #[libertas_size(min = 1)]
+    pub fund: String,
+    /// Special gain code (column (d))
+    #[libertas_default(None)]
+    pub gain_code: QofGainCode,
+    /// Short-term gain still deferred (column (e))
+    /// [NullText]
+    /// This printed column is blank
+    /// [SetText]
+    /// The printed deferred gain is
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub short_term: Option<i64>,
+    /// Long-term gain still deferred (column (f))
+    /// [NullText]
+    /// This printed column is blank
+    /// [SetText]
+    /// The printed deferred gain is
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub long_term: Option<i64>,
     /// What happened to the investment in 2026
-    pub event: QofEvent,
+    /// [NullText]
+    /// I do not know what happened yet
+    pub event: Option<QofEvent>,
     /// A partial sale, a distribution from the fund, a gift of the investment, a fund interest held through a partnership or S corporation, or another special treatment
     /// Yes leaves this investment out of the estimate with a notice; that treatment is not supported.
     #[libertas_default(false)]
     pub special: bool,
 }
 
+// Source: Form 8997 instructions, special gain code table (SGC A-F):
+// https://www.irs.gov/pub/irs-pdf/f8997.pdf
 /// Special gain code
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
@@ -79,15 +144,40 @@ pub struct QofInvestment {
 pub enum QofGainCode {
     /// No code
     None,
-    /// B: a section 1231 gain from Form 4797
+    /// A: Section 1256 gain
+    /// Leaves this investment out of the estimate with a notice; that treatment is not supported.
+    #[libertas_form_code("A")]
+    Section1256,
+    /// B: Form 4797 (section 1231) gain
     /// Taxed as a section 1231 gain on Form 4797 when included.
+    #[libertas_form_code("B")]
     Section1231,
-    /// D: a collectibles gain
+    /// C: Straddle gain
+    /// Leaves this investment out of the estimate with a notice; that treatment is not supported.
+    #[libertas_form_code("C")]
+    Straddle,
+    /// D: Collectibles gain
     /// Taxed at up to 28% when included.
+    #[libertas_form_code("D")]
     Collectibles,
-    /// A, C, E or F
-    /// A section 1256 gain, a straddle, a gain exempt by treaty, or an investment you received from someone else in a transfer that was not an inclusion event, such as an inheritance. Leaves this investment out of the estimate with a notice; that treatment is not supported.
-    Other,
+    /// E: Exempt by treaty (but for the election to defer rather than claim the exemption)
+    /// Leaves this investment out of the estimate with a notice; that treatment is not supported.
+    #[libertas_form_code("E")]
+    ExemptByTreaty,
+    /// F: Deferred gain relating to a noninclusion transfer
+    /// Leaves this investment out of the estimate with a notice; that treatment is not supported.
+    #[libertas_form_code("F")]
+    NoninclusionTransfer,
+}
+
+impl QofGainCode {
+    // The codes the App cannot compute (A, C, E, F).
+    pub(crate) fn unsupported(self) -> bool {
+        matches!(
+            self,
+            Self::Section1256 | Self::Straddle | Self::ExemptByTreaty | Self::NoninclusionTransfer
+        )
+    }
 }
 
 /// What happened in 2026
@@ -102,7 +192,8 @@ pub enum QofEvent {
         /// [SetText]
         /// The investment's December 31, 2026 fair market value is
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default($null)]
         fair_value: Option<i64>,
     },
@@ -117,7 +208,8 @@ pub enum QofEvent {
         /// Amount realized
         /// What you received for the whole investment, the value used in place of its fair market value.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }
@@ -139,13 +231,15 @@ pub struct QofDeferral {
     /// Short-term gain deferred
     /// Up to your 2026 short-term capital gains on this page.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub short_term: i64,
     /// Long-term gain deferred
     /// Up to your 2026 long-term capital gains on this page.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub long_term: i64,
     /// You invested within 180 days after the sale that produced each gain deferred
@@ -192,33 +286,77 @@ impl QofEvent {
     }
 }
 
-impl QofInvestment {
-    // The first relationship between this page's fields that fails, by its rule's key, in the
-    // order of the client rules.
-    pub(crate) fn rule(&self) -> Option<&'static str> {
-        self.issue().map(|issue| issue.key)
-    }
-
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        if i128::from(self.short_term) + i128::from(self.long_term) <= 0 {
+impl QofInvestmentPaper {
+    pub(crate) fn printed_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        if i128::from(self.short_term.unwrap_or(0)) + i128::from(self.long_term.unwrap_or(0)) <= 0 {
             return Some(
                 crate::validation::ValidationIssue::new("QOF_NO_DEFERRED_GAIN")
                     .at_field("short_term"),
             );
         }
-        if self.gain_code == QofGainCode::Section1231 && self.short_term != 0 {
+        if self.gain_code == QofGainCode::Section1231 && self.short_term.unwrap_or(0) != 0 {
             return Some(
                 crate::validation::ValidationIssue::new("QOF_SECTION_1231_LONG_TERM")
                     .at_field("short_term"),
             );
         }
-        if self.gain_code == QofGainCode::Collectibles && self.short_term != 0 {
+        if self.gain_code == QofGainCode::Collectibles && self.short_term.unwrap_or(0) != 0 {
             return Some(
                 crate::validation::ValidationIssue::new("QOF_COLLECTIBLES_LONG_TERM")
                     .at_field("short_term"),
             );
         }
-        if let QofEvent::Sold { sold_on, .. } = self.event
+        None
+    }
+
+    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
+        self.printed_issue()
+    }
+}
+
+impl From<&QofInvestment> for QofInvestmentPaper {
+    fn from(value: &QofInvestment) -> Self {
+        Self {
+            calendar_year: Default::default(),
+            source_recipient: value.source_recipient.clone(),
+            fund_ein: value.fund_ein.clone(),
+            fund: value.fund.clone(),
+            invested_on: value.invested_on,
+            short_term: value.short_term,
+            long_term: value.long_term,
+            gain_code: value.gain_code,
+        }
+    }
+}
+
+impl QofInvestment {
+    pub fn printed(form: QofInvestmentPaper) -> Self {
+        Self {
+            source_recipient: form.source_recipient,
+            fund_ein: form.fund_ein,
+            fund: form.fund,
+            invested_on: form.invested_on,
+            short_term: form.short_term,
+            long_term: form.long_term,
+            gain_code: form.gain_code,
+            event: None,
+            special: false,
+        }
+    }
+
+    pub(crate) fn rule(&self) -> Option<&'static str> {
+        self.issue().map(|issue| issue.key)
+    }
+
+    pub(crate) fn printed_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        QofInvestmentPaper::from(self).printed_issue()
+    }
+
+    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
+        if let Some(issue) = self.printed_issue() {
+            return Some(issue);
+        }
+        if let Some(QofEvent::Sold { sold_on, .. }) = self.event
             && sold_on <= self.invested_on
         {
             return Some(
@@ -235,51 +373,53 @@ impl QofInvestment {
             && crate::federal_rules::valid_date(self.invested_on)
             && (yc::QOF_FIRST_INVESTMENT_DATE..=yc::QOF_LAST_EARLIER_INVESTMENT_DATE)
                 .contains(&self.invested_on)
-            && (0..=MAX).contains(&self.short_term)
-            && (0..=MAX).contains(&self.long_term)
-            && self.event.valid()
+            && self.short_term.is_none_or(|amount| (0..=MAX).contains(&amount))
+            && self.long_term.is_none_or(|amount| (0..=MAX).contains(&amount))
+            && self.event.as_ref().is_none_or(QofEvent::valid)
             && self.rule().is_none()
     }
 
-    // Decision 2: a special gain code the App cannot compute (A, C, E, F) or any other special
+    // A special gain code the App cannot compute (A, C, E, F) or any other special
     // treatment leaves the investment out with a notice.
     pub(crate) fn left_out(&self) -> bool {
-        self.special || self.gain_code == QofGainCode::Other
+        self.special || self.gain_code.unsupported()
     }
 
     // The inclusion on the earlier of the sale and December 31, 2026 (IRC 1400Z-2(b)(1)(B)).
-    pub(crate) fn inclusion(&self) -> Inclusion {
-        let deferred = self.short_term + self.long_term;
-        let (five, seven) = match self.event {
+    pub(crate) fn inclusion(&self) -> Option<Inclusion> {
+        let event = self.event.as_ref()?;
+        let short_term = self.short_term.unwrap_or(0);
+        let deferred = short_term + self.long_term.unwrap_or(0);
+        let (five, seven) = match event {
             QofEvent::Held { .. } => (
                 self.invested_on <= yc::QOF_FIVE_YEAR_LAST_INVESTMENT_DATE,
                 self.invested_on <= yc::QOF_SEVEN_YEAR_LAST_INVESTMENT_DATE,
             ),
             QofEvent::Sold { sold_on, .. } => {
-                (self.invested_on + 50000 <= sold_on, self.invested_on + 70000 <= sold_on)
+                (self.invested_on + 50000 <= *sold_on, self.invested_on + 70000 <= *sold_on)
             }
         };
         let percent = if five { yc::QOF_FIVE_YEAR_PERCENT } else { 0 }
             + if seven { yc::QOF_SEVEN_YEAR_PERCENT } else { 0 };
         let increase = crate::kernel::ratio::fraction(deferred, percent, 100);
-        let (value, value_assumed) = match self.event {
-            QofEvent::Held { fair_value: Some(value) } => (value, false),
+        let (value, value_assumed) = match event {
+            QofEvent::Held { fair_value: Some(value) } => (*value, false),
             QofEvent::Held { fair_value: None } => (deferred, true),
-            QofEvent::Sold { amount, .. } => (amount, false),
+            QofEvent::Sold { amount, .. } => (*amount, false),
         };
         let included = phase::floor(phase::cap(deferred, [value]) - increase, 0);
         let short = if deferred == 0 {
             0
         } else {
-            crate::kernel::ratio::fraction(included, self.short_term, deferred)
+            crate::kernel::ratio::fraction(included, short_term, deferred)
         };
         let long_part = included - short;
         let (long, section_1231, collectibles) = match self.gain_code {
             QofGainCode::Section1231 => (0, long_part, 0),
             QofGainCode::Collectibles => (long_part, 0, long_part),
-            QofGainCode::None | QofGainCode::Other => (long_part, 0, 0),
+            _ => (long_part, 0, 0),
         };
-        Inclusion {
+        Some(Inclusion {
             deferred,
             increase,
             included,
@@ -289,41 +429,7 @@ impl QofInvestment {
             collectibles,
             basis_after: increase + included,
             value_assumed,
-        }
-    }
-}
-
-impl Inclusion {
-    // The Form 8949 rows of the inclusion: code Y in Part I box C and Part II box F; a section
-    // 1231 gain is the Y row and a code O row that backs it out of Schedule D (it is on Form 4797
-    // Part I instead), netting to zero.
-    pub(crate) fn rows(&self, entry: &FederalIncomeEntry) -> Vec<Form8949Row> {
-        let mut rows = Vec::new();
-        let mut push = |line: usize, box_letter: char, adjustment: i64, codes: &str| {
-            rows.push(Form8949Row {
-                entry: entry.id,
-                row: rows.len() as u32 + 1,
-                line,
-                box_letter,
-                label: crate::interview::income_display_arg(entry),
-                proceeds: 0,
-                basis: 0,
-                adjustment,
-                codes: codes.into(),
-                summary: false,
-            });
-        };
-        if self.short != 0 {
-            push(3, 'C', self.short, "Y");
-        }
-        if self.long != 0 {
-            push(7, 'F', self.long, "Y");
-        }
-        if self.section_1231 != 0 {
-            push(7, 'F', self.section_1231, "Y");
-            push(7, 'F', -self.section_1231, "O");
-        }
-        rows
+        })
     }
 }
 
@@ -347,54 +453,4 @@ impl QofDeferral {
             && (0..=MAX).contains(&self.long_term)
             && self.rule().is_none()
     }
-
-    // The Form 8949 rows of the election: code Z, the deferred gain as a negative column (g).
-    pub(crate) fn rows(&self, entry: &FederalIncomeEntry) -> Vec<Form8949Row> {
-        let mut rows = Vec::new();
-        for (line, box_letter, amount) in [(3, 'C', self.short_term), (7, 'F', self.long_term)] {
-            if amount != 0 {
-                rows.push(Form8949Row {
-                    entry: entry.id,
-                    row: rows.len() as u32 + 1,
-                    line,
-                    box_letter,
-                    label: crate::interview::income_display_arg(entry),
-                    proceeds: 0,
-                    basis: 0,
-                    adjustment: -amount,
-                    codes: "Z".into(),
-                    summary: false,
-                });
-            }
-        }
-        rows
-    }
-}
-
-// The investments' section 1231 gains as Form 4797 Part I sources (whole dollars): an
-// investment, not a business, so the gain is net investment income. `crate::section1231` joins
-// them to the earlier-year sources.
-pub(crate) fn sources(draft: &FederalDraft) -> Vec<(i64, crate::farm_land::LandGain, bool)> {
-    draft
-        .income
-        .iter()
-        .filter_map(|entry| match &entry.income {
-            FederalIncome::OpportunityFund { data } if data.valid() && !data.left_out() => {
-                let gain = crate::kernel::ratio::dollars(data.inclusion().section_1231);
-                (gain != 0).then_some((
-                    entry.id,
-                    crate::farm_land::LandGain {
-                        gain,
-                        percent: 0,
-                        recapture: 0,
-                        ordinary: 0,
-                        section1231: gain,
-                        unrecaptured: 0,
-                    },
-                    false,
-                ))
-            }
-            _ => None,
-        })
-        .collect()
 }

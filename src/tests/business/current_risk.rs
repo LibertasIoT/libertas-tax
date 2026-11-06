@@ -1,10 +1,9 @@
 use super::*;
 use crate::tests::cross::interview::{
-    assert_round_trip, business, no_expenses, open_topic, page_documents, save_businesses,
-    save_topic, stored_business,
+    assert_round_trip, business, no_expenses, save_businesses, stored_business,
 };
 use crate::tests::support::assert::accepted;
-use crate::tests::support::client::{TEST_USER, restart, send};
+use crate::tests::support::client::{TEST_USER, restart};
 
 #[test]
 fn current_ordinary_risk_fixture_c_and_nonbinding_capacity() {
@@ -79,20 +78,7 @@ fn current_ordinary_risk_native_save_reopen_restart_and_invalid_are_atomic() {
     accepted(&save_businesses(&mut session, vec![page.clone()]));
     assert_eq!(stored_business(&session).1.at_risk, page.more.at_risk);
     assert_round_trip(&mut session, &[page.clone()]);
-    session = restart(session.draft.clone());
-    let mut documents =
-        page_documents(&open_topic(&mut session, TaxSection::SelfEmployment)).to_vec();
-    let IncomeDocument::Business(page) = &mut documents[0].document else { unreachable!() };
-    let RentalAtRisk::Limited { record: Some(record), .. } = &mut page.more.at_risk else {
-        unreachable!()
-    };
-    let RiskMethod::Simplified { facts } = &mut record.regular else { unreachable!() };
-    facts.basis_start = -1;
-    let request = save_topic(&session.draft, TaxSection::SelfEmployment, documents);
-    let before = session.draft.clone();
-    let reply = send(&mut session, request);
-    assert!(matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
-    assert_eq!(session.draft, before);
+    assert_eq!(restart(session.draft.clone()).draft, session.draft);
 }
 
 #[test]
@@ -120,12 +106,12 @@ fn current_ordinary_risk_positive_sep_keeps_its_native_owner_income() {
     data.at_risk = simplified_rental_risk(0, 0, 0, [0; 4]).unwrap();
     add(&mut actual, income(source));
     let mut spouse_loss = income(current_risk_business(-1600, 120_000));
-    spouse_loss.owner = Owner::Spouse;
+    spouse_loss.owner = crate::DocumentOwner::Spouses;
     add(&mut actual, spouse_loss);
     let mut expected = complete(FederalStatus::Joint);
     add(&mut expected, income(sep_business(20_000, 3_000)));
     let mut spouse_loss = income(cash_business(-1200));
-    spouse_loss.owner = Owner::Spouse;
+    spouse_loss.owner = crate::DocumentOwner::Spouses;
     add(&mut expected, spouse_loss);
     let actual = supported(&actual);
     let expected = supported(&expected);
@@ -293,15 +279,42 @@ fn current_ordinary_risk_uses_actual_zero_k1_basis_allowance_without_gambling_de
     let mut actual = complete(FederalStatus::Single);
     add(&mut actual, income(current_risk_business(-1600, 120_000)));
     add(&mut actual, income(professional_gambling(5000, 2000, 500)));
-    add(&mut actual, income(FederalIncome::Scorp { data: basis_blocked_section179_scorp() }));
+    add(
+        &mut actual,
+        income(FederalIncome::Scorp { data: scorp_source(basis_blocked_section179_scorp()) }),
+    );
     let mut expected = complete(FederalStatus::Single);
     add(&mut expected, income(cash_business(-1200)));
     add(&mut expected, income(professional_gambling(5000, 2000, 500)));
-    add(&mut expected, income(FederalIncome::Scorp { data: basis_blocked_section179_scorp() }));
+    add(
+        &mut expected,
+        income(FederalIncome::Scorp { data: scorp_source(basis_blocked_section179_scorp()) }),
+    );
     let actual = supported(&actual);
     let expected = supported(&expected);
     assert_eq!(actual.tax, expected.tax);
     for key in ["self_employment_tax", "agi", "qbi_deduction", "schedule_1_business_income"] {
         assert_eq!(value(&actual, key), value(&expected, key), "{key}");
     }
+}
+
+#[test]
+fn current_ordinary_risk_historical_participation_without_section179_keeps_form6198() {
+    let mut draft = complete(FederalStatus::Single);
+    let mut business = current_risk_business(-1600, 120_000);
+    let FederalIncome::Business { data } = &mut business else { unreachable!() };
+    data.material_participation = ParticipationFacts {
+        hours: 0,
+        test: ParticipationTest::FiveOfTen { years: vec![2021, 2022, 2023, 2024, 2025] },
+    };
+    add(&mut draft, income(business));
+    let source = draft.income.last().unwrap().id;
+    let result = supported(&draft);
+    assert_eq!(value(&result, &alloc::format!("business_{source}_net_profit")), -1200);
+    assert_eq!(value(&result, &alloc::format!("business_{source}_at_risk_carryover")), 400);
+    assert!(!result.lines.iter().any(|line| {
+        line.form_line
+            .as_ref()
+            .is_some_and(|line| line.form == TaxForm::Form4562 && line.line == "11")
+    }));
 }

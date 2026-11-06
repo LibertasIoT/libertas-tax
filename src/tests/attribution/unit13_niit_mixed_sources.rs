@@ -1,6 +1,6 @@
 // Source-complete current NUA and retained NIIT use share one native worksheet.
 use super::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::{accepted, open_document_center};
 
 #[test]
 fn unit13_niit_mixed_zero_adjustment_retains_real_prior_use_choice() {
@@ -33,14 +33,9 @@ fn unit13_niit_mixed_zero_adjustment_save_restart_and_owner_axes() {
                         injured: used * 100,
                     });
                     let mut session = restart(draft);
-                    for topic in [
-                        TaxSection::Wages,
-                        TaxSection::InterestDividends,
-                        TaxSection::InvestmentSales,
-                    ] {
-                        let request = open_topic(&mut session, topic);
-                        accepted(&send(&mut session, request));
-                    }
+                    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+                    let request = open_document_center(&mut session);
+                    accepted(&send(&mut session, request));
                     let request = complete_niit_allocation(&mut session);
                     accepted(&send(&mut session, request));
                     let draft = roundtrip_native_draft(session.draft);

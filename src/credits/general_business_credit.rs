@@ -1,172 +1,17 @@
-// Coverage: Form 3800 — Partial (Unit16 source checkpoint, 2026-10-13).
-//   Part I, Part II Sections A/B/C and Parts III/IV use the source-credit catalog,
-//   chronological carry ledger, passive allowance, elective-payment and transfer columns.
-//   Own source-form amounts and supported K-1 codes reach their recorded Form3800 line;
-//   shared line caps precede allocation and the approved childcare-limit notice retains
-//   its $500,000 boundary. Schedule3 lines6a/13c/14 include the resulting credit/payment.
-//   Research capacity consumes actual business/K-1/rental income, source QBI and deductions,
-//   the approved W-2 employer and retained Form4952 origin answers, and common deductions.
-//   Current Form461/ScheduleD limits, actual nonpassive rental/QBI identities and
-//   portfolio1250 subset amounts retain their existing owner results. Retained
-//   capital and NOL source portions use actual retained owners and allowed
-//   deductions. Retained charity cash and basis-election portions use actual
-//   source original appreciation before allocating the owner's allowed deduction.
-//   The existing narrow section1341 combined-comparison guard remains unchanged;
-//   its unsupported counterfactual is not a completed source-consumer claim.
-//   No generic notice substitutes for unfinished adapters. Whole-map gates remain due.
-//   Changed-filer carries consume the genuine shared separate-tax owner at the
-//   pre-current-3800 boundary, including delivered account and collected C/F sources.
-//   Unavailable supplier source classes remain qualified; explicit component ratios
-//   are not that interface. The narrow notice does not cover an unfinished adapter.
-//   Printing and incoming2027 amended-return carrybacks remain outside this unit.
-//   Approved specified-renewable4e origin authoring retains actual facility
-//   identity, original DateOnly and exact source-credit cents. It reuses the
-//   physical-origin validity and paired community projection owner; generic1f
-//   classification, EPE and unresolved mixed unused-credit order stay separate.
-//   Evidence: src/tests/credits/unit16_renewable_facility_origin.rs seven native controls and
-//   actual direct/K1 source Save/reopen/restart. Existing seven45Q controls and
-//   source lifecycles remain passing; final whole-map gates remain due.
-//   Conditional45Q extended carrybacks retain actual equipment identity, original
-//   DateOnly and source-credit cents on canonical entered/K1 owners, with exact
-//   statement gross reconciliation and paired community source conservation.
-//   Missing dates withhold only the older exception; mixed surviving unused origins
-//   retain their named post-PAL/use/elective boundary without an invented use order.
-//   Evidence: src/tests/credits/unit16_45q_equipment_origin.rs seven native controls and actual
-//   source-row/K1 Save/reopen/restart; protected outer K1 import fitting is separate.
-//   Evidence: src/tests/credits/form_3800.rs F1–F7, F8 component only, nonresearch F9, transfer and line-cap
-//   controls; src/tests/credits/interview.rs actual fresh credit/history and W-2 source Save/reopen/restart;
-//   src/tests/credits/credits.rs catalog/source rules. Whole-map acceptance and final gates remain due.
-// Coverage: Form 8586 — Supported via the K-1 (audited 2026-10-09 against the 2026 DRAFT f8586 Rev.
-//   December 2026 created 7/14/26, identical in its lines to the final Rev. December 2023; no
-//   separate instructions exist; the final must be reread). Form 8586 itself is not filed: its
-//   general instructions send a taxpayer whose only source is a pass-through entity straight to
-//   Form 3800 Part III line 4d, which is what the App emits (no Form 8586 rows).
-//   Lines: 4 (the K-1 (1065) box 15 / (1120-S) box 13 codes C and D, section 42(j)(5) and other,
-//   one amount each; both are BusinessCredit::LowIncomeHousing, a specified credit from buildings
-//   placed in service after 2007, section 38(c)(4)(B)(iii)); 5 to Form 3800 Part III line 4d column
-//   (d). The credit is passive (section 469(c)(2)) unless the K-1's rental real estate activity is
-//   nonpassive because the owner is a real estate professional who materially participated in it
-//   (K1RentalParticipation::Professional with the recorded status): the same box 2 activity then
-//   carries the loss and the credit to column (e). Carryforwards: Part IV line 4d (from 2008,
-//   BusinessCredit::LowIncomeHousing) and line 2b (BusinessCredit::LowIncomeHousingBefore2008,
-//   pre-2008 buildings, not specified, carryforward only: no 2026 amount, no carryback), with the
-//   prior-year unallowed amount marked by its Form 8582-CR worksheet (PassiveWorksheet).
-//   A building owner's source-form computation (Forms 8609-A/8586 lines 1–3) is not
-//   performed here; a completed source-form amount uses General business credits.
-//   Recapture (Form 8611; K-1 box 20 codes F/G and box 17 codes E/F) retains its
-//   other-information boundary. Other box 15/13 general business credit codes now
-//   use their actual credit catalog. A pre-1990 pass-through interest uses
-//   Form 8582-CR Worksheet2 and PartIII through the housing-acquisition answer. Form 8586 lines 6 and 7 (estates and trusts) are not an
-//   individual's. Evidence: src/tests/credits/housing_credit.rs fixture_a_the_special_allowance_allows_the_whole_
-//   credit, fixture_a2_..., fixture_a3_a_pre_2008_carryforward_is_part_i_line_2b, fixture_b_...,
-//   fixture_e_codes_c_and_d_merge_on_line_4d_and_each_code_once, fixture_e_carryover_rules_of_the_
-//   housing_credits, fixture_f_a_k1_with_a_box_2_loss_and_a_credit_is_one_activity; src/tests/credits/interview.rs
-//   k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen, k1_import_instructions_name_codes_c_and_d_
-//   and_the_pre_1990_case, business_credit_carryovers_round_trip_through_more_credits; 26 U.S.C. 42,
-//   38(c)(4)(B)(iii), 469(c)(2), (c)(7); i1065sk1 (2025), i1120ssk (2026 draft), i3800 (2026 draft).
-// Coverage: Form 8582-CR — Source implementation extended (2026-10-13).
-//   Worksheets1–4 and PartsI–V classify the source credit, use net passive-income tax,
-//   then the active-rental, pre-1990 housing/rehabilitation and post-1989 housing allowances.
-//   Lines6/15/27/35 use the return's regular tax method, including Form8615 and ScheduleJ,
-//   with AGI-dependent items held fixed. Allocation preserves passive closing balances.
-//   PartVI's section469(j)(9) basis election remains refused; printing is deferred.
-//   Evidence: src/tests/credits/form_3800.rs F3/F6/F7; src/tests/credits/housing_credit.rs method/allowance fixtures;
-//   src/tests/credits/investment_credit.rs rental rehabilitation and Worksheet2 controls; IRS f8582cr,
-//   i8582cr, section469(i)/(j)(5). Full Unit16 map acceptance remains due.
-// Coverage: Form 5884 — Supported (audited 2026-09-27, unit T3-3800).
-//   Lines: 1a (25%, 120–399 hours), 1b (40%, 400+ hours), 1c (50% second-year long-term family
-//   assistance), 2 and 4 to Form 3800 line 4b; group limits $6,000/$12,000/$14,000/$24,000/
-//   $10,000 less wages counted on the 2025 form; employees who began work before 2026 only (the
-//   credit expired for later hires); Schedule C line 26 reduced by line 2; line 3 is reported
-//   directly on Form 3800 from K-1 code J. Its source-form computation retains the
-//   successor/controlled-group, summer-youth/designated-community-resident (no 2026
-//   wages), passive/non-Schedule C and matching-W2 wage boundaries. Completed
-//   source-form amounts use General business credits with the actual source.
-//   Evidence: as Form 3800;
-//   src/tests/credits/credits.rs form_5884_and_8881_limits_by_hand, form_5884_start_dates_and_payroll_are_refused_
-//   by_name; i5884 (Rev. 3-2021).
-// Coverage: Form 8881 — Supported (audited 2026-09-27, unit T3-3800).
-//   Lines: Part I Section 1 lines A, 1–5 (100%/50% by line A, $500 floor, $250 per eligible
-//   non-HCE, $5,000 cap; start-up deduction reduced by line 5), Part II line 9 ($500 for three
-//   years), lines 7, 10, 14 reported directly on Form 3800 from K-1 codes AE, AF, AG.
-//   Section 2 contributions and Part III own-plan amounts are not recomputed from
-//   facts here; completed source-form amounts use General business credits.
-//   Evidence: as Form 3800; i8881 (Rev. 12-2026 draft).
-// Coverage: Form 8941 — Supported (audited 2026-10-09 against the 2026 DRAFT f8941 created 4/8/26
-//   and the 2026 draft i8941 dated May 18, 2026; the final revision must be reread). One Schedule C
-//   (ordinary activity, U.S. source, material participation, BusinessPayroll::Yes) per owner, on the
-//   business page's "More about this business" (BusinessDetails.small_employer_health).
-//   Lines: A (SHOP Marketplace or the county exception after a 2025 claim; other coverage earns no
-//   credit and is left out with WARN_SMALL_EMPLOYER_HEALTH_NOT_SHOP), C (first credit year 2025 or
-//   2026: the two-year credit period), 1 and 2 (FTEs: hours of service per 2,080, rounded down, at
-//   least 1, at most 2,080 hours per employee, seasonal workers' hours and wages left out), 3 (average
-//   box 5 wages of the matched W-2s, rounded down to $1,000), 4-7 (premiums paid, capped per enrolled
-//   employee at the county average premium for the tier x months/12 x the employer's share; 50%),
-//   8 (FTE phaseout, (FTEs - 10)/15), 9 (wage phaseout, (average - $34,100)/$34,100, Rev. Proc.
-//   2025-32 section 3.09, year_constants.rs; none below $34,100, no credit above twice that),
-//   10-12 (state subsidies and credits; the credit), 13-14 (enrolled employees and their FTEs),
-//   15 (the owner's K-1 code BA amounts), 16 (to Form 3800 Part III line 4h); Worksheets 1-7. Schedule
-//   C line 14 is reduced by line 12 (section 280C(h)); Form 7206 is not (the owner is not an employee,
-//   section 45R(e)(1)(A)(i)). A listed employee is chosen from the business's payroll W-2s
-//   (an EnumSource keyed on the W-2 label, also for Forms 5884 and 8846).
-//   Entered by the person, not looked up: the two county average premiums of the 2026 table, which
-//   the IRS publishes in November 2026 (draft i8941 p. 10 is a placeholder); a later unit may embed
-//   the table. Excluded or left out, each stated on its page or by a note: line B (EIN) and the
-//   Marketplace identifier (printing only), lines 17-20 (cooperatives, estates, trusts and tax-exempt
-//   employers), the 35% tax-exempt rate, a farm employer's own source-form computation,
-//   household employees, other businesses, leased employees, controlled groups, Hawaii
-//   and several rating areas (No leaves the source computation out with
-//   WARN_SMALL_EMPLOYER_HEALTH_CREDIT_LEFT_OUT), K-1 (1041) code G and Form 1099-PATR
-//   box 12 allocations. Completed individual employer source-form amounts use
-//   General business credits with the actual source. K-1 code BA and carryforwards reach Form 3800
-//   line 4h on their own entries (specified credit). Lines 1, 2, 13 and 14 are counts (LineKind::Count,
-//   federal_rules.rs form_count): the review shows their number in the row label, not as dollars.
-//   Evidence: src/tests/credits/credits.rs form_8941_full_credit_with_a_seasonal_worker_and_a_partial_year (fixture A
-//   and A2 with a K-1 code BA), form_8941_fte_phaseout_and_the_premium_cap (B, 14/15/25 FTEs),
-//   form_8941_wage_phaseout_and_the_state_credit (C, the $68,000 and $69,000 boundaries),
-//   form_8941_paths_notices_and_consistency; src/tests/credits/interview.rs
-//   health_credit_round_trips_through_the_business_page_and_reduces_line_14,
-//   health_credit_page_rules_are_checked_on_save,
-//   employer_credit_rows_choose_their_w2_from_the_payroll; 2026 draft f8941 and i8941, i1040sc line
-//   14, Rev. Proc. 2025-32, 26 U.S.C. 45R and 280C(h).
-// Coverage: Form 8994 — Supported (audited 2026-10-09 against the 2026 DRAFT f8994 Rev. December 2026
-//   created 5/5/26; no 2026 instructions are posted, so the rules come from 26 U.S.C. 45S as amended
-//   by P.L. 119-21 section 70304, Notice 2026-28 and the Rev. December 2024 i8994 worksheets; the
-//   final form and first instructions must be reread). One Schedule C (ordinary activity, U.S.
-//   source, material participation, BusinessPayroll::Yes) per owner, on the business page's "More
-//   about this business" (BusinessDetails.paid_leave). A listed employee is chosen from the
-//   business's payroll W-2s (an EnumSource keyed on the W-2 label).
-//   Lines: A, B, D (the confirmed written policy, 50% rate and non-interference statement; No leaves
-//   the credit out with WARN_PAID_LEAVE_CREDIT_LEFT_OUT), C (an employee row or the insurance row,
-//   PAID_LEAVE_NOTHING_CLAIMED), 1a (wage method: Worksheet Part 1, leave wages at most the normal
-//   hourly rate x the leave hours, at most 12 weeks, times 12.5% + 0.25 point per point of the
-//   policy's rate above 50%, at most 25%, section 45S(a)(2); qualifying employee: 20 hours a week and
-//   2025 compensation of $96,000 or less are ranges on the row, year_constants.rs; wages counted for
-//   Form 5884 and wages over the W-2's Medicare wages are refused, section 45S(g)), 1b (premium
-//   method: Worksheet Part 2, creditable premiums at the lowest rate of the policies, Notice 2026-28),
-//   2 (the owner's K-1 code BB amounts), 3 (to Form 3800 Part III line 4j). Schedule C line 26 is
-//   reduced by line 1a and line 14 by line 1b (section 280C(a); the premium line is the inventor's
-//   decision of 2026-10-09, the draft Schedule C instructions do not name it); the line 14 premiums
-//   of Form 8941 and 8994 together stay within the employee benefit programs expense. One rate per
-//   employee and one insurance row, the lowest rate when several apply. The one-year (or elected
-//   six-month) service period, the leave purposes, state-paid leave (counts toward the policy
-//   minimums, never toward the credit), the written policy and the controlled-group aggregation of
-//   section 45S(c)(3) are statements inside the confirmed answer; one record per owner
-//   (CREDIT_ONE_BUSINESS_PER_OWNER). K-1 code BB amounts and 2018-2025 carryforwards reach Form 3800 line
-//   4j on their own entries (specified credit). Excluded: printing (name, identifying number), a
-//   farm (Schedule F has no employer-credit fields), several rates for one employee, several
-//   insurance rows, the section 45S(h) election out (add no record).
-//   Evidence: src/tests/credits/credits.rs form_8994_wage_method_follows_the_instructions_example (fixture A),
-//   form_8994_rate_floor_cap_and_the_twelve_week_limit (B, the ranges), form_8994_insurance_premiums_
-//   and_k1_code_bb (C, C2, C3, passive and active K-1), form_8994_paths_notices_and_the_employee_tests
-//   (D); src/tests/credits/interview.rs paid_leave_credit_round_trips_through_the_business_page_and_reduces_lines_
-//   26_and_14, paid_leave_page_rules_are_checked_on_save, employer_credit_rows_choose_their_w2_from_
-//   the_payroll; 2026 draft f8994, i8994 (Rev. 12-2024), Notice 2026-28, 26 U.S.C. 45S and 280C(a).
+pub(crate) use crate::business_credit_source::ConditionalCarrybackOrigin;
+pub use crate::business_credit_source::{
+    BusinessCredit, BusinessCreditCarryback, BusinessCreditCarryforward, BusinessCreditHistory,
+    CarbonOxideCreditOrigin, CarbonOxideEquipmentCredit, CarryFiler, CreditElection, CreditSource,
+    EmployerTipFicaCarryforward, EnteredBusinessCredit, PassiveWorksheet, RenewableFacilityCredit,
+    RenewableFacilityCreditOrigin,
+};
+use crate::business_credit_source::{CreditOriginPart, valid_origin_details};
 
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{form_line, line, line_cents};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{form_line, line, line_cents};
 use crate::validation::ValidationIssue;
 use crate::year_constants::{
     PAID_LEAVE_BASE_PERCENT_HUNDREDTHS, PAID_LEAVE_COMPENSATION_LIMIT_2026_CENTS,
@@ -184,35 +29,65 @@ use libertas_macros::*;
 
 /// One calendar month of eligible-service wages and customer tips for one employee
 /// Enter all twelve months in calendar order, including zero months. The wages exclude tips but include all this employer's Medicare-taxable cash pay for the month; tips are cash or charged customer tips reported to this employer and subject to its Social Security and Medicare taxes. Exclude mandatory service charges and unreported tips.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EmployerTipMonth {
-    /// Hours worked in hundredths of an hour
-    /// Enter 16050 for 160.50 hours. Form 8846 compares monthly wages with $5.15 per hour for food or beverages, or $7.25 per hour for qualifying beauty services.
-    #[libertas_number(min = 0)]
-    pub hours_hundredths: u32,
+    /// Time worked
+    /// Form 8846 compares monthly wages with $5.15 per hour for food or beverages, or $7.25 per hour for qualifying beauty services.
+    #[libertas_number(min = 0, max = 1000, step = 0.01)]
+    #[libertas_physical_unit("hour")]
+    pub hours: f64,
     /// Medicare-taxable wages paid by this employer before tips
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub wages_excluding_tips: i64,
     /// Customer tips reported to this employer and taxed for employer FICA
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reported_tips: i64,
 }
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for EmployerTipMonth {}
 
 /// One tipped employee's 2026 payroll record
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EmployerTipEmployee {
     /// Employee's W-2
     /// Choose this employee's W-2 in this business's Employee payroll. Enter a missing W-2 under Employees' W-2 wages first.
+    pub label: String,
+    /// January through December 2026 payroll records
+    // Tax structure: one entry for each of the twelve calendar months.
+    #[libertas_size(min = 12, max = 12)]
+    /// ----
+    /// Calendar month
+    pub months: Vec<EmployerTipMonth>,
+}
+
+/// One tipped employee's 2026 payroll record
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct EmployerTipEmployeePage {
+    /// Employee's W-2
+    /// Choose this employee's W-2 in this business's Employee payroll. Enter a missing W-2 under Employees' W-2 wages first.
     #[libertas_enum_source("^^^^.payroll.Yes.statements")]
     pub label: String,
     /// January through December 2026 payroll records
-    /// ----
-    /// Calendar month
     // Tax structure: one entry for each of the twelve calendar months.
     #[libertas_size(min = 12, max = 12)]
+    /// ----
+    /// Calendar month
     pub months: Vec<EmployerTipMonth>,
+}
+
+impl From<&EmployerTipEmployee> for EmployerTipEmployeePage {
+    fn from(value: &EmployerTipEmployee) -> Self {
+        Self { label: value.label.clone(), months: value.months.clone() }
+    }
+}
+impl From<&EmployerTipEmployeePage> for EmployerTipEmployee {
+    fn from(value: &EmployerTipEmployeePage) -> Self {
+        Self { label: value.label.clone(), months: value.months.clone() }
+    }
 }
 
 /// Services generating this employer's reported customer tips
@@ -269,23 +144,77 @@ pub struct EmployerTipFicaCredit {
     /// Food and beverage employers use the January 1, 2007 $5.15 hourly basis. Qualifying beauty-service employers use the 2026 $7.25 hourly basis. Both require customary customer tipping and employer FICA actually paid or incurred on the entered tips.
     pub service: EmployerTipService,
     /// Tipped employees on this business's 2026 Forms W-2
+    #[libertas_size(min = 1)]
     /// ----
     /// Employee payroll and tip record
-    #[libertas_size(min = 1)]
     pub employees: Vec<EmployerTipEmployee>,
     /// Actual employer FICA paid or incurred on these reported customer tips
     /// Reconcile the employer Social Security and Medicare tax on these tips to payroll records and Forms 941, including payroll-period rounding. Enter cents. Exclude employee tax, Additional Medicare Tax, non-tip wages, unreported tips, and mandatory service charges. Ordinary Business expenses must omit this amount: the App deducts it after reducing it by Form 8846 line 4.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub actual_employer_tip_fica_paid: i64,
     /// Current-year unused credit actually used on a 2025 carryback return
     /// Enter whole dollars from the retained 2025 Form 3800 carryback worksheet and Form 1040-X or Form 1045, or zero after confirming no 2025 capacity or another valid reason for no use. The App calculates 2026 tax use first; only the remaining 2026 credit is available for a 2025 carryback, then a 2027 carryforward.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub used_prior_year_carryback: i64,
     /// Confirm eligible service, payroll and carryback records
     /// This is one directly owned, actively operated U.S. Schedule C employer. All entered tips came from customer services in the selected eligible food/beverage or beauty categories where tipping is customary. Every tipped employee and monthly wage/tip report is entered. The employee reports and employer FICA payments were reconciled to payroll returns and W-2 box 5; no employee exceeds this employer's 2026 Social Security wage base, no predecessor or successor payroll, no service charge, no pass-through or passive credit, and no credit election or other Form 3800 amount is omitted. Ordinary expenses exclude employer FICA on these tips but include all other payroll costs once. The retained 2025 return supports the entered carryback use, including zero. No leaves this credit out of this estimate.
     pub confirmed: bool,
+}
+
+/// Current-year Form 8846 for one active Schedule C employer
+/// This source computes Form 8846 lines 1–4 and feeds Form 3800 Part III line 4f. Enter every tipped employee and all twelve months. Do not also include the employer FICA on these reported tips in Business expenses; the App deducts only the part not credited. Include other payroll wages and taxes in ordinary business expenses once.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct EmployerTipFicaCreditPage {
+    /// Service category that generated these customer tips
+    /// Food and beverage employers use the January 1, 2007 $5.15 hourly basis. Qualifying beauty-service employers use the 2026 $7.25 hourly basis. Both require customary customer tipping and employer FICA actually paid or incurred on the entered tips.
+    pub service: EmployerTipService,
+    /// Tipped employees on this business's 2026 Forms W-2
+    #[libertas_size(min = 1)]
+    /// ----
+    /// Employee payroll and tip record
+    pub employees: Vec<EmployerTipEmployeePage>,
+    /// Actual employer FICA paid or incurred on these reported customer tips
+    /// Reconcile the employer Social Security and Medicare tax on these tips to payroll records and Forms 941, including payroll-period rounding. Enter cents. Exclude employee tax, Additional Medicare Tax, non-tip wages, unreported tips, and mandatory service charges. Ordinary Business expenses must omit this amount: the App deducts it after reducing it by Form 8846 line 4.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub actual_employer_tip_fica_paid: i64,
+    /// Current-year unused credit actually used on a 2025 carryback return
+    /// Enter whole dollars from the retained 2025 Form 3800 carryback worksheet and Form 1040-X or Form 1045, or zero after confirming no 2025 capacity or another valid reason for no use. The App calculates 2026 tax use first; only the remaining 2026 credit is available for a 2025 carryback, then a 2027 carryforward.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub used_prior_year_carryback: i64,
+    /// Confirm eligible service, payroll and carryback records
+    /// This is one directly owned, actively operated U.S. Schedule C employer. All entered tips came from customer services in the selected eligible food/beverage or beauty categories where tipping is customary. Every tipped employee and monthly wage/tip report is entered. The employee reports and employer FICA payments were reconciled to payroll returns and W-2 box 5; no employee exceeds this employer's 2026 Social Security wage base, no predecessor or successor payroll, no service charge, no pass-through or passive credit, and no credit election or other Form 3800 amount is omitted. Ordinary expenses exclude employer FICA on these tips but include all other payroll costs once. The retained 2025 return supports the entered carryback use, including zero. No leaves this credit out of this estimate.
+    pub confirmed: bool,
+}
+
+impl From<&EmployerTipFicaCredit> for EmployerTipFicaCreditPage {
+    fn from(value: &EmployerTipFicaCredit) -> Self {
+        Self {
+            service: value.service.clone(),
+            employees: value.employees.iter().map(Into::into).collect(),
+            actual_employer_tip_fica_paid: value.actual_employer_tip_fica_paid,
+            used_prior_year_carryback: value.used_prior_year_carryback,
+            confirmed: value.confirmed,
+        }
+    }
+}
+impl From<&EmployerTipFicaCreditPage> for EmployerTipFicaCredit {
+    fn from(value: &EmployerTipFicaCreditPage) -> Self {
+        Self {
+            service: value.service.clone(),
+            employees: value.employees.iter().map(Into::into).collect(),
+            actual_employer_tip_fica_paid: value.actual_employer_tip_fica_paid,
+            used_prior_year_carryback: value.used_prior_year_carryback,
+            confirmed: value.confirmed,
+        }
+    }
 }
 
 impl EmployerTipFicaCredit {
@@ -300,7 +229,8 @@ impl EmployerTipFicaCredit {
                     && !self.employees[..index].iter().any(|prior| prior.label == employee.label)
                     && employee.months.len() == 12
                     && employee.months.iter().all(|month| {
-                        month.hours_hundredths <= 100_000
+                        crate::kernel::natural::exact(month.hours, 100)
+                            .is_some_and(|hours| hours <= 100_000)
                             && (0..=100_000_000_000).contains(&month.wages_excluding_tips)
                             && (0..=100_000_000_000).contains(&month.reported_tips)
                     })
@@ -327,10 +257,9 @@ impl EmployerTipFicaCredit {
                 && tips > 0
                 && wages + tips == matching[0].medicare
                 && wages + tips <= crate::year_constants::SOCIAL_SECURITY_WAGE_BASE_CENTS
-                && employee
-                    .months
-                    .iter()
-                    .all(|month| month.reported_tips == 0 || month.hours_hundredths > 0)
+                && employee.months.iter().all(|month| {
+                    month.reported_tips == 0 || crate::kernel::natural::units(month.hours, 100) > 0
+                })
         })
     }
 
@@ -347,7 +276,7 @@ impl EmployerTipFicaCredit {
                 // eligible beauty service. The shortfall is monthly and cannot
                 // exclude more than that month's taxed customer tips.
                 let minimum_wages = crate::kernel::ratio::half_offset_i64(
-                    i64::from(month.hours_hundredths) * basis_cents_per_hour,
+                    crate::kernel::natural::units(month.hours, 100) * basis_cents_per_hour,
                     100,
                 );
                 phase::cap(
@@ -433,1150 +362,6 @@ impl EmployerTipFicaCredit {
                 ))
             },
         );
-    }
-}
-
-/// 2025 employer tip FICA credit carried to the 2026 return
-/// This is a single 2025-origin Form 8846 credit from an active, directly owned employer business. Retain the 2025 Form 8846 and Form 3800 Part III line 4f, the 2025 tax-use worksheet, and any 2024 carryback return. A 2025-origin credit is not reported in 2025 Form 3800 Part IV; it first appears in 2026 Part IV line 4f.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct EmployerTipFicaCarryforward {
-    /// Filing status on the 2025 credit return
-    pub prior_status: FederalStatus,
-    /// Whole-dollar credit reported on 2025 Form 3800 Part III line 4f, drawn from Form 8846 line 6
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub original_credit: i64,
-    /// 2025 Form 3800 credit applied against 2025 tax
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub used_origin_year: i64,
-    /// Credit applied on a 2024 carryback return
-    /// Enter zero only after confirming no 2024 tax capacity or another valid reason the carryback did not use credit.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub used_origin_prior_year_carryback: i64,
-    /// Balance documented for 2026 Form 3800 Part IV line 4f column (f)
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub carryforward_to_current_year: i64,
-    /// Confirm the narrow carryforward history
-    /// The same filer or joint filers own this 2025 credit. It came directly from one active employer business (Form 8846 line 5 is zero), is not passive, was not transferred, recaptured, disallowed or adjusted, and all 2024 carryback use is final. No other general business credit or credit carryover is unentered. The 2025 Forms 8846 and 3800 (Part III carryforward lines) show it. No leaves this carryforward out of this estimate.
-    pub ordinary: bool,
-}
-
-impl EmployerTipFicaCarryforward {
-    pub(crate) fn valid(&self) -> bool {
-        [
-            self.original_credit,
-            self.used_origin_year,
-            self.used_origin_prior_year_carryback,
-            self.carryforward_to_current_year,
-        ]
-        .iter()
-        .all(|value| (0..=100000000000).contains(value) && value % 100 == 0)
-    }
-}
-
-/// General business credit
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum BusinessCredit {
-    /// Work opportunity credit (Form 5884)
-    WorkOpportunity,
-    /// Employer Social Security and Medicare taxes paid on tips (Form 8846)
-    EmployerTipFica,
-    /// Small employer pension plan start-up costs and contributions credit (Form 8881 Part I)
-    PensionStartup,
-    /// Alternative motor vehicle credit, business part (Form 8910)
-    /// Carryforward only: the credit ended for vehicles bought after 2021. The personal part of the credit never carried forward.
-    AlternativeMotorVehicle,
-    /// Small employer health insurance premiums credit (Form 8941)
-    SmallEmployerHealth,
-    /// Small employer auto-enrollment credit (Form 8881 Part II)
-    AutoEnrollment,
-    /// Small employer military spouse participation credit (Form 8881 Part III)
-    MilitarySpouse,
-    /// Employer credit for paid family and medical leave (Form 8994)
-    PaidLeave,
-    /// Low-income housing credit (Form 8586)
-    LowIncomeHousing,
-    /// Low-income housing credit from buildings placed in service before 2008 (Form 8586)
-    /// Carryforward only: the credit periods of those buildings have ended.
-    LowIncomeHousingBefore2008,
-    /// Rehabilitation credit (Form 3468 Part VII)
-    /// The 20% credit for a certified historic building's rehabilitation, allowed 4% a year for five years.
-    Rehabilitation,
-    /// Energy credit (Form 3468 Part VI)
-    /// Section 48: solar, small wind, energy storage and geothermal heat pump property whose construction began before 2025 (geothermal heat pumps through 2034).
-    Energy,
-    /// Clean electricity investment credit (Form 3468 Part V)
-    /// Section 48E: solar, wind and energy storage facilities whose construction began after 2024.
-    CleanElectricity,
-    /// Clean fuel production credit allocated by an actual cooperative notice (Form 7218)
-    /// This source-only patron allocation does not calculate a producer's credit.
-    CleanFuel,
-    /// Advanced coal project or gasification project credit (Form 3468 Part II, line 1a)
-    AdvancedCoalGasification,
-    /// Advanced energy project credit (Form 3468 Part III, line 1d)
-    /// Section 48C, for a project with an allocation.
-    AdvancedEnergyProject,
-    /// Qualifying therapeutic discovery project credit (Form 8942, line 2w)
-    /// Carryforward only.
-    TherapeuticDiscovery,
-    /// Advanced manufacturing investment credit (Form 3468 Part IV, line 1o)
-    /// Section 48D semiconductor property.
-    AdvancedManufacturingInvestment,
-    /// Biofuel producer credit (Form 6478, line 4c)
-    /// Carryforward only: the credit ended after 2024.
-    BiofuelProducer,
-    /// Credit for increasing research activities (Form 6765, line 1c)
-    /// When you are not an eligible small business (average gross receipts above $50 million for the 3 years before), or a partner or shareholder who is not.
-    Research,
-    /// Research credit of an eligible small business (Form 6765, line 4i)
-    /// When your business (and, for a K-1, both you and the entity) had average annual gross receipts of $50 million or less for the 3 years before. It can offset the alternative minimum tax.
-    ResearchSmallBusiness,
-    /// Enhanced oil recovery credit (Form 8830, line 1t)
-    EnhancedOilRecovery,
-    /// Disabled access credit (Form 8826, line 1e)
-    /// Form 3800 takes at most $5,000 of it from all sources together.
-    DisabledAccess,
-    /// Renewable electricity production credit (Form 8835 Part II, line 1f)
-    RenewableElectricity,
-    /// Renewable electricity production credit in a facility's first four years (Form 8835 Part II, line 4e)
-    /// For a facility placed in service after October 22, 2004, during its first four years of service. It can offset the alternative minimum tax.
-    RenewableElectricitySpecified,
-    /// Empowerment zone employment credit (Form 8844, line 3)
-    /// Empowerment zones ended December 31, 2025: a 2026 amount comes only from a K-1 of an entity whose tax year began in 2025.
-    EmpowermentZone,
-    /// Renewal community employment credit (line 3)
-    /// Carryforward only.
-    RenewalCommunity,
-    /// Indian employment credit (Form 8845, line 2c)
-    /// Carryforward only.
-    IndianEmployment,
-    /// Orphan drug credit (Form 8820, line 1h)
-    OrphanDrug,
-    /// New markets credit (Form 8874, line 1i)
-    NewMarkets,
-    /// Employer-provided childcare facilities and services credit (Form 8882, line 1k)
-    /// Form 3800 takes at most $500,000 of it from all sources together.
-    EmployerChildcare,
-    /// Railroad track maintenance credit (Form 8900, line 4g)
-    /// Amounts from before 2008 are line 2m and cannot offset the alternative minimum tax.
-    RailroadTrack,
-    /// Biodiesel, renewable diesel and small agri-biodiesel producer credit (Form 8864, line 1l)
-    Biodiesel,
-    /// Low sulfur diesel fuel production credit (Form 8896, line 1m)
-    LowSulfurDiesel,
-    /// Credit for oil and gas production from marginal wells (Form 8904, line 1bb)
-    /// A 2026 amount can be carried back five years.
-    MarginalWells,
-    /// Distilled spirits credit (Form 8906, line 1n)
-    DistilledSpirits,
-    /// Advanced nuclear power facility production credit (Form 7213 Part I, line 1cc)
-    AdvancedNuclear,
-    /// Nonconventional source fuel credit (Form 8907, line 2d)
-    /// Carryforward only.
-    NonconventionalFuel,
-    /// Energy efficient home credit (Form 8908, line 1p)
-    EnergyEfficientHome,
-    /// Energy efficient appliance credit (Form 8909, line 2e)
-    /// Carryforward only.
-    EnergyEfficientAppliance,
-    /// Alternative fuel vehicle refueling property credit, business part (Form 8911 Part I, line 1s)
-    RefuelingProperty,
-    /// Mine rescue team training credit (Form 8923, line 2f)
-    /// Carryforward only.
-    MineRescue,
-    /// Agricultural chemicals security credit (Form 8931, line 2h)
-    /// Carryforward only.
-    AgriculturalChemicals,
-    /// Credit for employer differential wage payments (Form 8932, line 1w)
-    DifferentialWage,
-    /// Carbon oxide sequestration credit (Form 8933, line 1x)
-    CarbonOxide,
-    /// Clean vehicle credit, business part (Form 8936 Part II, line 1y)
-    /// Also the earlier qualified plug-in electric drive vehicle credit's business part.
-    /// To use 2025 modified AGI for this credit's income limit, enter it under Clean vehicles and refueling property. Do not add a personal vehicle row for a completed business-form amount entered here.
-    CleanVehicle,
-    /// Employee retention credit for employers affected by qualified disasters (Form 5884-A, line 2a)
-    /// Carryforward only.
-    DisasterRetention,
-    /// Employee retention credit, Hurricanes Katrina, Rita or Wilma (Form 5884-A Section A, line 2o)
-    /// Carryforward only.
-    HurricaneRetention,
-    /// Employer housing credit, Hurricane Katrina (Form 5884-A Section B, line 2p)
-    /// Carryforward only.
-    HurricaneHousing,
-    /// Employee retention credit, Midwestern disaster areas (Form 5884-A Section A, line 2q)
-    /// Carryforward only.
-    MidwesternRetention,
-    /// Employer housing credit, Midwestern disaster areas (Form 5884-A Section B, line 2r)
-    /// Carryforward only.
-    MidwesternHousing,
-    /// Zero-emission nuclear power production credit (Form 7213 Part II, line 1u)
-    ZeroEmissionNuclear,
-    /// Sustainable aviation fuel credit (Form 8864, line 1ff)
-    /// Carryforward only: the credit ended after 2024.
-    SustainableAviationFuel,
-    /// Clean hydrogen production credit (Form 7210, line 1g)
-    CleanHydrogen,
-    /// Qualified commercial clean vehicle credit (Form 8936 Part V, line 1aa)
-    CommercialCleanVehicle,
-    /// Advanced manufacturing production credit (Form 7207, line 1b)
-    AdvancedManufacturingProduction,
-    /// Clean electricity production credit (Form 7211 Part II, line 1gg)
-    CleanElectricityProduction,
-    /// General credits from an electing large partnership (Form 1065-B, line 2i)
-    /// Carryforward only.
-    ElectingLargePartnership,
-    /// Qualified electric vehicle credit, business part (Form 8834, line 2g)
-    /// Carryforward only: 2006 amounts are in their last year.
-    QualifiedElectricVehicle,
-    /// New hire retention credit (Form 5884-B, line 2s)
-    /// Carryforward only.
-    NewHireRetention,
-    /// Credit for contributions to community development corporations (Form 8847, line 2t)
-    /// Carryforward only.
-    CommunityDevelopment,
-    /// Welfare-to-work credit (Form 8861, line 2u)
-    /// Carryforward only.
-    WelfareToWork,
-    /// Another expired credit (line 2zz)
-    /// Carryforward only. Keep a statement with the credit's name and form number.
-    ExpiredOther,
-    /// 2010 credit of an eligible small business (line 4y)
-    /// Carryforward only: a 2010 credit treated as a specified credit (Public Law 111-240).
-    SmallBusiness2010,
-    /// Another general business credit (line 1zz)
-    /// A credit with no line of its own on Form 3800 Part III.
-    Other,
-    /// Another specified credit (line 4z)
-    OtherSpecified,
-}
-
-/// Form 8582-CR worksheet that limits a passive activity credit
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum PassiveWorksheet {
-    /// Worksheet 3: low-income housing credit
-    /// For property placed in service after 1989, or a pass-through interest bought after 1989. Earlier property or interests use Worksheet 2 and Part III.
-    LowIncomeHousing,
-    /// Worksheet 4: any other passive activity credit
-    /// Every passive credit that is not a rental real estate, rehabilitation or low-income housing credit.
-    Other,
-    /// Worksheet 2: rehabilitation credit from a rental real estate activity
-    /// For a rehabilitation credit of a rental real estate activity, with or without active participation: up to $25,000 of deduction equivalent, reduced by half of your income above $200,000 (Form 8582-CR Part III). A rehabilitation credit of any other passive activity uses Worksheet 4.
-    Rehabilitation,
-    /// Worksheet 1: credit of rental real estate with active participation
-    /// Active participation is required both in the credit year and in 2026 for a prior unallowed credit.
-    RentalActive,
-    /// Worksheet 2: housing property or pass-through interest before 1990
-    LowIncomeHousingBefore1990,
-}
-
-#[derive(Clone, Copy)]
-enum CarrybackOrigin {
-    FirstAllowedYear,
-    // Section39(a)(4) applies notwithstanding the origin-year rule in39(d).
-    ApplicableCreditException,
-}
-
-/// Everything fixed about one general business credit, kept in one place:
-/// `BusinessCredit::info` has one arm per credit, and the accessors of
-/// `BusinessCredit` read it.
-struct CreditInfo {
-    /// Id key of the calculation rows (`business_credit_<key>_<year>`).
-    key: &'static str,
-    /// Form name (shown by the tests; the page shows `form_key`).
-    #[cfg_attr(not(test), allow(dead_code))]
-    form: &'static str,
-    /// Resource key of the form name.
-    form_key: &'static str,
-    /// Form 3800 line: Part III for a 2026 credit, Part IV for a carryforward.
-    line: &'static str,
-    /// The line of an amount determined before 2007, when it differs.
-    early_line: Option<(&'static str, u32)>,
-    /// Section 38(c)(4)(B): the first tax year the credit is a specified
-    /// credit (0: always); None: never.
-    specified_from: Option<u32>,
-    /// The first tax year the credit could arise; the 20-year carryforward
-    /// reaches 2026 from 2006 at the earliest.
-    first_year: u32,
-    /// The earliest year a 2026 amount may be carried back to: one year for
-    /// an ordinary credit (section 39(a)(1)), three for the energy and clean
-    /// electricity investment credits, which are applicable credits of
-    /// section 6417(b) (section 39(a)(4); Form 3800 instructions). None: the
-    /// credit holds carryforwards only (Form 8910 expired for 2026 property,
-    /// and the pre-2008 buildings' low-income housing credit has no 2026
-    /// amount); the client rule BUSINESS_CREDIT_CARRYFORWARD_ONLY is the twin.
-    carryback_from: Option<u32>,
-    // Internal outgoing-period policy, never a taxpayer answer or stored fact.
-    // Current and retained-credit origin-year validation remains separate.
-    carryback_origin: CarrybackOrigin,
-    section_b: bool,
-    cap_cents: Option<i64>,
-    elective_payment: bool,
-    transferable: bool,
-    research: bool,
-    magi_limited: bool,
-}
-
-const CREDIT_BASE: CreditInfo = CreditInfo {
-    key: "",
-    form: "",
-    form_key: "",
-    line: "",
-    early_line: None,
-    specified_from: None,
-    first_year: 2006,
-    carryback_from: Some(2025),
-    carryback_origin: CarrybackOrigin::FirstAllowedYear,
-    section_b: false,
-    cap_cents: None,
-    elective_payment: false,
-    transferable: false,
-    research: false,
-    magi_limited: false,
-};
-
-impl BusinessCredit {
-    // The instructions' "order in which credits are used" within one year.
-    pub(crate) const ALL: [Self; 66] = [
-        Self::Rehabilitation,
-        Self::Energy,
-        Self::AdvancedCoalGasification,
-        Self::AdvancedEnergyProject,
-        Self::TherapeuticDiscovery,
-        Self::AdvancedManufacturingInvestment,
-        Self::CleanElectricity,
-        Self::WorkOpportunity,
-        Self::BiofuelProducer,
-        Self::Research,
-        Self::LowIncomeHousingBefore2008,
-        Self::LowIncomeHousing,
-        Self::EnhancedOilRecovery,
-        Self::DisabledAccess,
-        Self::RenewableElectricity,
-        Self::RenewableElectricitySpecified,
-        Self::EmpowermentZone,
-        Self::RenewalCommunity,
-        Self::IndianEmployment,
-        Self::EmployerTipFica,
-        Self::OrphanDrug,
-        Self::NewMarkets,
-        Self::PensionStartup,
-        Self::EmployerChildcare,
-        Self::RailroadTrack,
-        Self::Biodiesel,
-        Self::LowSulfurDiesel,
-        Self::MarginalWells,
-        Self::DistilledSpirits,
-        Self::AdvancedNuclear,
-        Self::NonconventionalFuel,
-        Self::EnergyEfficientHome,
-        Self::EnergyEfficientAppliance,
-        Self::AlternativeMotorVehicle,
-        Self::RefuelingProperty,
-        Self::MineRescue,
-        Self::AgriculturalChemicals,
-        Self::DifferentialWage,
-        Self::CarbonOxide,
-        Self::CleanVehicle,
-        Self::SmallEmployerHealth,
-        Self::DisasterRetention,
-        Self::HurricaneRetention,
-        Self::HurricaneHousing,
-        Self::MidwesternRetention,
-        Self::MidwesternHousing,
-        Self::PaidLeave,
-        Self::AutoEnrollment,
-        Self::ZeroEmissionNuclear,
-        Self::SustainableAviationFuel,
-        Self::CleanHydrogen,
-        Self::CommercialCleanVehicle,
-        Self::AdvancedManufacturingProduction,
-        Self::CleanElectricityProduction,
-        Self::CleanFuel,
-        Self::MilitarySpouse,
-        Self::ElectingLargePartnership,
-        Self::QualifiedElectricVehicle,
-        Self::NewHireRetention,
-        Self::CommunityDevelopment,
-        Self::WelfareToWork,
-        Self::ExpiredOther,
-        Self::SmallBusiness2010,
-        Self::ResearchSmallBusiness,
-        Self::Other,
-        Self::OtherSpecified,
-    ];
-
-    // The one descriptor of a credit.
-    fn info(self) -> &'static CreditInfo {
-        match self {
-            // Specified only when determined in tax years after 2006.
-            Self::WorkOpportunity => &CreditInfo {
-                key: "work_opportunity",
-                form: "Form 5884",
-                form_key: "BUSINESS_CREDIT_FORM_WORK_OPPORTUNITY",
-                line: "4b",
-                early_line: Some(("2j", 2007)),
-                specified_from: Some(2007),
-                ..CREDIT_BASE
-            },
-            Self::EmployerTipFica => &CreditInfo {
-                key: "tip_fica",
-                form: "Form 8846",
-                form_key: "BUSINESS_CREDIT_FORM_EMPLOYER_TIP_FICA",
-                line: "4f",
-                early_line: Some(("2l", 2007)),
-                specified_from: Some(2007),
-                ..CREDIT_BASE
-            },
-            Self::PensionStartup => &CreditInfo {
-                key: "pension_startup",
-                form: "Form 8881 Part I",
-                form_key: "BUSINESS_CREDIT_FORM_PENSION_STARTUP",
-                line: "1j",
-                ..CREDIT_BASE
-            },
-            // Part IV only: the credit is expired, carryforward only. Section
-            // 30B applies to property placed in service after 2005.
-            Self::AlternativeMotorVehicle => &CreditInfo {
-                key: "alternative_motor_vehicle",
-                form: "Form 8910",
-                form_key: "BUSINESS_CREDIT_FORM_ALTERNATIVE_MOTOR_VEHICLE",
-                line: "2x",
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            // Always specified.
-            Self::SmallEmployerHealth => &CreditInfo {
-                key: "small_employer_health",
-                form: "Form 8941",
-                form_key: "BUSINESS_CREDIT_FORM_SMALL_EMPLOYER_HEALTH",
-                line: "4h",
-                specified_from: Some(0),
-                first_year: 2010,
-                ..CREDIT_BASE
-            },
-            // Always specified. Section 45S applies to wages paid in taxable
-            // years beginning after 2017.
-            Self::PaidLeave => &CreditInfo {
-                key: "paid_leave",
-                form: "Form 8994",
-                form_key: "BUSINESS_CREDIT_FORM_PAID_LEAVE",
-                line: "4j",
-                specified_from: Some(0),
-                first_year: 2018,
-                ..CREDIT_BASE
-            },
-            Self::AutoEnrollment => &CreditInfo {
-                key: "auto_enrollment",
-                form: "Form 8881 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_AUTO_ENROLLMENT",
-                line: "1dd",
-                first_year: 2020,
-                ..CREDIT_BASE
-            },
-            Self::MilitarySpouse => &CreditInfo {
-                key: "military_spouse",
-                form: "Form 8881 Part III",
-                form_key: "BUSINESS_CREDIT_FORM_MILITARY_SPOUSE",
-                line: "1ee",
-                first_year: 2023,
-                ..CREDIT_BASE
-            },
-            // Specified for buildings placed in service after 2007 (section
-            // 38(c)(4)(B)(iii)).
-            Self::LowIncomeHousing => &CreditInfo {
-                key: "low_income_housing",
-                form: "Form 8586",
-                form_key: "BUSINESS_CREDIT_FORM_LOW_INCOME_HOUSING",
-                line: "4d",
-                specified_from: Some(0),
-                first_year: 2008,
-                ..CREDIT_BASE
-            },
-            // Part IV only: pre-2008 buildings, carryforward only; their
-            // carryforward is not specified (Form 3800 Part IV line 2b).
-            Self::LowIncomeHousingBefore2008 => &CreditInfo {
-                key: "low_income_housing_pre2008",
-                form: "Form 8586 (pre-2008)",
-                form_key: "BUSINESS_CREDIT_FORM_LOW_INCOME_HOUSING_PRE_2008",
-                line: "2b",
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            // Specified for expenditures after 2007 (section 38(c)(4)(B)(xi)).
-            Self::Rehabilitation => &CreditInfo {
-                key: "rehabilitation",
-                form: "Form 3468 Part VII",
-                form_key: "BUSINESS_CREDIT_FORM_REHABILITATION",
-                line: "4k",
-                specified_from: Some(2008),
-                first_year: 2008,
-                ..CREDIT_BASE
-            },
-            // Specified (section 38(c)(4)(B)(x)).
-            Self::Energy => &CreditInfo {
-                key: "energy",
-                form: "Form 3468 Part VI",
-                form_key: "BUSINESS_CREDIT_FORM_ENERGY",
-                line: "4a",
-                specified_from: Some(0),
-                carryback_from: Some(2023),
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            // Not specified. Section 48E applies to facilities placed in
-            // service after 2024.
-            Self::CleanFuel => &CreditInfo {
-                key: "clean_fuel",
-                form: "Form 7218",
-                form_key: "BUSINESS_CREDIT_FORM_CLEAN_FUEL",
-                line: "1q",
-                first_year: 2025,
-                carryback_from: Some(2023),
-                carryback_origin: CarrybackOrigin::ApplicableCreditException,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::CleanElectricity => &CreditInfo {
-                key: "clean_electricity",
-                form: "Form 3468 Part V",
-                form_key: "BUSINESS_CREDIT_FORM_CLEAN_ELECTRICITY",
-                line: "1v",
-                first_year: 2025,
-                carryback_from: Some(2023),
-                carryback_origin: CarrybackOrigin::ApplicableCreditException,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::AdvancedCoalGasification => &CreditInfo {
-                key: "advanced_coal_gasification",
-                form: "Form 3468 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_ADVANCED_COAL_GASIFICATION",
-                line: "1a",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::AdvancedEnergyProject => &CreditInfo {
-                key: "advanced_energy_project",
-                form: "Form 3468 Part III",
-                form_key: "BUSINESS_CREDIT_FORM_ADVANCED_ENERGY_PROJECT",
-                line: "1d",
-                first_year: 2009,
-                carryback_from: Some(2023),
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::TherapeuticDiscovery => &CreditInfo {
-                key: "therapeutic_discovery",
-                form: "Form 8942",
-                form_key: "BUSINESS_CREDIT_FORM_THERAPEUTIC_DISCOVERY",
-                line: "2w",
-                first_year: 2009,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::AdvancedManufacturingInvestment => &CreditInfo {
-                key: "advanced_manufacturing_investment",
-                form: "Form 3468 Part IV",
-                form_key: "BUSINESS_CREDIT_FORM_ADVANCED_MANUFACTURING_INVESTMENT",
-                line: "1o",
-                first_year: 2023,
-                carryback_from: Some(2025),
-                elective_payment: true,
-                ..CREDIT_BASE
-            },
-            Self::BiofuelProducer => &CreditInfo {
-                key: "biofuel_producer",
-                form: "Form 6478",
-                form_key: "BUSINESS_CREDIT_FORM_BIOFUEL_PRODUCER",
-                line: "4c",
-                first_year: 2006,
-                carryback_from: None,
-                specified_from: Some(0),
-                ..CREDIT_BASE
-            },
-            Self::Research => &CreditInfo {
-                key: "research",
-                form: "Form 6765",
-                form_key: "BUSINESS_CREDIT_FORM_RESEARCH",
-                line: "1c",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                research: true,
-                ..CREDIT_BASE
-            },
-            Self::ResearchSmallBusiness => &CreditInfo {
-                key: "research_small_business",
-                form: "Form 6765",
-                form_key: "BUSINESS_CREDIT_FORM_RESEARCH_SMALL_BUSINESS",
-                line: "4i",
-                first_year: 2016,
-                carryback_from: Some(2025),
-                research: true,
-                specified_from: Some(0),
-                ..CREDIT_BASE
-            },
-            Self::EnhancedOilRecovery => &CreditInfo {
-                key: "enhanced_oil_recovery",
-                form: "Form 8830",
-                form_key: "BUSINESS_CREDIT_FORM_ENHANCED_OIL_RECOVERY",
-                line: "1t",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::DisabledAccess => &CreditInfo {
-                key: "disabled_access",
-                form: "Form 8826",
-                form_key: "BUSINESS_CREDIT_FORM_DISABLED_ACCESS",
-                line: "1e",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                cap_cents: Some(500000),
-                ..CREDIT_BASE
-            },
-            Self::RenewableElectricity => &CreditInfo {
-                key: "renewable_electricity",
-                form: "Form 8835 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_RENEWABLE_ELECTRICITY",
-                line: "1f",
-                first_year: 2006,
-                // For 2026, post-2022 facilities are still within the first
-                // four production years and belong on line4e. Generic line1f
-                // therefore uses the ordinary section39 one-year window.
-                carryback_from: Some(2025),
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::RenewableElectricitySpecified => &CreditInfo {
-                key: "renewable_electricity_specified",
-                form: "Form 8835 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_RENEWABLE_ELECTRICITY_SPECIFIED",
-                line: "4e",
-                first_year: 2006,
-                carryback_from: Some(2023),
-                specified_from: Some(0),
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::EmpowermentZone => &CreditInfo {
-                key: "empowerment_zone",
-                form: "Form 8844",
-                form_key: "BUSINESS_CREDIT_FORM_EMPOWERMENT_ZONE",
-                line: "3",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                section_b: true,
-                ..CREDIT_BASE
-            },
-            Self::RenewalCommunity => &CreditInfo {
-                key: "renewal_community",
-                form: "Renewal community employment credit",
-                form_key: "BUSINESS_CREDIT_FORM_RENEWAL_COMMUNITY",
-                line: "3",
-                first_year: 2006,
-                carryback_from: None,
-                section_b: true,
-                ..CREDIT_BASE
-            },
-            Self::IndianEmployment => &CreditInfo {
-                key: "indian_employment",
-                form: "Form 8845",
-                form_key: "BUSINESS_CREDIT_FORM_INDIAN_EMPLOYMENT",
-                line: "2c",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::OrphanDrug => &CreditInfo {
-                key: "orphan_drug",
-                form: "Form 8820",
-                form_key: "BUSINESS_CREDIT_FORM_ORPHAN_DRUG",
-                line: "1h",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::NewMarkets => &CreditInfo {
-                key: "new_markets",
-                form: "Form 8874",
-                form_key: "BUSINESS_CREDIT_FORM_NEW_MARKETS",
-                line: "1i",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::EmployerChildcare => &CreditInfo {
-                key: "employer_childcare",
-                form: "Form 8882",
-                form_key: "BUSINESS_CREDIT_FORM_EMPLOYER_CHILDCARE",
-                line: "1k",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                cap_cents: Some(50000000),
-                ..CREDIT_BASE
-            },
-            Self::RailroadTrack => &CreditInfo {
-                key: "railroad_track",
-                form: "Form 8900",
-                form_key: "BUSINESS_CREDIT_FORM_RAILROAD_TRACK",
-                line: "4g",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                specified_from: Some(2008),
-                early_line: Some(("2m", 2008)),
-                ..CREDIT_BASE
-            },
-            Self::Biodiesel => &CreditInfo {
-                key: "biodiesel",
-                form: "Form 8864",
-                form_key: "BUSINESS_CREDIT_FORM_BIODIESEL",
-                line: "1l",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::LowSulfurDiesel => &CreditInfo {
-                key: "low_sulfur_diesel",
-                form: "Form 8896",
-                form_key: "BUSINESS_CREDIT_FORM_LOW_SULFUR_DIESEL",
-                line: "1m",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::MarginalWells => &CreditInfo {
-                key: "marginal_wells",
-                form: "Form 8904",
-                form_key: "BUSINESS_CREDIT_FORM_MARGINAL_WELLS",
-                line: "1bb",
-                first_year: 2006,
-                carryback_from: Some(2021),
-                ..CREDIT_BASE
-            },
-            Self::DistilledSpirits => &CreditInfo {
-                key: "distilled_spirits",
-                form: "Form 8906",
-                form_key: "BUSINESS_CREDIT_FORM_DISTILLED_SPIRITS",
-                line: "1n",
-                first_year: 2018,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::AdvancedNuclear => &CreditInfo {
-                key: "advanced_nuclear",
-                form: "Form 7213 Part I",
-                form_key: "BUSINESS_CREDIT_FORM_ADVANCED_NUCLEAR",
-                line: "1cc",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::NonconventionalFuel => &CreditInfo {
-                key: "nonconventional_fuel",
-                form: "Form 8907",
-                form_key: "BUSINESS_CREDIT_FORM_NONCONVENTIONAL_FUEL",
-                line: "2d",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::EnergyEfficientHome => &CreditInfo {
-                key: "energy_efficient_home",
-                form: "Form 8908",
-                form_key: "BUSINESS_CREDIT_FORM_ENERGY_EFFICIENT_HOME",
-                line: "1p",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::EnergyEfficientAppliance => &CreditInfo {
-                key: "energy_efficient_appliance",
-                form: "Form 8909",
-                form_key: "BUSINESS_CREDIT_FORM_ENERGY_EFFICIENT_APPLIANCE",
-                line: "2e",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::RefuelingProperty => &CreditInfo {
-                key: "refueling_property",
-                form: "Form 8911",
-                form_key: "BUSINESS_CREDIT_FORM_REFUELING_PROPERTY",
-                line: "1s",
-                first_year: 2006,
-                carryback_from: Some(2023),
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::MineRescue => &CreditInfo {
-                key: "mine_rescue",
-                form: "Form 8923",
-                form_key: "BUSINESS_CREDIT_FORM_MINE_RESCUE",
-                line: "2f",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::AgriculturalChemicals => &CreditInfo {
-                key: "agricultural_chemicals",
-                form: "Form 8931",
-                form_key: "BUSINESS_CREDIT_FORM_AGRICULTURAL_CHEMICALS",
-                line: "2h",
-                first_year: 2008,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::DifferentialWage => &CreditInfo {
-                key: "differential_wage",
-                form: "Form 8932",
-                form_key: "BUSINESS_CREDIT_FORM_DIFFERENTIAL_WAGE",
-                line: "1w",
-                first_year: 2008,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::CarbonOxide => &CreditInfo {
-                key: "carbon_oxide",
-                form: "Form 8933",
-                form_key: "BUSINESS_CREDIT_FORM_CARBON_OXIDE",
-                line: "1x",
-                first_year: 2008,
-                carryback_from: Some(2023),
-                elective_payment: true,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::CleanVehicle => &CreditInfo {
-                key: "clean_vehicle",
-                form: "Form 8936 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_CLEAN_VEHICLE",
-                line: "1y",
-                first_year: 2010,
-                carryback_from: Some(2025),
-                magi_limited: true,
-                ..CREDIT_BASE
-            },
-            Self::DisasterRetention => &CreditInfo {
-                key: "disaster_retention",
-                form: "Form 5884-A",
-                form_key: "BUSINESS_CREDIT_FORM_DISASTER_RETENTION",
-                line: "2a",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::HurricaneRetention => &CreditInfo {
-                key: "hurricane_retention",
-                form: "Form 5884-A Section A",
-                form_key: "BUSINESS_CREDIT_FORM_HURRICANE_RETENTION",
-                line: "2o",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::HurricaneHousing => &CreditInfo {
-                key: "hurricane_housing",
-                form: "Form 5884-A Section B",
-                form_key: "BUSINESS_CREDIT_FORM_HURRICANE_HOUSING",
-                line: "2p",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::MidwesternRetention => &CreditInfo {
-                key: "midwestern_retention",
-                form: "Form 5884-A Section A",
-                form_key: "BUSINESS_CREDIT_FORM_MIDWESTERN_RETENTION",
-                line: "2q",
-                first_year: 2008,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::MidwesternHousing => &CreditInfo {
-                key: "midwestern_housing",
-                form: "Form 5884-A Section B",
-                form_key: "BUSINESS_CREDIT_FORM_MIDWESTERN_HOUSING",
-                line: "2r",
-                first_year: 2008,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::ZeroEmissionNuclear => &CreditInfo {
-                key: "zero_emission_nuclear",
-                form: "Form 7213 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_ZERO_EMISSION_NUCLEAR",
-                line: "1u",
-                first_year: 2024,
-                carryback_from: Some(2023),
-                carryback_origin: CarrybackOrigin::ApplicableCreditException,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::SustainableAviationFuel => &CreditInfo {
-                key: "sustainable_aviation_fuel",
-                form: "Form 8864 SAF",
-                form_key: "BUSINESS_CREDIT_FORM_SUSTAINABLE_AVIATION_FUEL",
-                line: "1ff",
-                first_year: 2023,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::CleanHydrogen => &CreditInfo {
-                key: "clean_hydrogen",
-                form: "Form 7210",
-                form_key: "BUSINESS_CREDIT_FORM_CLEAN_HYDROGEN",
-                line: "1g",
-                first_year: 2023,
-                carryback_from: Some(2023),
-                elective_payment: true,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::CommercialCleanVehicle => &CreditInfo {
-                key: "commercial_clean_vehicle",
-                form: "Form 8936 Part V",
-                form_key: "BUSINESS_CREDIT_FORM_COMMERCIAL_CLEAN_VEHICLE",
-                line: "1aa",
-                first_year: 2023,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::AdvancedManufacturingProduction => &CreditInfo {
-                key: "advanced_manufacturing_production",
-                form: "Form 7207",
-                form_key: "BUSINESS_CREDIT_FORM_ADVANCED_MANUFACTURING_PRODUCTION",
-                line: "1b",
-                first_year: 2023,
-                carryback_from: Some(2023),
-                elective_payment: true,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::CleanElectricityProduction => &CreditInfo {
-                key: "clean_electricity_production",
-                form: "Form 7211 Part II",
-                form_key: "BUSINESS_CREDIT_FORM_CLEAN_ELECTRICITY_PRODUCTION",
-                line: "1gg",
-                first_year: 2025,
-                carryback_from: Some(2023),
-                carryback_origin: CarrybackOrigin::ApplicableCreditException,
-                transferable: true,
-                ..CREDIT_BASE
-            },
-            Self::ElectingLargePartnership => &CreditInfo {
-                key: "electing_large_partnership",
-                form: "Form 1065-B",
-                form_key: "BUSINESS_CREDIT_FORM_ELECTING_LARGE_PARTNERSHIP",
-                line: "2i",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::QualifiedElectricVehicle => &CreditInfo {
-                key: "qualified_electric_vehicle",
-                form: "Form 8834",
-                form_key: "BUSINESS_CREDIT_FORM_QUALIFIED_ELECTRIC_VEHICLE",
-                line: "2g",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::NewHireRetention => &CreditInfo {
-                key: "new_hire_retention",
-                form: "Form 5884-B",
-                form_key: "BUSINESS_CREDIT_FORM_NEW_HIRE_RETENTION",
-                line: "2s",
-                first_year: 2010,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::CommunityDevelopment => &CreditInfo {
-                key: "community_development",
-                form: "Form 8847",
-                form_key: "BUSINESS_CREDIT_FORM_COMMUNITY_DEVELOPMENT",
-                line: "2t",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::WelfareToWork => &CreditInfo {
-                key: "welfare_to_work",
-                form: "Form 8861",
-                form_key: "BUSINESS_CREDIT_FORM_WELFARE_TO_WORK",
-                line: "2u",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::ExpiredOther => &CreditInfo {
-                key: "expired_other",
-                form: "Another expired credit",
-                form_key: "BUSINESS_CREDIT_FORM_EXPIRED_OTHER",
-                line: "2zz",
-                first_year: 2006,
-                carryback_from: None,
-                ..CREDIT_BASE
-            },
-            Self::SmallBusiness2010 => &CreditInfo {
-                key: "small_business2010",
-                form: "2010 eligible small business credit",
-                form_key: "BUSINESS_CREDIT_FORM_SMALL_BUSINESS2010",
-                line: "4y",
-                first_year: 2010,
-                carryback_from: None,
-                specified_from: Some(0),
-                ..CREDIT_BASE
-            },
-            Self::Other => &CreditInfo {
-                key: "other",
-                form: "Another general business credit",
-                form_key: "BUSINESS_CREDIT_FORM_OTHER",
-                line: "1zz",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                ..CREDIT_BASE
-            },
-            Self::OtherSpecified => &CreditInfo {
-                key: "other_specified",
-                form: "Another specified credit",
-                form_key: "BUSINESS_CREDIT_FORM_OTHER_SPECIFIED",
-                line: "4z",
-                first_year: 2006,
-                carryback_from: Some(2025),
-                specified_from: Some(0),
-                ..CREDIT_BASE
-            },
-        }
-    }
-
-    pub(crate) fn entered_choices() -> Vec<i32> {
-        Self::ALL
-            .iter()
-            .filter(|c| c.carryback_allowed() && **c != Self::EmpowermentZone)
-            .map(|c| *c as i32)
-            .collect()
-    }
-
-    pub(crate) fn transferable(self) -> bool {
-        self.info().transferable
-    }
-
-    pub(crate) fn election_choices(self) -> Vec<i32> {
-        let mut choices = alloc::vec![0];
-        if self.info().elective_payment {
-            choices.push(1);
-        }
-        if self.info().transferable {
-            choices.push(2);
-        }
-        choices
-    }
-
-    pub(crate) fn research(self) -> bool {
-        self.info().research
-    }
-
-    pub(crate) fn order(self) -> usize {
-        Self::ALL.iter().position(|c| *c == self).unwrap_or(0)
-    }
-
-    /// Whether a 2026 amount of this credit may be carried back to 2025.
-    pub(crate) fn carryback_allowed(self) -> bool {
-        self.info().carryback_from.is_some()
-    }
-
-    /// The earliest year a 2026 amount of this credit may be carried back to.
-    pub(crate) fn carryback_first_year(self) -> u32 {
-        let info = self.info();
-        let period_start = info.carryback_from.unwrap_or(2025);
-        match info.carryback_origin {
-            CarrybackOrigin::FirstAllowedYear => max(period_start, self.first_year()),
-            CarrybackOrigin::ApplicableCreditException => period_start,
-        }
-    }
-
-    pub(crate) fn key(self) -> &'static str {
-        self.info().key
-    }
-
-    // The credit named at the start of a calculation id's tail, with the rest
-    // after it (`energy_current_year_used` -> Energy, `current_year_used`). The longest key
-    // wins: `low_income_housing_pre2008` before `low_income_housing`.
-    pub(crate) fn split_id(tail: &str) -> Option<(Self, &str)> {
-        Self::ALL
-            .iter()
-            .filter_map(|credit| {
-                tail.strip_prefix(credit.key())
-                    .and_then(|rest| rest.strip_prefix('_'))
-                    .map(|rest| (*credit, rest))
-            })
-            .max_by_key(|(credit, _)| credit.key().len())
-    }
-
-    // Form 8582-CR worksheet that limits this credit when it is passive:
-    // Worksheet 3 for the post-1989 low-income housing credit, else Worksheet 4.
-    pub(crate) fn worksheet(self) -> PassiveWorksheet {
-        match self {
-            Self::LowIncomeHousing | Self::LowIncomeHousingBefore2008 => {
-                PassiveWorksheet::LowIncomeHousing
-            }
-            _ => PassiveWorksheet::Other,
-        }
-    }
-
-    // Whether a passive amount of this credit may come from the worksheet: a
-    // rehabilitation credit is Worksheet 2 when it belongs to a rental real
-    // estate activity and Worksheet 4 otherwise.
-    pub(crate) fn worksheet_allows(self, worksheet: PassiveWorksheet) -> bool {
-        match self {
-            Self::LowIncomeHousing | Self::LowIncomeHousingBefore2008 => matches!(
-                worksheet,
-                PassiveWorksheet::LowIncomeHousing | PassiveWorksheet::LowIncomeHousingBefore1990
-            ),
-            Self::Rehabilitation => {
-                matches!(worksheet, PassiveWorksheet::Other | PassiveWorksheet::Rehabilitation)
-            }
-            _ => matches!(worksheet, PassiveWorksheet::Other | PassiveWorksheet::RentalActive),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn form(self) -> &'static str {
-        self.info().form
-    }
-
-    pub(crate) fn form_message_key(self) -> &'static str {
-        self.info().form_key
-    }
-
-    // Whether the credit determined in `year` is a specified credit
-    // (section 38(c)(4)(B)).
-    pub(crate) fn specified(self, year: u32) -> bool {
-        self.info().specified_from.is_some_and(|from| year >= from)
-    }
-
-    // Part III line for a 2026 credit; Part IV line for a carryforward.
-    pub(crate) fn line(self, year: u32) -> &'static str {
-        let info = self.info();
-        match info.early_line {
-            Some((early, first)) if year < first => early,
-            _ => info.line,
-        }
-    }
-
-    // The first tax year the credit could arise.
-    pub(crate) fn first_year(self) -> u32 {
-        self.info().first_year
     }
 }
 
@@ -1874,89 +659,6 @@ impl K1CreditCode {
     }
 }
 
-/// Actual carbon-capture equipment credited by Form8933 or its attached statement
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct CarbonOxideEquipmentCredit {
-    /// Equipment or process-train identifier from the source document
-    /// Include the facility in this reference when needed to identify the actual equipment. Do not infer it from a business or asset name.
-    #[libertas_size(min = 1)]
-    pub identity: alloc::string::String,
-    /// Original placed-in-service date of this equipment
-    /// Use this equipment's first placed-in-service date, not a later acquisition, expansion or replacement date. A missing date keeps this source's extended carryback exception unavailable.
-    /// [NullText]
-    /// The original equipment date is unavailable
-    /// [SetText]
-    /// The equipment was originally placed in service on
-    #[libertas_date_only]
-    // Tax-year source window: only the stated current or prior tax years apply.
-    #[libertas_number(max = 20261231)]
-    #[libertas_default($null)]
-    pub original_placed_on: Option<u32>,
-    /// Credit attributable to this equipment on the source statement
-    /// Before Form3800 limits. The equipment amounts must exactly equal this credit row's gross source amount.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-}
-
-/// Origin of the carbon oxide credit
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum CarbonOxideCreditOrigin {
-    /// Actual equipment or process-train source statement
-    Statement {
-        /// Equipment that produced this credit
-        /// Enter actual component amounts when one source statement includes multiple pieces of equipment. No proportional or estimated split.
-        /// ----
-        /// Equipment
-        #[libertas_unordered]
-        equipment: Vec<CarbonOxideEquipmentCredit>,
-    },
-}
-// The two physical-source classes keep distinct questions and stored labels.
-// Their structural validity, date facts and paired community projection have
-// one native owner; no component credit-use ordering is decided here.
-trait CreditOriginPart: Clone {
-    fn identity(&self) -> &str;
-    fn original_date(&self) -> Option<u32>;
-    fn amount(&self) -> i64;
-    fn set_amount(&mut self, value: i64);
-}
-impl CreditOriginPart for CarbonOxideEquipmentCredit {
-    fn identity(&self) -> &str {
-        &self.identity
-    }
-    fn original_date(&self) -> Option<u32> {
-        self.original_placed_on
-    }
-    fn amount(&self) -> i64 {
-        self.amount
-    }
-    fn set_amount(&mut self, value: i64) {
-        self.amount = value;
-    }
-}
-fn valid_origin_parts<P: CreditOriginPart>(parts: &[P], gross: i64) -> bool {
-    !parts.is_empty()
-        && parts.len() <= 60
-        && parts.iter().enumerate().all(|(i, part)| {
-            !part.identity().trim().is_empty()
-                && (1..=100_000_000_000).contains(&part.amount())
-                && part
-                    .original_date()
-                    .is_none_or(|date| crate::federal_rules::valid_date(date) && date <= 20261231)
-                && !parts[..i].iter().any(|prior| prior.identity() == part.identity())
-        })
-        && parts.iter().try_fold(0i64, |sum, part| sum.checked_add(part.amount())) == Some(gross)
-}
-fn origin_parts_state<P: CreditOriginPart>(parts: &[P]) -> ConditionalCarrybackOrigin {
-    parts.iter().fold(ConditionalCarrybackOrigin::default(), |state, part| {
-        state.merge(match part.original_date() {
-            None => ConditionalCarrybackOrigin::unknown(),
-            Some(date) if date > 20221231 => ConditionalCarrybackOrigin(4),
-            Some(_) => ConditionalCarrybackOrigin(2),
-        })
-    })
-}
 fn divided_origin_parts<P: CreditOriginPart>(
     parts: &[P],
     gross: i64,
@@ -1983,78 +685,6 @@ fn divided_origin_parts<P: CreditOriginPart>(
     result.retain(|part| part.amount() > 0);
     result
 }
-impl CarbonOxideCreditOrigin {
-    pub(crate) fn valid(&self, gross: i64) -> bool {
-        let Self::Statement { equipment } = self;
-        valid_origin_parts(equipment, gross)
-    }
-    pub(crate) fn carryback_origin(&self) -> ConditionalCarrybackOrigin {
-        let Self::Statement { equipment } = self;
-        origin_parts_state(equipment)
-    }
-}
-
-/// Actual renewable-electricity facility credited by Form8835 or its attached statement
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RenewableFacilityCredit {
-    /// Facility identifier from the source document
-    /// Identify the actual facility that produced this credit. Do not infer it from a business name or another property's date.
-    #[libertas_size(min = 1)]
-    pub identity: alloc::string::String,
-    /// Original placed-in-service date of this facility
-    /// Use the original service date of the actual credited facility. A missing date keeps its extended carryback exception unavailable.
-    /// [NullText]
-    /// The original facility date is unavailable
-    /// [SetText]
-    /// The facility was originally placed in service on
-    #[libertas_date_only]
-    // Tax-year source window: only the stated current or prior tax years apply.
-    #[libertas_number(max = 20261231)]
-    #[libertas_default($null)]
-    pub original_placed_on: Option<u32>,
-    /// Credit attributable to this facility on the source statement
-    /// Before Form3800 limits. The facility amounts must exactly equal this credit row's gross source amount.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-}
-/// Origin of the specified renewable-electricity credit
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RenewableFacilityCreditOrigin {
-    /// Actual facility source statement
-    Statement {
-        /// Facilities that produced this credit
-        /// Enter actual component amounts when the statement includes multiple facilities. No proportional or estimated split.
-        /// ----
-        /// Facility
-        #[libertas_unordered]
-        facilities: Vec<RenewableFacilityCredit>,
-    },
-}
-impl CreditOriginPart for RenewableFacilityCredit {
-    fn identity(&self) -> &str {
-        &self.identity
-    }
-    fn original_date(&self) -> Option<u32> {
-        self.original_placed_on
-    }
-    fn amount(&self) -> i64 {
-        self.amount
-    }
-    fn set_amount(&mut self, value: i64) {
-        self.amount = value;
-    }
-}
-impl RenewableFacilityCreditOrigin {
-    pub(crate) fn valid(&self, gross: i64) -> bool {
-        let Self::Statement { facilities } = self;
-        valid_origin_parts(facilities, gross)
-    }
-    pub(crate) fn carryback_origin(&self) -> ConditionalCarrybackOrigin {
-        let Self::Statement { facilities } = self;
-        origin_parts_state(facilities)
-    }
-}
 
 /// Credit on the K-1
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -2065,7 +695,8 @@ pub struct K1Credit {
     pub line: Option<BusinessCredit>,
     /// Amount
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// Actual equipment origin for the carbon oxide credit
     /// Source-document facts only; this does not elect payment or determine any other credit.
@@ -2090,10 +721,21 @@ impl K1Credit {
         self.line.unwrap_or_else(|| self.code.credit())
     }
 
+    #[cfg(test)]
     pub(crate) fn valid_list(items: &[Self]) -> bool {
         Self::issue_list(items).is_none()
     }
+    pub(crate) fn source_valid_list(items: &[Self]) -> bool {
+        Self::issue_list_with_mode(items, false).is_none()
+    }
+    #[cfg(test)]
     pub(crate) fn issue_list(items: &[Self]) -> Option<ValidationIssue> {
+        Self::issue_list_with_mode(items, true)
+    }
+    pub(crate) fn issue_list_with_mode(
+        items: &[Self],
+        require_answers: bool,
+    ) -> Option<ValidationIssue> {
         if items.len() > 60 {
             return Some(ValidationIssue::new("K1_CREDIT_CODE_TWICE").at_field("credits"));
         }
@@ -2109,12 +751,19 @@ impl K1Credit {
             }) {
                 Some("code")
             } else if item.carbon_oxide_origin.as_ref().is_some_and(|origin| {
-                item.credit() != BusinessCredit::CarbonOxide || !origin.valid(item.amount)
+                let CarbonOxideCreditOrigin::Statement { equipment } = origin;
+                !valid_origin_details(equipment)
+                    || (require_answers
+                        && (item.credit() != BusinessCredit::CarbonOxide
+                            || !origin.valid(item.amount)))
             }) {
                 Some("carbon_oxide_origin")
             } else if item.renewable_facility_origin.as_ref().is_some_and(|origin| {
-                item.credit() != BusinessCredit::RenewableElectricitySpecified
-                    || !origin.valid(item.amount)
+                let RenewableFacilityCreditOrigin::Statement { facilities } = origin;
+                !valid_origin_details(facilities)
+                    || (require_answers
+                        && (item.credit() != BusinessCredit::RenewableElectricitySpecified
+                            || !origin.valid(item.amount)))
             }) {
                 Some("renewable_facility_origin")
             } else if items[..index]
@@ -2154,7 +803,8 @@ pub enum WorkOpportunityGroup {
         /// Second-year wages paid in 2026
         /// Wages for work in the year that begins one year after the employee began work.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         second_year_paid_in_year: i64,
         /// Second-year wages counted on your 2025 Form 5884 line 1c
@@ -2191,7 +841,6 @@ impl WorkOpportunityGroup {
 pub struct WorkOpportunityEmployee {
     /// Employee's W-2
     /// Choose this employee's W-2 in this business's Employee payroll. Enter a missing W-2 under Employees' W-2 wages first.
-    #[libertas_enum_source("^^^^.payroll.Yes.statements")]
     pub label: String,
     /// Targeted group on the certification
     #[libertas_default(Standard)]
@@ -2200,15 +849,17 @@ pub struct WorkOpportunityEmployee {
     /// The credit covers only employees who began work before 2026. First-year wages in 2026 need a start date in 2025 after January 1; long-term family assistance second-year wages need a start date after January 1, 2024.
     #[libertas_date_only]
     pub began: u32,
-    /// Hours worked for you in the employee's first year
-    /// At least 120. Fewer than 400 hours earns 25% of first-year wages; 400 or more earns 40%.
+    /// Time worked for you in the employee's first year
+    /// At least 120. Fewer than 400 earns 25% of first-year wages; 400 or more earns 40%.
     // Tax structure: the employee’s first-year period contains at most 366 days of 24 hours.
     #[libertas_number(min = 120, max = 8784)]
+    #[libertas_physical_unit("hour")]
     pub first_year_hours: u32,
     /// First-year wages paid in 2026
     /// FUTA-type wages, without the $7,000 wage base, for work in the year that began on the start date.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub first_year_paid_in_year: i64,
     /// First-year wages counted on your 2025 Form 5884
@@ -2218,6 +869,67 @@ pub struct WorkOpportunityEmployee {
     #[libertas_number(min = 0, max = $WOTC_FIRST_YEAR_CAP_DISABLED_LONG_UNEMPLOYED_VETERAN_CENTS)]
     #[libertas_default(0)]
     pub first_year_paid_in_prior_year: i64,
+}
+
+/// Certified employee
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct WorkOpportunityEmployeePage {
+    /// Employee's W-2
+    /// Choose this employee's W-2 in this business's Employee payroll. Enter a missing W-2 under Employees' W-2 wages first.
+    #[libertas_enum_source("^^^^.payroll.Yes.statements")]
+    pub label: String,
+    /// Targeted group on the certification
+    #[libertas_default(Standard)]
+    pub group: WorkOpportunityGroup,
+    /// Date the employee began work
+    /// The credit covers only employees who began work before 2026. First-year wages in 2026 need a start date in 2025 after January 1; long-term family assistance second-year wages need a start date after January 1, 2024.
+    #[libertas_date_only]
+    pub began: u32,
+    /// Time worked for you in the employee's first year
+    /// At least 120. Fewer than 400 earns 25% of first-year wages; 400 or more earns 40%.
+    // Tax structure: the employee’s first-year period contains at most 366 days of 24 hours.
+    #[libertas_number(min = 120, max = 8784)]
+    #[libertas_physical_unit("hour")]
+    pub first_year_hours: u32,
+    /// First-year wages paid in 2026
+    /// FUTA-type wages, without the $7,000 wage base, for work in the year that began on the start date.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub first_year_paid_in_year: i64,
+    /// First-year wages counted on your 2025 Form 5884
+    /// These use up the employee's first-year wage limit.
+    #[libertas_money("USD", 2)]
+    // Section 51 tax structure: the prior-year first-year qualified wage limit for this employee class.
+    #[libertas_number(min = 0, max = $WOTC_FIRST_YEAR_CAP_DISABLED_LONG_UNEMPLOYED_VETERAN_CENTS)]
+    #[libertas_default(0)]
+    pub first_year_paid_in_prior_year: i64,
+}
+
+impl From<&WorkOpportunityEmployee> for WorkOpportunityEmployeePage {
+    fn from(value: &WorkOpportunityEmployee) -> Self {
+        Self {
+            label: value.label.clone(),
+            group: value.group.clone(),
+            began: value.began,
+            first_year_hours: value.first_year_hours,
+            first_year_paid_in_year: value.first_year_paid_in_year,
+            first_year_paid_in_prior_year: value.first_year_paid_in_prior_year,
+        }
+    }
+}
+impl From<&WorkOpportunityEmployeePage> for WorkOpportunityEmployee {
+    fn from(value: &WorkOpportunityEmployeePage) -> Self {
+        Self {
+            label: value.label.clone(),
+            group: value.group.clone(),
+            began: value.began,
+            first_year_hours: value.first_year_hours,
+            first_year_paid_in_year: value.first_year_paid_in_year,
+            first_year_paid_in_prior_year: value.first_year_paid_in_prior_year,
+        }
+    }
 }
 
 impl WorkOpportunityEmployee {
@@ -2277,14 +989,46 @@ impl WorkOpportunityEmployee {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct WorkOpportunityCredit {
     /// Certified employees with credit wages in 2026
-    /// ----
-    /// Employee
     #[libertas_unordered]
     #[libertas_size(min = 1)]
+    /// ----
+    /// Employee
     pub employees: Vec<WorkOpportunityEmployee>,
     /// Certifications and wages confirmed
     /// Each employee has a state workforce agency certification requested on Form 8850 within 28 days of starting work, is not your relative or dependent, did not work for you before, and more than half of the wages were for work in this business. The wages exclude federally funded on-the-job training pay and wages used for another employment credit. Business expenses include these wages in full on line 26. Each employee's state workforce agency certification (the Form 8850 response) shows it. A successor employer, a controlled group, summer youth employees or designated community residents need No, which leaves this credit out of this estimate.
     pub confirmed: bool,
+}
+
+/// Work opportunity credit (Form 5884)
+/// For wages paid in 2026 to employees certified by the state workforce agency who began work before 2026. The App figures lines 1a–1c and 2 and reduces this business's wages deduction by the credit.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct WorkOpportunityCreditPage {
+    /// Certified employees with credit wages in 2026
+    #[libertas_unordered]
+    #[libertas_size(min = 1)]
+    /// ----
+    /// Employee
+    pub employees: Vec<WorkOpportunityEmployeePage>,
+    /// Certifications and wages confirmed
+    /// Each employee has a state workforce agency certification requested on Form 8850 within 28 days of starting work, is not your relative or dependent, did not work for you before, and more than half of the wages were for work in this business. The wages exclude federally funded on-the-job training pay and wages used for another employment credit. Business expenses include these wages in full on line 26. Each employee's state workforce agency certification (the Form 8850 response) shows it. A successor employer, a controlled group, summer youth employees or designated community residents need No, which leaves this credit out of this estimate.
+    pub confirmed: bool,
+}
+
+impl From<&WorkOpportunityCredit> for WorkOpportunityCreditPage {
+    fn from(value: &WorkOpportunityCredit) -> Self {
+        Self {
+            employees: value.employees.iter().map(Into::into).collect(),
+            confirmed: value.confirmed,
+        }
+    }
+}
+impl From<&WorkOpportunityCreditPage> for WorkOpportunityCredit {
+    fn from(value: &WorkOpportunityCreditPage) -> Self {
+        Self {
+            employees: value.employees.iter().map(Into::into).collect(),
+            confirmed: value.confirmed,
+        }
+    }
 }
 
 impl WorkOpportunityCredit {
@@ -2417,7 +1161,8 @@ pub struct PlanStartupCosts {
     /// Qualified start-up costs paid in 2026 (line 1)
     /// Costs to set up or administer the plan and educate employees about it, included once in Business expenses; the App reduces that deduction by the credit.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub costs: i64,
 }
 
@@ -2538,19 +1283,22 @@ pub struct EmployeeHealthCoverage {
     /// Coverage tier
     #[libertas_default(EmployeeOnly)]
     pub tier: HealthCoverageTier,
-    /// Months of 2026 the employee was enrolled
+    /// Time in 2026 the employee was enrolled
     // Tax structure: a calendar year has twelve months.
     #[libertas_number(min = 1, max = 12)]
+    #[libertas_physical_unit("month")]
     pub months: u32,
     /// Total premium charged for the employee's coverage in those months
     /// Your share plus the employee's share, from the SHOP invoices, without any tobacco surcharge.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub total_premium: i64,
     /// Premiums you paid (Worksheet 4 column (b))
     /// Your own share only. Not what the employee paid, including pretax salary reductions through a cafeteria plan, and not a tobacco surcharge. A state subsidy paid directly to the insurer counts as paid by you; do not subtract a state subsidy or credit paid to you (enter it below as state premium subsidies and tax credits).
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub employer_paid: i64,
 }
 
@@ -2559,10 +1307,11 @@ pub struct EmployeeHealthCoverage {
 pub enum HealthCreditService {
     /// Hours of service
     Hours {
-        /// Hours of service, at most 2,080
-        /// Hours paid for work plus paid vacation, holiday, sick and other leave (at most 160 hours for one continuous leave). You may instead count 8 hours for each day, or 40 hours for each week, with at least one hour of service.
+        /// Service time, at most 2,080
+        /// Time paid for work plus paid vacation, holiday, sick and other leave (at most 160 for one continuous leave). You may instead count 8 for each day, or 40 for each week, that has any service.
         // Form 8941 tax structure: count no more than 2,080 service hours per employee.
         #[libertas_number(min = 1, max = $SMALL_EMPLOYER_HEALTH_FTE_HOURS)]
+        #[libertas_physical_unit("hour")]
         hours: u32,
     },
     /// Seasonal worker who worked 120 days or fewer
@@ -2584,6 +1333,24 @@ impl HealthCreditService {
 pub struct HealthCreditEmployee {
     /// Employee's W-2
     /// Choose this employee's W-2 in this business's Employee payroll; its box 5 Medicare wages are this employee's wages. Enter a missing W-2 under Employees' W-2 wages first.
+    pub label: String,
+    /// Hours of service
+    pub service: HealthCreditService,
+    /// Health coverage you provided in 2026
+    /// Leave empty when the employee was not enrolled.
+    /// [NullText]
+    /// This employee was not enrolled in health coverage I provided
+    /// [SetText]
+    /// The health coverage I provided was
+    #[libertas_default($null)]
+    pub coverage: Option<EmployeeHealthCoverage>,
+}
+
+/// Employee for the health insurance credit
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct HealthCreditEmployeePage {
+    /// Employee's W-2
+    /// Choose this employee's W-2 in this business's Employee payroll; its box 5 Medicare wages are this employee's wages. Enter a missing W-2 under Employees' W-2 wages first.
     #[libertas_enum_source("^^^^.payroll.Yes.statements")]
     pub label: String,
     /// Hours of service
@@ -2596,6 +1363,25 @@ pub struct HealthCreditEmployee {
     /// The health coverage I provided was
     #[libertas_default($null)]
     pub coverage: Option<EmployeeHealthCoverage>,
+}
+
+impl From<&HealthCreditEmployee> for HealthCreditEmployeePage {
+    fn from(value: &HealthCreditEmployee) -> Self {
+        Self {
+            label: value.label.clone(),
+            service: value.service.clone(),
+            coverage: value.coverage.clone(),
+        }
+    }
+}
+impl From<&HealthCreditEmployeePage> for HealthCreditEmployee {
+    fn from(value: &HealthCreditEmployeePage) -> Self {
+        Self {
+            label: value.label.clone(),
+            service: value.service.clone(),
+            coverage: value.coverage.clone(),
+        }
+    }
 }
 
 /// Small employer health insurance premiums credit (Form 8941)
@@ -2612,29 +1398,101 @@ pub struct SmallEmployerHealthCredit {
     /// Average employee-only premium for your county
     /// From the 2026 average premium table at the end of the Form 8941 instructions (published in November 2026), for the county of this business's principal address: the Employee-Only column.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub employee_only_average: i64,
     /// Average family premium for your county
     /// The same table row's "Dependent, Family, etc." column.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub family_average: i64,
     /// Employees (Worksheet 1)
     /// Everyone you employed in 2026, including seasonal workers, except: you, a partner or owner of more than 5% (more than 2% of an S corporation), anyone's spouse among these, their children and other descendants, siblings and step-siblings, parents and other ancestors, stepparents, nieces, nephews, aunts, uncles and in-laws, and a household member who is the dependent of one of them.
-    /// ----
-    /// Employee
     #[libertas_unordered]
     #[libertas_size(min = 1)]
+    /// ----
+    /// Employee
     pub employees: Vec<HealthCreditEmployee>,
     /// State premium subsidies and tax credits (line 10)
     /// State tax credits you can take, and state premium subsidies paid to you or to the insurer, for the premiums entered above.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub state_subsidies: i64,
     /// Eligible small employer confirmed
     /// Your arrangement pays the same percentage, at least 50%, of each enrolled employee's premium (or a composite or list-billing arrangement the Form 8941 instructions allow) through plans in this one county's rating area; the business is not in Hawaii. Every employee listed above has a W-2 in this business's Employee payroll, and you have no other business with employees, no household employee and no leased employee; this business is not part of a controlled group, an affiliated service group or a commonly controlled group (a spouse's separate business counts only if either of you works in or manages the other's). The premiums you paid are included once in this business's employee benefit programs expense. Your payroll and hour records, SHOP invoices and earlier returns show it. No leaves this credit out of this estimate.
     pub confirmed: bool,
+}
+
+/// Small employer health insurance premiums credit (Form 8941)
+/// For premiums this business paid for its employees' coverage through a SHOP Marketplace. The App figures Form 8941 lines 1–16 and reduces the employee benefit programs deduction (Schedule C line 14) by the credit.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct SmallEmployerHealthCreditPage {
+    /// How you offered the coverage (line A)
+    pub coverage: HealthCreditCoverage,
+    /// First year of your two-year credit period (line C)
+    /// 2026 when no earlier return of yours or a predecessor's claimed this credit; 2025 when your 2025 return was the first. If a return for 2014 through 2024 claimed it, the two-year period has ended and no credit is allowed; do not add this credit.
+    // Tax-year source window: only the stated current or prior tax years apply.
+    #[libertas_number(min = 2025, max = 2026)]
+    pub first_credit_year: u32,
+    /// Average employee-only premium for your county
+    /// From the 2026 average premium table at the end of the Form 8941 instructions (published in November 2026), for the county of this business's principal address: the Employee-Only column.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub employee_only_average: i64,
+    /// Average family premium for your county
+    /// The same table row's "Dependent, Family, etc." column.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub family_average: i64,
+    /// Employees (Worksheet 1)
+    /// Everyone you employed in 2026, including seasonal workers, except: you, a partner or owner of more than 5% (more than 2% of an S corporation), anyone's spouse among these, their children and other descendants, siblings and step-siblings, parents and other ancestors, stepparents, nieces, nephews, aunts, uncles and in-laws, and a household member who is the dependent of one of them.
+    #[libertas_unordered]
+    #[libertas_size(min = 1)]
+    /// ----
+    /// Employee
+    pub employees: Vec<HealthCreditEmployeePage>,
+    /// State premium subsidies and tax credits (line 10)
+    /// State tax credits you can take, and state premium subsidies paid to you or to the insurer, for the premiums entered above.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default(0)]
+    pub state_subsidies: i64,
+    /// Eligible small employer confirmed
+    /// Your arrangement pays the same percentage, at least 50%, of each enrolled employee's premium (or a composite or list-billing arrangement the Form 8941 instructions allow) through plans in this one county's rating area; the business is not in Hawaii. Every employee listed above has a W-2 in this business's Employee payroll, and you have no other business with employees, no household employee and no leased employee; this business is not part of a controlled group, an affiliated service group or a commonly controlled group (a spouse's separate business counts only if either of you works in or manages the other's). The premiums you paid are included once in this business's employee benefit programs expense. Your payroll and hour records, SHOP invoices and earlier returns show it. No leaves this credit out of this estimate.
+    pub confirmed: bool,
+}
+
+impl From<&SmallEmployerHealthCredit> for SmallEmployerHealthCreditPage {
+    fn from(value: &SmallEmployerHealthCredit) -> Self {
+        Self {
+            coverage: value.coverage,
+            first_credit_year: value.first_credit_year,
+            employee_only_average: value.employee_only_average,
+            family_average: value.family_average,
+            employees: value.employees.iter().map(Into::into).collect(),
+            state_subsidies: value.state_subsidies,
+            confirmed: value.confirmed,
+        }
+    }
+}
+impl From<&SmallEmployerHealthCreditPage> for SmallEmployerHealthCredit {
+    fn from(value: &SmallEmployerHealthCreditPage) -> Self {
+        Self {
+            coverage: value.coverage,
+            first_credit_year: value.first_credit_year,
+            employee_only_average: value.employee_only_average,
+            family_average: value.family_average,
+            employees: value.employees.iter().map(Into::into).collect(),
+            state_subsidies: value.state_subsidies,
+            confirmed: value.confirmed,
+        }
+    }
 }
 
 impl SmallEmployerHealthCredit {
@@ -2846,7 +1704,7 @@ impl SmallEmployerHealthCredit {
         for (printed, amount, explanation) in rows {
             // Lines 1, 2, 13 and 14 are numbers of people, not dollars.
             let emit = if matches!(printed, "1" | "2" | "13" | "14") {
-                crate::kernel::lines::form_count
+                crate::line_emission::form_count
             } else {
                 form_line
             };
@@ -2864,15 +1722,15 @@ impl SmallEmployerHealthCredit {
 }
 
 /// One employee's 2026 paid family and medical leave
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PaidLeaveEmployee {
     /// Employee's W-2
     /// Choose this employee's W-2 in this business's Employee payroll. Enter a missing W-2 under Employees' W-2 wages first. Not your spouse, your child under 21 or your parent: their wages are not FUTA wages and earn no credit.
-    #[libertas_enum_source("^^^^.payroll.Yes.statements")]
     pub label: String,
-    /// Hours the employee customarily works each week
-    /// At least 20; an employee customarily working fewer hours is not a qualifying employee. It also sets the 12-week limit on the leave counted.
+    /// Time the employee customarily works each week
+    /// At least 20; an employee customarily working less is not a qualifying employee. It also sets the 12-week limit on the leave counted.
     #[libertas_number(min = $PAID_LEAVE_MIN_WEEKLY_HOURS)]
+    #[libertas_physical_unit("hour")]
     pub weekly_hours: u32,
     /// 2025 compensation from you, annualized
     /// Pay you gave the employee in 2025 (Form W-2 box 1 plus pretax elective deferrals), figured for a full year when they worked part of 2025, pro rata for a part-time employee. More than $96,000 means the employee does not qualify; enter 0 for an employee who started in 2026.
@@ -2883,23 +1741,99 @@ pub struct PaidLeaveEmployee {
     /// Normal hourly wage rate
     /// The employee's usual pay per hour for work, without irregular overtime or discretionary bonuses; a salaried employee's pay converted to an hourly rate by a reasonable method.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub normal_hourly_rate: i64,
-    /// Hours of family and medical leave paid in 2026, in hundredths of an hour
-    /// Enter 16000 for 160.00 hours. Count only leave under your written policy for a family and medical leave purpose, taken while the employee was a qualifying employee, and at most 12 weeks of the employee's usual hours.
-    #[libertas_number(min = 1)]
-    pub leave_hours_hundredths: u32,
+    /// Family and medical leave paid in 2026
+    /// Count only leave under your written policy for a family and medical leave purpose, taken while the employee was a qualifying employee, and at most 12 weeks of the employee's usual hours.
+    #[libertas_number(min = 0.01, step = 0.01)]
+    #[libertas_physical_unit("hour")]
+    pub leave_hours: f64,
     /// Wages you paid for that leave (worksheet column (b))
     /// Only what you paid under your policy for those hours. Not leave paid by a state or locality or required by state or local law, not leave paid by an insurance policy whose premiums you claim below, and not wages you counted for the work opportunity credit.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub leave_wages: i64,
-    /// Rate of payment under your policy, in hundredths of a percent
-    /// The share of normal wages your policy pays during this leave: enter 7500 for 75% and 10000 for 100% or more. It must be at least 50%. If this employee's leave was paid at more than one rate, enter the lowest.
-    // Percentage encoding: 10,000 ten-thousandths is 100 percent.
-    #[libertas_number(min = $PAID_LEAVE_MIN_RATE_HUNDREDTHS, max = 10000)]
-    pub rate_hundredths: u32,
+    /// Rate of payment under your policy
+    /// The share of normal wages your policy pays during this leave; enter 100 for 100% or more. It must be at least 50%. If this employee's leave was paid at more than one rate, enter the lowest.
+    #[libertas_number(min = $PAID_LEAVE_MIN_RATE_PERCENT, max = 100, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub rate: f64,
 }
+
+/// One employee's 2026 paid family and medical leave
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct PaidLeaveEmployeePage {
+    /// Employee's W-2
+    /// Choose this employee's W-2 in this business's Employee payroll. Enter a missing W-2 under Employees' W-2 wages first. Not your spouse, your child under 21 or your parent: their wages are not FUTA wages and earn no credit.
+    #[libertas_enum_source("^^^^.payroll.Yes.statements")]
+    pub label: String,
+    /// Time the employee customarily works each week
+    /// At least 20; an employee customarily working less is not a qualifying employee. It also sets the 12-week limit on the leave counted.
+    #[libertas_number(min = $PAID_LEAVE_MIN_WEEKLY_HOURS)]
+    #[libertas_physical_unit("hour")]
+    pub weekly_hours: u32,
+    /// 2025 compensation from you, annualized
+    /// Pay you gave the employee in 2025 (Form W-2 box 1 plus pretax elective deferrals), figured for a full year when they worked part of 2025, pro rata for a part-time employee. More than $96,000 means the employee does not qualify; enter 0 for an employee who started in 2026.
+    #[libertas_money("USD", 2)]
+    // Section 45S qualifying-employee compensation limit for 2026.
+    #[libertas_number(min = 0, max = $PAID_LEAVE_COMPENSATION_LIMIT_2026_CENTS)]
+    pub prior_year_compensation: i64,
+    /// Normal hourly wage rate
+    /// The employee's usual pay per hour for work, without irregular overtime or discretionary bonuses; a salaried employee's pay converted to an hourly rate by a reasonable method.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub normal_hourly_rate: i64,
+    /// Family and medical leave paid in 2026
+    /// Count only leave under your written policy for a family and medical leave purpose, taken while the employee was a qualifying employee, and at most 12 weeks of the employee's usual hours.
+    #[libertas_number(min = 0.01, step = 0.01)]
+    #[libertas_physical_unit("hour")]
+    pub leave_hours: f64,
+    /// Wages you paid for that leave (worksheet column (b))
+    /// Only what you paid under your policy for those hours. Not leave paid by a state or locality or required by state or local law, not leave paid by an insurance policy whose premiums you claim below, and not wages you counted for the work opportunity credit.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub leave_wages: i64,
+    /// Rate of payment under your policy
+    /// The share of normal wages your policy pays during this leave; enter 100 for 100% or more. It must be at least 50%. If this employee's leave was paid at more than one rate, enter the lowest.
+    #[libertas_number(min = $PAID_LEAVE_MIN_RATE_PERCENT, max = 100, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub rate: f64,
+}
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for PaidLeaveEmployeePage {}
+
+impl From<&PaidLeaveEmployee> for PaidLeaveEmployeePage {
+    fn from(value: &PaidLeaveEmployee) -> Self {
+        Self {
+            label: value.label.clone(),
+            weekly_hours: value.weekly_hours,
+            prior_year_compensation: value.prior_year_compensation,
+            normal_hourly_rate: value.normal_hourly_rate,
+            leave_hours: value.leave_hours,
+            leave_wages: value.leave_wages,
+            rate: value.rate,
+        }
+    }
+}
+impl From<&PaidLeaveEmployeePage> for PaidLeaveEmployee {
+    fn from(value: &PaidLeaveEmployeePage) -> Self {
+        Self {
+            label: value.label.clone(),
+            weekly_hours: value.weekly_hours,
+            prior_year_compensation: value.prior_year_compensation,
+            normal_hourly_rate: value.normal_hourly_rate,
+            leave_hours: value.leave_hours,
+            leave_wages: value.leave_wages,
+            rate: value.rate,
+        }
+    }
+}
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for PaidLeaveEmployee {}
 
 impl PaidLeaveEmployee {
     fn valid(&self) -> bool {
@@ -2908,19 +1842,20 @@ impl PaidLeaveEmployee {
             && (0..=PAID_LEAVE_COMPENSATION_LIMIT_2026_CENTS)
                 .contains(&self.prior_year_compensation)
             && (1..=100_000).contains(&self.normal_hourly_rate)
-            && (1..=96_000).contains(&self.leave_hours_hundredths)
+            && (1..=96_000).contains(&crate::kernel::natural::units(self.leave_hours, 100))
             && (1..=100_000_000_000).contains(&self.leave_wages)
-            && Self::rate_valid(self.rate_hundredths)
+            && Self::rate_valid(self.rate)
             && !self.above_12_weeks()
     }
 
-    fn rate_valid(rate: u32) -> bool {
-        (PAID_LEAVE_MIN_RATE_HUNDREDTHS..=10_000).contains(&i64::from(rate))
+    fn rate_valid(rate: f64) -> bool {
+        crate::kernel::natural::exact(rate, 100)
+            .is_some_and(|rate| (PAID_LEAVE_MIN_RATE_HUNDREDTHS..=10_000).contains(&rate))
     }
 
     // Section 45S(b)(3): at most 12 weeks of the employee's usual hours.
     fn above_12_weeks(&self) -> bool {
-        i64::from(self.leave_hours_hundredths)
+        crate::kernel::natural::units(self.leave_hours, 100)
             > PAID_LEAVE_MAX_WEEKS * 100 * i64::from(self.weekly_hours)
     }
 
@@ -2929,13 +1864,17 @@ impl PaidLeaveEmployee {
     fn credit_wages(&self) -> i64 {
         phase::cap(
             self.leave_wages,
-            [fraction(self.normal_hourly_rate, i64::from(self.leave_hours_hundredths), 100)],
+            [fraction(
+                self.normal_hourly_rate,
+                crate::kernel::natural::units(self.leave_hours, 100),
+                100,
+            )],
         )
     }
 
     // Worksheet Part 1 column (d) in cents.
     fn credit_cents(&self) -> i64 {
-        paid_leave_credit_cents(self.credit_wages(), self.rate_hundredths)
+        paid_leave_credit_cents(self.credit_wages(), self.rate)
     }
 }
 
@@ -2943,30 +1882,33 @@ impl PaidLeaveEmployee {
 // 0.25 point per point above it, at most 25%) times an amount in cents. The
 // percentage is kept in quarters of a hundredth of a percent, so a rate of
 // 66.67% needs no rounding of points.
-fn paid_leave_credit_cents(amount: i64, rate_hundredths: u32) -> i64 {
+fn paid_leave_credit_cents(amount: i64, rate: f64) -> i64 {
     let quarters = min(
         PAID_LEAVE_RATE_POINTS_PER_PERCENT_POINT * PAID_LEAVE_MAX_PERCENT_HUNDREDTHS,
         PAID_LEAVE_RATE_POINTS_PER_PERCENT_POINT * PAID_LEAVE_BASE_PERCENT_HUNDREDTHS
-            + i64::from(rate_hundredths)
+            + crate::kernel::natural::units(rate, 100)
             - PAID_LEAVE_MIN_RATE_HUNDREDTHS,
     );
     fraction(amount, quarters, PAID_LEAVE_RATE_POINTS_PER_PERCENT_POINT * 10_000)
 }
 
 /// Paid family and medical leave insurance (premium method)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PaidLeaveInsurance {
     /// Creditable premiums you paid or incurred in 2026
     /// Only the part of the premiums that funds paid family and medical leave for qualifying employees that the wage method could credit: not coverage for other leave, for employees who do not qualify, or for leave required or paid by a state or locality. Split a premium that covers both by a reasonable method your records support. These premiums are included once in this business's employee benefit programs expense; the App reduces that deduction by the credit.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub premiums: i64,
-    /// Rate of payment under the policy, in hundredths of a percent
-    /// The share of normal wages the policy pays during leave, whether or not anyone took leave in 2026: enter 6000 for 60%. With more than one policy, enter the lowest rate.
-    // Percentage encoding: 10,000 ten-thousandths is 100 percent.
-    #[libertas_number(min = $PAID_LEAVE_MIN_RATE_HUNDREDTHS, max = 10000)]
-    pub rate_hundredths: u32,
+    /// Rate of payment under the policy
+    /// The share of normal wages the policy pays during leave, whether or not anyone took leave in 2026. With more than one policy, enter the lowest rate.
+    #[libertas_number(min = $PAID_LEAVE_MIN_RATE_PERCENT, max = 100, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub rate: f64,
 }
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for PaidLeaveInsurance {}
 
 /// Employer credit for paid family and medical leave (Form 8994)
 /// For wages this business paid to qualifying employees on family and medical leave under its written policy, or premiums for a paid leave insurance policy. The App figures Form 8994 lines 1a–3 and reduces the wages and employee benefit programs deductions by the credit.
@@ -2974,9 +1916,9 @@ pub struct PaidLeaveInsurance {
 pub struct PaidLeaveCredit {
     /// Employees paid while on family and medical leave (wage method)
     /// Leave empty when you claim only insurance premiums.
+    #[libertas_unordered]
     /// ----
     /// Employee
-    #[libertas_unordered]
     pub employees: Vec<PaidLeaveEmployee>,
     /// Paid family and medical leave insurance (premium method)
     /// Leave empty when you have no such policy. Do not also count, in the wage rows above, leave this policy paid for.
@@ -2991,13 +1933,54 @@ pub struct PaidLeaveCredit {
     pub confirmed: bool,
 }
 
+/// Employer credit for paid family and medical leave (Form 8994)
+/// For wages this business paid to qualifying employees on family and medical leave under its written policy, or premiums for a paid leave insurance policy. The App figures Form 8994 lines 1a–3 and reduces the wages and employee benefit programs deductions by the credit.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct PaidLeaveCreditPage {
+    /// Employees paid while on family and medical leave (wage method)
+    /// Leave empty when you claim only insurance premiums.
+    #[libertas_unordered]
+    /// ----
+    /// Employee
+    pub employees: Vec<PaidLeaveEmployeePage>,
+    /// Paid family and medical leave insurance (premium method)
+    /// Leave empty when you have no such policy. Do not also count, in the wage rows above, leave this policy paid for.
+    /// [NullText]
+    /// I have no paid family and medical leave insurance policy to claim
+    /// [SetText]
+    /// The paid family and medical leave insurance policy is
+    #[libertas_default($null)]
+    pub insurance: Option<PaidLeaveInsurance>,
+    /// Written policy and eligibility confirmed
+    /// Before the leave was taken you had a written policy giving every qualifying employee at least 2 weeks a year of paid leave for family and medical leave purposes (a proportionate amount for anyone working fewer than 30 hours a week) at no less than 50% of normal wages, without excluding any class of qualifying employees; leave a state or locality requires or pays counts toward these minimums. If any qualifying employee is not covered by the Family and Medical Leave Act (for example, you have fewer than 50 employees), the policy says you will not interfere with or retaliate for the use of the leave, and you complied. Each listed employee had worked for you at least a year (or at least six months, if you chose that period) when the leave was taken. The entered leave was specifically for family and medical leave purposes, not general vacation, personal or sick leave. You have no other business, and this business is not part of a controlled group or a group under common control. Your written policy, payroll, leave and insurance records show it. No leaves this credit out of this estimate.
+    pub confirmed: bool,
+}
+
+impl From<&PaidLeaveCredit> for PaidLeaveCreditPage {
+    fn from(value: &PaidLeaveCredit) -> Self {
+        Self {
+            employees: value.employees.iter().map(Into::into).collect(),
+            insurance: value.insurance.clone(),
+            confirmed: value.confirmed,
+        }
+    }
+}
+impl From<&PaidLeaveCreditPage> for PaidLeaveCredit {
+    fn from(value: &PaidLeaveCreditPage) -> Self {
+        Self {
+            employees: value.employees.iter().map(Into::into).collect(),
+            insurance: value.insurance.clone(),
+            confirmed: value.confirmed,
+        }
+    }
+}
+
 impl PaidLeaveCredit {
     pub(crate) fn valid(&self) -> bool {
         self.employees.len() <= 100
             && self.employees.iter().all(PaidLeaveEmployee::valid)
             && self.insurance.as_ref().is_none_or(|i| {
-                (1..=100_000_000_000).contains(&i.premiums)
-                    && PaidLeaveEmployee::rate_valid(i.rate_hundredths)
+                (1..=100_000_000_000).contains(&i.premiums) && PaidLeaveEmployee::rate_valid(i.rate)
             })
             && !self.duplicate_label()
     }
@@ -3030,7 +2013,7 @@ impl PaidLeaveCredit {
         }
         self.employees.iter().position(PaidLeaveEmployee::above_12_weeks).map(|index| {
             ValidationIssue::new("PAID_LEAVE_ABOVE_12_WEEKS")
-                .at_field("leave_hours_hundredths")
+                .at_field("leave_hours")
                 .in_list("employees", index)
         })
     }
@@ -3076,7 +2059,7 @@ impl PaidLeaveCredit {
         let premiums = self
             .insurance
             .as_ref()
-            .map_or(0, |i| dollars(paid_leave_credit_cents(i.premiums, i.rate_hundredths)));
+            .map_or(0, |i| dollars(paid_leave_credit_cents(i.premiums, i.rate)));
         [wages, premiums]
     }
 
@@ -3121,373 +2104,7 @@ impl PaidLeaveCredit {
     }
 }
 
-/// General business credit figured on its own form
-/// The credit from your own Form 8826, 6765, 8882, 8932 or another source form, entered at the Form 3800 Part III line that form names. A credit on a Schedule K-1 belongs with that K-1.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct EnteredBusinessCredit {
-    /// Credit
-    /// The Form 3800 Part III line your credit form sends it to. Credits the App figures from your business page (Forms 5884, 8846, 8881, 8941, 8994) and from property (Form 3468) are not entered here unless you figured them yourself because the App cannot.
-    pub credit: BusinessCredit,
-    /// Where the credit comes from
-    pub source: CreditSource,
-    /// Credit from the form
-    /// The amount your credit form reports for Form 3800, before any tax limit, in whole dollars. For the research credit, leave out any part elected as a payroll tax credit (Form 6765 line 34).
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
-    pub amount: i64,
-    /// Elective payment or transfer
-    /// Only with an IRS registration number for the property, obtained before filing.
-    #[libertas_default(None)]
-    pub election: CreditElection,
-    /// Actual equipment origin for the carbon oxide credit
-    /// Source-document facts only; this does not elect payment or determine any other credit.
-    /// [NullText]
-    /// I do not have the equipment origin details for the extended carryback
-    /// [SetText]
-    /// The equipment origin details are
-    #[libertas_default($null)]
-    pub carbon_oxide_origin: Option<CarbonOxideCreditOrigin>,
-    /// Actual facility origin for the specified renewable-electricity credit
-    /// Source-document facts only; this does not elect payment or determine a generic renewable-electricity credit.
-    /// [NullText]
-    /// I do not have the facility origin details for the extended carryback
-    /// [SetText]
-    /// The facility origin details are
-    #[libertas_default($null)]
-    pub renewable_facility_origin: Option<RenewableFacilityCreditOrigin>,
-}
-
-/// Where the credit comes from
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum CreditSource {
-    /// A business you run (Schedule C)
-    Business {
-        /// Business
-        /// Empty uses your only business on Self-employment.
-        #[libertas_default($null)]
-        business: Option<i64>,
-        /// Expenses and basis already reduced for this credit
-        /// The credit form names the deduction or basis to reduce by the credit, such as wages for Form 8932, clinical testing expenses for Form 8820 or research expenses for Form 6765 (unless you elected the reduced credit), or the property's basis for Forms 8826 and 8882. Yes when the amounts entered for this business already reflect it. No leaves this credit out of the estimate.
-        reduced: bool,
-    },
-    /// A farm (Schedule F or Form 4835)
-    Farm {
-        /// Farm
-        /// Empty uses your only farm.
-        #[libertas_default($null)]
-        farm: Option<i64>,
-        /// Expenses and basis already reduced for this credit
-        /// The credit form names the deduction or basis to reduce by the credit. Yes when the amounts entered for this farm already reflect it. No leaves this credit out of the estimate.
-        reduced: bool,
-    },
-    /// A rental property (Schedule E)
-    /// A credit of a rental you actively participate in can use the $25,000 special allowance (Form 8582-CR Part II).
-    Rental {
-        /// Rental
-        /// Empty uses your only rental.
-        #[libertas_default($null)]
-        rental: Option<i64>,
-        /// Expenses and basis already reduced for this credit
-        /// The credit form names the deduction or basis to reduce by the credit. Yes when the amounts entered for this rental already reflect it. No leaves this credit out of the estimate.
-        reduced: bool,
-    },
-    /// Bought from another taxpayer (section 6418 transfer)
-    /// A credit you paid cash for under a transfer election statement. It is a passive activity credit, used only against the tax on passive income; the price is not deductible.
-    Bought,
-}
-
-/// Elective payment or transfer
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum CreditElection {
-    /// Neither
-    None,
-    /// Elective payment (sections 6417 and 48D)
-    /// For the advanced manufacturing production, clean hydrogen, carbon oxide sequestration or advanced manufacturing investment credit of property you hold directly. The credit first reduces your tax; what is left of the elected amount is paid to you (Schedule 3 line 13c).
-    ElectivePayment {
-        /// Gross elective payment amount
-        /// Form 3800 Part III column (h), in whole dollars.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 100)]
-        amount: i64,
-    },
-    /// Sold to another taxpayer (section 6418 transfer)
-    /// The part you transferred for cash. The cash is not income, and the part sold is not your credit.
-    Sold {
-        /// Amount sold
-        /// Form 3800 Part III column (f), in whole dollars.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 100)]
-        amount: i64,
-    },
-}
-
-/// Unused credit carried forward to 2026
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct BusinessCreditCarryforward {
-    /// Credit
-    pub credit: BusinessCredit,
-    /// Tax year the credit arose
-    /// A credit carries forward 20 years, so 2006 is the earliest year that reaches 2026.
-    // Tax-year source window: only the stated current or prior tax years apply.
-    #[libertas_number(min = 2006, max = 2025)]
-    pub origin_year: u32,
-    /// Unused credit carried to 2026
-    /// From your 2025 Form 3800 Part IV column (i) or Part III carryforward records, in whole dollars.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
-    pub amount: i64,
-    /// Form 8582-CR worksheet of a passive activity credit disallowed in 2025
-    /// Choose the worksheet of your 2025 Form 8582-CR that carried the amount when it is a prior-year unallowed passive credit rather than a Form 3800 carryforward. Leave it empty for a Form 3800 carryforward. A low-income housing credit uses Worksheet 3; a rehabilitation credit of a rental real estate activity uses Worksheet 2; every other credit uses Worksheet 4.
-    /// [NullText]
-    /// This is a Form 3800 carryforward, not an unallowed passive activity credit
-    /// [SetText]
-    /// The prior unallowed passive credit came from
-    pub passive: Option<PassiveWorksheet>,
-    /// Whose credit
-    pub filer: CarryFiler,
-    /// Originating business whose current taxable income supports this research credit
-    /// Absence affirmatively means no corresponding taxable income on this return.
-    pub research_source: Option<i64>,
-}
-
-/// Whose credit
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-#[libertas_inline_choices]
-pub enum CarryFiler {
-    /// The same filers as this return
-    SameFilers,
-    /// Yours alone
-    /// It arose when you filed without your current spouse.
-    You,
-    /// Your spouse's alone
-    /// It arose when your spouse filed without you.
-    Spouse,
-}
-/// 2026 credit carried back to an earlier return
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct BusinessCreditCarryback {
-    /// Credit
-    pub credit: BusinessCredit,
-    /// Year of the return it was carried back to
-    /// Ordinary credits carry back to 2025. Applicable energy, nuclear, clean electricity and clean fuel credits carry back to 2023–2025; marginal-well credits carry back to 2021–2025.
-    // Tax-year source window: only the stated current or prior tax years apply.
-    #[libertas_number(min = 2021, max = 2025)]
-    #[libertas_default(2025)]
-    pub year: u32,
-    /// Amount used on that carryback return
-    /// From the Form 1040-X or Form 1045 that carries the unused 2026 credit back, in whole dollars.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
-    pub amount: i64,
-    /// Originating current business for a research-credit carryback
-    pub research_source: Option<i64>,
-}
-
-/// General business credit carryovers (Form 3800)
-/// Enter credits carried from earlier years and 2026 credits carried back to earlier returns. The 2025 Form 8846 carryforward has its own item.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct BusinessCreditHistory {
-    /// Credits figured on their own forms
-    pub credits: Vec<EnteredBusinessCredit>,
-    /// Credits carried forward to 2026 (Part IV)
-    /// A credit carried from a property entered with its investment credit is added from that property, not here.
-    /// ----
-    /// Carryforward
-    #[libertas_unordered]
-    pub carryforwards: Vec<BusinessCreditCarryforward>,
-    /// 2026 credits carried back to earlier returns
-    /// ----
-    /// Carryback
-    #[libertas_unordered]
-    pub carrybacks: Vec<BusinessCreditCarryback>,
-    /// Your spouse has no general business credit, carryforward or carryback for 2026
-    /// Married filing separately only. When true, the $25,000 amount on Form 3800 line 13 applies instead of $12,500.
-    #[libertas_default(false)]
-    pub spouse_without_credits: bool,
-}
-
 impl BusinessCreditHistory {
-    pub(crate) fn rule(&self) -> Option<&'static str> {
-        self.issue().map(|issue| issue.key)
-    }
-    pub(crate) fn issue(&self) -> Option<ValidationIssue> {
-        for (index, item) in self.credits.iter().enumerate() {
-            let info = item.credit.info();
-            if item.carbon_oxide_origin.as_ref().is_some_and(|origin| {
-                item.credit != BusinessCredit::CarbonOxide || !origin.valid(item.amount)
-            }) {
-                return Some(
-                    ValidationIssue::new("CARBON_OXIDE_SOURCE_STATEMENT_INVALID")
-                        .at_field("carbon_oxide_origin")
-                        .in_list("credits", index),
-                );
-            }
-            if item.renewable_facility_origin.as_ref().is_some_and(|origin| {
-                item.credit != BusinessCredit::RenewableElectricitySpecified
-                    || !origin.valid(item.amount)
-            }) {
-                return Some(
-                    ValidationIssue::new("RENEWABLE_FACILITY_SOURCE_STATEMENT_INVALID")
-                        .at_field("renewable_facility_origin")
-                        .in_list("credits", index),
-                );
-            }
-            if !item.credit.carryback_allowed() || info.section_b {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CREDIT_CARRYFORWARD_ONLY")
-                        .at_field("credit")
-                        .in_list("credits", index),
-                );
-            }
-            match item.election {
-                CreditElection::ElectivePayment { amount } => {
-                    if !info.elective_payment {
-                        return Some(
-                            ValidationIssue::new("ELECTIVE_PAYMENT_NOT_FOR_THIS_CREDIT")
-                                .at_field("credit")
-                                .in_list("credits", index),
-                        );
-                    }
-                    if !matches!(
-                        item.source,
-                        CreditSource::Business { .. } | CreditSource::Farm { .. }
-                    ) {
-                        return Some(
-                            ValidationIssue::new("ELECTIVE_PAYMENT_OWN_PROPERTY")
-                                .at_field("source")
-                                .in_list("credits", index),
-                        );
-                    }
-                    if amount > item.amount {
-                        return Some(
-                            ValidationIssue::new("BUSINESS_CREDIT_ELECTION_ABOVE_CREDIT")
-                                .at_field("amount")
-                                .in_field("election")
-                                .in_list("credits", index),
-                        );
-                    }
-                }
-                CreditElection::Sold { amount } => {
-                    if matches!(item.source, CreditSource::Bought) {
-                        return Some(
-                            ValidationIssue::new("BOUGHT_CREDIT_CANNOT_BE_SOLD")
-                                .at_field("source")
-                                .in_list("credits", index),
-                        );
-                    }
-                    if !info.transferable {
-                        return Some(
-                            ValidationIssue::new("TRANSFER_NOT_FOR_THIS_CREDIT")
-                                .at_field("credit")
-                                .in_list("credits", index),
-                        );
-                    }
-                    if amount > item.amount {
-                        return Some(
-                            ValidationIssue::new("BUSINESS_CREDIT_ELECTION_ABOVE_CREDIT")
-                                .at_field("amount")
-                                .in_field("election")
-                                .in_list("credits", index),
-                        );
-                    }
-                }
-                CreditElection::None => {}
-            }
-            if matches!(item.source, CreditSource::Bought) && !info.transferable {
-                return Some(
-                    ValidationIssue::new("TRANSFER_NOT_FOR_THIS_CREDIT")
-                        .at_field("credit")
-                        .in_list("credits", index),
-                );
-            }
-            if item.credit == BusinessCredit::DisabledAccess
-                && item.amount > crate::year_constants::DISABLED_ACCESS_CREDIT_LIMIT_CENTS
-            {
-                return Some(
-                    ValidationIssue::new("DISABLED_ACCESS_ABOVE_LIMIT")
-                        .at_field("amount")
-                        .in_list("credits", index),
-                );
-            }
-        }
-        for (index, item) in self.carryforwards.iter().enumerate() {
-            if item.origin_year < item.credit.first_year()
-                || (item.credit == BusinessCredit::SmallBusiness2010 && item.origin_year != 2010)
-            {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CREDIT_BEFORE_ITS_FIRST_YEAR")
-                        .at_field("origin_year")
-                        .in_list("carryforwards", index),
-                );
-            }
-            if item.credit == BusinessCredit::EmployerTipFica && item.origin_year >= 2025 {
-                return Some(
-                    ValidationIssue::new("TIP_FICA_PRIOR_YEAR_HAS_ITS_OWN_ITEM")
-                        .at_field("origin_year")
-                        .in_list("carryforwards", index),
-                );
-            }
-            if item.passive.is_some_and(|worksheet| !item.credit.worksheet_allows(worksheet)) {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CREDIT_WORKSHEET_MISMATCH")
-                        .at_field("passive")
-                        .in_list("carryforwards", index),
-                );
-            }
-            if self.carryforwards[..index].iter().any(|prior| {
-                prior.credit == item.credit
-                    && prior.origin_year == item.origin_year
-                    && prior.passive == item.passive
-                    && prior.filer == item.filer
-                    && prior.research_source == item.research_source
-            }) {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CARRYFORWARD_TWICE")
-                        .at_field("credit")
-                        .in_list("carryforwards", index),
-                );
-            }
-        }
-        for (index, item) in self.carrybacks.iter().enumerate() {
-            if item.credit == BusinessCredit::EmployerTipFica {
-                return Some(
-                    ValidationIssue::new("TIP_FICA_CARRYBACK_ON_ITS_CREDIT")
-                        .at_field("credit")
-                        .in_list("carrybacks", index),
-                );
-            }
-            if !item.credit.carryback_allowed() {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CREDIT_CARRYFORWARD_ONLY")
-                        .at_field("credit")
-                        .in_list("carrybacks", index),
-                );
-            }
-            if !(item.credit.carryback_first_year()..=2025).contains(&item.year) {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CARRYBACK_YEAR_NOT_ALLOWED")
-                        .at_field("year")
-                        .in_list("carrybacks", index),
-                );
-            }
-            if self.carrybacks[..index].iter().any(|prior| {
-                prior.credit == item.credit
-                    && prior.year == item.year
-                    && prior.research_source == item.research_source
-            }) {
-                return Some(
-                    ValidationIssue::new("BUSINESS_CARRYBACK_TWICE")
-                        .at_field("credit")
-                        .in_list("carrybacks", index),
-                );
-            }
-        }
-        None
-    }
-
     fn actual_source_origin(
         &self,
         d: &crate::FederalDraft,
@@ -3509,8 +2126,8 @@ impl BusinessCreditHistory {
             });
         for entry in crate::community::entries(d) {
             let items = match &entry.income {
-                crate::FederalIncome::Partnership { data } => &data.credits,
-                crate::FederalIncome::Scorp { data } => &data.credits,
+                crate::FederalIncome::Partnership { data } => data.credits.clone(),
+                crate::FederalIncome::Scorp { data } => crate::ScorpK1::from(data).credits,
                 _ => continue,
             };
             for item in
@@ -3566,8 +2183,8 @@ impl BusinessCreditHistory {
                         && crate::business_credit_page::research_eligible(e)
                         && match item.filer {
                             CarryFiler::SameFilers => true,
-                            CarryFiler::You => e.owner == crate::Owner::Taxpayer,
-                            CarryFiler::Spouse => e.owner == crate::Owner::Spouse,
+                            CarryFiler::You => e.owner == crate::DocumentOwner::Yours,
+                            CarryFiler::Spouse => e.owner == crate::DocumentOwner::Spouses,
                         }
                 });
                 if !found {
@@ -3613,40 +2230,6 @@ impl BusinessCreditHistory {
         }
         None
     }
-
-    pub(crate) fn valid(&self) -> bool {
-        self.credits.len() <= 40
-            && self.credits.iter().all(|c| {
-                (100..=100_000_000_000).contains(&c.amount)
-                    && c.carbon_oxide_origin.as_ref().is_none_or(|origin| {
-                        c.credit == BusinessCredit::CarbonOxide && origin.valid(c.amount)
-                    })
-                    && c.renewable_facility_origin.as_ref().is_none_or(|origin| {
-                        c.credit == BusinessCredit::RenewableElectricitySpecified
-                            && origin.valid(c.amount)
-                    })
-                    && c.amount % 100 == 0
-                    && match c.election {
-                        CreditElection::None => true,
-                        CreditElection::ElectivePayment { amount }
-                        | CreditElection::Sold { amount } => {
-                            (100..=100_000_000_000).contains(&amount) && amount % 100 == 0
-                        }
-                    }
-            })
-            && self.carryforwards.len() <= 60
-            && self.carrybacks.len() <= 40
-            && self.carryforwards.iter().all(|c| {
-                (2006..=2025).contains(&c.origin_year)
-                    && (100..=100_000_000_000).contains(&c.amount)
-                    && c.amount % 100 == 0
-            })
-            && self.carrybacks.iter().all(|c| {
-                (2021..=2025).contains(&c.year)
-                    && (100..=100_000_000_000).contains(&c.amount)
-                    && c.amount % 100 == 0
-            })
-    }
 }
 
 // Resolve an explicit source identity, or the documented sole-source null answer.
@@ -3684,51 +2267,6 @@ pub(crate) struct ResearchItems {
     pub investment_interest: i64,
 }
 
-// One credit amount entering Form 3800, whole dollars. `year` is 2026 for a
-// current-year credit and the originating year for a carryforward. A passive
-// activity credit names its Form 8582-CR worksheet; it enters the tax limit
-// only as far as that form allows.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ConditionalCarrybackOrigin(u8);
-impl ConditionalCarrybackOrigin {
-    pub(crate) fn unknown() -> Self {
-        Self(1)
-    }
-    pub(crate) fn from_origin(origin: Option<&CarbonOxideCreditOrigin>) -> Self {
-        origin.map_or_else(Self::unknown, CarbonOxideCreditOrigin::carryback_origin)
-    }
-    pub(crate) fn from_source(
-        credit: BusinessCredit,
-        carbon: Option<&CarbonOxideCreditOrigin>,
-        renewable: Option<&RenewableFacilityCreditOrigin>,
-    ) -> Option<Self> {
-        match credit {
-            BusinessCredit::CarbonOxide => Some(Self::from_origin(carbon)),
-            BusinessCredit::RenewableElectricitySpecified => Some(
-                renewable
-                    .map_or_else(Self::unknown, RenewableFacilityCreditOrigin::carryback_origin),
-            ),
-            _ => None,
-        }
-    }
-    fn merge(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-    fn extended(self) -> bool {
-        self.0 == 4
-    }
-    fn mixed(self) -> bool {
-        self.0 & 6 == 6
-    }
-    fn unknown_date(self) -> bool {
-        self.0 & 1 != 0
-    }
-    // Statutory section 45/45Q carryback eligibility cutoff, not a relative return year.
-    fn before2023(self) -> bool {
-        self.0 == 2
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CreditEntry {
     pub conditional_origin: Option<ConditionalCarrybackOrigin>,
@@ -3745,29 +2283,7 @@ pub(crate) struct CreditEntry {
     pub filer: CarryFiler,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NativeElectiveGroup {
-    pub(crate) component: alloc::string::String,
-    pub(crate) label: &'static str,
-    pub(crate) amount: i64,
-    pub(crate) elected: i64,
-    pub(crate) allowed: i64,
-    pub(crate) used: i64,
-    pub(crate) elective: i64,
-    pub(crate) allowed_owners: Option<[i64; 2]>,
-    pub(crate) elected_owners: Option<[i64; 2]>,
-}
-
-// Native Form3800 amounts are already reported whole Dollars. These fields
-// retain that precision and the same invocation's settled allowance/use.
-// Current credits also retain ownership with no elective-payment election;
-// prior non-elective carries keep their existing separate history context.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NativeElectiveSources {
-    pub(crate) joint: i64,
-    pub(crate) used_joint: i64,
-    pub(crate) groups: Vec<NativeElectiveGroup>,
-}
+pub(crate) use crate::return_carriers::{NativeElectiveGroup, NativeElectiveSources};
 
 impl NativeElectiveGroup {
     fn checked_owners(owners: Option<[i64; 2]>, joint: i64) -> Option<[i64; 2]> {
@@ -5133,10 +3649,12 @@ fn credit_column(r: &mut FederalResult, part: u8, printed: &str, column: char, a
 }
 
 pub(crate) fn entered_entries(
-    d: &crate::FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     history: &BusinessCreditHistory,
     r: &mut FederalResult,
 ) -> Vec<CreditEntry> {
+    let d = form_context.draft;
+    let direct_participation = form_context.participation();
     let mut entries = Vec::new();
     for (index, item) in history.credits.iter().enumerate() {
         let source = resolve_source(d, &item.source);
@@ -5158,10 +3676,29 @@ pub(crate) fn entered_entries(
             );
             continue;
         }
+        if source.is_some_and(|entry| {
+            matches!(entry.income, crate::FederalIncome::Business { .. })
+                && direct_participation.get(entry.id)
+                    == crate::participation::Participation::Unavailable
+        }) {
+            crate::require_localized!(
+                r,
+                false,
+                &crate::IssueContext::Section(crate::TaxSection::MoreCredits)
+                    .item("business_credits.credits", index),
+                "Material participation",
+                "DIRECT_PARTICIPATION_OTHER_ACTIVITY_SOURCE_REQUIRED",
+                "Establish the qualifying hours and legal activity grouping of the other trades or businesses before applying the combined significant-participation test."
+            );
+            continue;
+        }
         let passive = match source.map(|e| (&e.income, e.owner)) {
-            Some((crate::FederalIncome::Business { data }, _)) => !data.material_participation,
+            Some((crate::FederalIncome::Business { .. }, _)) => {
+                !(direct_participation.get(source.map_or(0, |entry| entry.id))
+                    == crate::participation::Participation::Yes)
+            }
             Some((crate::FederalIncome::Rental { data }, owner)) => {
-                !data.participation.professional() || d.professional(owner).is_none()
+                !data.participation.professional() || d.professional(owner.owned()).is_none()
             }
             Some(_) => true,
             None => matches!(item.source, CreditSource::Bought),
@@ -5203,7 +3740,7 @@ pub(crate) fn entered_entries(
             _ => 0,
         };
         entries.push(CreditEntry {
-            source_owner: source.map(|entry| entry.owner),
+            source_owner: source.map(|entry| entry.owner.owned()),
             conditional_origin: ConditionalCarrybackOrigin::from_source(
                 item.credit,
                 item.carbon_oxide_origin.as_ref(),

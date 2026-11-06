@@ -13,7 +13,7 @@ fn unit13_elective_credit_actual_business_owner_native_save_restart() {
                 for _ in 0..2 {
                     save_native_credit_sources(
                         &mut session,
-                        &[TaxSection::Wages, TaxSection::SelfEmployment],
+                        &[TaxSection::Documents, TaxSection::SelfEmployment],
                     );
                     let r = ordinary(&session.draft);
                     assert_eq!(

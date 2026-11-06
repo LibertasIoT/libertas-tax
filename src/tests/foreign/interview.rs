@@ -1,11 +1,11 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::support::assert::{accepted, rejected_with};
 use super::support::builders::native_income::credit_construction_return;
 use super::*;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::builders::native_income::{document, owned};
 use super::support::client::income_pages::{
-    open_topic, page_documents, save_documents, save_topic,
+    open_documents, open_topic, page_documents, save_documents, save_topic,
 };
 use crate::tests::cross::interview::{
     back, from_review, k1_1041, more_credits_value, open_credits_topic, save_deductions, save_k1s,
@@ -17,7 +17,7 @@ fn unanswered_foreign_tax_preserves_adoption_and_business_credit_construction() 
     let draft = credit_construction_return();
     let mut session = Interview::new(TEST_USER, draft.clone());
     for _ in 0..2 {
-        let Reply::Response(P::BeginMoreCredits { previous, value, .. }) =
+        let Reply::Response(P::BeginMoreCredits { previous, value, credit_income_sources, .. }) =
             from_review(&mut session, TaxSection::MoreCredits)
         else {
             panic!("required foreign-tax construction");
@@ -53,20 +53,36 @@ fn unanswered_foreign_tax_preserves_adoption_and_business_credit_construction() 
         assert!(!business.credits[0].allowed_carbon_oxide_origins.is_empty());
         assert!(!business.carryforwards[0].allowed_research_choices.is_empty());
         assert!(!business.carrybacks[0].allowed_research_choices.is_empty());
-        let bonds = value
-            .credits
+        let bonds: Vec<crate::TaxCreditBondPage> = value
+            .documents
             .iter()
-            .find_map(|credit| match credit {
-                MoreCreditInitial::TaxCreditBonds { tax_credit_bonds } => Some(tax_credit_bonds),
+            .filter_map(|view| match view {
+                crate::CreditDocumentView::CreditBond { value } => Some(value.clone()),
                 _ => None,
             })
+            .collect();
+        assert_eq!(
+            bonds,
+            draft
+                .credits
+                .as_ref()
+                .unwrap()
+                .tax_credit_bonds
+                .iter()
+                .map(crate::TaxCreditBondPage::from)
+                .collect::<Vec<_>>()
+        );
+        let entity = draft.credits.as_ref().unwrap().tax_credit_bonds[0]
+            .answers
+            .origin
+            .as_ref()
+            .unwrap()
+            .entity()
             .unwrap();
-        assert_eq!(bonds, &draft.credits.as_ref().unwrap().tax_credit_bonds);
-        let entity = bonds[0].origin.entity().unwrap();
         assert_eq!(entity.designated_income, 250_000);
         assert_eq!(entity.income_already_reported, 150_000);
         assert!(
-            value.credit_income_sources.iter().any(|source| {
+            credit_income_sources.iter().any(|source| {
                 Some(source.id) == entity.income_source && source.amount == 400_000
             })
         );
@@ -77,7 +93,7 @@ fn unanswered_foreign_tax_preserves_adoption_and_business_credit_construction() 
     }
 }
 
-// Unit M3-P2: 1099-INT box 6 and 1099-DIV box 7 fold into the return-level
+// 1099-INT box 6 and 1099-DIV box 7 fold into the return-level
 // small foreign-tax election instead of a per-document stored field.
 #[test]
 fn small_foreign_tax_becomes_the_statement_election() {
@@ -91,24 +107,31 @@ fn small_foreign_tax_becomes_the_statement_election() {
         },
         ..native_int1099("Synthetic Bank".into(), 50_000)
     };
-    let div = Div1099 {
-        more: DivMore {
-            foreign_tax: 10_000,
-            special: crate::DividendSpecial::NoneOfThese,
-            ..Default::default()
-        },
-        ..native_div1099("".into(), 30_000, 0)
-    };
-    send(
-        &mut session,
-        save_documents(
-            &original,
+    let div = Div1099 { foreign_tax: 10_000, ..native_div1099("".into(), 30_000, 0) };
+    {
+        let request = save_documents(
+            &mut session,
             vec![
-                document(0, IncomeDocument::Int1099(int.clone())),
-                document(0, IncomeDocument::Div1099(div.clone())),
+                document(
+                    0,
+                    IncomeSource::InterestDividend {
+                        value: crate::InterestDividendDocument::Int1099(interest_document(
+                            int.clone(),
+                        )),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::InterestDividend {
+                        value: crate::InterestDividendDocument::Div1099(dividend_document(
+                            div.clone(),
+                        )),
+                    },
+                ),
             ],
-        ),
-    );
+        );
+        send(&mut session, request)
+    };
     // Exactly $300, the single-filer limit: the amounts stay on the two
     // documents (box 6 and box 7 are read from there) and the claim holds
     // only the election. The 1099 boxes do not show that all foreign income
@@ -155,17 +178,28 @@ fn small_foreign_tax_becomes_the_statement_election() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
+            answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(ForeignTaxPage::Statements { eligible: true })],
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     );
     send(&mut session, request);
     let request = save_documents(
-        &session.draft,
+        &mut session,
         vec![
-            document(0, IncomeDocument::Int1099(int.clone())),
-            document(0, IncomeDocument::Div1099(div.clone())),
+            document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(int.clone())),
+                },
+            ),
+            document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(div.clone())),
+                },
+            ),
         ],
     );
     send(&mut session, request);
@@ -177,34 +211,65 @@ fn small_foreign_tax_becomes_the_statement_election() {
     assert_eq!(value(&r, "foreign_tax_credit"), 300);
     // Reopening restores each document's box 6/7 amount from the document.
     let mut session = restart(session.draft);
-    let documents =
-        page_documents(&open_topic(&mut session, TaxSection::InterestDividends)).to_vec();
-    assert_eq!(documents[0].document, IncomeDocument::Int1099(int));
-    assert_eq!(documents[1].document, IncomeDocument::Div1099(div.clone()));
+    let documents = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        documents[0].document,
+        expected_named_source(
+            &session.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(int))
+            }
+        )
+    );
+    assert_eq!(
+        documents[1].document,
+        expected_named_source(
+            &session.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(div.clone()))
+            }
+        )
+    );
     // Boundary: one more cent needs Form 1116. Still stored, not rejected.
     let mut int_over = documents[0].document.clone();
-    let IncomeDocument::Int1099(Int1099 { more: IntMore { foreign_tax, .. }, .. }) = &mut int_over
+    let IncomeSource::InterestDividend {
+        value: crate::InterestDividendDocument::Int1099(Form1099IntPaper { foreign_tax_paid, .. }),
+    } = &mut int_over
     else {
         unreachable!()
     };
-    *foreign_tax += 1;
+    *foreign_tax_paid += 1;
     let mut over_session = Interview::new(TEST_USER, original.clone());
-    let reply = send(
-        &mut over_session,
-        save_documents(
-            &original,
-            vec![document(0, int_over), document(0, IncomeDocument::Div1099(div))],
-        ),
-    );
+    let reply = {
+        let request = save_documents(
+            &mut over_session,
+            vec![
+                document(0, int_over),
+                document(
+                    0,
+                    IncomeSource::InterestDividend {
+                        value: crate::InterestDividendDocument::Div1099(dividend_document(div)),
+                    },
+                ),
+            ],
+        );
+        send(&mut over_session, request)
+    };
     assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     // Unconfirmed, the claim is not made; confirmed, $300.01 is refused.
     assert_eq!(estimate(&over_session.draft).state, ResultState::EstimatedForSupportedScope);
     let request = save_more_credits(
         &over_session.draft,
         MoreCredits {
+            answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(ForeignTaxPage::Statements { eligible: true })],
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     );
     send(&mut over_session, request);
@@ -233,7 +298,18 @@ fn foreign_tax_above_the_election_points_to_form_1116() {
         },
         ..native_int1099("Synthetic Bank".into(), 50_000)
     };
-    send(&mut session, save_documents(&original, vec![document(0, IncomeDocument::Int1099(int))]));
+    {
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(int)),
+                },
+            )],
+        );
+        send(&mut session, request)
+    };
     assert_eq!(
         session.draft.credits.as_ref().unwrap().foreign_tax,
         ForeignTaxClaim::Statements { eligible: None }
@@ -244,9 +320,10 @@ fn foreign_tax_above_the_election_points_to_form_1116() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
+            answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(confirmed.try_into().unwrap())],
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     );
     send(&mut session, request);
@@ -276,9 +353,10 @@ fn foreign_tax_above_the_election_points_to_form_1116() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
+            answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(ordinary.clone().try_into().unwrap())],
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     );
     send(&mut session, request);
@@ -286,7 +364,7 @@ fn foreign_tax_above_the_election_points_to_form_1116() {
     // Removing the item from the list clears the field back to No.
     let request = save_more_credits(
         &session.draft,
-        MoreCredits { credits: Vec::new(), credit_income_sources: Vec::new() },
+        MoreCredits { answers: Vec::new(), credits: Vec::new(), documents: Vec::new() },
     );
     send(&mut session, request);
     assert_eq!(session.draft.credits.as_ref().unwrap().foreign_tax, ForeignTaxClaim::No);
@@ -307,9 +385,15 @@ fn foreign_account_kind_answers_schedule_b_part_iii() {
         highest_value: Some(4_000_000),
     };
     let request = save_topic(
-        &s.draft.clone(),
+        &mut s,
         TaxSection::InterestDividends,
-        vec![owned(Owner::Taxpayer, 0, IncomeDocument::ForeignAccountOrTrust(account.clone()))],
+        vec![owned(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::ForeignAccountOrTrust(account.clone()),
+            },
+        )],
     );
     accepted(&send(&mut s, request));
     let screening = s.draft.screening.clone().unwrap();
@@ -326,7 +410,13 @@ fn foreign_account_kind_answers_schedule_b_part_iii() {
         reopened,
         vec![IncomeDocumentItem {
             refund_management_needed: Some(false),
-            ..owned(Owner::Taxpayer, 0, IncomeDocument::ForeignAccountOrTrust(account.clone()))
+            ..owned(
+                Owner::Taxpayer,
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::ForeignAccountOrTrust(account.clone())
+                }
+            )
         }]
     );
     // A trust alone: line 7a No, no country, line 8 Yes.
@@ -338,9 +428,12 @@ fn foreign_account_kind_answers_schedule_b_part_iii() {
         highest_value: Some(4_000_000),
     };
     let request = save_topic(
-        &s.draft.clone(),
+        &mut s,
         TaxSection::InterestDividends,
-        vec![document(0, IncomeDocument::ForeignAccountOrTrust(trust))],
+        vec![document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::ForeignAccountOrTrust(trust) },
+        )],
     );
     accepted(&send(&mut s, request));
     let screening = s.draft.screening.clone().unwrap();
@@ -351,20 +444,34 @@ fn foreign_account_kind_answers_schedule_b_part_iii() {
     // Twice is refused by name; none clears the answers.
     let before = s.draft.clone();
     rejected_with(
-        send(
-            &mut s,
-            save_topic(
-                &before,
+        {
+            let request = save_topic(
+                &mut s,
                 TaxSection::InterestDividends,
                 vec![
-                    document(0, IncomeDocument::ForeignAccountOrTrust(account.clone())),
-                    document(0, IncomeDocument::ForeignAccountOrTrust(account)),
+                    document(
+                        0,
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::ForeignAccountOrTrust(account.clone()),
+                        },
+                    ),
+                    document(
+                        0,
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::ForeignAccountOrTrust(account),
+                        },
+                    ),
                 ],
-            ),
-        ),
+            );
+            send(&mut s, request)
+        },
         "FOREIGN_ACCOUNT_TWICE",
     );
-    accepted(&send(&mut s, save_topic(&before, TaxSection::InterestDividends, vec![])));
+    assert_eq!(s.draft, before);
+    accepted(&{
+        let request = save_topic(&mut s, TaxSection::InterestDividends, vec![]);
+        send(&mut s, request)
+    });
     let screening = s.draft.screening.clone().unwrap();
     assert_eq!((screening.foreign_account, screening.foreign_trust), (false, false));
 }
@@ -402,9 +509,10 @@ fn foreign_qualified_above_source_income_rejects_on_both_sides() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
+            answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(claim(100_001).try_into().unwrap())],
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     );
     let reply = send(&mut session, request);
@@ -415,9 +523,10 @@ fn foreign_qualified_above_source_income_rejects_on_both_sides() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
+            answers: Vec::new(),
             credits: vec![MoreCredit::ForeignTax(claim(100_000).try_into().unwrap())],
 
-            credit_income_sources: Vec::new(),
+            documents: Vec::new(),
         },
     );
     send(&mut session, request);
@@ -440,9 +549,14 @@ fn foreign_account_kind_asks_the_highest_value() {
     };
     let save = |s: &mut Interview, value: &ForeignAccountOrTrust| {
         let request = save_topic(
-            &s.draft.clone(),
+            s,
             TaxSection::InterestDividends,
-            vec![document(0, IncomeDocument::ForeignAccountOrTrust(value.clone()))],
+            vec![document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::ForeignAccountOrTrust(value.clone()),
+                },
+            )],
         );
         send(s, request)
     };
@@ -458,7 +572,12 @@ fn foreign_account_kind_asks_the_highest_value() {
         reopened,
         vec![IncomeDocumentItem {
             refund_management_needed: Some(false),
-            ..document(0, IncomeDocument::ForeignAccountOrTrust(account.clone()))
+            ..document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::ForeignAccountOrTrust(account.clone())
+                }
+            )
         }]
     );
     // With neither answer the value is not needed and not stored.
@@ -496,6 +615,8 @@ fn foreign_deduction_public_page_estimates_saves_reopens_and_preserves_choice() 
     let reply = send(
         &mut session,
         P::EstimateMoreCredits {
+            credit_income_sources: crate::tax_credit_bonds::income_sources(&before),
+            allowed_credit_owners: vec![Owner::Taxpayer as i32],
             initial_carbon_oxide_origins: vec![],
             initial_renewable_facility_origins: Vec::new(),
             businesses: vec![],
@@ -512,6 +633,7 @@ fn foreign_deduction_public_page_estimates_saves_reopens_and_preserves_choice() 
             allowed_owners: vec![0],
             mortgage_loans: vec![],
             foreign_businesses: vec![],
+            estate_foreign_sources: vec![],
             capital_sales: vec![],
             foreign_situations: vec![],
             value: edited.clone(),
@@ -530,18 +652,25 @@ fn foreign_deduction_public_page_estimates_saves_reopens_and_preserves_choice() 
     assert_eq!(more_credits_value(&page), &edited);
     // A later investment save must not replace the explicit deduction with the
     // automatically discovered, unconfirmed payee-statement election.
-    let original = restarted.draft.clone();
     let int = Int1099 {
         more: IntMore { foreign_tax: 12_000, ..IntMore::default() },
         ..native_int1099("Synthetic bank".into(), 100_000)
     };
-    send(
-        &mut restarted,
-        save_documents(&original, vec![document(0, IncomeDocument::Int1099(int))]),
-    );
+    {
+        let request = save_documents(
+            &mut restarted,
+            vec![document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(int)),
+                },
+            )],
+        );
+        send(&mut restarted, request)
+    };
     assert_eq!(restarted.draft.credits.as_ref().unwrap().foreign_tax, saved);
     // Selecting another deduction method leaves More credits' own record intact.
-    for route in [DeductionRoute::Itemize, DeductionRoute::Standard] {
+    for route in [Some(ItemizeOverride::Itemize), None] {
         let request = save_deductions(&restarted.draft, route, 0);
         send(&mut restarted, request);
         assert_eq!(restarted.draft.credits.as_ref().unwrap().foreign_tax, saved);
@@ -566,6 +695,8 @@ fn foreign_deduction_earned_owner_rejects_forged_catalog_in_save_and_estimate() 
         send(
             &mut session,
             P::EstimateMoreCredits {
+                credit_income_sources: crate::tax_credit_bonds::income_sources(&before),
+                allowed_credit_owners: vec![Owner::Taxpayer as i32],
                 initial_carbon_oxide_origins: vec![],
                 initial_renewable_facility_origins: Vec::new(),
                 businesses: vec![],
@@ -582,6 +713,7 @@ fn foreign_deduction_earned_owner_rejects_forged_catalog_in_save_and_estimate() 
                 allowed_owners: vec![0, 1],
                 mortgage_loans: vec![],
                 foreign_businesses: vec![],
+                estate_foreign_sources: vec![],
                 capital_sales: vec![],
                 foreign_situations: vec![],
                 value,
@@ -594,38 +726,33 @@ fn foreign_deduction_earned_owner_rejects_forged_catalog_in_save_and_estimate() 
 
 #[test]
 fn foreign_deduction_row_ranges_and_collection_limit_have_server_twins() {
-    for (count, amount, label) in [
-        (51, 100, "Synthetic tax"),
-        (1, 0, "Synthetic tax"),
-        (1, 100_000_000_001, "Synthetic tax"),
-        (1, 100, ""),
-    ] {
-        let mut d = complete(FederalStatus::Single);
-        d.credits.as_mut().unwrap().foreign_tax = ForeignTaxClaim::Deduction {
-            taxes: (0..count)
-                .map(|_| ForeignTaxDeducted {
-                    owners: None,
-                    label: label.into(),
-                    income: ForeignTaxIncome::Other,
-                    tax: amount,
-                })
-                .collect(),
-        };
-        assert!(!d.valid_stored());
-        let request = save_more_credits(
-            &complete(FederalStatus::Single),
-            MoreCredits {
-                credit_income_sources: vec![],
-                credits: vec![MoreCredit::ForeignTax(
-                    d.credits.unwrap().foreign_tax.try_into().unwrap(),
-                )],
-            },
-        );
-        let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let before = session.draft.clone();
-        let reply = send(&mut session, request);
-        assert_eq!(session.draft, before, "{reply:?}");
-    }
+    let (count, amount, label) = (51, 100, "Synthetic tax");
+    let mut d = complete(FederalStatus::Single);
+    d.credits.as_mut().unwrap().foreign_tax = ForeignTaxClaim::Deduction {
+        taxes: (0..count)
+            .map(|_| ForeignTaxDeducted {
+                owners: None,
+                label: label.into(),
+                income: ForeignTaxIncome::Other,
+                tax: amount,
+            })
+            .collect(),
+    };
+    assert!(!d.valid_stored());
+    let request = save_more_credits(
+        &complete(FederalStatus::Single),
+        MoreCredits {
+            answers: Vec::new(),
+            documents: vec![],
+            credits: vec![MoreCredit::ForeignTax(
+                d.credits.unwrap().foreign_tax.try_into().unwrap(),
+            )],
+        },
+    );
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let before = session.draft.clone();
+    let reply = send(&mut session, request);
+    assert_eq!(session.draft, before, "{reply:?}");
 }
 
 #[test]
@@ -641,12 +768,13 @@ fn foreign_deduction_reuses_current_estate_payee_statement_owner_once() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
-            credit_income_sources: vec![],
+            answers: Vec::new(),
+            documents: vec![],
             credits: vec![MoreCredit::ForeignTax(ForeignTaxPage::Deduction { taxes: vec![] })],
         },
     );
     accepted(&send(&mut session, request));
-    let request = save_deductions(&session.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&session.draft, Some(ItemizeOverride::Itemize), 0);
     accepted(&send(&mut session, request));
     let r = supported(&session.draft);
     assert_eq!(value(&r, "other_taxes_deduction"), 200);

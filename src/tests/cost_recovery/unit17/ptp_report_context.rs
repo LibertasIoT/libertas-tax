@@ -29,7 +29,13 @@ fn unit17_ptp_report_context_omits_only_consumed_sources_and_keeps_native_rows()
             system,
             &[],
             &sources,
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
+            |_, _, _| {
+                Some(Section179OtherLimitedDeduction {
+                    system,
+                    amount_cents: 0,
+                    coordinated_owner_sources: Default::default(),
+                })
+            },
         )
         .unwrap();
     let first = allocation.ptp_section179_pal_input(2).unwrap();
@@ -44,7 +50,9 @@ fn unit17_ptp_report_context_omits_only_consumed_sources_and_keeps_native_rows()
     let ptp = "ISSUE_SECTION179_PUBLICLY_TRADED";
     let passive = "ISSUE_SECTION179_PASSIVE_ACTIVITY";
     assert_eq!(old.issues.iter().filter(|issue| issue.display.key == ptp).count(), 2);
-    assert_eq!(old.issues.iter().filter(|issue| issue.display.key == passive).count(), 1);
+    // A passive K-1's section 179 enters its Form 8582 net; only the PTP
+    // refusal remains for a PTP whose own pool has not consumed it.
+    assert_eq!(old.issues.iter().filter(|issue| issue.display.key == passive).count(), 0);
     let other: Vec<_> = old
         .issues
         .iter()
@@ -52,7 +60,7 @@ fn unit17_ptp_report_context_omits_only_consumed_sources_and_keeps_native_rows()
         .cloned()
         .collect();
     for (consumed, remaining, remaining_passive) in
-        [(&[][..], 2, 1), (&[first][..], 1, 1), (&[second][..], 1, 0), (&[first, second][..], 0, 0)]
+        [(&[][..], 2, 0), (&[first][..], 1, 0), (&[second][..], 1, 0), (&[first, second][..], 0, 0)]
     {
         let context = allocation.ptp_report_context(consumed).unwrap();
         let mut report = FederalResult::empty(draft.revision);
@@ -88,11 +96,11 @@ fn unit17_ptp_report_context_requires_exact_allocation_and_preserves_owner_refus
     data.amt_section179_income_carry =
         Some(Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: vec![] });
     let regular =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100).unwrap();
     let foreign =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100).unwrap();
     let alternative =
-        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, 20_000 * 100).unwrap();
     let source = regular.ptp_section179_pal_input(2).unwrap();
     let cloned = source.clone();
     for other in [
@@ -108,7 +116,7 @@ fn unit17_ptp_report_context_requires_exact_allocation_and_preserves_owner_refus
     let FederalIncome::Partnership { data } = &mut draft.income[1].income else { unreachable!() };
     data.pensions = 100;
     let refused =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100).unwrap();
     let Err(Ptp179SourceIssue::OwnerIssues(issues)) = refused.ptp_report_context(&[source]) else {
         panic!("existing owner refusal must precede consumption")
     };

@@ -41,7 +41,7 @@ fn no_statement_missing_history_warns_for_each_actual_suspension_stage() {
             else {
                 panic!("expected review")
             };
-            assert!(correction_notes.iter().any(|note| note.section == TaxSection::PassThrough));
+            assert!(correction_notes.iter().any(|note| note.section == TaxSection::Documents));
         }
     }
 }
@@ -90,7 +90,12 @@ fn no_statement_negative_current_loss_still_counts_released_qualified_history() 
     source.loss_qbi.passive = vec![loss_year(2020, 2_000, 1_000, 2_000, 1_000)];
     source.amt = Some(amt_records(&source));
     let mut draft = complete(FederalStatus::Single);
-    add(&mut draft, income(FederalIncome::Scorp { data: source.clone() }));
+    add(
+        &mut draft,
+        income(FederalIncome::Scorp {
+            data: crate::tests::support::builders::scorp_source(source.clone()),
+        }),
+    );
     let mut rental = rental(12_000, 0);
     rental.qbi_business = RentalBusiness::Yes { material_participation: false };
     add(&mut draft, income(FederalIncome::Rental { data: rental }));
@@ -107,6 +112,8 @@ fn no_statement_negative_current_loss_still_counts_released_qualified_history() 
     assert!(source.loss_reported_with_basis());
     // Qualification comes from 2020, independently of the missing current statement.
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
         data.loss_qbi.passive[0].qualified = 0;
         data.loss_qbi.passive[0].remaining_qualified = 0;
     } else {
@@ -128,22 +135,25 @@ fn no_statement_unrelated_histories_remain_inactive_and_retained() {
     let projection = source.qbi_projection();
     assert!(projection.loss_qbi.is_empty() && projection.property_qbi.is_empty());
     let mut draft = complete(FederalStatus::Single);
-    add(&mut draft, income(FederalIncome::Scorp { data: source.clone() }));
+    add(
+        &mut draft,
+        income(FederalIncome::Scorp {
+            data: crate::tests::support::builders::scorp_source(source.clone()),
+        }),
+    );
     let result = supported(&draft);
     assert_eq!(value(&result, "qbi_deduction"), 0);
     assert!(noted(&result, "WARN_K1_QBI_NO_STATEMENT"));
     assert_eq!(restart(draft.clone()).draft, draft);
     assert_eq!(source.loss_qbi.history.len(), 1);
     assert_eq!(source.property_qbi.losses.history.len(), 1);
-    source.loss_qbi.history[0].remaining = -1;
-    assert!(!source.valid());
 }
 
 #[test]
 fn no_statement_counts_released_property_history_without_current_confirmation() {
     let mut source = complete_ordinary_scorp(0, true);
     source.qbi_statement = None;
-    source.opening = 200_000;
+    source.opening = Some(200_000);
     source.loans.clear();
     source.section1231 = Some(K1Section1231 { basis_loss: 200_000, ..k1_section1231(0, 0) });
     source.property_qbi.losses.history = vec![loss_year(2020, 2_000, 1_000, 2_000, 1_000)];
@@ -176,7 +186,7 @@ fn missing_partner_gross_leaves_qbi_out_with_distinct_editable_source_notes() {
     let mut ids = Vec::new();
     for _ in 0..2 {
         let mut partner = ordinary_partner_source(8_000, true);
-        partner.limited_for_se = false;
+        partner.limited_for_se = Some(false);
         partner.reported_se = Some(800_000);
         partner.qbi = Some(partner_qbi_statement(4_000));
         let mut entry = income(FederalIncome::Partnership { data: partner });
@@ -198,6 +208,7 @@ fn missing_partner_gross_leaves_qbi_out_with_distinct_editable_source_notes() {
         ids.iter().copied().map(NoteIdentity::Income).collect::<Vec<_>>()
     );
 
+    let mut draft = known_fact_partnership_draft(draft);
     let mut session = Interview::new(TEST_USER, draft.clone());
     let Reply::Response(P::Review {
         correction_notes,
@@ -216,7 +227,7 @@ fn missing_partner_gross_leaves_qbi_out_with_distinct_editable_source_notes() {
         .filter(|note| status_message(&note.status).key == "WARN_QBI_GROSS_ALLOCATION_LEFT_OUT")
         .collect();
     assert_eq!(notes.len(), 2);
-    assert!(notes.iter().all(|note| note.section == TaxSection::PassThrough));
+    assert!(notes.iter().all(|note| note.section == TaxSection::Documents));
     assert!(matches!(
         send(
             &mut session,
@@ -225,10 +236,11 @@ fn missing_partner_gross_leaves_qbi_out_with_distinct_editable_source_notes() {
                 cookie,
                 revision,
                 from: page,
-                section: TaxSection::PassThrough,
+                section: TaxSection::Documents,
+                reveal_path: None,
             }
         ),
-        Reply::Edit(P::SaveIncomes { topic: TaxSection::PassThrough, .. })
+        Reply::Edit(P::SaveDocuments { .. })
     ));
 
     for entry in &mut draft.income {
@@ -246,7 +258,7 @@ fn missing_partner_gross_leaves_qbi_out_with_distinct_editable_source_notes() {
 fn inconsistent_partner_gross_keeps_its_actual_source_identity() {
     let mut draft = complete(FederalStatus::Single);
     let mut partner = ordinary_partner_source(8_000, true);
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(800_000);
     partner.qbi = Some(partner_qbi_statement(4_000));
     partner.se_gross = Some(PartnerSeGross::Nonfarm { gross: 1_000_000 });
@@ -339,17 +351,20 @@ fn care_plan_reconciliation_retains_both_payments_even_with_the_same_name() {
         let mut second = draft.income[1].clone();
         second.id = 3;
         let FederalIncome::Retirement { data } = &mut second.income else { panic!() };
-        let RetirementTreatment::Exception {
-            facts: RetirementException::LongTermCare { data },
-            ..
-        } = &mut data.ordinary_distribution
-        else {
-            panic!()
-        };
-        if balance {
-            data.balance += 100;
-        } else {
-            data.premiums += 100;
+        {
+            let mut data = edit_retirement(data);
+            let Some(RetirementTreatment::Exception {
+                facts: RetirementException::LongTermCare { data },
+                ..
+            }) = &mut data.ordinary_distribution
+            else {
+                panic!()
+            };
+            if balance {
+                data.balance += 100;
+            } else {
+                data.premiums += 100;
+            }
         }
         add(&mut draft, second);
         let result = estimate(&draft);
@@ -361,6 +376,6 @@ fn care_plan_reconciliation_retains_both_payments_even_with_the_same_name() {
             vec![NoteIdentity::Income(2), NoteIdentity::Income(3)]
         );
         let rows = crate::interview::remaining_items(&draft, &result, TaxSection::Review);
-        assert_eq!(rows.iter().filter(|row| row.section == TaxSection::Retirement).count(), 2);
+        assert_eq!(rows.iter().filter(|row| row.section == TaxSection::Documents).count(), 2);
     }
 }

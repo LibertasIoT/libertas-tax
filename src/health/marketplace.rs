@@ -1,35 +1,14 @@
-// Coverage: Form8962/1095-A canonical source owner (coupled Units20/24 WIP).
-// Stable accepted policy IDs, actual covered People/tax families, PartIV
-// source-derived agreements, lawful enrollment/payment corrections, monthly
-// eligibility/SLCSP sources, QSEHRA and optional marriage worksheets project
-// into one existing monthly/annual PTC calculation. Current2026 rates and
-// full excess-advance repayment remain owned by the tax-year constants.
-// Household income includes required dependent income and the actual8814
-// election's required nontaxable SocialSecurity addback. Claimable-but-
-// unclaimed filers reconcile only actual attester responsibility, without
-// acquiring a tax-family member or PTC. Tests: marketplace_unclaimed_filer_*
-// and marketplace_claimable_filer_* cover source responsibility and lifecycle.
-// Medical and linked162(l) expenses use retained subsidy, APTC+refund−repayment,
-// rather than an optional marriage line24 amount that was never paid.
-// The shared source outcome carries transient enrollment/retained-credit
-// columns for all established business plans; no second1095-A ledger or
-// retired monthly Marketplace checkbox. Specified premiums/relative parts
-// remain exact until the final shared whole-dollar deduction projection.
-// Ordinary Iterative coordination freezes Step4 credit with Step5 deduction;
-// dual strict cent changes and fresh Simplified fallback are separate from
-// final filing rounding. Ordered covered-IRA, bond and student deductions and
-// canonical nonspecified expenses use their existing owners. Remaining named
-// initial-PAL intersections, annual-owner cent fitting and general earlier-
-// activity QHFD remain unfinished; no complete coupled delivery claimed.
-// Primary: IRS Instructions8962/1095A and Pub974(2025 final printedJan12,2026),
-// RevProc2014-41, Notice2017-67 and26CFR1.36B-3/4. Source-edition qualifications
-// and final-gate evidence are retained in the owning private maps/report.
+pub(crate) use crate::marketplace_claim_source::facts;
+pub use crate::marketplace_claim_source::{
+    MarketplaceClaim, MarketplaceDependent, MarketplaceResidence,
+};
 
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{form_line, line};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{Exact, ratio, whole};
-use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::kernel::ratio::{fraction, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{form_line, line};
 use crate::{FederalResult, FederalStatus, FormLine, TaxForm};
 use alloc::vec::Vec;
 
@@ -59,75 +38,6 @@ impl CalculationMoney {
         fraction(value, 1, self.scale())
     }
 }
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
-
-/// Poverty guideline residence
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum MarketplaceResidence {
-    /// Contiguous states or District of Columbia
-    Contiguous,
-    /// Alaska
-    Alaska,
-    /// Hawaii
-    Hawaii,
-}
-/// Marketplace premium tax credit reconciliation
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum MarketplaceClaim {
-    /// No Marketplace coverage or advance credits
-    No,
-    /// Canonical statement sources and direct tax facts
-    Yes {
-        /// Original source records; no calculated monthly ledger is persisted
-        facts: alloc::boxed::Box<crate::MarketplaceFacts>,
-    },
-}
-/// Dependent return used for Marketplace household income
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct MarketplaceDependent {
-    /// Dependent required to file because of income, not merely to recover withholding
-    /// By the identity of a person on the return.
-    pub person: i64,
-    /// Form 1040 adjusted gross income
-    #[libertas_money("USD", 2)]
-    pub agi: i64,
-    /// Form 1040 tax-exempt interest
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub exempt_interest: i64,
-    /// Form 2555 excluded foreign income and housing, lines 45 and 50
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub foreign_exclusion: i64,
-    /// Gross Social Security, Form 1040 line 6a
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub social: i64,
-    /// Taxable Social Security, Form 1040 line 6b
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub taxable_social: i64,
-}
-impl MarketplaceDependent {
-    pub(crate) fn income_cents(&self) -> i64 {
-        self.agi + self.exempt_interest + self.foreign_exclusion + self.social - self.taxable_social
-    }
-    pub(crate) fn income(&self) -> i64 {
-        dollars(self.agi)
-            + dollars(self.exempt_interest)
-            + dollars(self.foreign_exclusion)
-            + dollars(self.social)
-            - dollars(self.taxable_social)
-    }
-}
-pub(crate) fn facts(claim: &MarketplaceClaim) -> Option<&crate::MarketplaceFacts> {
-    match claim {
-        MarketplaceClaim::No => None,
-        MarketplaceClaim::Yes { facts } => Some(facts),
-    }
-}
 
 pub(crate) fn w2_sources(d: &crate::FederalDraft) -> Vec<(i64, i64, i64)> {
     d.income
@@ -136,6 +46,7 @@ pub(crate) fn w2_sources(d: &crate::FederalDraft) -> Vec<(i64, i64, i64)> {
             let crate::FederalIncome::Wage { data } = &entry.income else {
                 return None;
             };
+            let data = crate::FederalWage::from(data);
             let amount: i64 = data
                 .other_box12
                 .iter()
@@ -144,7 +55,7 @@ pub(crate) fn w2_sources(d: &crate::FederalDraft) -> Vec<(i64, i64, i64)> {
                 .sum();
             (amount > 0).then_some((
                 entry.id,
-                if entry.owner == crate::Owner::Taxpayer { -1 } else { -2 },
+                if entry.owner == crate::DocumentOwner::Yours { -1 } else { -2 },
                 amount,
             ))
         })
@@ -247,36 +158,45 @@ pub(crate) fn valid(claim: &MarketplaceClaim, d: &crate::FederalDraft) -> bool {
 pub(crate) fn valid_with_issue(
     claim: &MarketplaceClaim,
     d: &crate::FederalDraft,
-    issue: &mut Option<crate::validation::ValidationIssue>,
+    _issue: &mut Option<crate::validation::ValidationIssue>,
 ) -> bool {
     facts(claim).is_none_or(|facts| {
-        let (people, births) = current_people(d);
-        let family = family_people(d);
+        let (people, _) = current_people(d);
         family_sources_valid(facts, d)
             && crate::marketplace_sources::valid(facts, &people, &w2_sources(d))
-            && match crate::health::medical_costs_issue(facts, d) {
-                Some(failure) => {
-                    *issue = Some(failure.in_field("marketplace").in_field("credits"));
-                    false
-                }
-                None => true,
-            }
-            && crate::marketplace_projection::allocation_sources_valid(
-                facts,
-                &crate::marketplace_projection::SourcePeople {
-                    family: &family,
-                    current: &people,
-                    births: &births,
-                },
+    })
+}
+
+pub(crate) fn policy_answer_issue(
+    facts: &crate::MarketplaceFacts,
+    d: &crate::FederalDraft,
+    policy: &crate::MarketplacePolicyRecord,
+) -> Option<crate::validation::ValidationIssue> {
+    if let Some(issue) = crate::marketplace_sources::policy_answer_issue(policy) {
+        return Some(issue);
+    }
+    let family = family_people(d);
+    let (current, births) = current_people(d);
+    let people = crate::marketplace_projection::SourcePeople {
+        family: &family,
+        current: &current,
+        births: &births,
+    };
+    crate::health::policy_costs_issue(facts, &people, policy).or_else(|| {
+        let field =
+            if !crate::marketplace_projection::allocation_policy_valid(facts, &people, policy) {
+                "allocation"
+            } else if !crate::marketplace_projection::expense_policy_valid(facts, &people, policy) {
+                "payments"
+            } else {
+                return None;
+            };
+        Some(
+            crate::validation::ValidationIssue::new(
+                "MESSAGE_CHECK_THE_MONTHS_AND_AMOUNTS_OF_EACH_FORM_1095_A",
             )
-            && crate::marketplace_projection::expense_sources_valid(
-                facts,
-                &crate::marketplace_projection::SourcePeople {
-                    family: &family,
-                    current: &people,
-                    births: &births,
-                },
-            )
+            .at_field(field),
+        )
     })
 }
 
@@ -464,7 +384,8 @@ pub(crate) fn calculate(
     crate::require_localized!(
         r,
         crate::marketplace_qsehra::dependent_sources_complete(facts)
-            || facts.forms.iter().all(|p| p.status == crate::MarketplaceStatementStatus::Void),
+            || facts.forms.iter().all(|p| crate::MarketplacePolicyRecordPage::from(&p.form).status
+                == crate::MarketplaceStatementStatus::Void),
         &crate::IssueContext::Section(crate::TaxSection::Marketplace),
         "Marketplace",
         "PTC_DEPENDENT_QSEHRA_RECONCILIATION_REQUIRED",

@@ -1,6 +1,7 @@
 use super::*;
 use crate::tests::support::client::unit50_interview_native::NativeInterviewCase;
 use crate::tests::support::client::{draft_from_native_records, native_draft_records};
+use alloc::string::String;
 
 fn fixture() -> FederalDraft {
     let mut draft = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
@@ -12,7 +13,7 @@ fn fixture() -> FederalDraft {
 fn unit13_ltc_qualified_benefits_do_not_erase_known_niit_owner() {
     let mut draft = fixture();
     let mut interest = income(savings_income(25_000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, interest);
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         draft.injured_spouse.as_mut().unwrap().injured = injured;
@@ -40,7 +41,7 @@ fn unit13_ltc_interest_keeps_actual_payees_separate_from_care_benefits() {
     let mut draft = fixture();
     for (index, interest) in [(3, 500_000), (4, 1_500_000)] {
         let FederalIncome::LtcBenefits { data } = &mut draft.income[index].income else { panic!() };
-        data.interest = interest;
+        data.interest = Some(interest);
     }
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         draft.injured_spouse.as_mut().unwrap().injured = injured;
@@ -69,7 +70,7 @@ fn unit13_ltc_interest_uses_the_native_aggregate_annual_boundary() {
     let mut draft = fixture();
     for row in &mut draft.income {
         if let FederalIncome::LtcBenefits { data } = &mut row.income {
-            data.interest = 100_049;
+            data.interest = Some(100_049);
         }
     }
     let result = supported(&draft);
@@ -88,7 +89,7 @@ fn unit13_ltc_accident_health_character_does_not_turn_benefits_into_interest() {
     {
         let mut draft = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
         let FederalIncome::LtcBenefits { mut data } = ltc_form(10_000, None) else { panic!() };
-        data.interest = 500_000;
+        data.interest = Some(500_000);
         data.contract = LtcContract::Nonqualified {
             treatment: NonqualifiedCareTreatment::AccidentHealth {
                 funding,
@@ -99,7 +100,7 @@ fn unit13_ltc_accident_health_character_does_not_turn_benefits_into_interest() {
         };
         add(&mut draft, income(FederalIncome::LtcBenefits { data }));
         let mut interest = income(savings_income(15_000, 0));
-        interest.owner = Owner::Spouse;
+        interest.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, interest);
         let result = supported(&draft);
         assert_eq!(value(&result, "taxable_ltc_benefits"), taxable);
@@ -118,7 +119,7 @@ fn unit13_ltc_accident_health_character_does_not_turn_benefits_into_interest() {
 
 #[test]
 fn unit13_ltc_linked_actual_annuity_retains_income_and_niit_once() {
-    use crate::tests::cross::interview::{accepted, open_topic, r1099, save_topic};
+    use crate::tests::cross::interview::{accepted, r1099};
     let item = |owner, id, document| {
         crate::tests::support::builders::survey::survey_uncatalogued_document(owner, id, document)
     };
@@ -126,38 +127,78 @@ fn unit13_ltc_linked_actual_annuity_retains_income_and_niit_once() {
     draft.people.as_mut().unwrap().spouse.as_mut().unwrap().birth_date = 19600101;
     let mut session = Interview::new(TEST_USER, draft);
     let mut annuity = r1099(1_000_000, DistributionCode::Nonqualified, false);
-    annuity.taxable = 600_000;
-    let kept = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &kept,
-            TaxSection::Retirement,
-            vec![item(Owner::Spouse, 0, IncomeDocument::R1099(annuity))],
-        ),
-    ));
+    annuity.source_mut().form.taxable = Some(600_000);
+    accepted(&{
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![item(
+                Owner::Spouse,
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(annuity)),
+                },
+            )],
+        );
+        let request = fixture_owner_inputs(&session.draft, request);
+        let desired = crate::tests::support::client::income_pages::page_documents(&request);
+        let reply = send(&mut session, request);
+        accepted(&reply);
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut session,
+            &desired,
+        );
+        reply
+    });
     let source = session.draft.income.last().unwrap().id;
-    let form = Ltc1099 {
-        benefits: 1_000_000,
-        accelerated: 0,
-        interest: 100_000,
+    let form = ltc_document(crate::LtcSource {
+        interest: Some(100_000),
+        form: Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(1_000_000),
+            accelerated: Some(0),
+            paid: LtcPaidBasis::NotChecked,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
         benefit_origin: Some(LtcPaymentOrigin::Insurance),
         accelerated_origin: None,
-        paid: LtcPaidBasis::NotChecked,
-        contract: LtcContractPage::Nonqualified {
-            treatment: NonqualifiedCareTreatmentPage::LifeAnnuity { source },
+        contract: LtcContract::Nonqualified {
+            treatment: NonqualifiedCareTreatment::LifeAnnuity { source },
         },
-        illness: LtcIllness::Chronic,
         insured: None,
-    };
-    let kept = session.draft.clone();
-    accepted(&send(
+    });
+    accepted(&{
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![item(
+                Owner::Spouse,
+                0,
+                IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Ltc1099(form) },
+            )],
+        );
+        let request = fixture_owner_inputs(&session.draft, request);
+        let desired = crate::tests::support::client::income_pages::page_documents(&request);
+        let reply = send(&mut session, request);
+        accepted(&reply);
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut session,
+            &desired,
+        );
+        reply
+    });
+    // The interest is not a box of the paper: it is answered beside it.
+    let ltc = session.draft.income.last().unwrap().id;
+    accepted(&crate::tests::support::client::income_pages::answer_ltc_interest(
         &mut session,
-        save_topic(
-            &kept,
-            TaxSection::OtherIncome,
-            vec![item(Owner::Spouse, 0, IncomeDocument::Ltc1099(form))],
-        ),
+        ltc,
+        100_000,
     ));
     let result = supported(&session.draft);
     assert_eq!(value(&result, "taxable_ltc_benefits"), 0);
@@ -170,7 +211,8 @@ fn unit13_ltc_linked_actual_annuity_retains_income_and_niit_once() {
     assert!(!noted(&result, "WARN_8379_OTHER_TAX_OWNER_UNAVAILABLE"));
     assert_injured_ordinary_unchanged(&session.draft, &result, supported);
     let mut reopened = restart(session.draft.clone());
-    let page = open_topic(&mut reopened, TaxSection::OtherIncome);
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut reopened);
+    let page = fixture_owner_inputs(&reopened.draft, page);
     accepted(&send(&mut reopened, page));
     assert_eq!(estimate(&reopened.draft), result);
 }
@@ -181,7 +223,7 @@ fn unit13_ltc_unknown_character_is_not_a_known_zero_investment_source() {
     let mut draft = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     let FederalIncome::LtcBenefits { mut data } = ltc_form(15_000, None) else { panic!() };
     data.contract = LtcContract::Unknown;
-    data.interest = 500_000;
+    data.interest = Some(500_000);
     add(&mut draft, income(FederalIncome::LtcBenefits { data }));
     let result = estimate(&draft);
     assert!(
@@ -197,7 +239,7 @@ fn unit13_ltc_unknown_character_is_not_a_known_zero_investment_source() {
 #[test]
 fn unit13_ltc_actual_client_save_reopen_restart() {
     extern crate std;
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::accepted;
     let selected = std::env::var("TAX_UNIT13_LTC_NII_PROFILE").ok();
     for profile in ["taxpayer", "spouse"] {
         if selected.as_deref().is_some_and(|value| value != profile) {
@@ -208,10 +250,11 @@ fn unit13_ltc_actual_client_save_reopen_restart() {
             let FederalIncome::LtcBenefits { data } = &mut draft.income[index].income else {
                 panic!()
             };
-            data.interest = interest;
+            data.interest = Some(interest);
         }
         let mut session = Interview::new(TEST_USER, draft);
-        let mut page = open_topic(&mut session, TaxSection::OtherIncome);
+        let mut page =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         let native = NativeInterviewCase("TAX_UNIT13_LTC_NII");
         if native.required_checked_calculation(&mut session) {
             return;
@@ -222,15 +265,27 @@ fn unit13_ltc_actual_client_save_reopen_restart() {
         let request = if let Some(request) = native.checked_input("PAYLOAD") {
             request
         } else {
-            let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
+            let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
             let id = if profile == "taxpayer" { 5 } else { 4 };
-            let row = documents.documents.iter_mut().find(|row| row.id == id).unwrap();
-            row.owner = if profile == "taxpayer" { Owner::Taxpayer } else { Owner::Spouse };
-            let IncomeDocument::Ltc1099(data) = &mut row.document else { panic!() };
-            data.interest = if profile == "taxpayer" { 1_600_000 } else { 600_000 };
-            page
+            let row =
+                documents.other.other_income.documents.iter_mut().find(|row| row.id == id).unwrap();
+            row.owner = if profile == "taxpayer" {
+                crate::DocumentOwner::Yours
+            } else {
+                crate::DocumentOwner::Spouses
+            };
+            fixture_owner_inputs(&session.draft, page)
         };
         accepted(&send(&mut session, request));
+        let correction =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        accepted(&send(&mut session, correction));
+        let id = if profile == "taxpayer" { 5 } else { 4 };
+        accepted(&crate::tests::support::client::income_pages::answer_ltc_interest(
+            &mut session,
+            id,
+            if profile == "taxpayer" { 1_600_000 } else { 600_000 },
+        ));
         let check = |draft: &FederalDraft| {
             let result = supported(draft);
             assert_eq!(value(&result, "taxable_ltc_benefits"), 3770);
@@ -254,7 +309,8 @@ fn unit13_ltc_actual_client_save_reopen_restart() {
         let draft = draft_from_native_records(tax_year, &stored);
         assert_eq!(draft, session.draft);
         let mut reopened = restart(draft);
-        let shown = open_topic(&mut reopened, TaxSection::OtherIncome);
+        let shown =
+            crate::tests::support::client::income_pages::open_document_center(&mut reopened);
         native.output(&shown, &stored);
         let accepted_draft = reopened.draft.clone();
         accepted(&send(&mut reopened, shown));

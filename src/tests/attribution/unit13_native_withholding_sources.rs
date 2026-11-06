@@ -8,20 +8,20 @@ fn unit13_native_withholding_separate_zero_categories_retain_actual_source_cents
             for sale in [false, true] {
                 let mut d = native_cash_fixture();
                 let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-                data.withholding = 49;
+                edit_wage(data).withholding = 49;
                 let mut e = if sale {
                     let mut e = income(ordinary_investment_sale(10_000, 10_000, GainTerm::Long));
                     let FederalIncome::Sale { data } = &mut e.income else { panic!() };
-                    data.withholding = 49;
+                    data.form.withholding = 49;
                     e
                 } else {
                     let mut e = income(savings_income(0, 0));
                     let FederalIncome::Interest { data } = &mut e.income else { panic!() };
-                    data.taxable = 49;
-                    data.withholding = 49;
+                    edit_interest(data).taxable = 49;
+                    edit_interest(data).withholding = 49;
                     e
                 };
-                e.owner = owner;
+                e.owner = crate::DocumentOwner::from(owner);
                 let id = d.next_id;
                 add(&mut d, e);
                 if reverse {
@@ -61,16 +61,20 @@ fn unit13_native_withholding_qsbs_preloop_sources_count_once() {
                     0,
                 );
                 e.owner = if index == 1 {
-                    if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer }
+                    if owner == Owner::Taxpayer {
+                        crate::DocumentOwner::Spouses
+                    } else {
+                        crate::DocumentOwner::Yours
+                    }
                 } else {
-                    owner
+                    crate::DocumentOwner::from(owner)
                 };
                 let FederalIncome::QualifiedSmallBusinessSale { data } = &mut e.income else {
                     panic!()
                 };
                 data.withholding = held;
                 if index == 2 {
-                    data.issuer_qualified = false;
+                    data.issuer_qualified = Some(false);
                 }
                 expected.push((d.next_id, e.owner, held));
                 add(&mut d, e);
@@ -80,7 +84,7 @@ fn unit13_native_withholding_qsbs_preloop_sources_count_once() {
             }
             let r = save_native_cash_sources(d, TaxSection::InvestmentSales, [0, 2, 0], 30_000);
             for (id, owner, held) in expected {
-                assert_native_cash_row(&r, id, owner, [0, held, 0]);
+                assert_native_cash_row(&r, id, owner.owned(), [0, held, 0]);
             }
             let packet = r.withholding_sources.unwrap();
             assert_eq!(packet.joint_dollars, [0, 2, 0]);
@@ -96,13 +100,13 @@ fn unit13_native_withholding_inherited_group_counts_linked_statements_once() {
             let mut d = native_cash_fixture();
             let id = d.next_id;
             let mut group = inherited_ira(3_000, 0);
-            group.owner = owner;
+            group.owner = crate::DocumentOwner::from(owner);
             add(&mut d, group);
             let mut linked = Vec::new();
             for (gross, held) in [(1_000, 49), (2_000, 1)] {
                 let mut payment = inherited_payment(owner, Some(id), gross);
                 let FederalIncome::Retirement { data } = &mut payment.income else { panic!() };
-                data.withholding = held;
+                edit_retirement(data).withholding = held;
                 linked.push(d.next_id);
                 add(&mut d, payment);
             }
@@ -126,7 +130,8 @@ fn unit13_native_withholding_inherited_group_counts_linked_statements_once() {
 fn unit13_native_withholding_retains_after_pending_community_share_and_final_flush() {
     for reverse in [false, true] {
         let mut d = community_w2_draft(2_000_000, 4_000_000, 10_000, 30_000);
-        d.payments.as_mut().unwrap().estimated = Some(0);
+        d.payments.as_mut().unwrap().estimated = crate::EstimatedPaymentEntryRecord::None;
+
         if reverse {
             d.income.reverse();
         }

@@ -54,7 +54,8 @@ pub struct RentalPropertyLossYear {
     pub year: u32,
     /// Original property loss disallowed in that year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub original: i64,
     /// Qualified part of the original disallowed loss
     /// Apply the original year's business qualification, not today's rental status.
@@ -62,7 +63,8 @@ pub struct RentalPropertyLossYear {
     pub qualified: SourceCents,
     /// Property loss still suspended at the start of this return year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub remaining: i64,
     /// Qualified part still suspended at the start of this return year
     #[libertas_default(Unavailable)]

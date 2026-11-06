@@ -1,0 +1,2 @@
+# Preserve recorded audit output, including its original whitespace.
+doc/working_items/tax-link-audit/probes/*.log -whitespace

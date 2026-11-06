@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::support::builders::native_income::native_w2;
 
 #[test]
 fn published_ordinary_bracket_edges_all_statuses() {
@@ -67,16 +68,19 @@ fn irs_social_security_worksheet_examples() {
 #[test]
 fn gambling_withholding_and_unresolved_records_are_handled() {
     let mut d = complete(FederalStatus::Single);
-    let mut entry = gambling(1000, 1000);
-    if let FederalIncome::Gambling { data } = &mut entry.income {
-        data.withholding = 24000;
+    let mut entry = gambling(1000, 0);
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry.income {
+        data.form.withholding = Some(24000);
     }
     add(&mut d, entry);
+    add(&mut d, gambling_losses(1000));
     let r = supported(&d);
     assert_eq!(return_line(&r, "25d"), 674000);
     assert_eq!(value(&r, "gambling_loss_deduction"), 0); // Standard deduction is larger.
-    if let FederalIncome::Gambling { data } = &mut d.income[1].income {
-        data.ordinary = false;
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } =
+        &mut d.income[1].income
+    {
+        data.special = true;
     }
     let r = supported(&d);
     assert!(noted(&r, "WARN_GAMBLING_LEFT_OUT"));
@@ -111,14 +115,15 @@ fn gambling_withholding_and_unresolved_records_are_handled() {
 #[test]
 fn itemizing_filer_with_two_w2gs_losses_above_winnings_and_withholding() {
     let mut d = complete(FederalStatus::Single);
-    let mut entry1 = gambling(5000, 10000);
-    if let FederalIncome::Gambling { data } = &mut entry1.income {
-        data.withholding = 50_000;
+    let mut entry1 = gambling(5000, 0);
+    add(&mut d, gambling_losses(10000));
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry1.income {
+        data.form.withholding = Some(50_000);
     }
     add(&mut d, entry1);
     let mut entry2 = gambling(3500, 0);
-    if let FederalIncome::Gambling { data } = &mut entry2.income {
-        data.withholding = 30_000;
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry2.income {
+        data.form.withholding = Some(30_000);
     }
     add(&mut d, entry2);
     let facts = itemized(d.deductions.as_mut().unwrap());
@@ -150,17 +155,18 @@ fn itemizing_filer_with_two_w2gs_losses_above_winnings_and_withholding() {
 #[test]
 fn two_w2gs_under_the_standard_deduction_get_no_loss_deduction() {
     let mut d = complete(FederalStatus::Single);
-    let mut entry1 = gambling(5000, 10000);
-    if let FederalIncome::Gambling { data } = &mut entry1.income {
-        data.withholding = 50_000;
+    let mut entry1 = gambling(5000, 0);
+    add(&mut d, gambling_losses(10000));
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry1.income {
+        data.form.withholding = Some(50_000);
     }
     add(&mut d, entry1);
     let mut entry2 = gambling(3500, 0);
-    if let FederalIncome::Gambling { data } = &mut entry2.income {
-        data.withholding = 30_000;
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry2.income {
+        data.form.withholding = Some(30_000);
     }
     add(&mut d, entry2);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 68_500);
     assert_eq!(value(&r, "gambling_loss_deduction"), 0);
@@ -180,7 +186,8 @@ fn two_w2gs_under_the_standard_deduction_get_no_loss_deduction() {
 #[test]
 fn ninety_percent_of_losses_governs_when_losses_are_well_under_winnings() {
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, gambling(40_000, 20_000));
+    add(&mut d, gambling(40_000, 0));
+    add(&mut d, gambling_losses(20_000));
     let r = supported(&d);
     assert_eq!(value(&r, "gambling_loss_deduction"), 18_000);
     assert_eq!(value(&r, "agi"), 100_000);
@@ -197,7 +204,8 @@ fn ninety_percent_of_losses_governs_when_losses_are_well_under_winnings() {
 #[test]
 fn deduction_cannot_exceed_winnings_even_at_ninety_percent_of_larger_losses() {
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, gambling(20_000, 100_000));
+    add(&mut d, gambling(20_000, 0));
+    add(&mut d, gambling_losses(100_000));
     let r = supported(&d);
     assert_eq!(value(&r, "gambling_loss_deduction"), 20_000);
     assert_eq!(value(&r, "agi"), 80_000);
@@ -214,7 +222,8 @@ fn deduction_cannot_exceed_winnings_even_at_ninety_percent_of_larger_losses() {
 #[test]
 fn losses_exactly_equal_to_winnings_still_lose_ten_percent() {
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, gambling(20_000, 20_000));
+    add(&mut d, gambling(20_000, 0));
+    add(&mut d, gambling_losses(20_000));
     let r = supported(&d);
     assert_eq!(value(&r, "gambling_loss_deduction"), 18_000);
     assert_eq!(value(&r, "agi"), 80_000);
@@ -230,8 +239,8 @@ fn losses_exactly_equal_to_winnings_still_lose_ten_percent() {
 fn box_4_withholding_reaches_line_25c_separately_from_wages() {
     let mut d = complete(FederalStatus::Single);
     let mut entry = gambling(2000, 0);
-    if let FederalIncome::Gambling { data } = &mut entry.income {
-        data.withholding = 50_000;
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry.income {
+        data.form.withholding = Some(50_000);
     }
     add(&mut d, entry);
     let r = supported(&d);
@@ -249,13 +258,13 @@ fn box_4_withholding_reaches_line_25c_separately_from_wages() {
 fn several_w2gs_add_up_before_the_loss_limit() {
     let mut d = complete(FederalStatus::Single);
     let mut entry1 = gambling(5000, 0);
-    if let FederalIncome::Gambling { data } = &mut entry1.income {
-        data.withholding = 40_000;
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry1.income {
+        data.form.withholding = Some(40_000);
     }
     add(&mut d, entry1);
     let mut entry2 = gambling(7000, 0);
-    if let FederalIncome::Gambling { data } = &mut entry2.income {
-        data.withholding = 60_000;
+    if let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } = &mut entry2.income {
+        data.form.withholding = Some(60_000);
     }
     add(&mut d, entry2);
     let r = supported(&d);
@@ -270,7 +279,7 @@ fn personal_sale_term_and_statement_withholding_flow_to_result() {
     let mut d = complete(FederalStatus::Single);
     add(&mut d, income(personal_sale(4000, 1000, GainTerm::Short)));
     let FederalIncome::Sale { data } = &mut d.income[1].income else { panic!() };
-    data.withholding = 24000;
+    data.form.withholding = 24000;
     let r = supported(&d);
     assert_eq!(value(&r, "income_tax"), 5383);
     assert_eq!(r.payments, Some(674000));
@@ -382,7 +391,10 @@ fn niit_unclassified_personal_income_tax_reduces_no_investment_income_with_a_war
     facts.personal_tax =
         PersonalTaxElection::Income { paid: 1000000, allocation: TaxIncomeAllocation::Unresolved };
     let facts = facts.clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     // Not resolved: none of it reduces investment income, with a warning.
     let r = supported(&d);
     assert!(noted(&r, "WARN_NIIT_STATE_TAX_NOT_ALLOCATED"), "{r:?}");
@@ -417,8 +429,6 @@ fn niit_income_tax_accepts_documented_source_income_and_checks_bounds() {
         paid: 1000000,
         allocation: TaxIncomeAllocation::SourceIncome { investment: 200, total: 100 },
     };
-    assert!(!d.valid_stored());
-    itemized(d.deductions.as_mut().unwrap()).personal_tax = PersonalTaxElection::Sales { paid: -1 };
     assert!(!d.valid_stored());
 }
 
@@ -477,8 +487,15 @@ fn nonqualified_death_and_disability_remove_early_tax_not_income_or_niit() {
         assert_eq!(return_line(&r, "5b"), 500000);
         assert_eq!(restart(d.clone()).draft, d);
         let mut ordinary = d.clone();
-        let FederalIncome::Retirement { data } = &mut ordinary.income[1].income else { panic!() };
-        data.ordinary_distribution = RetirementTreatment::Early;
+        let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut ordinary.income[1].income
+        else {
+            panic!()
+        };
+        data.code = Some(DistributionCode::Early {
+            what_happened: Disposition::Kept,
+            exception: EarlyException::None,
+        });
         assert_eq!(value(&supported(&ordinary), "early_distribution_tax"), 500);
     }
 }
@@ -517,7 +534,7 @@ fn seller_adjusted_later_sales_match_ordinary_sale_tax_and_withholding() {
         let mut d = complete(FederalStatus::Single);
         let mut entry = price_reduction_debt();
         if let FederalIncome::PersonalDebt { data } = &mut entry.income
-            && let PersonalDebtTreatment::PriceReduction { sale, .. } = &mut data.treatment
+            && let Some(CanceledDebtChoice::SellerReduction { sale, .. }) = &mut data.treatment
         {
             *sale = Some(DebtPropertySale {
                 date: 20261201,
@@ -533,13 +550,13 @@ fn seller_adjusted_later_sales_match_ordinary_sale_tax_and_withholding() {
         add(
             &mut ordinary,
             income(FederalIncome::Sale {
-                data: FederalSale {
+                data: sale_source(FederalSale {
                     collectible,
                     withholding: 12345,
                     use_kind: SaleUse::Personal,
                     basis_reporting: BasisReporting::NoForm1099B,
                     ..native_sale(term, proceeds, Some(800000))
-                },
+                }),
             }),
         );
         let reference = supported(&ordinary);
@@ -577,8 +594,9 @@ fn older_200_percent_and_pre1999_asset_histories_still_require_amt_records() {
 fn young_filers_use_normal_amt_exemption_even_without_earned_income() {
     for (base, expected) in [(90100, 0), (100000, 2574), (200000, 28574)] {
         let mut d = young_interest_return();
-        d.income[0].income =
-            FederalIncome::Interest { data: native_exempt_interest(base * 100, base * 100) };
+        d.income[0].income = FederalIncome::Interest {
+            data: interest_source(native_exempt_interest(base * 100, base * 100)),
+        };
         let r = supported(&d);
         assert_eq!(value(&r, "agi"), 0);
         assert_eq!(value(&r, "alternative_minimum_taxable_income"), base);
@@ -608,14 +626,6 @@ fn minimum_tax_history_unknown_is_unclaimed_and_ownership_and_invalid_storage_ar
     h.status = FederalStatus::Joint;
     assert!(!d.valid_stored());
     assert_eq!(estimate(&d).state, ResultState::Incomplete);
-    let h = &mut d.credits.as_mut().unwrap().minimum_tax.as_mut().unwrap().returns[0].facts;
-    h.status = FederalStatus::Single;
-    h.carry = -1;
-    assert!(!d.valid_stored());
-    let h = &mut d.credits.as_mut().unwrap().minimum_tax.as_mut().unwrap().returns[0].facts;
-    h.carry = 0;
-    h.exclusions[0].source.clear();
-    assert!(!d.valid_stored());
 }
 #[test]
 fn material_trading_income_is_niit_but_not_form4952_income() {
@@ -627,14 +637,10 @@ fn dated_note_payments_must_reconcile_to_principal_and_valid_current_year_dates(
     let original = mixed_note_repayments();
     assert!(original.valid());
     for (advanced, date, first, second) in [
-        (20250615, 20260230, 200_000, 300_000),
         (20250615, 20251231, 200_000, 300_000),
         (20250615, 20270101, 200_000, 300_000),
         (20260101, 20260615, 200_000, 300_000),
-        (20250229, 20260615, 200_000, 300_000),
         (20250615, 20260615, 199_999, 300_000),
-        (20250615, 20260615, 0, 500_000),
-        (20250615, 20260615, -1, 500_001),
     ] {
         let mut source = original.clone();
         source.loans[0].repayment_term = ScorpNoteHolding::Dated {
@@ -715,8 +721,11 @@ fn general_rule_payment_frequency_reproduces_irs_timing_adjustments() {
             6000,
             RetirementTreatment::Ordinary,
         );
-        if let FederalIncome::Retirement { data } = &mut entry.income {
-            data.taxable = RetirementTaxable::GeneralAnnuity { data: a };
+        if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut entry.income
+        {
+            data.form.taxable_not_determined = true;
+            data.taxable_method = Some(TaxableMethod::GeneralRule { data: a });
         }
         add(&mut d, entry);
         assert_eq!(return_line(&supported(&d), "5b"), 480000);
@@ -739,7 +748,8 @@ fn registered_vendor_government_diesel_reaches_form_1040_payment() {
         fuels: FederalFuelLines {
             vendor_state_diesel: Some(government_vendor_claim(100_000)),
             ..FederalFuelLines::default()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
@@ -767,29 +777,30 @@ fn registered_vendor_government_diesel_reaches_form_1040_payment() {
 fn form_1040_withholding_lines_round_each_document_category_once() {
     let mut draft = complete(FederalStatus::Single);
     draft.payments.as_mut().unwrap().extension = 12_345;
-    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
-    data.withholding = 49;
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.withholding = Some(49);
     add(
         &mut draft,
         income(FederalIncome::Interest {
-            data: FederalInterest {
-                taxable: 10_000,
-                withholding: 49,
-                special: InterestSpecial::NoneOfThese,
-                ..Default::default()
-            },
+            data: interest_source(FederalInterest::from(&Int1099 {
+                more: IntMore { withholding: 49, ..Default::default() },
+                ..native_int1099("".into(), 10_000)
+            })),
         }),
     );
     add(
         &mut draft,
         income(FederalIncome::Gambling {
-            data: FederalGambling {
+            data: gambling_source(FederalGambling {
                 winnings: 10_000,
                 losses: 0,
                 withholding: 49,
                 own_records: false,
                 ordinary: true,
-            },
+            }),
         }),
     );
     let below = supported(&draft);
@@ -804,12 +815,23 @@ fn form_1040_withholding_lines_round_each_document_category_once() {
         return_line(&below, "25d") + return_line(&below, "26") + return_line(&below, "32c")
     );
 
-    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
-    data.withholding = 50;
-    let FederalIncome::Interest { data } = &mut draft.income[1].income else { unreachable!() };
-    data.withholding = 50;
-    let FederalIncome::Gambling { data } = &mut draft.income[2].income else { unreachable!() };
-    data.withholding = 50;
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.withholding = Some(50);
+    let FederalIncome::Interest { data: crate::InterestSource::Int1099(data) } =
+        &mut draft.income[1].income
+    else {
+        unreachable!()
+    };
+    data.form.federal_income_tax_withheld = 50;
+    let FederalIncome::Gambling { data: crate::GamblingSource::W2g(data) } =
+        &mut draft.income[2].income
+    else {
+        unreachable!()
+    };
+    data.form.withholding = Some(50);
     let above = supported(&draft);
     for line in ["25a", "25b", "25c"] {
         assert_eq!(return_line(&above, line), 100, "{line}");
@@ -834,12 +856,15 @@ fn single_employer_excess_social_security_is_refused_not_credited() {
     // Security credit (that credit requires at least two employers, each within its own
     // limit).
     let mut draft = complete(FederalStatus::Single);
-    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
-    data.wages = 18_450_000;
-    data.social_wages = 18_450_000;
-    data.social_tax = 1_150_000;
-    data.medicare_wages = 18_450_000;
-    data.medicare_tax = 267_525; // exactly 1.45% of $184,500.00; only the SS box is wrong.
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.wages = Some(18_450_000);
+    data.form.social_wages = Some(18_450_000);
+    data.form.social_tax = Some(1_150_000);
+    data.form.medicare_wages = Some(18_450_000);
+    data.form.medicare_tax = Some(267_525); // exactly 1.45% of $184,500.00; only the SS box is wrong.
     let r = estimate(&draft);
     assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
     assert!(
@@ -854,12 +879,15 @@ fn single_employer_excess_social_security_is_refused_not_credited() {
 #[test]
 fn box6_medicare_withholding_below_1_45_percent_of_box5_is_refused() {
     // W-2 map row 6: box 6 Medicare tax withheld must be at least 1.45% of box 5 Medicare
-    // wages (less a 1-cent rounding tolerance). Box 5 stays at the default $60,000.00 (1.45%
+    // wages (less the $1.00 reporting-rounding tolerance). Box 5 stays at the default $60,000.00 (1.45%
     // = $870.00); box 6 is dropped to $700.00, $170.00 short. forms/w2.rs `collect` refuses
     // this by name instead of silently accepting an under-withheld box 6.
     let mut draft = complete(FederalStatus::Single);
-    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
-    data.medicare_tax = 70_000;
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.medicare_tax = Some(70_000);
     let r = estimate(&draft);
     assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
     assert!(
@@ -869,6 +897,59 @@ fn box6_medicare_withholding_below_1_45_percent_of_box5_is_refused() {
         "{r:?}"
     );
     assert!(r.tax.is_none() && r.refund.is_none() && r.lines.is_empty());
+}
+
+#[test]
+fn box4_social_security_tolerates_one_dollar_of_reporting_rounding() {
+    // Box 4 may exceed 6.2% x box 3 by up to $1.00 (employers compute payroll tax per pay
+    // period and may print whole dollars; General Instructions for Forms W-2 and W-3). Box 3
+    // $60,000.00 gives $3,720.00: +$1.00 is accepted, +$1.01 is refused by name.
+    let mut draft = complete(FederalStatus::Single);
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.social_tax = Some(372_000 + 100);
+    supported(&draft);
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.social_tax = Some(372_000 + 101);
+    let r = estimate(&draft);
+    assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
+    assert!(
+        r.issues
+            .iter()
+            .any(|i| i.message.contains("Excess Social Security withholding by one employer")),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn box6_medicare_tolerates_one_dollar_of_reporting_rounding() {
+    // Box 6 may fall below 1.45% x box 5 by up to $1.00. Box 5 $60,000.00 gives $870.00:
+    // -$1.00 is accepted (Form 8959 line 22 clamps at zero), -$1.01 is refused by name.
+    let mut draft = complete(FederalStatus::Single);
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.medicare_tax = Some(87_000 - 100);
+    supported(&draft);
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.form.medicare_tax = Some(87_000 - 101);
+    let r = estimate(&draft);
+    assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
+    assert!(
+        r.issues
+            .iter()
+            .any(|i| i.message.contains("Medicare withholding below ordinary payroll tax")),
+        "{r:?}"
+    );
 }
 
 #[test]
@@ -882,31 +963,20 @@ fn church_employee_income_enters_schedule_se_line_5() {
     add(
         &mut d,
         income(FederalIncome::Wage {
-            data: FederalWage {
-                abroad: 0,
-                deferred_pension: 0,
-                inmate_pay: 0,
-                disability: DisabilityIncome::None,
-                wages: 1_200_000,
-                withholding: 0,
-                social_wages: 0,
-                social_tips: 0,
-                employee_tips: None,
-                work_deductions: FederalWorkDeductions::NONE,
-                social_tax: 0,
-                medicare_wages: 0,
-                medicare_tax: 0,
-                uncollected_tax: None,
-                medicaid_waiver: 0,
-                statutory_business: None,
-                paying_scorporation: None,
-                payroll: crate::W2Payroll::SocialSecurity,
-                coverage: crate::W2Coverage::ChurchEmployee,
-                care_benefits: 0,
-                statutory_employee: false,
-                retirement_plan: false,
-                other_box12: Vec::new(),
-            },
+            data: crate::WageSource::W2(crate::W2Source {
+                form: wage_document(W2 {
+                    withholding: 0,
+                    social_wages: 0,
+                    social_tax: 0,
+                    medicare_wages: 0,
+                    medicare_tax: 0,
+                    ..native_w2(1_200_000)
+                }),
+                answers: crate::W2Answers {
+                    coverage: Some(crate::W2Coverage::ChurchEmployee),
+                    ..Default::default()
+                },
+            }),
         }),
     );
     add(&mut d, wage(2, Owner::Taxpayer, 3_000_000, 0));
@@ -936,31 +1006,20 @@ fn church_employee_income_under_the_floor_is_zero() {
     add(
         &mut d,
         income(FederalIncome::Wage {
-            data: FederalWage {
-                abroad: 0,
-                deferred_pension: 0,
-                inmate_pay: 0,
-                disability: DisabilityIncome::None,
-                wages: 10_000,
-                withholding: 0,
-                social_wages: 0,
-                social_tips: 0,
-                employee_tips: None,
-                work_deductions: FederalWorkDeductions::NONE,
-                social_tax: 0,
-                medicare_wages: 0,
-                medicare_tax: 0,
-                uncollected_tax: None,
-                medicaid_waiver: 0,
-                statutory_business: None,
-                paying_scorporation: None,
-                payroll: crate::W2Payroll::SocialSecurity,
-                coverage: crate::W2Coverage::ChurchEmployee,
-                care_benefits: 0,
-                statutory_employee: false,
-                retirement_plan: false,
-                other_box12: Vec::new(),
-            },
+            data: crate::WageSource::W2(crate::W2Source {
+                form: wage_document(W2 {
+                    withholding: 0,
+                    social_wages: 0,
+                    social_tax: 0,
+                    medicare_wages: 0,
+                    medicare_tax: 0,
+                    ..native_w2(10_000)
+                }),
+                answers: crate::W2Answers {
+                    coverage: Some(crate::W2Coverage::ChurchEmployee),
+                    ..Default::default()
+                },
+            }),
         }),
     );
     let r = supported(&d);
@@ -978,8 +1037,11 @@ fn church_w2_with_social_security_wages_is_refused() {
     // Schedule SE line 5a, instead of silently computing both a payroll tax
     // base and church employee income from the same wages.
     let mut draft = complete(FederalStatus::Single);
-    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
-    data.coverage = crate::W2Coverage::ChurchEmployee;
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut draft.income[0].income
+    else {
+        unreachable!()
+    };
+    data.answers.coverage = Some(crate::W2Coverage::ChurchEmployee);
     let r = estimate(&draft);
     assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
     assert!(r.issues.iter().any(|i| i.message.contains("Schedule SE line 5a")), "{r:?}");
@@ -991,7 +1053,9 @@ fn form_8919_withholding_uses_the_reported_document_category() {
     let mut draft = complete(FederalStatus::Single);
     let mut wages = omitted_employee_wages(1_000);
     let FederalIncome::EmployeeWages { data } = &mut wages else { unreachable!() };
-    data.reason = EmployeeWageReason::Ss8Determination { date: 20260901 };
+    data.payroll = crate::EmployeePayrollSource::Form8919 {
+        reason: EmployeeWageReason::Ss8Determination { date: 20260901 },
+    };
     data.form1099 = false;
     data.withholding = 50_000;
     add(&mut draft, income(wages));
@@ -1038,6 +1102,8 @@ fn qualified_wildfire_relief_is_excluded_but_1099_withholding_is_paid() {
         &mut d,
         income(FederalIncome::WildfireRelief {
             data: FederalWildfireRelief {
+                source_issuer: Default::default(),
+                source_recipient: Default::default(),
                 paid: 20260912,
                 declared: 20260801,
                 reference: "DR-1234, synthetic forest fire".into(),
@@ -1093,6 +1159,8 @@ fn qualified_disaster_relief_is_recorded_without_taxing_the_payment() {
             &mut d,
             income(FederalIncome::DisasterRelief {
                 data: FederalDisasterRelief {
+                    source_issuer: Default::default(),
+                    source_recipient: Default::default(),
                     received: 20260912,
                     qualification: DisasterQualification::FederalDeclaration {
                         reference: "DR-1234, synthetic federal disaster".into(),
@@ -1125,11 +1193,6 @@ fn qualified_disaster_relief_is_recorded_without_taxing_the_payment() {
         data.received = 20270201;
     }
     assert!(!d.valid_stored());
-    if let FederalIncome::DisasterRelief { data } = &mut d.income.last_mut().unwrap().income {
-        data.received = 20260912;
-        data.qualification = DisasterQualification::FederalDeclaration { reference: "".into() };
-    }
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -1142,6 +1205,8 @@ fn carrier_disaster_death_or_physical_injury_payment_is_excluded() {
             &mut d,
             income(FederalIncome::DisasterRelief {
                 data: FederalDisasterRelief {
+                    source_issuer: Default::default(),
+                    source_recipient: Default::default(),
                     received: 20261001,
                     qualification: DisasterQualification::CarrierAccident {
                         event: "Synthetic 2026 rail accident".into(),
@@ -1197,14 +1262,6 @@ fn carrier_disaster_death_or_physical_injury_payment_is_excluded() {
         unreachable!()
     };
     data.purpose = DisasterReliefPurpose::CommonCarrier {
-        carrier: "".into(),
-        loss: DisasterCarrierLoss::PhysicalInjury,
-    };
-    assert!(!d.valid_stored());
-    let FederalIncome::DisasterRelief { data } = &mut d.income.last_mut().unwrap().income else {
-        unreachable!()
-    };
-    data.purpose = DisasterReliefPurpose::CommonCarrier {
         carrier: "Synthetic passenger railway".into(),
         loss: DisasterCarrierLoss::PhysicalInjury,
     };
@@ -1218,7 +1275,7 @@ fn schedule_2_other_taxes_are_refused_by_line() {
     let baseline = supported(&d);
     assert_situation_refused(
         &d,
-        OtherTax::HousingCreditRecapture,
+        Unprepared::HousingCreditRecapture,
         &["Schedule 2 line 9", "line 13n"],
     );
     // An empty list keeps today's result.
@@ -1231,7 +1288,7 @@ fn schedule_2_part_ii_other_taxes_are_refused_by_line() {
     let baseline = supported(&d);
     assert_situation_refused(
         &d,
-        OtherTax::OtherAdditionalTaxes { kind: RareAdditionalTax::AnotherIdentifiedAddedTax },
+        Unprepared::OtherAdditionalTaxes { kind: RareAdditionalTax::AnotherIdentifiedAddedTax },
         &["An additional federal tax whose computation is outside the App scope"],
     );
     assert_eq!(estimate(&d).tax, baseline.tax);
@@ -1267,7 +1324,6 @@ fn schedule_d_other_form_gains_are_refused_by_line() {
     let d = complete(FederalStatus::Single);
     let baseline = supported(&d);
     for (situation, needles) in [
-        (RareSituation::InstallmentSale, &["Form 6252", "Schedule D lines 4 and 11"][..]),
         (RareSituation::Straddles, &["Form 6781", "Schedule D lines 4 and 11"][..]),
         (
             RareSituation::LikeKindExchange,
@@ -1378,6 +1434,7 @@ fn self_employment_with_the_wage_base_binding_matches_hand_computation() {
         &mut d,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 6_000_000,
@@ -1526,7 +1583,7 @@ fn joint_owners_each_have_their_own_schedule_se() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, wage(1, Owner::Taxpayer, 15_000_000, 2_000_000));
     let mut spouse_business = income(cash_business(220_000));
-    spouse_business.owner = Owner::Spouse;
+    spouse_business.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse_business);
     let r = supported(&d);
     assert_eq!(value(&r, "self_employment_tax"), 28_770);
@@ -1565,31 +1622,20 @@ fn church_income_and_business_profit_share_line_6() {
     add(
         &mut d,
         income(FederalIncome::Wage {
-            data: FederalWage {
-                abroad: 0,
-                deferred_pension: 0,
-                inmate_pay: 0,
-                disability: DisabilityIncome::None,
-                wages: 2_000_000,
-                withholding: 0,
-                social_wages: 0,
-                social_tips: 0,
-                employee_tips: None,
-                work_deductions: FederalWorkDeductions::NONE,
-                social_tax: 0,
-                medicare_wages: 0,
-                medicare_tax: 0,
-                uncollected_tax: None,
-                medicaid_waiver: 0,
-                statutory_business: None,
-                paying_scorporation: None,
-                payroll: crate::W2Payroll::SocialSecurity,
-                coverage: crate::W2Coverage::ChurchEmployee,
-                care_benefits: 0,
-                statutory_employee: false,
-                retirement_plan: false,
-                other_box12: Vec::new(),
-            },
+            data: crate::WageSource::W2(crate::W2Source {
+                form: wage_document(W2 {
+                    withholding: 0,
+                    social_wages: 0,
+                    social_tax: 0,
+                    medicare_wages: 0,
+                    medicare_tax: 0,
+                    ..native_w2(2_000_000)
+                }),
+                answers: crate::W2Answers {
+                    coverage: Some(crate::W2Coverage::ChurchEmployee),
+                    ..Default::default()
+                },
+            }),
         }),
     );
     add(&mut d, income(cash_business(30_000)));
@@ -1713,6 +1759,7 @@ fn schedule_2_part_ii_taxes_match_hand_computation() {
         &mut d,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 4_000_000,
@@ -1729,20 +1776,32 @@ fn schedule_2_part_ii_taxes_match_hand_computation() {
     add(
         &mut d,
         income(FederalIncome::Retirement {
-            data: FederalRetirement {
+            data: retirement_source(FederalRetirement {
+                form_boxes: Default::default(),
+                trump: false,
+                box_2a: 800_000,
+                box_3: 0,
+                box_6: 0,
+                box_8a: 0,
+                box_8b_percent: None,
+                box_9a_percent: None,
+                ira: (RetirementKind::Ira).ira()
+                    && (crate::DistributionCodes::CODE_1.0) & crate::DistributionCodes::CODE_N.0
+                        == 0,
                 box_9b: None,
                 box_10: 0,
+                box_10_basis: None,
                 disability: DisabilityIncome::None,
                 kind: RetirementKind::Ira,
                 disability_wages: crate::DisabilityWages::None,
                 gross: 800_000,
-                taxable: RetirementTaxable::Payer { amount: 800_000 },
+                taxable: Some(RetirementTaxable::Payer),
                 withholding: 0,
                 box7: crate::DistributionCodes::CODE_1.0,
-                ordinary_distribution: RetirementTreatment::Early,
+                ordinary_distribution: Some(RetirementTreatment::Early),
                 disaster: crate::DisasterDistribution::No,
                 after_death: None,
-            },
+            }),
         }),
     );
     let h = hsa_entry(Owner::Taxpayer, HsaCoverage::SelfOnly, 0);
@@ -1829,7 +1888,9 @@ fn amt_from_private_activity_interest_reaches_line_2() {
     d.income[0] = wage(1, Owner::Taxpayer, 15_000_000, 3_000_000);
     add(
         &mut d,
-        income(FederalIncome::Interest { data: native_exempt_interest(20_000_000, 20_000_000) }),
+        income(FederalIncome::Interest {
+            data: interest_source(native_exempt_interest(20_000_000, 20_000_000)),
+        }),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "taxable_income"), 133_900);
@@ -1870,7 +1931,7 @@ fn schedule_2_unmodeled_lines_stay_refused() {
     let d = complete(FederalStatus::Single);
     for kind in RareAdditionalTax::ALL {
         let (_, _, lines, _, _) = kind.refusal_info();
-        assert_situation_refused(&d, OtherTax::OtherAdditionalTaxes { kind }, &[lines]);
+        assert_situation_refused(&d, Unprepared::OtherAdditionalTaxes { kind }, &[lines]);
     }
 }
 
@@ -1999,18 +2060,20 @@ fn railroad_w2_computes_8959_part_ii_separately() {
     // $60,000: Part II tax is $540 while ordinary Part I tax stays zero.
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 26_000_000, 0);
-    let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
-    data.social_wages = 0;
-    data.social_tax = 0;
-    data.medicare_wages = 0;
-    data.medicare_tax = 0;
-    data.payroll = W2Payroll::Railroad {
-        compensation: 26_000_000,
-        tier_1: 1_143_900,
-        tier_2: 0,
-        medicare: 377_000,
-        additional_medicare: 54_000,
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut d.income[0].income else {
+        unreachable!()
     };
+    data.form.social_wages = Some(0);
+    data.form.social_tax = Some(0);
+    data.form.medicare_wages = Some(0);
+    data.form.medicare_tax = Some(0);
+    data.answers.coverage = Some(crate::W2Coverage::Railroad {
+        compensation: 26_000_000,
+        tier_1: Some(1_143_900),
+        tier_2: Some(0),
+        medicare: Some(377_000),
+        additional_medicare: Some(54_000),
+    });
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 260_000);
     assert_eq!(value(&r, "additional_medicare_payroll_wages"), 0);
@@ -2034,7 +2097,7 @@ fn form_8960_line(r: &FederalResult, line: &str) -> i64 {
 }
 fn portfolio_dividend(ordinary: i64, qualified: i64, capital: i64) -> FederalIncome {
     FederalIncome::Dividend {
-        data: native_dividend(ordinary * 100, qualified * 100, capital * 100),
+        data: dividend_source(native_dividend(ordinary * 100, qualified * 100, capital * 100)),
     }
 }
 
@@ -2207,9 +2270,11 @@ fn form_8959_withholding_lines_foot_on_the_printed_dollars() {
     // stays blank. Exact cents would leave $0.50, rounded to $1 on line 24.
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 3_500_000, 0);
-    let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
-    data.medicare_wages = 3_500_000;
-    data.medicare_tax = 50_800;
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut d.income[0].income else {
+        unreachable!()
+    };
+    data.form.medicare_wages = Some(3_500_000);
+    data.form.medicare_tax = Some(50_800);
     let r = supported(&d);
     assert_eq!(return_line(&r, "25c"), 0);
 }

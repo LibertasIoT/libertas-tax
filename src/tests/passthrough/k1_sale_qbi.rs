@@ -9,14 +9,19 @@ fn sale_rows(source: &mut FederalIncome, rows: Vec<K1Section179Sale>, basis: i64
     match source {
         FederalIncome::Partnership { data } => {
             data.section179_sales = rows;
-            data.regular.basis.opening = basis * 100;
+            data.regular.basis.opening = Some(basis * 100);
             data.regular.risk.start = capacity;
+            data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
             data.alternative = Some(data.regular.clone());
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             data.section179_sales = rows;
-            data.opening = basis * 100;
+            data.opening = Some(basis * 100);
             data.risk.start = capacity;
+            data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
             data.amt = Some(amt_records(data));
             for sale in &mut data.section179_sales {
                 sale.alternative =
@@ -69,24 +74,27 @@ fn business(
                 .unwrap()
                 .current
         }
-        FederalIncome::Scorp { data } => data
-            .qbi_statement
-            .as_ref()
-            .unwrap()
-            .combined_with_sales(
-                data,
-                [
-                    crate::kernel::carry::Amount::new(0).unwrap(),
-                    crate::kernel::carry::Amount::new(0).unwrap(),
-                ],
-                crate::section1231::PropertyCharacter::Capital,
-                (Some(taxable), FederalStatus::Single),
-                deduction,
-                sales,
-                0,
-            )
-            .unwrap()
-            .remove(0),
+        FederalIncome::Scorp { data } => {
+            let source_view = ScorpK1::from(data);
+            let data = &source_view;
+            data.qbi_statement
+                .as_ref()
+                .unwrap()
+                .combined_with_sales(
+                    data,
+                    [
+                        crate::kernel::carry::Amount::new(0).unwrap(),
+                        crate::kernel::carry::Amount::new(0).unwrap(),
+                    ],
+                    crate::section1231::PropertyCharacter::Capital,
+                    (Some(taxable), FederalStatus::Single),
+                    deduction,
+                    sales,
+                    0,
+                )
+                .unwrap()
+                .remove(0)
+        }
         _ => unreachable!(),
     }
 }
@@ -248,7 +256,11 @@ fn k1_sale_qbi_current_section179_deduction_is_taken_once_with_sale_gains() {
         k1_qbi_statement(&mut source, 15_000, false);
         match &mut source {
             FederalIncome::Partnership { data } => data.section179 = 2_000 * 100,
-            FederalIncome::Scorp { data } => data.section179 = 2_000 * 100,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.section179 = 2_000 * 100
+            }
             _ => unreachable!(),
         }
         let (draft, id) = draft(source);
@@ -287,11 +299,13 @@ fn k1_sale_qbi_code_r_keeps_its_own_share_of_the_passive_cut() {
     k1_qbi_statement(&mut source, 0, false);
     sale_rows(&mut source, vec![sale(32_000), sale(8_000)], 100_000, 100_000);
     let FederalIncome::Partnership { data } = &mut source else { unreachable!() };
-    data.income = vec![PartnerIncome {
+    data.income = vec![PartnerIncomeTotal {
         code: PartnerIncomeCode::SpeciallyAllocatedOrdinary,
         amount: -6_000 * 100,
     }];
-    let PartnerParticipation::General { facts } = &mut data.participation else { unreachable!() };
+    let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
+        unreachable!()
+    };
     facts.minutes = 0;
     let (draft, id) = draft(source);
     let (sales, pool) = calculation(&draft, id, 0);
@@ -356,8 +370,12 @@ fn k1_sale_qbi_required_sstb_choices_keep_loss_and_phase_out_income() {
         k1_qbi_statement(&mut source, 1, false);
         sale_rows(&mut source, vec![sale(price)], 100_000, 100_000);
         let FederalIncome::Scorp { data } = &mut source else { unreachable!() };
-        data.qbi_statement.as_mut().unwrap().service = service;
-        assert_eq!(data.qbi_statement.as_ref().unwrap().income, 100);
+        {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+            data.qbi_statement.as_mut().unwrap().service = service;
+            assert_eq!(data.qbi_statement.as_ref().unwrap().income, 100);
+        }
         let (draft, id) = draft(source);
         let (sales, _) = calculation(&draft, id, 300_000);
         assert_eq!(
@@ -378,7 +396,11 @@ fn k1_sale_qbi_declined_scorp_statement_omits_sale_qbi_with_one_loss_notice() {
     k1_qbi_statement(&mut source, 0, false);
     sale_rows(&mut source, vec![sale(20_000)], 100_000, 100_000);
     let FederalIncome::Scorp { data } = &mut source else { unreachable!() };
-    data.qbi_statement.as_mut().unwrap().complete = false;
+    {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
+        data.qbi_statement.as_mut().unwrap().complete = false;
+    }
     let (draft, id) = draft(source);
     let (sales, _) = calculation(&draft, id, 0);
     assert_eq!(
@@ -416,7 +438,7 @@ fn property_source(ordinary: i64, rows: Vec<K1Section179Sale>, capacity: i64) ->
     k1_qbi_statement(&mut source, ordinary.max(0), false);
     sale_rows(&mut source, rows, capacity, capacity);
     let FederalIncome::Scorp { data } = source else { unreachable!() };
-    data
+    ScorpK1::from(&data)
 }
 
 fn property_business(
@@ -448,8 +470,8 @@ fn property_business(
 fn k1_sale_qbi_property_sale_without_original_box_reaches_the_business_and_coordinator() {
     let mut source = sources(15_000, 2_000, 2_000, 20_000).into_iter().nth(1).unwrap();
     k1_qbi_statement(&mut source, 15_000, false);
-    let original = source.clone();
     let (d, id) = draft(source);
+    let original = d.income[0].income.clone();
     let (_, pool) = calculation(&d, id, 0);
     let preview = crate::section1231::property_qbi(&d, &pool).unwrap();
     assert_eq!(preview.len(), 1);
@@ -465,6 +487,8 @@ fn k1_sale_qbi_property_sale_without_original_box_reaches_the_business_and_coord
     assert!(r.issues.is_empty(), "{:?}", r.issues);
     assert_eq!(d.income[0].income, original);
     let FederalIncome::Scorp { data } = &original else { unreachable!() };
+    let source_view = ScorpK1::from(data);
+    let data = &source_view;
     assert!(data.section1231.is_none());
     assert!(!data.property_qbi.complete); // No nonexistent-box confirmation required.
     assert!(data.property_qbi.valid(data));
@@ -581,7 +605,9 @@ fn k1_sale_qbi_property_gain_joins_the_same_business_before_sstb_rounding() {
 #[test]
 fn k1_sale_qbi_property_capital_character_excludes_sale_gains_and_losses() {
     let source = property_source(0, vec![property_sale(10_000), property_sale(-4_000)], 0);
-    let (d, id) = draft(FederalIncome::Scorp { data: source.clone() });
+    let (d, id) = draft(FederalIncome::Scorp {
+        data: crate::tests::support::builders::scorp_source(source.clone()),
+    });
     let (_, pool) = calculation(&d, id, 0);
     let preview = crate::section1231::property_qbi(&d, &pool).unwrap();
     assert_eq!((preview[0].gain, preview[0].loss, preview[0].current_loss), (0, 0, 0));
@@ -594,7 +620,9 @@ fn k1_sale_qbi_property_capital_character_excludes_sale_gains_and_losses() {
 #[test]
 fn k1_sale_qbi_property_recapture_of_sale_only_gain_uses_the_known_qualified_share() {
     let source = property_source(0, vec![property_sale(10_000)], 0);
-    let (mut d, id) = draft(FederalIncome::Scorp { data: source.clone() });
+    let (mut d, id) = draft(FederalIncome::Scorp {
+        data: crate::tests::support::builders::scorp_source(source.clone()),
+    });
     d.screening.as_mut().unwrap().section1231 =
         Some(section1231_history(&[(2025, 3_000, 3_000)], &[]));
     let (_, pool) = calculation(&d, id, 0);
@@ -760,7 +788,9 @@ fn k1_sale_qbi_property_preserves_minor_unit_history_reconciliation_and_rounds_c
 fn k1_sale_qbi_property_sale_only_passive_loss_uses_the_property_character_cut() {
     let mut source = property_source(0, vec![property_sale(-2_000), property_sale(1_000)], 5_000);
     source.participation.as_mut().unwrap().minutes = 0;
-    let (d, id) = draft(FederalIncome::Scorp { data: source.clone() });
+    let (d, id) = draft(FederalIncome::Scorp {
+        data: crate::tests::support::builders::scorp_source(source.clone()),
+    });
     let (_, pool) = calculation(&d, id, 0);
     let item = pool.k1_section1231.iter().find(|v| v.id == id).unwrap();
     assert_eq!((item.net, item.suspended), (0, 1_000));
@@ -898,7 +928,8 @@ fn k1_sale_qbi_property_coordinator_uses_the_business_component_of_shared_lookba
     source.rentals.real_estate_property =
         K1RentalProperty { net: 500_000, unrecaptured: 500_000, ..Default::default() };
     source.rental_facts.real_estate_qbi = Some(K1RentalQbi { wages: 0, property: 0 });
-    let (mut d, id) = draft(FederalIncome::Scorp { data: source });
+    let (mut d, id) =
+        draft(FederalIncome::Scorp { data: crate::tests::support::builders::scorp_source(source) });
     d.screening.as_mut().unwrap().section1231 =
         Some(section1231_history(&[(2025, 5_000, 5_000)], &[]));
     let (_, pool) = calculation(&d, id, 0);
@@ -944,7 +975,8 @@ fn k1_sale_qbi_property_partial_recapture_of_wholly_qualified_current_net_needs_
             expected
         );
     }
-    let (mut d, id) = draft(FederalIncome::Scorp { data: source });
+    let (mut d, id) =
+        draft(FederalIncome::Scorp { data: crate::tests::support::builders::scorp_source(source) });
     d.screening.as_mut().unwrap().section1231 =
         Some(section1231_history(&[(2025, 3_000, 3_000)], &[]));
     let (_, pool) = calculation(&d, id, 0);

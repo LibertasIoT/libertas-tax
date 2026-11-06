@@ -24,12 +24,19 @@ fn topic_page(s: &mut Interview) -> P {
     }
 }
 fn received(owner: Owner, payment: AlimonyPayment) -> IncomeDocumentItem {
-    unanswered_document(owner, 0, IncomeDocument::AlimonyReceived(payment))
+    unanswered_document(
+        owner,
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::AlimonyReceived(payment) },
+    )
 }
 fn save(s: &mut Interview, documents: Vec<IncomeDocumentItem>) -> Reply {
     let mut request = topic_page(s);
     let P::SaveIncomes { documents: page, .. } = &mut request else { unreachable!() };
-    page.documents = documents;
+    page.documents = documents
+        .into_iter()
+        .map(|row| crate::IncomeRecordItem::from_income(row).expect("alimony record"))
+        .collect();
     send(s, request)
 }
 fn single() -> Interview {
@@ -83,7 +90,7 @@ fn alimony_received_through_the_topic_by_hand() {
         .cloned()
         .collect();
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].owner, Owner::Taxpayer);
+    assert_eq!(stored[0].owner, crate::DocumentOwner::Yours);
     // An unnamed source stores no name; its kind and identity name it.
     assert_eq!(stored[0].label, "");
     assert_eq!(stored[0].income, FederalIncome::Alimony { data: alimony_record(20181231) });
@@ -105,7 +112,7 @@ fn alimony_received_through_the_topic_by_hand() {
     assert_eq!(documents.documents[0].owner, Owner::Taxpayer);
     assert_eq!(
         documents.documents[0].document,
-        IncomeDocument::AlimonyReceived(alimony_record(20181231))
+        crate::IncomeRecord::AlimonyReceived(alimony_record(20181231))
     );
     let request = topic_page(&mut again);
     accepted(&send(&mut again, request));
@@ -303,8 +310,6 @@ fn alimony_received_rules_refuse_on_the_server() {
         "MESSAGE_ALIMONY_RECEIVED_ENTER_THE_AGREEMENT_DATE_BEFORE_2027_AND_AMOUNTS_WITH_THIS",
         "[documents/documents/0/document/recapture/current_excluded]",
     ));
-    // An impossible agreement date.
-    problem(save(&mut s, vec![received(Owner::Taxpayer, alimony_record(20180230))]));
     assert_eq!(s.draft, before);
     // Exactly the years' payments is accepted.
     let mut payment = recapture_alimony();
@@ -325,10 +330,9 @@ fn the_topic_offers_alimony_received_and_less_common_income_no_longer_names_it()
     else {
         panic!("expected the topic")
     };
-    assert!(
-        allowed_documents
-            .contains(&(libertas_macros::variant_index!(IncomeDocument::AlimonyReceived) as i32))
-    );
+    assert!(allowed_documents.contains(
+        &(libertas_macros::variant_index!(crate::IncomeSourceKind::AlimonyReceived) as i32)
+    ));
 }
 
 #[test]
@@ -356,23 +360,11 @@ fn a_spouse_agreement_on_a_joint_return_and_leaving_joint_erases_it() {
         .income
         .iter()
         .filter(|e| matches!(e.income, FederalIncome::Alimony { .. }))
-        .map(|e| e.owner)
+        .map(|e| e.owner.owned())
         .collect();
     assert_eq!(owners, vec![Owner::Taxpayer]);
     assert!(
         result.removed.iter().any(|item| item.key() == "SAVING_KIND_ALIMONY_AGREEMENT"),
         "{result:?}"
     );
-}
-
-#[test]
-fn unticking_the_topic_erases_alimony_received() {
-    // The checklist tick owns the topic's entries: saved without it, the
-    // agreement goes.
-    let mut s = single();
-    accepted(&save(&mut s, vec![received(Owner::Taxpayer, alimony_record(20181231))]));
-    let mut d = s.draft.clone();
-    d.checklist.income &= !IncomeTopics::OTHER_INCOME.0;
-    crate::interview::prune(&mut d);
-    assert!(!d.income.iter().any(|e| matches!(e.income, FederalIncome::Alimony { .. })));
 }

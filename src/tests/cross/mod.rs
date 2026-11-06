@@ -17,4 +17,5 @@ pub(in crate::tests) mod line_audit_family_credits;
 pub(in crate::tests) mod line_audit_qbi_f;
 pub(crate) mod oracle;
 pub(in crate::tests) mod reference;
+mod reference_pages;
 pub(in crate::tests) mod returns;

@@ -1,0 +1,56 @@
+{
+ "source": {
+  "title": "Publication 915, Social Security and Equivalent Railroad Retirement Benefits (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 17",
+  "example": "Repayment of benefits received in an earlier year, Example (Ryan and Jordan)",
+  "url": "https://www.irs.gov/pub/irs-dft/p915--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "83c99be25e9562a1be4999dd2a108f5c84f654555ccb1a626ac3483834a1bdf3"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "both spouses born 1956-06-15",
+   "reason": "the example gives no ages"
+  },
+  {
+   "fact": "no other income",
+   "reason": "the example reports only the two Forms SSA-1099; the net benefits 2,500 are the printed answer"
+  }
+ ],
+ "filing": "MarriedJointly",
+ "birth": 19560615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "ssa",
+     "benefits": 3000
+    },
+    {
+     "doc": "ssa",
+     "benefits": -500
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "6a",
+   "amount": 2500,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "6b",
+   "amount": 0,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

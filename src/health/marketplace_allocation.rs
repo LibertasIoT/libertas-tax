@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::marketplace_record_source::MarketplaceFraction;
 // Pub974 (2025), pp28–38, Worksheets C–F; i8962 (2025), pp19–21.
 // https://www.irs.gov/pub/irs-pdf/p974.pdf
 // https://www.irs.gov/pub/irs-pdf/i8962.pdf
@@ -7,7 +9,7 @@ use crate::kernel::ratio::exact::{Exact, ratio, whole};
 use crate::{
     MarketplaceAgreement as Agreement, MarketplaceAllocationKind as Kind,
     MarketplaceBenchmarkSource as Benchmark, MarketplaceFamilyRef as Family,
-    MarketplaceFamilyShare, MarketplaceFraction, MarketplaceMaritalFamilyShare,
+    MarketplaceFamilyShare, MarketplaceMaritalFamilyShare,
 };
 use alloc::vec::Vec;
 
@@ -21,29 +23,6 @@ pub(crate) struct Allocation {
     pub premium: Exact,
     pub advance: Exact,
     pub benchmark: AllocatedBenchmark,
-}
-
-impl MarketplaceFraction {
-    pub(crate) fn exact(&self) -> Option<Exact> {
-        self.checked_exact().ok()
-    }
-
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        self.checked_exact().err()
-    }
-
-    fn checked_exact(&self) -> Result<Exact, crate::validation::ValidationIssue> {
-        if self.numerator > self.denominator || self.denominator == 0 {
-            Err(crate::validation::ValidationIssue::new("PTC_SHARE_EXCEEDS_WHOLE").at_field(
-                if self.numerator > self.denominator { "numerator" } else { "denominator" },
-            ))
-        } else {
-            ratio(i64::from(self.numerator), i64::from(self.denominator)).ok_or_else(|| {
-                crate::validation::ValidationIssue::new("PTC_SHARE_EXCEEDS_WHOLE")
-                    .at_field("denominator")
-            })
-        }
-    }
 }
 
 fn agreed(value: &Agreement, default: Exact) -> Option<Exact> {

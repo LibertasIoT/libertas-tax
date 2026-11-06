@@ -5,11 +5,52 @@ use crate::interview::estimate_text;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::client::income_pages::save_topic;
 use crate::tests::cross::interview::{
-    PAGE_CREDITS, PAGE_OTHER_TAXES, PAGE_PAYMENTS, at_the_payments_page, back, figure_with,
-    navigate, no_payments, open_payments, page_paid, paid, payments_value, refusal, save_payments,
-    save_setup, shown, submit, value_of,
+    PAGE_CREDITS, PAGE_PAYMENTS, at_the_payments_page, back, begin_finish, figure_with,
+    finish_request, navigate, no_payments, open_payments, page_paid, paid, payments_value, refusal,
+    save_payments, save_setup, shown, submit, value_of,
 };
 const PAGE_INCOME_BY_PERIOD: i32 = TaxSection::IncomeByPeriod as i32;
+
+#[test]
+fn payments_more_preserves_all_answers_through_calculation_and_reopen() {
+    let (mut session, _) = at_the_payments_page(complete(FederalStatus::Single));
+    let mut value = no_payments();
+    value.extension = 10_000;
+    value.more = crate::PaymentsMore {
+        penalty: figure_with(
+            PriorReturn::SameReturn,
+            WithholdingTiming::Evenly,
+            Farmer::No,
+            Waiver::None,
+        ),
+        next_year: NextYearEstimate::SameAsThisReturn {
+            farmer_fisherman_next_year: FarmerNextYear::No,
+        },
+        extension_payer: Some(PaymentPayer::Taxpayer),
+        extension_refund_property: Some(RefundSourceProperty::Separate { owner: Owner::Taxpayer }),
+    };
+    let before = session.draft.clone();
+    let reduced: crate::PaymentsEstimateInput = value.clone().into();
+    assert_eq!(reduced.more, value.more);
+    assert!(Payments::from(reduced.clone()).withheld.is_none());
+    assert!(matches!(
+        send(
+            &mut session,
+            P::EstimatePayments {
+                user: TEST_USER,
+                allowed_prior_returns: vec![0],
+                allowed_farmer: vec![0, 1],
+                allowed_farmer_next_year: vec![1, 2],
+                allowed_refund_management: vec![],
+                value: reduced,
+            }
+        ),
+        Reply::Response(P::PaymentsEstimate { .. })
+    ));
+    assert_eq!(session.draft, before);
+    accepted(&submit(&mut session, value.clone()));
+    assert_eq!(payments_value(&open_payments(&mut session)).0.more, value.more);
+}
 
 #[test]
 fn dated_payments_total_the_estimated_payments() {
@@ -20,17 +61,14 @@ fn dated_payments_total_the_estimated_payments() {
     // IRS figures the penalty, and the withholding of Form 1040 lines
     // 25a-25d (complete()'s one W-2, box 2 $6,500.00).
     let P::SavePayments { page: section, previous, progress, .. } = &page else { unreachable!() };
-    // M3-P19: Back opens the previous shown section, other taxes (every
-    // return walks it, gate fixes batch A); setup, you, people, the
-    // checklist, income, adjustments, credits, other taxes, payments and
-    // the review.
-    assert_eq!((*section, *previous), (PAGE_PAYMENTS, PAGE_OTHER_TAXES));
-    assert!(shown(progress).contains("section 9 of 10"));
+    // Back opens Credits. 2026-10-29: progress_line counts Income without a
+    // form after Document center; the final situations page follows Payments.
+    assert_eq!((*section, *previous), (PAGE_PAYMENTS, PAGE_CREDITS));
+    assert!(shown(progress).contains("section 10 of 12"));
     let (value, _, _, _) = payments_value(&page);
     assert_eq!(
         value,
         &Payments {
-            credit_capacity: baseline.credit_capacity,
             withheld: Some(Withheld { w2: 650_000, forms_1099: 0, other: 0, total: 650_000 }),
             ..no_payments()
         }
@@ -39,9 +77,14 @@ fn dated_payments_total_the_estimated_payments() {
     // $1,200.00 + $800.00 = $2,000.00 (Form 1040 line 26); with the
     // $300.00 extension payment the payments rise by $2,300.00.
     let entered = Payments {
-        estimated: vec![page_paid(20260415, 120_000), page_paid(20260915, 80_000)],
+        more: crate::PaymentsMore {
+            extension_payer: Some(PaymentPayer::Joint),
+            ..(value.clone()).more
+        },
+        estimated: crate::EstimatedPaymentEntry::Sources {
+            payments: vec![page_paid(20260415, 120_000), page_paid(20260915, 80_000)],
+        },
         extension: 30_000,
-        extension_payer: Some(PaymentPayer::Joint),
         ..value.clone()
     };
     match submit(&mut s, entered.clone()) {
@@ -55,21 +98,15 @@ fn dated_payments_total_the_estimated_payments() {
         other => panic!("expected the review, got {other:?}"),
     }
     let pay = s.draft.payments.clone().unwrap();
-    assert_eq!(pay.estimated, Some(200_000));
-    assert_eq!(
-        pay.estimated_payments,
-        entered.estimated.iter().map(InjuredDatedPayment::accepted).collect::<Vec<_>>()
-    );
+    assert_eq!(crate::kernel::ratio::exact::rounded(&pay.estimated_source()), Some(200_000));
+    assert_eq!(pay.estimated, entered.estimated.accepted());
     assert_eq!(pay.extension, 30_000);
     assert_eq!(pay.prior_year, None);
     assert!(s.draft.finished_sections.contains(&TaxSection::Payments));
     // It reopens as entered, and an unchanged save stores no revision.
     let revision = s.draft.revision;
     let page = open_payments(&mut s);
-    assert_eq!(
-        payments_value(&page).0,
-        &Payments { credit_capacity: Some(377_700), ..entered.clone() }
-    );
+    assert_eq!(payments_value(&page).0, &entered);
     submit(&mut s, entered);
     assert_eq!(s.draft.revision, revision);
     // Back returns to the credits hub.
@@ -83,18 +120,25 @@ fn dated_payments_total_the_estimated_payments() {
         allowed_prior_returns: vec![0],
         allowed_farmer: vec![0],
         allowed_farmer_next_year: vec![0, 1, 2],
-        value: Payments { estimated: vec![page_paid(20260115, 100_000)], ..no_payments() }.into(),
+        value: Payments {
+            estimated: crate::EstimatedPaymentEntry::Sources {
+                payments: vec![page_paid(20260115, 100_000)],
+            },
+            ..no_payments()
+        }
+        .into(),
     };
     let Reply::Response(P::PaymentsEstimate { estimate: text, .. }) = send(&mut s, request) else {
         panic!("expected the running estimate")
     };
     let mut expected = s.draft.clone();
     expected.payments = Some(FederalPayments {
-        estimated: Some(100_000),
-        estimated_payments: vec![paid(20260115, 100_000)],
+        estimated: crate::EstimatedPaymentEntryRecord::Sources {
+            payments: vec![paid(20260115, 100_000)],
+        },
         ..FederalPayments::none()
     });
-    assert_eq!(text, estimate_text(&estimate(&expected)));
+    assert_eq!(text.map(|t| t.line), Some(estimate_text(&estimate(&expected))));
 }
 
 #[test]
@@ -103,24 +147,29 @@ fn irs_figures_leaves_no_prior_year() {
     // Figuring the penalty stores the 2025 facts with every Form 2210
     // answer: box D, box C, the farmer rule and a box A waiver.
     let figured = Payments {
-        estimated: vec![page_paid(20260415, 100_000)],
-        penalty: PenaltyChoice::Figure {
-            prior_tax: 500_000,
-            prior_agi: Some(6_000_000),
-            full_year: true,
-            prior_return: PriorReturn::SameReturn,
-            withholding: WithholdingTiming::ByPeriod {
-                first: 150_000,
-                second: 150_000,
-                third: 150_000,
-                fourth: 200_000,
+        more: crate::PaymentsMore {
+            penalty: PenaltyChoice::Figure {
+                prior_tax: 500_000,
+                prior_agi: Some(6_000_000),
+                full_year: true,
+                prior_return: PriorReturn::SameReturn,
+                withholding: WithholdingTiming::ByPeriod {
+                    first: 150_000,
+                    second: 150_000,
+                    third: 150_000,
+                    fourth: 200_000,
+                },
+                income: IncomeTiming::Evenly,
+                farmer: Farmer::No,
+                waiver: Waiver::Full {
+                    reason: PenaltyWaiverReason::CasualtyOrDisasterOrUnusual,
+                    explanation: "House fire in March".into(),
+                },
             },
-            income: IncomeTiming::Evenly,
-            farmer: Farmer::No,
-            waiver: Waiver::Full {
-                reason: PenaltyWaiverReason::CasualtyOrDisasterOrUnusual,
-                explanation: "House fire in March".into(),
-            },
+            ..no_payments().more
+        },
+        estimated: crate::EstimatedPaymentEntry::Sources {
+            payments: vec![page_paid(20260415, 100_000)],
         },
         ..no_payments()
     };
@@ -150,18 +199,23 @@ fn irs_figures_leaves_no_prior_year() {
             .any(|l| status_text(&l.label).starts_with("1040 38 —"))
     );
     let page = open_payments(&mut s);
-    assert_eq!(payments_value(&page).0.penalty, figured.penalty, "reopens as entered");
+    assert_eq!(payments_value(&page).0.more.penalty, figured.more.penalty, "reopens as entered");
     // Letting the IRS figure it erases every Form 2210 fact and keeps the
     // payments.
-    let irs = Payments { penalty: PenaltyChoice::IrsFigures, ..figured };
+    let irs = Payments {
+        more: crate::PaymentsMore { penalty: PenaltyChoice::IrsFigures, ..figured.more },
+        ..figured
+    };
     accepted(&submit(&mut s, irs));
     let pay = s.draft.payments.clone().unwrap();
     assert_eq!(
         pay,
         FederalPayments {
             credit_applied_next_year: 0,
-            estimated: Some(100_000),
-            estimated_payments: vec![paid(20260415, 100_000)],
+
+            estimated: crate::EstimatedPaymentEntryRecord::Sources {
+                payments: vec![paid(20260415, 100_000)]
+            },
             ..FederalPayments::none()
         }
     );
@@ -175,15 +229,18 @@ fn irs_figures_leaves_no_prior_year() {
     // period page (M3-P14); until its periods are saved the estimate
     // refuses it by name. Back to Evenly erases it.
     let box_c = Payments {
-        penalty: PenaltyChoice::Figure {
-            prior_tax: 500_000,
-            prior_agi: Some(6_000_000),
-            full_year: true,
-            prior_return: PriorReturn::SameReturn,
-            withholding: WithholdingTiming::Evenly,
-            income: IncomeTiming::ByPeriod,
-            farmer: Farmer::No,
-            waiver: Waiver::None,
+        more: crate::PaymentsMore {
+            penalty: PenaltyChoice::Figure {
+                prior_tax: 500_000,
+                prior_agi: Some(6_000_000),
+                full_year: true,
+                prior_return: PriorReturn::SameReturn,
+                withholding: WithholdingTiming::Evenly,
+                income: IncomeTiming::ByPeriod,
+                farmer: Farmer::No,
+                waiver: Waiver::None,
+            },
+            ..no_payments().more
         },
         ..no_payments()
     };
@@ -196,31 +253,37 @@ fn irs_figures_leaves_no_prior_year() {
         "{:?}",
         result.issues
     );
-    assert_eq!(payments_value(&open_payments(&mut s)).0.penalty, box_c.penalty);
+    assert_eq!(payments_value(&open_payments(&mut s)).0.more.penalty, box_c.more.penalty);
     accepted(&submit(
         &mut s,
         Payments {
-            penalty: figure_with(
-                PriorReturn::SameReturn,
-                WithholdingTiming::Evenly,
-                Farmer::No,
-                Waiver::None,
-            ),
+            more: crate::PaymentsMore {
+                penalty: figure_with(
+                    PriorReturn::SameReturn,
+                    WithholdingTiming::Evenly,
+                    Farmer::No,
+                    Waiver::None,
+                ),
+                ..no_payments().more
+            },
             ..no_payments()
         },
     ));
     assert!(!s.draft.payments.as_ref().unwrap().annualized);
     // A waiver with a blank explanation is refused on the server too.
     let blank = Payments {
-        penalty: figure_with(
-            PriorReturn::SameReturn,
-            WithholdingTiming::Evenly,
-            Farmer::No,
-            Waiver::Full {
-                reason: PenaltyWaiverReason::RetirementOrDisability,
-                explanation: "  ".into(),
-            },
-        ),
+        more: crate::PaymentsMore {
+            penalty: figure_with(
+                PriorReturn::SameReturn,
+                WithholdingTiming::Evenly,
+                Farmer::No,
+                Waiver::Full {
+                    reason: PenaltyWaiverReason::RetirementOrDisability,
+                    explanation: "  ".into(),
+                },
+            ),
+            ..no_payments().more
+        },
         ..no_payments()
     };
     let before = s.draft.clone();
@@ -236,12 +299,20 @@ fn box_d_periods_must_total_the_withholding() {
     // on save and in the running estimate.
     let (mut s, _) = at_the_payments_page(complete(FederalStatus::Single));
     let by_period = |fourth: i64| Payments {
-        penalty: figure_with(
-            PriorReturn::SameReturn,
-            WithholdingTiming::ByPeriod { first: 150_000, second: 150_000, third: 150_000, fourth },
-            Farmer::No,
-            Waiver::None,
-        ),
+        more: crate::PaymentsMore {
+            penalty: figure_with(
+                PriorReturn::SameReturn,
+                WithholdingTiming::ByPeriod {
+                    first: 150_000,
+                    second: 150_000,
+                    third: 150_000,
+                    fourth,
+                },
+                Farmer::No,
+                Waiver::None,
+            ),
+            ..no_payments().more
+        },
         ..no_payments()
     };
     let before = s.draft.clone();
@@ -288,12 +359,15 @@ fn box_d_periods_must_total_the_withholding() {
 #[test]
 fn box_e_is_offered_only_on_joint() {
     let separate = |spouse_tax| Payments {
-        penalty: figure_with(
-            PriorReturn::SeparateReturns { spouse_tax },
-            WithholdingTiming::Evenly,
-            Farmer::No,
-            Waiver::None,
-        ),
+        more: crate::PaymentsMore {
+            penalty: figure_with(
+                PriorReturn::SeparateReturns { spouse_tax },
+                WithholdingTiming::Evenly,
+                Farmer::No,
+                Waiver::None,
+            ),
+            ..no_payments().more
+        },
         ..no_payments()
     };
     // A single return offers only the one 2025 return, and refuses box E
@@ -313,7 +387,7 @@ fn box_e_is_offered_only_on_joint() {
         Some(300_000)
     );
     let page = open_payments(&mut s);
-    assert_eq!(payments_value(&page).0.penalty, separate(300_000).penalty);
+    assert_eq!(payments_value(&page).0.more.penalty, separate(300_000).more.penalty);
     // Leaving the joint return erases the payments entered for it, box E
     // with them (walk-owned data: they were the couple's).
     let request = save_setup(&s.draft, ReturnSetup { filing: Filing::Single });
@@ -323,10 +397,10 @@ fn box_e_is_offered_only_on_joint() {
 }
 
 #[test]
-fn payment_date_outside_2026_is_rejected() {
+fn payment_date_window_accepts_its_declared_endpoints() {
     // Client side: the date field carries the window as its range.
     // 2026-10-16: required cap-reason comments do not change the declared date window.
-    let source = include_str!("../../payments/underpayment.rs")
+    let source = include_str!("../../payments/underpayment_model.rs")
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
@@ -336,23 +410,28 @@ fn payment_date_outside_2026_is_rejected() {
     ));
     assert_eq!(crate::year_constants::ESTIMATED_PAYMENT_START_DATE, 20260101);
     assert_eq!(crate::year_constants::ESTIMATED_PAYMENT_LAST_DATE, 20270415);
-    // Server side: January 1, 2026 through April 15, 2027 inclusive; the
-    // day before, the day after and an impossible date are refused.
+    // The first and last permitted payment dates are accepted.
     let (mut s, _) = at_the_payments_page(complete(FederalStatus::Single));
-    let dated = |date| Payments { estimated: vec![page_paid(date, 50_000)], ..no_payments() };
+    let dated = |date| Payments {
+        estimated: crate::EstimatedPaymentEntry::Sources {
+            payments: vec![page_paid(date, 50_000)],
+        },
+        ..no_payments()
+    };
     let before = s.draft.clone();
-    for date in [20251231, 20270416, 20260230] {
-        rejected_with(
-            send(&mut s, save_payments(&before, dated(date))),
-            "PAYMENT_DATE_OUTSIDE_2026",
-        );
-        assert_eq!(s.draft, before, "{date}");
-    }
     accepted(&send(&mut s, save_payments(&before, dated(20260101))));
-    assert_eq!(s.draft.payments.as_ref().unwrap().estimated_payments, vec![paid(20260101, 50_000)]);
+    assert_eq!(
+        s.draft.payments.as_ref().unwrap().estimated,
+        crate::EstimatedPaymentEntryRecord::Sources { payments: vec![paid(20260101, 50_000)] }
+    );
     let later = s.draft.clone();
     accepted(&send(&mut s, save_payments(&later, dated(20270415))));
-    assert_eq!(s.draft.payments.as_ref().unwrap().estimated, Some(50_000));
+    assert_eq!(
+        crate::kernel::ratio::exact::rounded(
+            &s.draft.payments.as_ref().unwrap().estimated_source()
+        ),
+        Some(50_000)
+    );
 }
 
 // M3-P14: the income by period page.
@@ -372,7 +451,13 @@ fn figure_income(income: IncomeTiming) -> PenaltyChoice {
     }
 }
 fn box_c_payments() -> Payments {
-    Payments { penalty: figure_income(IncomeTiming::ByPeriod), ..no_payments() }
+    Payments {
+        more: crate::PaymentsMore {
+            penalty: figure_income(IncomeTiming::ByPeriod),
+            ..no_payments().more
+        },
+        ..no_payments()
+    }
 }
 fn save_periods(d: &FederalDraft, value: IncomeByPeriod, review: bool) -> P {
     P::SaveIncomeByPeriod {
@@ -382,7 +467,7 @@ fn save_periods(d: &FederalDraft, value: IncomeByPeriod, review: bool) -> P {
         page: PAGE_INCOME_BY_PERIOD,
         previous: PAGE_PAYMENTS,
         review,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value,
@@ -417,8 +502,16 @@ fn income_by_period_opens_only_for_box_c() {
     // Even income (no box C): the payments page goes on to the review, and
     // the page is neither offered nor opened nor saved.
     let (mut s, _) = at_the_payments_page(complete(FederalStatus::Single));
-    match submit(&mut s, Payments { penalty: figure_income(IncomeTiming::Evenly), ..no_payments() })
-    {
+    match submit(
+        &mut s,
+        Payments {
+            more: crate::PaymentsMore {
+                penalty: figure_income(IncomeTiming::Evenly),
+                ..no_payments().more
+            },
+            ..no_payments()
+        },
+    ) {
         Reply::Response(P::Review { allowed_sections, answers, .. }) => {
             assert!(!allowed_sections.contains(&PAGE_INCOME_BY_PERIOD));
             assert!(!answers.iter().any(|r| r.section == TaxSection::IncomeByPeriod));
@@ -448,9 +541,9 @@ fn income_by_period_opens_only_for_box_c() {
         panic!("expected the income by period page, got {reply:?}")
     };
     assert_eq!((page, previous), (PAGE_INCOME_BY_PERIOD, PAGE_PAYMENTS));
-    // M3-P19: setup, you, people, the checklist, income, adjustments,
-    // credits, other taxes, payments and the review.
-    assert!(shown(progress).contains("section 9 of 10"));
+    // 2026-10-29: page_section keeps Income by period at the Payments position;
+    // progress_line includes Income without a form after Document center.
+    assert!(shown(progress).contains("section 10 of 12"));
     let even = periods_page(reply);
     assert_eq!(
         even,
@@ -557,7 +650,7 @@ fn full_year_column_is_the_return() {
     assert_eq!(line_in_cents(&result, "form_2210_ai_line_1_d"), 7_858_700);
     // Column (d) follows the return: removing the business leaves the W-2
     // alone, so AGI $60,000.00 and nothing else.
-    let request = save_topic(&s.draft, TaxSection::SelfEmployment, vec![]);
+    let request = save_topic(&mut s, TaxSection::SelfEmployment, vec![]);
     send(&mut s, request);
     assert_eq!(stored_periods(&s).unwrap().full_year, agi_only(6_000_000));
     let request = navigate(&s.draft, TaxSection::IncomeByPeriod);
@@ -587,7 +680,16 @@ fn box_c_back_to_evenly_erases_the_periods() {
     // the page is no longer offered.
     open_payments(&mut s);
     assert!(matches!(
-        submit(&mut s, Payments { penalty: figure_income(IncomeTiming::Evenly), ..no_payments() },),
+        submit(
+            &mut s,
+            Payments {
+                more: crate::PaymentsMore {
+                    penalty: figure_income(IncomeTiming::Evenly),
+                    ..no_payments().more
+                },
+                ..no_payments()
+            },
+        ),
         Reply::Response(P::Review { .. })
     ));
     let pay = s.draft.payments.clone().unwrap();
@@ -608,36 +710,28 @@ fn box_c_back_to_evenly_erases_the_periods() {
     assert_eq!(pay.prior_year, None);
 }
 
+// The refund choices are asked on the review as the return is finished:
+// the plan opens with the overpayment available for it, each refusal
+// locates its answer, and the accepted plan is stored.
 #[test]
-fn applied_credit_capacity_refreshes_and_native_errors_locate_the_answer() {
-    let (mut session, page) = at_the_payments_page(complete(FederalStatus::Single));
-    let mut value = payments_value(&page).0.clone();
+fn refund_choices_are_asked_on_the_review_and_errors_locate_the_answer() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let refund = begin_finish(&mut session);
+    assert_eq!(refund.credit_applied_next_year, 0);
+    // $6,500 withheld against $5,023 of tax: $1,477 available.
+    let capacity = refund.credit_capacity.unwrap();
+    assert_eq!(capacity, 147_700);
     let before = session.draft.clone();
-    let capacity = value.credit_capacity.unwrap();
-    value.extension = 100_000;
-    value.extension_payer = Some(PaymentPayer::Taxpayer);
-    let request = P::EstimatePayments {
-        user: TEST_USER,
-        allowed_prior_returns: vec![],
-        allowed_farmer: vec![],
-        allowed_farmer_next_year: vec![],
-        allowed_refund_management: vec![],
-        value: value.clone().into(),
-    };
-    let Reply::Response(P::PaymentsEstimate { credit_capacity, .. }) = send(&mut session, request)
-    else {
-        panic!("payments calculation")
-    };
-    assert_eq!(credit_capacity, Some(capacity + 100_000));
-    assert_eq!(session.draft, before);
-    for (amount, recipient, key, field) in [
-        (-1, None, "PAYMENT_APPLIED_CREDIT_NEGATIVE", "[value/credit_applied_next_year]"),
-        (1, None, "PAY_CREDIT_RECIPIENT_NEEDED", "[value/credit_recipient]"),
-    ] {
-        value.credit_applied_next_year = amount;
-        value.credit_recipient = recipient;
-        let request = save_payments(&before, value.clone());
-        let Reply::Response(P::Problem { message, field: located }) = send(&mut session, request)
+    {
+        let (amount, recipient, key, field) =
+            (1, None, "PAY_CREDIT_RECIPIENT_NEEDED", "[refund/credit_recipient]");
+        let value = RefundChoice {
+            credit_applied_next_year: amount,
+            credit_recipient: recipient,
+            ..refund.clone()
+        };
+        let Reply::Response(P::Problem { message, field: located }) =
+            send(&mut session, finish_request(&before, value))
         else {
             panic!("invalid election must be refused")
         };
@@ -645,30 +739,68 @@ fn applied_credit_capacity_refreshes_and_native_errors_locate_the_answer() {
         assert_eq!(located.as_deref(), Some(field));
         assert_eq!(session.draft, before);
     }
+    let above = RefundChoice {
+        credit_applied_next_year: capacity + 1,
+        credit_recipient: Some(OverpaymentRecipient::TaxpayerAccount),
+        ..refund.clone()
+    };
+    let Reply::Response(P::Problem { field, .. }) =
+        send(&mut session, finish_request(&before, above))
+    else {
+        panic!("a plan above the overpayment must be refused")
+    };
+    assert_eq!(field.as_deref(), Some("[refund/credit_applied_next_year]"));
+    let planned = RefundChoice {
+        credit_applied_next_year: 100_000,
+        credit_recipient: Some(OverpaymentRecipient::TaxpayerAccount),
+        ..refund
+    };
+    assert!(matches!(
+        send(&mut session, finish_request(&before, planned)),
+        Reply::Response(P::Finished { .. })
+    ));
+    let pay = session.draft.payments.as_ref().unwrap();
+    assert_eq!(
+        (pay.credit_applied_next_year, pay.credit_recipient),
+        (100_000, Some(OverpaymentRecipient::TaxpayerAccount))
+    );
+    assert!(session.draft.finished);
+    let reopened = begin_finish(&mut session);
+    assert_eq!(
+        (reopened.credit_applied_next_year, reopened.credit_capacity),
+        (100_000, Some(capacity))
+    );
 }
 
 #[test]
-fn applied_credit_unknown_capacity_saves_intent_without_admitting_cash_or_forecast_credit() {
+fn applied_credit_unknown_capacity_keeps_intent_without_admitting_cash_or_forecast_credit() {
     let mut draft = complete(FederalStatus::Single);
     let FederalIncome::EmployeeWages { mut data } = omitted_employee_wages(7_500) else {
         unreachable!()
     };
-    data.complete = false;
-    add(&mut draft, income(FederalIncome::EmployeeWages { data }));
-    let baseline = supported(&draft);
-    let (mut session, page) = at_the_payments_page(draft);
-    let mut value = payments_value(&page).0.clone();
-    assert_eq!(value.credit_capacity, None);
-    value.credit_applied_next_year = 100_050;
-    value.credit_recipient = Some(OverpaymentRecipient::TaxpayerAccount);
-    accepted(&submit(&mut session, value));
-    let result = estimate(&session.draft);
+    data.payroll = crate::EmployeePayrollSource::Unavailable;
+    let mut source = income(FederalIncome::EmployeeWages { data });
+    // Keep the native source's displayed identity stable across its editor save.
+    source.label.clear();
+    add(&mut draft, source);
+    let baseline = estimate(&draft);
+    assert_eq!(baseline.state, ResultState::Incomplete);
+    assert!(
+        baseline
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE")
+    );
+    let pay = draft.payments.as_mut().unwrap();
+    pay.credit_applied_next_year = 100_050;
+    pay.credit_recipient = Some(OverpaymentRecipient::TaxpayerAccount);
+    let result = estimate(&draft);
     assert_eq!((result.credit_capacity, result.refund), (None, None));
     assert_eq!(result.state, baseline.state);
-    assert_eq!(
-        estimate_text(&result),
-        Message::new("PAYMENT_APPLIED_CREDIT_UNAVAILABLE", vec![]).encode()
-    );
+    // 2026-10-19: actual missing payroll source prevents the whole tax;
+    // its located source message takes precedence over the retained credit notice.
+    assert_eq!(Message::decode(&estimate_text(&result)).key, "ESTIMATE_UNAVAILABLE");
+    assert_eq!(estimate_text(&result), estimate_text(&baseline));
     assert_eq!(
         (result.tax, result.payments, result.balance),
         (baseline.tax, baseline.payments, baseline.balance)
@@ -694,22 +826,16 @@ fn applied_credit_unknown_capacity_saves_intent_without_admitting_cash_or_foreca
     }));
     assert!(!result.lines.iter().any(|l| l.id.starts_with("form_1040_es_planned_cash_")));
     assert!(!result.review_notes.iter().any(|n| n.display.key == "NOTE_APPLIED_CREDIT_PLAN"));
-    assert_eq!(payments_value(&open_payments(&mut session)).0.credit_applied_next_year, 100_050);
 }
 
 #[test]
-fn applied_credit_intent_survives_a_household_change_and_rechecks_capacity() {
+fn applied_credit_intent_survives_a_household_change() {
     let mut draft = complete(FederalStatus::Joint);
     draft.income = vec![wage(1, Owner::Taxpayer, 6_000_000, 650_000)];
-    let (mut session, _) = at_the_payments_page(draft);
-    let value = Payments {
-        credit_applied_next_year: 250_050,
-        credit_recipient: Some(OverpaymentRecipient::SpouseAccount),
-        extension: 1_000_000,
-        extension_payer: Some(PaymentPayer::Joint),
-        ..no_payments()
-    };
-    accepted(&submit(&mut session, value));
+    let pay = draft.payments.as_mut().unwrap();
+    pay.credit_applied_next_year = 250_050;
+    pay.credit_recipient = Some(OverpaymentRecipient::SpouseAccount);
+    let mut session = Interview::new(TEST_USER, draft);
     let request = save_setup(&session.draft, ReturnSetup { filing: Filing::Single });
     send(&mut session, request);
     let pay = session.draft.payments.as_ref().unwrap();
@@ -717,35 +843,19 @@ fn applied_credit_intent_survives_a_household_change_and_rechecks_capacity() {
         (pay.credit_applied_next_year, pay.credit_recipient),
         (250_050, Some(OverpaymentRecipient::SpouseAccount))
     );
-    assert!(!pay.joint);
-    assert!(!session.draft.finished_sections.contains(&TaxSection::Payments));
+    // Saving the payments page keeps the plan.
     let page = open_payments(&mut session);
-    let reopened = payments_value(&page).0;
-    assert_eq!(reopened.credit_applied_next_year, 250_050);
-    // Single-return tax $5,023 against $6,500 withholding: $1,477 remains.
-    assert_eq!(reopened.credit_capacity, Some(147_700));
-}
-
-#[test]
-fn applied_credit_defaults_to_zero_on_the_normal_final_payments_page() {
-    let mut draft = complete(FederalStatus::Single);
-    draft.payments = None;
-    let (mut session, page) = at_the_payments_page(draft);
-    assert_eq!(payments_value(&page).0.credit_applied_next_year, 0);
     let value = payments_value(&page).0.clone();
     accepted(&submit(&mut session, value));
-    assert_eq!(session.draft.payments.as_ref().unwrap().credit_applied_next_year, 0);
+    assert_eq!(session.draft.payments.as_ref().unwrap().credit_applied_next_year, 250_050);
 }
 
 #[test]
 fn applied_credit_stored_validity_checks_intrinsics_without_freezing_capacity() {
     for (amount, recipient, valid) in [
-        (-1, Some(OverpaymentRecipient::TaxpayerAccount), false),
         (1, None, false),
         (0, None, true),
         (100_050, Some(OverpaymentRecipient::SpouseAccount), true),
-        // Changing financial facts may leave a retained excess for correction.
-        (i64::MAX, Some(OverpaymentRecipient::TaxpayerAccount), true),
     ] {
         let mut draft = complete(FederalStatus::Single);
         let pay = draft.payments.as_mut().unwrap();
@@ -753,4 +863,186 @@ fn applied_credit_stored_validity_checks_intrinsics_without_freezing_capacity() 
         pay.credit_recipient = recipient;
         assert_eq!(draft.valid_stored(), valid);
     }
+}
+
+#[test]
+fn farmland_relief_uses_retained_source_through_payment_save_reopen_and_restart() {
+    let draft = farmland_installment_return();
+    let (mut session, page) = at_the_payments_page(draft);
+    let source_income = session.draft.income.clone();
+    let mut value = payments_value(&page).0.clone();
+    value.more.penalty = PenaltyChoice::Figure {
+        prior_tax: 2_000_000,
+        prior_agi: Some(10_000_000),
+        full_year: true,
+        prior_return: PriorReturn::SameReturn,
+        withholding: WithholdingTiming::Evenly,
+        income: IncomeTiming::Evenly,
+        farmer: Farmer::No,
+        waiver: Waiver::None,
+    };
+    accepted(&submit(&mut session, value.clone()));
+    let result = supported(&session.draft);
+    // Same actual Form 1062 owner as the farm-source controls: $6,000
+    // applicable, $1,500 first installment and $4,500 deferred.
+    assert_eq!(result.farmland_installments.as_ref().unwrap().applicable, 600_000);
+    assert_eq!(value_of(&result, "form_2210_line_3"), 4_500);
+    assert_eq!(session.draft.income, source_income);
+    assert_eq!(payments_value(&open_payments(&mut session)).0.more, value.more);
+    let mut restored = restart(session.draft.clone());
+    assert_eq!(supported(&restored.draft), result);
+    assert_eq!(payments_value(&open_payments(&mut restored)).0.more, value.more);
+    // Correct only the penalty source; neither correction nor reopening
+    // replaces the accepted farmland sale or its election.
+    let PenaltyChoice::Figure { prior_tax, .. } = &mut value.more.penalty else { unreachable!() };
+    *prior_tax = 1_900_000;
+    accepted(&submit(&mut restored, value));
+    assert_eq!(restored.draft.income, source_income);
+    assert_eq!(value_of(&supported(&restored.draft), "form_2210_line_3"), 4_500);
+}
+
+#[test]
+fn estimated_method_is_required_and_selected_sources_survive_save_correction_and_restart() {
+    let mut draft = complete(FederalStatus::Single);
+    draft.finished_sections.retain(|section| *section != TaxSection::Payments);
+    // Refund or fuel-credit work can create this record before the payment interview.
+    draft.payments = Some(FederalPayments::none());
+    let mut session = Interview::new(TEST_USER, draft);
+    let before = session.draft.clone();
+    let request = navigate(&session.draft, TaxSection::Payments);
+    let Reply::Response(P::BeginPayments { value, .. }) = send(&mut session, request) else {
+        panic!("the payment method is unanswered")
+    };
+    assert_eq!(value.estimated, None);
+    assert_eq!(session.draft, before);
+    accepted(&submit(&mut session, no_payments()));
+    assert_eq!(
+        payments_value(&open_payments(&mut session)).0.estimated,
+        EstimatedPaymentEntry::None
+    );
+
+    let annual = AnnualEstimatedAmount {
+        amount: 200_000,
+        payer: PaymentPayer::Taxpayer,
+        refund_property: Some(RefundSourceProperty::Partly {
+            community: 80_000,
+            separate_owner: Owner::Taxpayer,
+            management: RefundManagement::NotApplicable,
+        }),
+    };
+    let original = Payments {
+        estimated: EstimatedPaymentEntry::TimingUnknown { payments: vec![annual.clone()] },
+        ..no_payments()
+    };
+    accepted(&submit(&mut session, original.clone()));
+    let baseline = supported(&session.draft);
+    assert_eq!(return_line(&baseline, "26"), 200_000);
+    let accepted_sources = session.draft.payments.as_ref().unwrap().estimated.clone();
+    let stored = crate::tests::support::client::roundtrip_native_draft(session.draft.clone());
+    let mut cold = restart(stored);
+    assert_eq!(cold.draft.payments.as_ref().unwrap().estimated, accepted_sources);
+    assert_eq!(payments_value(&open_payments(&mut cold)).0.estimated, original.estimated);
+
+    // A deliberate method switch carries precisely its newly supplied payload.
+    let mut corrected = original;
+    corrected.estimated = EstimatedPaymentEntry::EqualTimely { payments: vec![annual] };
+    accepted(&submit(&mut cold, corrected.clone()));
+    assert_eq!(payments_value(&open_payments(&mut cold)).0.estimated, corrected.estimated);
+    corrected.estimated = EstimatedPaymentEntry::Sources {
+        payments: vec![page_paid(20260415, 100_000), page_paid(20260415, 100_000)],
+    };
+    accepted(&submit(&mut cold, corrected.clone()));
+    let saved = cold.draft.clone();
+    assert_eq!(saved.payments.as_ref().unwrap().estimated.count(), 2);
+    let mut cold = restart(saved);
+    assert_eq!(payments_value(&open_payments(&mut cold)).0.estimated, corrected.estimated);
+    assert_eq!(supported(&cold.draft).payments, baseline.payments);
+    // Existing refund capacity continues to use the known annual credit.
+    assert_eq!(supported(&cold.draft).credit_capacity, baseline.credit_capacity);
+}
+
+#[test]
+fn annual_source_validation_is_shared_atomic_and_locates_the_selected_list_leaf() {
+    let (mut session, _) = at_the_payments_page(complete(FederalStatus::Joint));
+    for unknown in [false, true] {
+        for (amount, property, leaf, key) in [
+            (0, None, "amount", "PAYMENT_AMOUNT_INVALID"),
+            (
+                100,
+                Some(RefundSourceProperty::Partly {
+                    community: 101,
+                    separate_owner: Owner::Spouse,
+                    management: RefundManagement::NotApplicable,
+                }),
+                "refund_property/Partly/community",
+                "INJURED_SPOUSE_COMMUNITY_ABOVE_PAYMENT",
+            ),
+            (
+                100,
+                Some(RefundSourceProperty::Community { management: RefundManagement::Spouse }),
+                "refund_property/Community/management",
+                "INJURED_SPOUSE_COMMUNITY_FACTS_NOT_CURRENT",
+            ),
+        ] {
+            let rows = vec![AnnualEstimatedAmount {
+                amount,
+                payer: PaymentPayer::Spouse,
+                refund_property: property,
+            }];
+            let (entry, branch) = if unknown {
+                (EstimatedPaymentEntry::TimingUnknown { payments: rows }, "TimingUnknown")
+            } else {
+                (EstimatedPaymentEntry::EqualTimely { payments: rows }, "EqualTimely")
+            };
+            let value = Payments { estimated: entry, ..no_payments() };
+            let before = session.draft.clone();
+            for request in [
+                save_payments(&before, value.clone()),
+                P::EstimatePayments {
+                    user: TEST_USER,
+                    allowed_prior_returns: vec![0, 1],
+                    allowed_farmer: vec![0, 1],
+                    allowed_farmer_next_year: vec![0, 1, 2],
+                    allowed_refund_management: vec![0, 1, 2, 3],
+                    value: value.clone().into(),
+                },
+            ] {
+                let Reply::Response(P::Problem { message, field, .. }) =
+                    send(&mut session, request)
+                else {
+                    panic!("invalid source must be refused")
+                };
+                assert_eq!(status_message(&message).key, key);
+                assert_eq!(
+                    field.as_deref(),
+                    Some(alloc::format!("[value/estimated/{branch}/payments/0/{leaf}]").as_str())
+                );
+                assert_eq!(session.draft, before);
+            }
+            let native = value.estimated.accepted();
+            assert!(native.issue(&[RefundManagement::NotApplicable as i32]).is_some());
+        }
+    }
+}
+
+#[test]
+fn separate_return_keeps_actual_spouse_and_community_payment_sources() {
+    let (mut session, _) = at_the_payments_page(complete(FederalStatus::Separate));
+    let source = AnnualEstimatedAmount {
+        amount: 10_000,
+        payer: PaymentPayer::Spouse,
+        refund_property: Some(RefundSourceProperty::Partly {
+            community: 4_000,
+            separate_owner: Owner::Spouse,
+            management: RefundManagement::NotApplicable,
+        }),
+    };
+    let value = Payments {
+        estimated: EstimatedPaymentEntry::TimingUnknown { payments: vec![source] },
+        ..no_payments()
+    };
+    accepted(&submit(&mut session, value.clone()));
+    assert_eq!(return_line(&supported(&session.draft), "26"), 10_000);
+    let mut cold = restart(session.draft.clone());
+    assert_eq!(payments_value(&open_payments(&mut cold)).0.estimated, value.estimated);
 }

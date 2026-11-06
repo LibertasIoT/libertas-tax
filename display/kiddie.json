@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 648000, "rule": {"select": "^<WorkValue>", "flatten": true}},
+    {"order": 649000, "rule": {"select": "^<BusinessIncomeChoice>", "flatten": true}},
+    {"order": 800000, "rule": {"select": "^<OtherChildTax>.label", "promote": true}},
+    {"order": 981000, "rule": {"select": "^<ParentReturn>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_PARENT_RETURN", "fields": ["status", "taxable", "gains"]}, {"title": "DISPLAY_PARENT_OTHER", "fields": ["foreign_excluded", "others", "special"]}]}},
+    {"order": 982000, "rule": {"select": "^<ParentReturn>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PARENT_RETURN", "fields": ["status", "taxable", "gains"]}, {"title": "DISPLAY_PARENT_OTHER", "fields": ["foreign_excluded", "others", "special"]}]}}
+  ]
+}

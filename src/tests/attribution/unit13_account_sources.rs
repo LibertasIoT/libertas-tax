@@ -1,10 +1,11 @@
 // Final native account sources; all expectations below are independent cents
 // arithmetic. Recipient ownership is never inferred from the student's identity.
+use super::*;
+use crate::tests::cross::interview::{accepted, document};
 use crate::tests::family::education_accounts::{
     coverdell, entered, expense_record, q1099_form, qtp, student_row, withdrawal,
 };
-use crate::tests::cross::interview::{accepted, document, open_topic, page_documents, save_topic};
-use super::*;
+use crate::tests::support::client::income_pages::{open_document_center, save_documents};
 
 fn education(d: &FederalDraft) -> (crate::education_account::EducationTotals, FederalResult) {
     let mut r = FederalResult::empty(d.revision);
@@ -23,11 +24,8 @@ fn education(d: &FederalDraft) -> (crate::education_account::EducationTotals, Fe
     (crate::education_account::calculate(&cx, &mut r), r)
 }
 fn source_values(v: &crate::education_account::EducationTotals) -> Vec<(i64, Owner, i64, i64)> {
-    let mut values: Vec<_> = v
-        .sources
-        .iter()
-        .map(|s| (s.id, s.owner, s.taxable, s.exceptions))
-        .collect();
+    let mut values: Vec<_> =
+        v.sources.iter().map(|s| (s.id, s.owner, s.taxable, s.exceptions)).collect();
     values.sort_by_key(|s| s.0);
     values
 }
@@ -51,10 +49,9 @@ fn unit13_account_sources_education_shared_student_keeps_each_recipient_and_nati
     let mut d = complete(FederalStatus::Joint);
     add_child(&mut d);
     let student = d.dependents[0].id;
-    for (owner, gross, earnings) in [
-        (Owner::Taxpayer, 200_000, 100_001),
-        (Owner::Spouse, 400_000, 200_003),
-    ] {
+    for (owner, gross, earnings) in
+        [(Owner::Taxpayer, 200_000, 100_001), (Owner::Spouse, 400_000, 200_003)]
+    {
         let mut entry = q1099_form(
             owner,
             gross / 100,
@@ -65,26 +62,18 @@ fn unit13_account_sources_education_shared_student_keeps_each_recipient_and_nati
         let FederalIncome::EducationDistribution { data } = &mut entry.income else {
             unreachable!()
         };
-        data.account = EducationAccount::Qtp {
-            earnings,
-            basis: gross - earnings,
-        };
+        data.form.earnings = earnings;
+        data.form.basis = gross - earnings;
         add(&mut d, entry);
     }
-    add(
-        &mut d,
-        expense_record(vec![student_row(student, entered(3000, 0, 0))]),
-    );
+    add(&mut d, expense_record(vec![student_row(student, entered(3000, 0, 0))]));
     let (v, r) = education(&d);
     assert!(r.issues.is_empty());
     // $3000 shared expenses cover half each actual distribution. Excluded
     // earnings round first: 50000.5c ->50001c, 100001.5c ->100002c.
     assert_eq!(
         source_values(&v),
-        vec![
-            (3, Owner::Taxpayer, 50_000, 0),
-            (4, Owner::Spouse, 100_001, 0)
-        ]
+        vec![(3, Owner::Taxpayer, 50_000, 0), (4, Owner::Spouse, 100_001, 0)]
     );
     assert_eq!(v.income, [50_000, 100_001]);
     assert_eq!(v.excluded_earnings, [50_001, 100_002]);
@@ -107,10 +96,7 @@ fn unit13_account_sources_education_credit_exception_is_actual_final_coordinatio
             FederalEducationBeneficiary::Recipient,
         ),
     );
-    add(
-        &mut d,
-        expense_record(vec![student_row(-2, entered(4000, 0, 2000))]),
-    );
+    add(&mut d, expense_record(vec![student_row(-2, entered(4000, 0, 2000))]));
     let (v, r) = education(&d);
     assert!(r.issues.is_empty());
     // Half of1000 earnings is taxable solely because2000 costs were used
@@ -127,31 +113,13 @@ fn unit13_account_sources_education_zero_loss_and_timed_corrections_are_explicit
     let mut d = complete(FederalStatus::Joint);
     for (owner, account, transfer) in [
         (Owner::Taxpayer, qtp(-1, 1001), withdrawal()),
-        (
-            Owner::Spouse,
-            qtp(300, 700),
-            Q1099Transfer::TrusteeTransfer { taxable_part: 0 },
-        ),
-        (
-            Owner::Spouse,
-            coverdell(300, 700),
-            Q1099Transfer::ExcessLastYear,
-        ),
-        (
-            Owner::Taxpayer,
-            coverdell(300, 700),
-            Q1099Transfer::ExcessThisYear,
-        ),
+        (Owner::Spouse, qtp(300, 700), Q1099Transfer::TrusteeTransfer),
+        (Owner::Spouse, coverdell(300, 700), Q1099Transfer::ExcessLastYear),
+        (Owner::Taxpayer, coverdell(300, 700), Q1099Transfer::ExcessThisYear),
     ] {
         add(
             &mut d,
-            q1099_form(
-                owner,
-                1000,
-                account,
-                transfer,
-                FederalEducationBeneficiary::Recipient,
-            ),
+            q1099_form(owner, 1000, account, transfer, FederalEducationBeneficiary::Recipient),
         );
     }
     let (v, _) = education(&d);
@@ -216,20 +184,20 @@ fn unit13_account_sources_able_retains_rollover_loss_and_penalty_character() {
     let annual = AbleDistribution {
         gross: 1_000_000,
         earnings: 300_000,
-        treatment: AbleTreatment::Annual {
-            rollover: AbleRollover::Qualified {
-                amount: 200_000,
-                earnings: 100_000,
-            },
+        program_to_program_transfer: false,
+        account_terminated: false,
+        recipient_not_designated_beneficiary: false,
+        treatment: Some(AbleTreatment::Annual {
+            rollover: AbleRollover::Qualified { amount: 200_000, earnings: 100_000 },
             expenses: 399_951,
             following_expenses: 49,
-        },
+        }),
     };
     assert_eq!(
-        (annual.amounts().taxable, annual.amounts().penalized),
+        (annual.amounts().unwrap().taxable, annual.amounts().unwrap().penalized),
         (100_000, 100_000)
     );
-    assert_eq!(annual.taxable(), 100_000);
+    assert_eq!(annual.taxable(), Some(100_000));
     assert!(annual.penalized());
     for (earnings, treatment, taxable, penalized, applies) in [
         (
@@ -251,13 +219,19 @@ fn unit13_account_sources_able_retains_rollover_loss_and_penalty_character() {
         let data = AbleDistribution {
             gross: 1000,
             earnings,
-            treatment,
+            program_to_program_transfer: false,
+            account_terminated: false,
+            recipient_not_designated_beneficiary: matches!(
+                treatment,
+                AbleTreatment::Corrective { .. }
+            ),
+            treatment: Some(treatment),
         };
         assert_eq!(
-            (data.amounts().taxable, data.amounts().penalized),
+            (data.amounts().unwrap().taxable, data.amounts().unwrap().penalized),
             (taxable, penalized)
         );
-        assert_eq!(data.taxable(), taxable);
+        assert_eq!(data.taxable(), Some(taxable));
         assert_eq!(data.penalized(), applies);
     }
 }
@@ -266,44 +240,39 @@ fn unit13_account_sources_able_retains_rollover_loss_and_penalty_character() {
 fn unit13_account_sources_medical_keeps_account_rate_and_dated_exception_without_rounding() {
     let mut recipient = person();
     recipient.birth_date = 19610615;
-    for account in [
-        MedicalSaAccount::Hsa,
-        MedicalSaAccount::Archer,
-        MedicalSaAccount::MedicareFromSpouse,
-        MedicalSaAccount::MedicareAdvantage {
-            prior: MedicareMsaPrior::None,
-        },
+    for (account, medicare_prior, medicare_from_spouse) in [
+        (MedicalSaAccount::Hsa, None, None),
+        (MedicalSaAccount::Archer, None, None),
+        (MedicalSaAccount::MedicareAdvantage, None, Some(true)),
+        (MedicalSaAccount::MedicareAdvantage, Some(MedicareMsaPrior::None), Some(false)),
     ] {
-        let data = FederalMedicalDistribution {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross: 349,
-            account: account.clone(),
-            payment: MedicalSaPayment::Own {
+        let data = crate::SaSource {
+            medicare_prior,
+            medicare_from_spouse,
+            payment: Some(MedicalSaPayment::Own {
                 nonmedical: vec![
-                    MedicalAccountWithdrawal {
-                        date: 20260101,
-                        amount: 49,
-                    },
-                    MedicalAccountWithdrawal {
-                        date: 20261201,
-                        amount: 200,
-                    },
+                    MedicalAccountWithdrawal { date: 20260101, amount: 49 },
+                    MedicalAccountWithdrawal { date: 20261201, amount: 200 },
                 ],
                 medical: 100,
                 rollover: None,
                 disabled_since: None,
-            },
+            }),
+            ..sa_source(Sa1099 {
+                origin: HealthDocumentOrigin::Form1099Sa,
+                gross: 349,
+                box2_earnings: None,
+                box3_code: Some(1),
+                box4_value: None,
+                account: account.clone(),
+                ..Default::default()
+            })
         };
-        let amounts = data.amounts(&recipient).unwrap();
-        let source = amounts.source(31, Owner::Spouse, &account);
+        let amounts = data.record().amounts(&recipient).unwrap();
+        let calculation_account = data.calculation_account().unwrap();
+        let source = amounts.source(31, Owner::Spouse, calculation_account);
         assert_eq!(
-            (
-                source.id,
-                source.owner,
-                source.taxable,
-                source.earnings,
-                source.inherited
-            ),
+            (source.id, source.owner, source.taxable, source.earnings, source.inherited),
             (
                 31,
                 Owner::Spouse,
@@ -312,13 +281,13 @@ fn unit13_account_sources_medical_keeps_account_rate_and_dated_exception_without
                 crate::kernel::ratio::exact::whole(0)
             )
         );
-        assert_eq!(source.account, account);
+        assert_eq!(&source.account, calculation_account);
         // Medicare has50% additional tax and no age65 exception; HSA/Archer
         // have20% with the actual age boundary. No per-source tax is rounded here.
         assert_eq!(
             source.penalized,
             crate::kernel::ratio::exact::whole(
-                if matches!(account, MedicalSaAccount::MedicareAdvantage { .. }) {
+                if matches!(calculation_account, MedicalSaAccount::MedicareAdvantage) {
                     249
                 } else {
                     49
@@ -330,13 +299,23 @@ fn unit13_account_sources_medical_keeps_account_rate_and_dated_exception_without
 
 #[test]
 fn unit13_account_sources_medical_inheritance_preserves_native_dollar_precision_and_estate() {
-    let mut data = FederalMedicalDistribution {
-        origin: HealthDocumentOrigin::Form1099Sa,
-        gross: 10_100,
-        account: MedicalSaAccount::Hsa,
-        payment: MedicalSaPayment::Inherited {
+    let mut data = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Hsa, MedicalSaAccount::MedicareAdvantage) {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Hsa,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Inherited {
             died: 20260615,
-            value: 10_049,
+
             beneficiary: MedicalBeneficiary::Nonspouse {
                 payments: vec![InheritedMedicalPayment {
                     incurred: 20260101,
@@ -344,10 +323,19 @@ fn unit13_account_sources_medical_inheritance_preserves_native_dollar_precision_
                     amount: 151,
                 }],
             },
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: HealthDocumentOrigin::Form1099Sa,
+            gross: 10_100,
+            box2_earnings: None,
+            box3_code: Some(4),
+            box4_value: Some(10_049),
+            account: MedicalSaAccount::Hsa,
+            ..Default::default()
+        })
     };
-    let amounts = data.amounts(&person()).unwrap();
-    let source = amounts.source(32, Owner::Taxpayer, &data.account);
+    let amounts = data.record().amounts(&person()).unwrap();
+    let source = amounts.source(32, Owner::Taxpayer, data.account());
     // Native inherited value100 dollars minus rounded bills2 dollars =98;
     // source preserves9800c, rather than the raw10049-151=9898c.
     assert_eq!(
@@ -358,24 +346,15 @@ fn unit13_account_sources_medical_inheritance_preserves_native_dollar_precision_
             crate::kernel::ratio::exact::whole(51)
         )
     );
-    let MedicalSaPayment::Inherited {
-        died, beneficiary, ..
-    } = &mut data.payment
-    else {
+    let Some(MedicalSaPayment::Inherited { died, beneficiary, .. }) = &mut data.payment else {
         unreachable!()
     };
     *beneficiary = MedicalBeneficiary::Estate;
     let mut deceased = person();
-    deceased.died = Some(FinalReturn {
-        date: *died,
-        bonds: None,
-        estate_medical: 0,
-        ordinary: true,
-    });
-    let source = data
-        .amounts(&deceased)
-        .unwrap()
-        .source(33, Owner::Spouse, &data.account);
+    deceased.died =
+        Some(FinalReturn { date: *died, bonds: None, estate_medical: 0, ordinary: true });
+    let source =
+        data.record().amounts(&deceased).unwrap().source(33, Owner::Spouse, data.account());
     assert_eq!(
         (source.inherited, source.earnings, source.penalized),
         (
@@ -384,30 +363,48 @@ fn unit13_account_sources_medical_inheritance_preserves_native_dollar_precision_
             crate::kernel::ratio::exact::whole(0)
         )
     );
-    assert!(data.amounts(&person()).is_err());
+    assert!(data.record().amounts(&person()).is_err());
 }
 
 #[test]
 fn unit13_account_sources_final_medical_correction_projection_does_not_reintroduce_linked_earnings()
 {
-    let data = FederalMedicalDistribution {
-        origin: HealthDocumentOrigin::Form1099Sa,
-        gross: 1000,
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::ExcessReturned {
-            earnings: Some(149),
+    let data = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
         },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::ExcessReturned),
+        ..sa_source(Sa1099 {
+            origin: HealthDocumentOrigin::Form1099Sa,
+            gross: 1000,
+            box2_earnings: Some(149),
+            box3_code: Some(2),
+            box4_value: None,
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
-    let mut amounts = data.amounts(&person()).unwrap();
+    let mut amounts = data.record().amounts(&person()).unwrap();
     assert_eq!(
-        amounts.source(34, Owner::Spouse, &data.account).earnings,
+        amounts.source(34, Owner::Spouse, data.account()).earnings,
         crate::kernel::ratio::exact::whole(149)
     );
     // This is the existing collector's completed linked-correction operation;
     // the projection sees its final value, rather than recalculating the form.
     amounts.earnings = crate::kernel::ratio::exact::whole(0);
     assert_eq!(
-        amounts.source(34, Owner::Spouse, &data.account).earnings,
+        amounts.source(34, Owner::Spouse, data.account()).earnings,
         crate::kernel::ratio::exact::whole(0)
     );
 }
@@ -417,19 +414,17 @@ fn other_account_sources(d: &FederalDraft) -> Vec<(i64, Owner, i64, i64, i64, i6
         .iter()
         .filter_map(|e| match &e.income {
             FederalIncome::Able { data } => {
-                let v = data.amounts();
-                Some((e.id, e.owner, v.taxable, v.penalized, 0, 0))
+                let v = AbleDistribution::from(data).amounts().unwrap();
+                Some((e.id, e.owner.owned(), v.taxable, v.penalized, 0, 0))
             }
             FederalIncome::MedicalDistribution { data } => {
                 let p = d.people.as_ref().unwrap();
-                let recipient = match e.owner {
+                let recipient = match e.owner.owned() {
                     Owner::Taxpayer => &p.taxpayer,
                     Owner::Spouse => p.spouse.as_ref().unwrap(),
                 };
-                let v = data
-                    .amounts(recipient)
-                    .unwrap()
-                    .source(e.id, e.owner, &data.account);
+                let v =
+                    data.record().amounts(recipient).unwrap().source(e.id, e.owner.owned(), data.account());
                 Some((
                     v.id,
                     v.owner,
@@ -451,95 +446,139 @@ fn unit13_account_sources_public_save_reopen_restart_and_correction_keep_actual_
     for (owner, doc) in [
         (
             Owner::Taxpayer,
-            IncomeDocument::Q1099(Q1099 {
-                gross: 400_000,
-                account: qtp(1000, 3000),
-                transfer: withdrawal(),
-                beneficiary: Q1099Beneficiary::Recipient,
-            }),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Q1099(education_distribution_document(
+                    EducationDistributionSource {
+                        form: q1099_paper(Q1099 {
+                            payer_trustee: Default::default(),
+                            recipient: Default::default(),
+                            recipient_not_beneficiary: false,
+                            gross: 400_000,
+                            account: qtp(1000, 3000),
+                            transfer: withdrawal(),
+                        }),
+                        coverdell_basis_start: None,
+                        coverdell_contributions: 0,
+                        redeposited: 0,
+                        taxable_transfer_part: 0,
+                        roth_rollover: None,
+                        late_rollovers: Some(0),
+                        beneficiary: Some(FederalEducationBeneficiary::Recipient),
+                    },
+                )),
+            },
         ),
         (
             Owner::Spouse,
-            IncomeDocument::Qa1099(Qa1099 {
-                gross: 100_000,
-                earnings: 30_049,
-                basis: 69_951,
-                treatment: AbleTreatment::Annual {
-                    rollover: AbleRollover::None,
-                    expenses: 50_000,
-                    following_expenses: 0,
-                },
-            }),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Qa1099(able_document(crate::AbleSource {
+                    form: crate::Form1099QaPaper {
+                        payer: Default::default(),
+                        recipient: Default::default(),
+                        gross: 100_000,
+                        earnings: 30_049,
+                        basis: 69_951,
+                        program_to_program_transfer: false,
+                        account_terminated: false,
+                        recipient_not_designated_beneficiary: false,
+                        ..Default::default()
+                    },
+                    treatment: Some(AbleTreatment::Annual {
+                        rollover: AbleRollover::None,
+                        expenses: 50_000,
+                        following_expenses: 0,
+                    }),
+                })),
+            },
         ),
         (
             Owner::Spouse,
-            IncomeDocument::Sa1099(Sa1099 {
-                origin: HealthDocumentOrigin::Form1099Sa,
-                gross: 149,
-                account: MedicalSaAccount::Archer,
-                payment: MedicalSaPayment::Own {
-                    nonmedical: vec![MedicalAccountWithdrawal {
-                        date: 20260601,
-                        amount: 149,
-                    }],
-                    medical: 0,
-                    rollover: None,
-                    disabled_since: None,
-                },
-            }),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Sa1099(
+                    crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                        medicare_prior: if matches!(
+                            &MedicalSaAccount::Archer,
+                            MedicalSaAccount::MedicareAdvantage
+                        ) {
+                            Some(MedicareMsaPrior::None)
+                        } else {
+                            None
+                        },
+                        medicare_from_spouse: if matches!(
+                            &MedicalSaAccount::Archer,
+                            MedicalSaAccount::MedicareAdvantage
+                        ) {
+                            Some(false)
+                        } else {
+                            None
+                        },
+                        payment: Some(MedicalSaPayment::Own {
+                            nonmedical: vec![MedicalAccountWithdrawal {
+                                date: 20260601,
+                                amount: 149,
+                            }],
+                            medical: 0,
+                            rollover: None,
+                            disabled_since: None,
+                        }),
+                        ..sa_source(Sa1099 {
+                            trustee_payer: Default::default(),
+                            recipient: Default::default(),
+                            origin: HealthDocumentOrigin::Form1099Sa,
+                            gross: 149,
+                            box2_earnings: None,
+                            box3_code: Some(1),
+                            box4_value: None,
+                            account: MedicalSaAccount::Archer,
+                        })
+                    }),
+                ),
+            },
         ),
     ] {
         let mut row = document(0, doc);
-        row.owner = owner;
+        row.owner = crate::DocumentOwner::from(owner);
         rows.push(row);
     }
-    let request = save_topic(&session.draft, TaxSection::OtherIncome, rows);
+    let desired = rows.clone();
+    let request = save_documents(&mut session, rows);
+    let request = fixture_owner_inputs(&session.draft, request);
     accepted(&send(&mut session, request));
+    crate::tests::support::client::income_pages::save_information_return_answers(
+        &mut session,
+        &desired,
+    );
     let saved = session.draft.clone();
     let initial = source_values(&education(&saved).0);
     let other = other_account_sources(&saved);
     assert_eq!(
         other,
-        vec![
-            (3, Owner::Spouse, 15_024, 15_024, 0, 0),
-            (4, Owner::Spouse, 149, 149, 0, 0)
-        ]
+        vec![(3, Owner::Spouse, 15_024, 15_024, 0, 0), (4, Owner::Spouse, 149, 149, 0, 0)]
     );
     assert_eq!(initial, vec![(2, Owner::Taxpayer, 100_000, 0)]);
     assert_eq!(value(&supported(&saved), "agi"), 101_151);
     session = restart(saved.clone());
     assert_eq!(session.draft, saved);
     assert_eq!(other_account_sources(&session.draft), other);
-    let page = open_topic(&mut session, TaxSection::OtherIncome);
-    let mut rows = page_documents(&page).to_vec();
+    let mut page = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let rows = &mut documents.other.other_income.documents;
     let row = rows
         .iter_mut()
-        .find(|r| matches!(r.document, IncomeDocument::Q1099(_)))
+        .find(|r| matches!(r.document, crate::OtherIncomeDocument::Q1099(_)))
         .unwrap();
-    row.owner = Owner::Spouse;
-    let IncomeDocument::Q1099(data) = &mut row.document else {
-        unreachable!()
-    };
-    data.transfer = Q1099Transfer::Withdrawal {
-        reason: DistributionReason::Disability,
-        redeposited: 0,
-    };
-    let request = save_topic(&session.draft, TaxSection::OtherIncome, rows);
-    accepted(&send(&mut session, request));
+    row.owner = crate::DocumentOwner::Spouses;
+    let crate::OtherIncomeDocument::Q1099(data) = &mut row.document else { unreachable!() };
+    data.distribution_code = Some(crate::Form1099QDistributionCode::Disability);
+    let page = fixture_owner_inputs(&session.draft, page);
+    accepted(&send(&mut session, page));
     let corrected = session.draft.clone();
-    assert_eq!(
-        source_values(&education(&corrected).0),
-        vec![(2, Owner::Spouse, 100_000, 100_000)]
-    );
+    assert_eq!(source_values(&education(&corrected).0), vec![(2, Owner::Spouse, 100_000, 100_000)]);
     assert_eq!(value(&supported(&corrected), "agi"), 101_151);
     session = restart(corrected.clone());
-    let page = open_topic(&mut session, TaxSection::OtherIncome);
-    let request = save_topic(
-        &session.draft,
-        TaxSection::OtherIncome,
-        page_documents(&page).to_vec(),
-    );
-    accepted(&send(&mut session, request));
+    let page = open_document_center(&mut session);
+    let page = fixture_owner_inputs(&session.draft, page);
+    accepted(&send(&mut session, page));
     assert_eq!(session.draft.income, corrected.income);
     conserve(&education(&session.draft).0);
     assert_eq!(other_account_sources(&session.draft), other);

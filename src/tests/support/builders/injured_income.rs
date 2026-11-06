@@ -30,16 +30,34 @@ pub(in crate::tests) mod estate_estimated_payment_sources {
         let mut d = injured_return((30_000, 1_000), (20_000, 1_000), 0, a);
         let mut source = estate_trust_code_c_draft(0, 0).income.remove(1);
         source.id = 3;
-        source.owner = beneficiary;
+        source.owner = crate::DocumentOwner::from(beneficiary);
+        // The K-1 prints the beneficiary's name, so it is the beneficiary's document.
+        if let FederalIncome::EstateTrustPortfolio { data } = &mut source.income {
+            data.form.beneficiary.name.clear();
+        }
+        source.printed = None;
+        let person = if beneficiary == Owner::Spouse { -2 } else { -1 };
+        crate::tests::support::builders::prepare_income_fixture(
+            &mut source,
+            crate::tests::support::builders::fixture_document_names(&d, person).map(|mut names| {
+                names.set_assignment(crate::document_names::Assignment::matched(
+                    crate::DocumentRecipient::from_key(person).unwrap(),
+                ));
+                names
+            }),
+        );
         let FederalIncome::EstateTrustPortfolio { data } = &mut source.income else { panic!() };
-        data.allocated_estimated_tax = 100_049;
-        data.form_1041t_timely = true;
+        {
+            let mut record = edit_estate(data);
+            record.allocated_estimated_tax = 100_049;
+            record.form_1041t_timely = true;
+        }
         d.income.push(source);
         d.next_id = 4;
         if dated_cents != 0 {
             let pay = d.payments.as_mut().unwrap();
-            pay.estimated = Some(dated_cents);
-            pay.estimated_payments.push(crate::DatedPayment {
+
+            crate::tests::support::builders::dated_payments_mut(pay).push(crate::DatedPayment {
                 date: 20260415,
                 amount: dated_cents,
                 payer: if beneficiary == Owner::Taxpayer {
@@ -101,11 +119,11 @@ pub(in crate::tests) mod k1_activity_niit_sources {
         match source {
             Source::Partner => {
                 let mut data = ordinary_partner_source(if ordinary { 10_000 } else { 0 }, material);
-                data.regular.basis.opening = 5_000_000;
+                data.regular.basis.opening = Some(5_000_000);
                 data.regular.risk.start =
                     ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
                 data.regular.rentals = rentals;
-                data.rental_facts.participation = K1RentalParticipation::NotActive;
+                data.rental_facts.participation = Some(K1RentalParticipation::NotActive);
                 if ordinary {
                     data.qbi = Some(PartnerQbiStatement {
                         income: 1_000_000,
@@ -125,13 +143,13 @@ pub(in crate::tests) mod k1_activity_niit_sources {
             }
             Source::Scorp => {
                 let mut data = complete_ordinary_scorp(if ordinary { 10_000 } else { 0 }, material);
-                data.opening = 5_000_000;
+                data.opening = Some(5_000_000);
                 data.risk.start =
                     ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
                 data.rentals = rentals;
-                data.rental_facts.participation = K1RentalParticipation::NotActive;
+                data.rental_facts.participation = Some(K1RentalParticipation::NotActive);
                 data.amt = Some(amt_records(&data));
-                FederalIncome::Scorp { data }
+                FederalIncome::Scorp { data: scorp_source(data) }
             }
             Source::Rental => {
                 assert!(!ordinary);
@@ -155,12 +173,17 @@ pub(in crate::tests) mod k1_activity_niit_sources {
     ) -> (FederalDraft, i64) {
         let mut draft = injured_return((200_000, 100_000), (50_000, 30_000), 0, allocation());
         let mut interest = income(savings_income(5000, 0));
-        interest.owner = if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+        interest.owner = if owner == Owner::Taxpayer {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
         add(&mut draft, interest);
         let mut entry = income(source(source_kind, activity));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut draft, entry);
-        (draft.clone(), draft.income.last().unwrap().id)
+        let id = draft.income.last().unwrap().id;
+        (known_fact_partnership_draft(draft), id)
     }
 }
 
@@ -195,13 +218,13 @@ pub(in crate::tests) mod ltc_cent_sources {
         );
         let mut own = ltc_form(0, Some(3));
         let FederalIncome::LtcBenefits { data } = &mut own else { panic!() };
-        data.benefits = if shared { 43_050 } else { 86_098 };
+        data.form.benefits = Some(if shared { 43_050 } else { 86_098 });
         add(&mut draft, income(own));
         if shared {
             let mut spouse = income(ltc_form(0, Some(3)));
-            spouse.owner = Owner::Spouse;
+            spouse.owner = crate::DocumentOwner::Spouses;
             let FederalIncome::LtcBenefits { data } = &mut spouse.income else { panic!() };
-            data.benefits = 43_048;
+            data.form.benefits = Some(43_048);
             add(&mut draft, spouse);
         }
         draft
@@ -269,7 +292,11 @@ pub(in crate::tests) mod ltc_cent_actual_clients {
                         }
                     }
                     FederalIncome::LtcBenefits { data } => {
-                        data.benefits = if e.owner == Owner::Taxpayer { 21_525 } else { 21_524 }
+                        data.form.benefits = Some(if e.owner == crate::DocumentOwner::Yours {
+                            21_525
+                        } else {
+                            21_524
+                        })
                     }
                     _ => {}
                 }
@@ -300,7 +327,7 @@ pub(in crate::tests) mod ltc_cent_actual_clients {
             .filter_map(|e| {
                 if let FederalIncome::LtcBenefits { data } = &e.income {
                     assert_eq!(data.insured, Some(group));
-                    Some((e.id, e.owner))
+                    Some((e.id, e.owner.owned()))
                 } else {
                     None
                 }
@@ -320,7 +347,7 @@ pub(in crate::tests) mod medicare_actual_clients {
             (FederalIncome::Partnership { .. }, Source::PartnerSe)
             | (FederalIncome::Business { .. }, Source::SmallBusiness) => true,
             (FederalIncome::Wage { data }, Source::Railroad) => {
-                matches!(data.payroll, W2Payroll::Railroad { .. })
+                matches!(FederalWage::from(data).payroll, W2Payroll::Railroad { .. })
             }
             _ => false,
         }
@@ -346,6 +373,8 @@ pub(in crate::tests) mod niit_relief_completeness {
             2 | 3 => (
                 FederalIncome::WildfireRelief {
                     data: FederalWildfireRelief {
+                        source_issuer: Default::default(),
+                        source_recipient: Default::default(),
                         paid: 20260310,
                         declared: 20250108,
                         reference: "FEMA-FM-5000".into(),
@@ -360,6 +389,8 @@ pub(in crate::tests) mod niit_relief_completeness {
             4 | 5 => (
                 FederalIncome::DisasterRelief {
                     data: FederalDisasterRelief {
+                        source_issuer: Default::default(),
+                        source_recipient: Default::default(),
                         received: 20260612,
                         qualification: DisasterQualification::FederalDeclaration {
                             reference: "DR-4800".into(),
@@ -405,12 +436,24 @@ pub(in crate::tests) mod niit_relief_completeness {
             ),
             8 => (
                 FederalIncome::TrumpDeath {
-                    data: TrumpDeathAcquisition {
+                    data: trump_death_source(TrumpDeathAcquisition {
+                        form_boxes: Default::default(),
+                        box_2a: crate::kernel::ratio::positive((150_000) - (100_000)),
+                        box_3: 0,
+                        box_6: 0,
+                        box_8a: 0,
+                        box_8b_percent: None,
+                        box_9a_percent: None,
+                        box_9b: None,
+                        box_10: 0,
+                        box7: crate::DistributionCodes::CODE_4.0,
+                        ira: false,
+                        trump: true,
                         beneficiary_estate: false,
                         value: 150_000,
-                        basis: 100_000,
+                        basis: Some(100_000),
                         withholding: 0,
-                    },
+                    }),
                 },
                 500,
                 TaxSection::Retirement,
@@ -452,10 +495,27 @@ pub(in crate::tests) mod niit_supporting_sources {
                     },
                 },
                 Self::AbleRollover => FederalIncome::TrumpAbleRollover {
-                    data: TrumpAbleRollover { amount: 200_000, transferred: 20260801 },
+                    data: trump_able_source(TrumpAbleRollover {
+                        form_boxes: Default::default(),
+                        box_2a: 0,
+                        box_3: 0,
+                        box_6: 0,
+                        box_8a: 0,
+                        box_8b_percent: None,
+                        box_9a_percent: None,
+                        box_9b: None,
+                        box_10: 0,
+                        box7: crate::DistributionCodes::CODE_G.0,
+                        ira: false,
+                        trump: true,
+                        withholding: 0,
+                        amount: 200_000,
+                        transferred: 20260801,
+                    }),
                 },
                 Self::PersonalLoss | Self::InvestmentGain => FederalIncome::PropertyAcquisition {
-                    data: PropertyAcquisition {
+                    data: acquisition_source(PropertyAcquisition {
+                        description: alloc::string::String::new(),
                         date: 20260801,
                         balance: if matches!(self, Self::PersonalLoss) {
                             850_000
@@ -464,7 +524,7 @@ pub(in crate::tests) mod niit_supporting_sources {
                         },
                         value: if matches!(self, Self::PersonalLoss) { 700_000 } else { 3_000_000 },
                         personally_liable: matches!(self, Self::PersonalLoss),
-                        property: if matches!(self, Self::PersonalLoss) {
+                        property: Some(if matches!(self, Self::PersonalLoss) {
                             TransferredProperty::PersonalUse {
                                 basis: 1_200_000,
                                 term: GainTerm::Long,
@@ -476,9 +536,9 @@ pub(in crate::tests) mod niit_supporting_sources {
                                 term: GainTerm::Long,
                                 collectible: false,
                             }
-                        },
+                        }),
                         crop: None,
-                    },
+                    }),
                 },
             }
         }
@@ -495,7 +555,7 @@ pub(in crate::tests) mod niit_supporting_sources {
         let mut d = injured_return((200_000, 60_000), (50_000, 10_000), 0, a);
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut entry = income(savings_income(10_000, 0));
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut d, entry);
         }
         if matches!(kind, Supporting::AbleRollover) {
@@ -514,7 +574,7 @@ pub(in crate::tests) mod niit_supporting_sources {
         // Use their native empty label from the beginning; identity and every
         // source field still round-trip exactly.
         entry.label.clear();
-        entry.owner = source_owner;
+        entry.owner = crate::DocumentOwner::from(source_owner);
         add(&mut d, entry);
         if reversed {
             d.income.reverse();
@@ -549,7 +609,7 @@ pub(in crate::tests) mod reit_owner_footing {
                 let mut statement = partner_qbi_statement(0);
                 statement.reit_dividends = 1000000;
                 data.qbi = Some(statement);
-                data.separate = Some(PartnerSeparateItems {
+                data.separate = Some(PartnerSeparateTotals {
                     interest: 0,
                     dividends: 1000000,
                     qualified_dividends: 0,
@@ -570,17 +630,17 @@ pub(in crate::tests) mod reit_owner_footing {
                 let mut data = complete_ordinary_scorp(0, true);
                 data.dividends = 1000000;
                 data.qbi_statement.as_mut().unwrap().reit_dividends = 1000000;
-                income(FederalIncome::Scorp { data })
+                income(FederalIncome::Scorp { data: scorp_source(data) })
             }
             Source::Investment => income(reit_income(10000, 10000, true)),
             Source::Estate => {
                 let mut donor = estate_trust_code_c_draft(0, 0);
                 let mut e = donor.income.pop().unwrap();
                 let FederalIncome::EstateTrustPortfolio { data } = &mut e.income else { panic!() };
-                data.ordinary_dividends = 1000000;
-                data.section199a_dividends =
-                    ReitDividends::Reported { amount: 1000000, eligible: true };
-                data.code_i_dividends_only = true;
+                data.form.ordinary_dividends = 1000000;
+                data.statements.section199a_dividends =
+                    ReitDividends::Reported { amount: 1000000, eligible: Some(true) };
+                data.statements.code_i_dividends_only = true;
                 e
             }
         }
@@ -596,7 +656,7 @@ pub(in crate::tests) mod reit_owner_footing {
         a.injured = injured;
         let mut d = injured_return((160000, 20000), (20000, 8000), 0, a);
         let mut e = source(kind);
-        e.owner = owner;
+        e.owner = crate::DocumentOwner::from(owner);
         e.label.clear();
         add(&mut d, e);
         if reverse {
@@ -624,13 +684,14 @@ pub(in crate::tests) mod estate_carry_sources {
         let mut draft = injured_return((300_000, 60_000), (100_000, 20_000), 0, claim);
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut sale = income(ordinary_investment_sale(30_000, 0, GainTerm::Short));
-            sale.owner = owner;
+            sale.owner = crate::DocumentOwner::from(owner);
             add(&mut draft, sale);
         }
         for &(owner, carry, difference) in carries {
             let mut data = empty_estate_portfolio();
             data.final_short_carry = carry;
-            data.final_year_successor = true;
+            data.final_k1 = true;
+            data.final_year_successor = Some(true);
             // These are the final-year shortcut confirmations written by
             // the ordinary K1EstateTrust editor, even for a zero tax amount.
             data.final_67e_no_niit_allocation = true;
@@ -638,8 +699,7 @@ pub(in crate::tests) mod estate_carry_sources {
             data.final_carry_same_tax_character = true;
             data.final_character = Some(crate::EstateFinalCharacter {
                 entity_terminated: true,
-                final_beneficiary_k1: true,
-                successor: true,
+
                 section67e_nii: 0,
                 section67e_in_h: false,
                 additional: vec![],
@@ -661,8 +721,9 @@ pub(in crate::tests) mod estate_carry_sources {
                     alternative_business: None,
                 },
             });
-            let mut entry = income(FederalIncome::EstateTrustPortfolio { data });
-            entry.owner = owner;
+            let mut entry =
+                income(FederalIncome::EstateTrustPortfolio { data: estate_source(data) });
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut draft, entry);
         }
         draft
@@ -678,19 +739,22 @@ pub(in crate::tests) mod estate_carry_sources {
                 _ => None,
             })
             .unwrap();
-        estate.final_short_carry = 0;
-        estate.final_long_carry = 1_000_000;
-        let character = &mut estate.final_character.as_mut().unwrap().capital;
+        {
+            let mut record = edit_estate(estate);
+            record.final_short_carry = 0;
+            record.final_long_carry = 1_000_000;
+        }
+        let character = &mut estate.statements.final_character.as_mut().unwrap().capital;
         character.alternative_short = 0;
         character.alternative_long = 1_000_000;
         character.regular_investment =
             Some(crate::EstateCapitalLossParts { short: 0, long: 1_000_000 });
         character.alternative_investment = character.regular_investment.clone();
         let mut ordinary = income(ordinary_investment_sale(10_000, 0, GainTerm::Long));
-        ordinary.owner = Owner::Taxpayer;
+        ordinary.owner = crate::DocumentOwner::Yours;
         add(&mut draft, ordinary);
         let mut collectible = income(collectible_sale(15_000, 0, GainTerm::Long, false));
-        collectible.owner = Owner::Spouse;
+        collectible.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, collectible);
         draft
     }

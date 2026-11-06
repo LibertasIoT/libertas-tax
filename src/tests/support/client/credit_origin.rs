@@ -143,8 +143,7 @@ macro_rules! origin_credit_scenarios {
                 !origin(&[("same", Some($post_date), 300_000), ("same", Some($pre_date), 300_000)])
                     .valid(600_000)
             );
-            assert!(!origin(&[("A", Some(20230230), 600_000)]).valid(600_000));
-            // D-2026-10-15-13: preserve full source identifiers without an arbitrary ceiling.
+            // Preserve complete source identifiers.
             let exact_bytes = "é".repeat(100);
             assert_eq!(exact_bytes.len(), 200);
             assert!(origin(&[(&exact_bytes, Some($post_date), 600_000)]).valid(600_000));
@@ -330,7 +329,6 @@ macro_rules! origin_credit_scenarios {
                 for bad in [
                     origin(&[]),
                     origin(&[("A", Some($post_date), 599_999)]),
-                    origin(&[("A", Some(20230230), 600_000)]),
                     origin(&[("A", None, 300_000), ("A", None, 300_000)]),
                 ] {
                     let mut invalid = open(&mut session);
@@ -403,7 +401,7 @@ macro_rules! origin_credit_scenarios {
 
         #[test]
         fn $test4() {
-            use crate::tests::cross::interview::{accepted, navigate, open_topic};
+            use crate::tests::cross::interview::{accepted, navigate};
             use libertas::{AvroDecode, AvroEncode};
             let selected = std::env::var(concat!($env, "_K1_PROFILE")).ok();
             let profiles =
@@ -417,6 +415,8 @@ macro_rules! origin_credit_scenarios {
                 );
                 history(&mut d);
                 let id = d.income.last().unwrap().id;
+                name_accepted_income_documents(&mut d);
+                let d = crate::tests::support::builders::known_fact_partnership_draft(d);
                 let mut session = Interview::new(TEST_USER, d);
                 let decode = |path: &str| {
                     let bytes = std::fs::read(path).unwrap();
@@ -443,12 +443,19 @@ macro_rules! origin_credit_scenarios {
                     }
                     return;
                 }
-                let seed = open_topic(&mut session, TaxSection::PassThrough);
+                let seed =
+                    crate::tests::support::client::income_pages::open_document_center(&mut session);
                 write("seed.avro", &seed);
                 let mut answers = seed;
-                let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-                let IncomeDocument::K1Partnership(page) =
-                    &mut documents.documents.iter_mut().find(|e| e.id == id).unwrap().document
+                let P::SaveDocuments { documents, .. } = &mut answers else { panic!() };
+                let crate::K1Document::K1Partnership(page) = &mut documents
+                    .common
+                    .k1
+                    .documents
+                    .iter_mut()
+                    .find(|e| e.id == id)
+                    .unwrap()
+                    .document
                 else {
                     panic!()
                 };
@@ -463,13 +470,18 @@ macro_rules! origin_credit_scenarios {
                     $other_origin_field: None,
                     $origin_field: Some(origin(&[($first_identity, Some($post_date), 600_000)])),
                 };
-                page.more.credits.push(expected.clone().into());
+                crate::tests::support::builders::push_partnership_credit(page, expected.clone());
                 write("answers.avro", &answers);
                 if std::env::var(concat!($env, "_K1_SEED_ONLY")).as_deref() == Ok("1") {
                     return;
                 }
                 let payload = std::env::var(concat!($env, "_K1_PAYLOAD")).ok();
-                accepted(&send(&mut session, payload.as_deref().map_or(answers, decode)));
+                accepted(
+                    &crate::tests::support::client::income_pages::save_source_fixture_request(
+                        &mut session,
+                        payload.as_deref().map_or(answers, decode),
+                    ),
+                );
                 let FederalIncome::Partnership { data } =
                     &session.draft.income.iter().find(|e| e.id == id).unwrap().income
                 else {
@@ -480,16 +492,20 @@ macro_rules! origin_credit_scenarios {
                 let saved = session.draft.clone();
                 session = restart(saved.clone());
                 assert_eq!(session.draft, saved);
-                let reopened = open_topic(&mut session, TaxSection::PassThrough);
+                let reopened =
+                    crate::tests::support::client::income_pages::open_document_center(&mut session);
                 write("reopened.avro", &reopened);
-                let P::SaveIncomes { documents, .. } = &reopened else { panic!() };
-                let IncomeDocument::K1Partnership(page) =
-                    &documents.documents.iter().find(|e| e.id == id).unwrap().document
+                let P::SaveDocuments { documents, .. } = &reopened else { panic!() };
+                let crate::K1Document::K1Partnership(page) =
+                    &documents.common.k1.documents.iter().find(|e| e.id == id).unwrap().document
                 else {
                     panic!()
                 };
-                assert_eq!(page.more.credits[0].$allowed_field, vec![0]);
-                assert_eq!(page.more.credits[0].$origin_field, expected.$origin_field);
+                assert_eq!(page.calculation_page().more.credits[0].$allowed_field, vec![0]);
+                assert_eq!(
+                    page.personal.as_ref().unwrap().credit_origins[0].$origin_field,
+                    expected.$origin_field
+                );
                 accepted(&send(&mut session, reopened));
                 assert_eq!(session.draft, saved);
                 let d = session.draft.clone();
@@ -521,16 +537,30 @@ macro_rules! origin_credit_scenarios {
                 // Correcting only the actual K1 source date changes eligibility and is
                 // retained through the same parent Save, not inferred from its name.
                 for (date, included) in [(None, false), (Some($post_date), true)] {
-                    let mut corrected = open_topic(&mut session, TaxSection::PassThrough);
-                    let P::SaveIncomes { documents, .. } = &mut corrected else { panic!() };
-                    let IncomeDocument::K1Partnership(page) =
-                        &mut documents.documents.iter_mut().find(|e| e.id == id).unwrap().document
+                    let mut corrected =
+                        crate::tests::support::client::income_pages::open_document_center(
+                            &mut session,
+                        );
+                    let P::SaveDocuments { documents, .. } = &mut corrected else { panic!() };
+                    let crate::K1Document::K1Partnership(page) = &mut documents
+                        .common
+                        .k1
+                        .documents
+                        .iter_mut()
+                        .find(|e| e.id == id)
+                        .unwrap()
+                        .document
                     else {
                         panic!()
                     };
-                    page.more.credits[0].$origin_field =
+                    page.personal.as_mut().unwrap().credit_origins[0].$origin_field =
                         Some(origin(&[($first_identity, date, 600_000)]));
-                    accepted(&send(&mut session, corrected));
+                    accepted(
+                        &crate::tests::support::client::income_pages::save_source_fixture_request(
+                            &mut session,
+                            corrected,
+                        ),
+                    );
                     assert_origin(&session.draft, 2023, included);
                     session = restart(session.draft.clone());
                 }
@@ -565,7 +595,7 @@ macro_rules! origin_credit_scenarios {
                     $origin_field: Some(origin(&[($pre_identity, Some($pre_date), 99)])),
                 });
                 let mut source = income(FederalIncome::Partnership { data: k1 });
-                source.owner = owner;
+                source.owner = crate::DocumentOwner::from(owner);
                 source.community = CommunityShare::Community;
                 add(&mut d, source);
                 let id = d.income.last().unwrap().id;

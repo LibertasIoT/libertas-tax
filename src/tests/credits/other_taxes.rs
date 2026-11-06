@@ -1,4 +1,5 @@
 use crate::tests::support::assert::line_amount as cents;
+use crate::tests::support::client::income_pages::open_document_center;
 // u5-credits: the stored data no page asked before (Schedule H, Form 8828,
 // Form 5329 Parts X-XI Trump accounts and the Form 4136 home kerosene
 // credit), each reached through its page: the Other taxes list or the More
@@ -11,7 +12,7 @@ use crate::tests::cross::interview::{
 };
 use crate::tests::federal::other_taxes::{gift, line23, ok, refused_key};
 fn recapture(s: &mut Interview, home: MortgageSubsidyEntry) -> i64 {
-    ok(&save_other_taxes(s, vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home] }]));
+    ok(&save_other_taxes(s, vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home.into()] }]));
     value(&supported(&s.draft), "mortgage_subsidy_recapture_tax")
 }
 
@@ -91,7 +92,9 @@ fn form_8828_homes_are_named_once() {
     refused_key(
         save_other_taxes(
             &mut s,
-            vec![OtherTax::MortgageSubsidyRecapture { homes: vec![home.clone(), home] }],
+            vec![OtherTax::MortgageSubsidyRecapture {
+                homes: vec![home.clone().into(), home.into()],
+            }],
         ),
         "MORTGAGE_SUBSIDY_HOME_TWICE",
     );
@@ -102,7 +105,7 @@ fn form_8828_homes_are_named_once() {
 
 fn kerosene(thousandths: u32, cost_cents: i64) -> FederalHomeKerosene {
     FederalHomeKerosene {
-        thousandths_of_gallon: thousandths,
+        gallons: crate::kernel::natural::natural(i64::from(thousandths), 1_000),
         actual_cost: cost_cents,
         qualified: true,
         not_claimed_elsewhere: true,
@@ -117,6 +120,9 @@ fn save_more_credits(s: &mut Interview, credits: Vec<MoreCredit>) -> Reply {
     send(
         s,
         P::SaveMoreCredits {
+            document_questions: Vec::new(),
+            credit_income_sources: crate::tax_credit_bonds::income_sources(&d),
+            allowed_credit_owners: vec![Owner::Taxpayer as i32],
             initial_carbon_oxide_origins: vec![],
             initial_renewable_facility_origins: Vec::new(),
             businesses: vec![],
@@ -140,11 +146,12 @@ fn save_more_credits(s: &mut Interview, credits: Vec<MoreCredit>) -> Reply {
             progress: None,
             allowed_owners: vec![Owner::Taxpayer as i32],
             foreign_businesses: vec![],
+            estate_foreign_sources: vec![],
             capital_sales: vec![],
             foreign_situations: vec![],
             mortgage_loans: vec![],
             document_facts: DocumentFacts { year: 2026 },
-            value: MoreCredits { credits, credit_income_sources: Vec::new() },
+            value: MoreCredits { answers: Vec::new(), credits, documents: Vec::new() },
         },
     )
 }
@@ -211,12 +218,13 @@ fn home_kerosene_gallon_limit_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// Form 8912 tax credit bonds: the owner is one of the More credits page's
-// allowed_owners, and a spouse's bonds go with the joint return.
+// Form 8912 bonds keep their assigned owner in each person's More credits
+// section, and a spouse's bonds go with the joint return.
 
 #[test]
 fn tax_credit_bond_owner_is_checked_on_save_and_pruned_off_joint() {
-    let spouse_bond = FederalTaxCreditBond1097 {
+    let joint = complete(FederalStatus::Joint);
+    let mut spouse_bond = FederalTaxCreditBond1097 {
         owner: Owner::Spouse,
         ..direct_tax_credit_bond(
             "SPOUSE8912",
@@ -224,43 +232,58 @@ fn tax_credit_bond_owner_is_checked_on_save_and_pruned_off_joint() {
             1_000,
         )
     };
-    let own_bond = direct_tax_credit_bond(
+    spouse_bond.form.recipient = accepted_document_names(&joint, Owner::Spouse).recipient;
+    let mut own_bond = direct_tax_credit_bond(
         "OWN8912",
         FederalTaxCreditBondKind::QualifiedSchoolConstruction,
         2_000,
     );
-    // A single return refuses the spouse's bond (the server twin of the
-    // owner constraint) and stores nothing.
-    let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let before = s.draft.clone();
-    assert!(
-        refusal(save_more_credits(
-            &mut s,
-            vec![MoreCredit::TaxCreditBonds { tax_credit_bonds: vec![spouse_bond.clone().into()] }],
-        ))
-        .contains("joint return")
-    );
-    assert_eq!(s.draft, before);
+    own_bond.form.recipient = accepted_document_names(&joint, Owner::Taxpayer).recipient;
     // A joint return keeps both filers' bonds.
-    let mut s = Interview::new(TEST_USER, complete(FederalStatus::Joint));
-    ok(&save_more_credits(
-        &mut s,
-        vec![MoreCredit::TaxCreditBonds {
-            tax_credit_bonds: vec![own_bond.clone().into(), spouse_bond.into()],
-        }],
-    ));
+    let mut s = Interview::new(TEST_USER, joint);
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.credits.documents.extend([
+        crate::CreditDocument::CreditBond(alloc::boxed::Box::new(
+            crate::TaxCreditBondDocument::from(own_bond.clone()),
+        )),
+        crate::CreditDocument::CreditBond(alloc::boxed::Box::new(
+            crate::TaxCreditBondDocument::from(spouse_bond.clone()),
+        )),
+    ]);
+    ok(&send(&mut s, request));
     assert_eq!(s.draft.credits.as_ref().unwrap().tax_credit_bonds.len(), 2);
-    // Leaving the joint return erases the spouse's bond (walk-owned data:
-    // the row's owner leaves allowed_owners) and names it.
+    own_bond.id = s.draft.credits.as_ref().unwrap().tax_credit_bonds[0].id;
+    spouse_bond.id = s.draft.credits.as_ref().unwrap().tax_credit_bonds[1].id;
+    assert_eq!(
+        s.draft
+            .credits
+            .as_ref()
+            .unwrap()
+            .tax_credit_bonds
+            .iter()
+            .map(|bond| bond.owner)
+            .collect::<Vec<_>>(),
+        vec![Owner::Taxpayer, Owner::Spouse],
+    );
+    let request = crate::tests::support::client::credit_documents::credit_document_answers_request(
+        &mut s,
+        &[own_bond, spouse_bond],
+        None,
+    );
+    ok(&send(&mut s, request));
+    // Source facts survive a change in owner context so they remain available
+    // for correction after the household answers change.
+    let accepted_bonds = s.draft.credits.as_ref().unwrap().tax_credit_bonds.clone();
     let mut d = s.draft.clone();
     d.setup.as_mut().unwrap().status = filing_choice(FederalStatus::Single);
     d.setup.as_mut().unwrap().marital_state = MaritalState::Unmarried;
     d.people.as_mut().unwrap().spouse = None.into();
     let mut pruned = d.clone();
     let result = crate::interview::prune(&mut pruned);
-    assert_eq!(pruned.credits.as_ref().unwrap().tax_credit_bonds, vec![own_bond]);
+    assert_eq!(pruned.credits.as_ref().unwrap().tax_credit_bonds, accepted_bonds);
     assert!(
-        result.removed.iter().any(|item| item.key() == "SAVING_KIND_TAX_CREDIT_BOND"),
+        !result.removed.iter().any(|item| item.key() == "SAVING_KIND_TAX_CREDIT_BOND"),
         "{result:?}"
     );
 }
@@ -273,21 +296,44 @@ fn tax_credit_bond_owner_is_checked_on_save_and_pruned_off_joint() {
 // https://www.irs.gov/instructions/i8912
 #[test]
 fn tax_credit_entity_distribution_links_retained_dividends_once_and_survives_restart() {
-    use crate::tests::cross::interview::{
-        accepted, document, open_topic, page_documents, rejected_with, save_topic,
-    };
+    use crate::tests::cross::interview::{accepted, rejected_with};
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let dividend = Div1099 {
-        nominee: Some(DividendNominee { ordinary: 10_000, qualified: 2_000, ..Default::default() }),
-        ..native_div1099("RIC statement".into(), 50_000, 10_000)
+    let dividend = native_div1099("RIC statement".into(), 50_000, 10_000);
+    let previous_sources = s.draft.income.iter().map(|row| row.id).collect::<Vec<_>>();
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, allowed_community, .. } = &mut request else {
+        unreachable!()
     };
-    let request = save_topic(
-        &s.draft,
-        TaxSection::InterestDividends,
-        vec![document(0, IncomeDocument::Div1099(dividend))],
-    );
-    accepted(&send(&mut s, request));
-    let source_id = s.draft.income.last().unwrap().id;
+    documents.common.interest_dividends.documents.push(crate::InterestDividendDocumentRow {
+        id: 0,
+        owner: crate::DocumentOwner::Yours,
+        document: crate::InterestDividendDocument::Div1099(dividend_document(dividend)),
+        community: crate::CommunityShare::NotNeeded,
+        refund_management: None,
+        allowed_community: allowed_community.clone(),
+        preview: None,
+        investment_caps: None,
+        refund_management_needed: None,
+    });
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut s, request,
+    ));
+    let source_id =
+        s.draft.income.iter().find(|row| !previous_sources.contains(&row.id)).unwrap().id;
+    let mut answers =
+        crate::tests::cross::interview::open_topic(&mut s, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = &mut answers else { unreachable!() };
+    let nominee = followups
+        .iter_mut()
+        .find(|row| row.key == alloc::format!("income/{source_id}/nominee"))
+        .unwrap();
+    let crate::DocumentAnswer::DividendNominee { value: nominee_value } = &mut nominee.answer
+    else {
+        unreachable!()
+    };
+    *nominee_value =
+        Some(DividendNominee { ordinary: 10_000, qualified: 2_000, ..Default::default() }.into());
+    accepted(&send(&mut s, answers));
     let entity = |amount, already, source| TaxCreditEntity {
         entity: "RIC statement".into(),
         designated_income: amount,
@@ -300,17 +346,46 @@ fn tax_credit_entity_distribution_links_retained_dividends_once_and_survives_res
         FederalTaxCreditBondKind::QualifiedSchoolConstruction,
         30_000,
     );
-    form.origin = TaxCreditOrigin::Entity1097(entity(30_000, 20_000, Some(source_id)));
+    form.answers.origin =
+        Some(TaxCreditOrigin::Entity1097(entity(30_000, 20_000, Some(source_id))));
     let mut statement = direct_tax_credit_bond(
         "RICOTHER",
         FederalTaxCreditBondKind::QualifiedSchoolConstruction,
         20_000,
     );
-    statement.origin = TaxCreditOrigin::EntityStatement(entity(20_000, 0, None));
-    let items = vec![MoreCredit::TaxCreditBonds {
-        tax_credit_bonds: vec![form.clone().into(), statement.clone().into()],
-    }];
-    ok(&save_more_credits(&mut s, items.clone()));
+    statement.answers.origin = Some(TaxCreditOrigin::EntityStatement(entity(20_000, 0, None)));
+    // Each bond's credit is allowed in full: the share confirmation is never asked.
+    form.answers.allowed_credit_confirmed = None;
+    statement.answers.allowed_credit_confirmed = None;
+    let first_credit_id = s.draft.next_id;
+    let items = vec![
+        crate::CreditDocument::CreditBond(alloc::boxed::Box::new(
+            crate::TaxCreditBondDocument::from(form.clone()),
+        )),
+        crate::CreditDocument::CreditBond(alloc::boxed::Box::new(
+            crate::TaxCreditBondDocument::from(statement.clone()),
+        )),
+    ];
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.credits.documents.extend(items.clone());
+    ok(&send(&mut s, request));
+    form.id = first_credit_id;
+    statement.id = first_credit_id + 1;
+    // No printed recipient: both forms are pending until your section adds them.
+    ok(&crate::tests::support::builders::add_documents(
+        &mut s,
+        TaxSection::MoreCredits,
+        -1,
+        &[form.id, statement.id],
+        crate::AddedOwnership::Yours,
+    ));
+    let request = crate::tests::support::client::credit_documents::credit_document_answers_request(
+        &mut s,
+        &[form.clone(), statement.clone()],
+        None,
+    );
+    ok(&send(&mut s, request));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "2b"), 0);
     // RetainedDIV400 + (designated300-already200) + statement200 =700.
@@ -324,35 +399,62 @@ fn tax_credit_entity_distribution_links_retained_dividends_once_and_survives_res
     let mut s = restart(s.draft);
     let saved = s.draft.clone();
     assert_eq!(estimate(&saved), r);
-    let Reply::Edit(P::SaveMoreCredits { value, .. }) =
+    let Reply::Edit(P::SaveMoreCredits { value, credit_income_sources, .. }) =
         send(&mut s, go_to(&saved, TaxSection::Credits as i32, TaxSection::MoreCredits))
     else {
         panic!("more credits")
     };
-    assert_eq!(value.credits, items);
-    assert_eq!(value.credit_income_sources.len(), 1);
-    assert_eq!(value.credit_income_sources[0].id, source_id);
-    assert_eq!(value.credit_income_sources[0].amount, 40_000); //retained ordinary, including actual qualified designation
-    // Two credits cannot independently claim the same already-reported income.
-    statement.origin = TaxCreditOrigin::EntityStatement(entity(30_000, 30_000, Some(source_id)));
-    refused_key(
-        save_more_credits(
-            &mut s,
-            vec![MoreCredit::TaxCreditBonds {
-                tax_credit_bonds: vec![form.clone().into(), statement.into()],
-            }],
-        ),
-        "CREDIT_INCOME_SOURCE_INVALID",
+    assert_eq!(
+        value.documents,
+        vec![
+            crate::CreditDocumentView::CreditBond { value: crate::TaxCreditBondPage::from(&form) },
+            crate::CreditDocumentView::CreditBond {
+                value: crate::TaxCreditBondPage::from(&statement)
+            },
+        ]
     );
+    assert_eq!(credit_income_sources.len(), 1);
+    assert_eq!(credit_income_sources[0].id, source_id);
+    assert_eq!(credit_income_sources[0].amount, 40_000); //retained ordinary, including actual qualified designation
+    // Two credits cannot independently claim the same already-reported income.
+    statement.answers.origin =
+        Some(TaxCreditOrigin::EntityStatement(entity(30_000, 30_000, Some(source_id))));
+    let mut request =
+        crate::tests::support::client::credit_documents::credit_document_answers_request(
+            &mut s,
+            &[form.clone(), statement.clone()],
+            None,
+        );
+    let (_, answered) =
+        crate::tests::support::client::credit_documents::answered_origin(&mut request, 1);
+    let crate::TaxCreditOrigin::EntityStatement(reused) = statement.answers.origin.clone().unwrap()
+    else {
+        unreachable!()
+    };
+    *answered = reused.into();
+    refused_key(send(&mut s, request), "CREDIT_INCOME_SOURCE_INVALID");
     assert_eq!(s.draft, saved);
+    // Answered for the first time on the questions page, the reused link is refused.
+    let mut open = saved.clone();
+    open.credits.as_mut().unwrap().tax_credit_bonds[1].answers.origin = None;
+    let mut t = restart(open.clone());
+    let request = crate::tests::support::client::credit_documents::origin_question(
+        &mut t,
+        &[form.clone(), statement],
+        1,
+    );
+    refused_key(send(&mut t, request), "CREDIT_INCOME_SOURCE_INVALID");
+    assert_eq!(t.draft, open);
     // Deleting a linked dividend fails without changing accepted state or IDs.
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, vec![]);
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.interest_dividends.documents.retain(|row| row.id != source_id);
     rejected_with(send(&mut s, request), "CREDIT_INCOME_SOURCE_INVALID");
     assert_eq!(s.draft, saved);
     // A restored wrong link fails the same graph rule.
     let mut bad = saved.clone();
-    let TaxCreditOrigin::Entity1097(ref mut e) =
-        bad.credits.as_mut().unwrap().tax_credit_bonds[0].origin
+    let Some(TaxCreditOrigin::Entity1097(ref mut e)) =
+        bad.credits.as_mut().unwrap().tax_credit_bonds[0].answers.origin
     else {
         unreachable!()
     };
@@ -360,10 +462,14 @@ fn tax_credit_entity_distribution_links_retained_dividends_once_and_survives_res
     assert!(!bad.valid_stored());
     assert_eq!(estimate(&bad).state, ResultState::Incomplete);
     // Clear the credit before removing its source through the ordinary page.
-    ok(&save_more_credits(&mut s, vec![]));
-    let page = open_topic(&mut s, TaxSection::InterestDividends);
-    assert_eq!(page_documents(&page).len(), 1);
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, vec![]);
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.credits.documents.clear();
+    ok(&send(&mut s, request));
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    assert_eq!(documents.common.interest_dividends.documents.len(), 1);
+    documents.common.interest_dividends.documents.retain(|row| row.id != source_id);
     accepted(&send(&mut s, request));
 }
 
@@ -375,24 +481,29 @@ fn tax_credit_old_and_k1_scopes_retain_known_income_without_claiming_unavailable
         FederalTaxCreditBondKind::OriginalCleanRenewableEnergy,
         10_000,
     );
-    old.issued_on = 20070101;
-    old.box3_code_199 = false;
+    old.answers.issued_on = Some(20070101);
+    old.form.calendar_year = Some(2026);
+    old.form.identifier_code = Some(Form1097BtcIdentifierCode::OtherIdentifier);
+    old.form.bond_type = Some(Form1097BtcBondType::CleanRenewableEnergy);
     let mut k1 = direct_tax_credit_bond(
         "K1SOURCE",
         FederalTaxCreditBondKind::QualifiedSchoolConstruction,
         20_000,
     );
-    k1.origin = TaxCreditOrigin::EntityStatement(TaxCreditEntity {
+    k1.answers.origin = Some(TaxCreditOrigin::EntityStatement(TaxCreditEntity {
         entity: "Documented partnership statement".into(),
         designated_income: 20_000,
         income_already_reported: 0,
         income_kind: TaxCreditIncomeKind::Interest,
         income_source: None,
-    });
+    }));
     d.credits.as_mut().unwrap().tax_credit_bonds = vec![old, k1];
     let r = supported(&d);
     assert_eq!(return_line(&r, "2b"), 30_000);
     assert_eq!(value(&r, "tax_credit_bond_credit"), 0);
     assert!(noted(&r, "WARN_TAX_CREDIT_BOND_LEFT_OUT"));
     assert!(noted(&r, "WARN_TAX_CREDIT_K1_INTERFACE_LEFT_OUT"));
+    let restored = restart(d.clone());
+    assert_eq!(restored.draft, d);
+    assert_eq!(estimate(&restored.draft), r);
 }

@@ -198,7 +198,7 @@ fn passive_qbi_full_suspension_does_not_claim_allowed_loss() {
 #[test]
 fn property_qbi_fifo_preserves_pre2018_and_each_suspension_stage() {
     let mut source = passive_property_scorp(0, -6_000);
-    source.opening = 500_000;
+    source.opening = Some(500_000);
     source.risk.start = ScorpRiskStart::Detailed { capacity: 300_000, profit: 0, loss: 0 };
     let property = source.section1231.as_mut().unwrap();
     property.basis_loss = 200_000;
@@ -271,7 +271,7 @@ fn property_qbi_fifo_preserves_pre2018_and_each_suspension_stage() {
 #[test]
 fn ordinary_qbi_with_property_uses_shared_limits_but_ordinary_suspension() {
     let mut source = passive_property_scorp(-30_000, -40_000);
-    source.opening = 3_500_000;
+    source.opening = Some(3_500_000);
     source.risk.start = ScorpRiskStart::Detailed { capacity: 1_400_000, profit: 0, loss: 0 };
     source.loss_qbi = sole_qbi_loss(30_000, 35_000, 15_000).loss_qbi;
     source.qbi_statement = complete_ordinary_scorp(0, false).qbi_statement;

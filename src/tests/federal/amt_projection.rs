@@ -211,7 +211,12 @@ fn print_amt_foreign_stack_preserves_the_capped_source_gain_and_final_subtractio
 fn print_amt_actual_return_rate_rows_match_save_restart_and_final_tax() {
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, wage(1, Owner::Taxpayer, 20000000, 0));
-    add(&mut d, income(FederalIncome::Dividend { data: native_dividend(2000000, 2000000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Dividend {
+            data: dividend_source(native_dividend(2000000, 2000000, 0)),
+        }),
+    );
     d.screening.as_mut().unwrap().iso_exercises =
         vec![iso_exercise("Synthetic rate trace ISO", 1000.0, 10000, 20000)];
     let r = supported(&d);

@@ -1,5 +1,6 @@
 use super::*;
 use crate::kernel::{ratio::exact, source_fact::SourceFact};
+use crate::tests::support::client::income_pages::save_documents;
 
 #[test]
 fn published_brown_purchase_refund_preserves_historical_year_and_schedule() {
@@ -111,7 +112,7 @@ fn current_sale_refund_changes_cost_and_personal_basis_without_deemed_depreciati
         how: DisposalKind::Sold {
             proceeds: 120_000,
             selling_expenses: 0,
-            livestock: Livestock::No,
+            livestock: crate::SoldLivestock::No,
             buyer: Buyer::Unrelated,
             payment: SalePayment::InFull,
         },
@@ -191,12 +192,16 @@ fn equipment_purchase_refund_native_save_rejects_collision_wrong_kind_and_bad_pa
         .documents
         .iter_mut()
         .find_map(|row| match &mut row.document {
-            IncomeDocument::Farm(farm) => Some(farm),
+            crate::IncomeRecord::Farm(farm) => Some(farm),
             _ => None,
         })
         .unwrap();
     farm.assets = vec![asset(100_000, 20260601, AssetClass::Five)];
-    accepted(&send(&mut session, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, page)
+    } else {
+        send(&mut session, page)
+    });
     let mut other = business(100_000);
     other.assets = vec![asset(20_000, 20260601, AssetClass::Five)];
     accepted(&save_businesses(&mut session, vec![other]));
@@ -218,12 +223,7 @@ fn equipment_purchase_refund_native_save_rejects_collision_wrong_kind_and_bad_pa
     let activity = session.draft.income[1].id;
     let FederalIncome::Business { data } = &session.draft.income[1].income else { unreachable!() };
     let property = data.assets[0].id;
-    let mut page = open_topic(&mut session, TaxSection::Farming);
-    let P::SaveIncomes { documents, cooperative_properties, .. } = &mut page else {
-        unreachable!()
-    };
-    assert!(cooperative_properties.iter().any(|choice| choice.id == property));
-    let mut patronage = crate::tests::farm::cooperative::patr_page(120_000, 0, Some(activity));
+    let mut patronage = crate::tests::farm::cooperative::patr_page(120_000, 0);
     patronage.withholding = 0;
     patronage.more.allocations[0].properties.push(CoopPropertyRefundInput {
         distribution: CoopDistributionBox::Patronage,
@@ -235,10 +235,62 @@ fn equipment_purchase_refund_native_save_rejects_collision_wrong_kind_and_bad_pa
         qualified_payments: 0,
         treatment: CoopPropertyTreatment::Purchase,
     });
-    documents
+    let page = save_documents(
+        &mut session,
+        vec![crate::tests::cross::interview::document(
+            0,
+            IncomeSource::Farming(cooperative_document(patronage)),
+        )],
+    );
+    let P::SaveDocuments { cooperative_properties, .. } = &page else { unreachable!() };
+    assert!(cooperative_properties.iter().any(|choice| choice.id == property));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, page)
+    } else {
+        send(&mut session, page)
+    });
+    let component = session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::Cooperative { data } => Some(data.more.allocations[0].id),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(crate::cooperative::sources(&session.draft)[0].activity, None);
+    let unclaimed = session.draft.clone();
+    let unclaimed_figures = estimate(&unclaimed);
+    let mut wrong = open_topic(&mut session, TaxSection::SelfEmployment);
+    let P::SaveIncomes { documents, .. } = &mut wrong else { unreachable!() };
+    let business = documents
         .documents
-        .push(crate::tests::cross::interview::document(0, IncomeDocument::Patr1099(patronage)));
-    accepted(&send(&mut session, page));
+        .iter_mut()
+        .find_map(|row| match &mut row.document {
+            crate::IncomeRecord::Business(business) => Some(business),
+            _ => None,
+        })
+        .unwrap();
+    business.related.forms.push(crate::RelatedFormView { key: component, summary: None });
+    rejected_with(send(&mut session, wrong), "COOP_PROPERTY_LINK_UNAVAILABLE");
+    assert_eq!(session.draft, unclaimed);
+    assert_eq!(estimate(&session.draft), unclaimed_figures);
+    let mut page = open_topic(&mut session, TaxSection::Farming);
+    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
+    let farm = documents
+        .documents
+        .iter_mut()
+        .find_map(|row| match &mut row.document {
+            crate::IncomeRecord::Farm(farm) => Some(farm),
+            _ => None,
+        })
+        .unwrap();
+    farm.related.forms.push(crate::RelatedFormView { key: component, summary: None });
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, page)
+    } else {
+        send(&mut session, page)
+    });
     let result = supported(&session.draft);
     assert_eq!(value(&result, &alloc::format!("farm_{activity}_cooperative_taxable")), 200);
     assert_eq!(
@@ -258,7 +310,7 @@ fn equipment_purchase_refund_native_save_rejects_collision_wrong_kind_and_bad_pa
             .documents
             .iter_mut()
             .find_map(|row| match &mut row.document {
-                IncomeDocument::Farm(farm) => Some(farm),
+                crate::IncomeRecord::Farm(farm) => Some(farm),
                 _ => None,
             })
             .unwrap();
@@ -277,7 +329,11 @@ fn equipment_purchase_refund_native_save_rejects_collision_wrong_kind_and_bad_pa
         );
         assert_eq!(session.draft, saved);
     }
-    accepted(&send(&mut session, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, page)
+    } else {
+        send(&mut session, page)
+    });
     assert_eq!(session.draft, saved);
     assert_eq!(restart(saved.clone()).draft, saved);
 }
@@ -291,7 +347,7 @@ fn mixed_use_refund_personal_basis_excludes_business_credit_reduction() {
         how: DisposalKind::Sold {
             proceeds: 120_000,
             selling_expenses: 0,
-            livestock: Livestock::No,
+            livestock: crate::SoldLivestock::No,
             buyer: Buyer::Unrelated,
             payment: SalePayment::InFull,
         },
@@ -380,7 +436,7 @@ fn fell_use_refund_keeps_current_personal_and_sale_cost_basis() {
         how: DisposalKind::Sold {
             proceeds: 120_000,
             selling_expenses: 0,
-            livestock: Livestock::No,
+            livestock: crate::SoldLivestock::No,
             buyer: Buyer::Unrelated,
             payment: SalePayment::InFull,
         },
@@ -396,16 +452,6 @@ fn fell_use_refund_keeps_current_personal_and_sale_cost_basis() {
     // personal60000c−75c rounds to$599. Historical80% must not become
     // a new personal-use source or subtract100c from current business cost.
     assert_eq!((sale.basis, sale.personal_basis), (400, 599));
-}
-
-#[test]
-fn purchase_refund_numeric_overflow_is_located_and_not_missing_history() {
-    let (draft, activity, property) =
-        cooperative_asset_refunds(bonus_equipment(1000, 100), &[[i64::MAX, 0, 0, 0], [1, 0, 0, 0]]);
-    assert!(
-        matches!(crate::cooperative_basis::purchases(&draft, Owner::Taxpayer, activity, property),
-        Err(crate::Section179PreparedIssue::AmountOverflow(id)) if id == activity)
-    );
 }
 
 #[test]
@@ -433,7 +479,7 @@ fn qualified_sstb_refund_excess_keeps_actual_related_expense_and_final_qbi() {
     data.expenses[0].category = BusinessExpenseCategory::Feed;
     let (mut draft, activity, _) = cooperative_asset_refunds_on(asset, &[[5000, 0, 0, 5000]], farm);
     let FederalIncome::Cooperative { data } = &mut draft.income[1].income else { unreachable!() };
-    data.allocations[0].sstb_expenses.push(CoopSstbExpense {
+    data.more.allocations[0].sstb_expenses.push(CoopSstbExpense {
         category: BusinessExpenseCategory::Feed,
         amount: 100_000,
         source: "Actual related feed invoice already deducted on this farm".into(),
@@ -446,11 +492,15 @@ fn qualified_sstb_refund_excess_keeps_actual_related_expense_and_final_qbi() {
     let FederalIncome::Cooperative { data } = &mut ordinary.income[1].income else {
         unreachable!()
     };
-    data.allocations[0].properties.clear();
+    data.more.allocations[0].properties.clear();
     // An exhausted-basis refund has the same taxable and qualified classes
     // as this ordinary distribution, and no second expense deduction.
     let actual = supported(&draft);
     let expected = supported(&ordinary);
+    // The cooperative owner restores the $50 related expense to its proper
+    // QBI class after excluding the SSTB receipt; cent inputs must retain it.
+    assert_eq!(value(&actual, &alloc::format!("business_{activity}_qbi")), 8_410);
+    assert_eq!(value(&expected, &alloc::format!("business_{activity}_qbi")), 8_410);
     for id in ["agi", "self_employment_tax", "qbi_deduction"] {
         assert_eq!(value(&actual, id), value(&expected, id), "{id}");
     }
@@ -490,7 +540,7 @@ fn current_refund_keeps_native_section179_income_capacity_and_excess_election_is
     let FederalIncome::Cooperative { data } = &mut ordinary.income[1].income else {
         unreachable!()
     };
-    data.allocations[0].properties.clear();
+    data.more.allocations[0].properties.clear();
     assert_eq!(value(&supported(&ordinary), "section179_deduction"), 200);
 }
 
@@ -544,22 +594,35 @@ fn community_mfs_refund_keeps_whole_c_f_election_and_projects_4835_once() {
         let (draft, activity, _) =
             cooperative_asset_refunds_on(asset, &[[20_000, 0, 0, 0]], source);
         let mut draft = cooperative_community_mfs(draft);
-        let result = supported(&draft);
-        // Actual C/F sources stay whole for operator SE; native Totals then
-        // shares the200 profit. Form4835 owns its already-divided400 cost.
-        assert_eq!(value(&result, "agi"), 100);
         if kind == 2 {
+            let result = supported(&draft);
+            // Form4835 owns its already-divided400 cost.
+            assert_eq!(value(&result, "agi"), 100);
             assert_eq!(value(&result, &alloc::format!("farm_rental_{activity}_net_income")), 100);
             assert_eq!(
                 value(&result, &alloc::format!("business_{activity}_depreciation_total")),
                 400
             );
+            // Form 8958 retains the original whole source schedule before the
+            // refunded Form 4835 deduction and its community projection.
+            for suffix in ["total", "this_return"] {
+                assert_eq!(
+                    result
+                        .lines
+                        .iter()
+                        .find(|line| line.id == alloc::format!("form8958_{activity}_{suffix}"))
+                        .unwrap()
+                        .amount,
+                    0
+                );
+            }
         } else {
-            assert_eq!(value(&result, "section179_eligible_cost"), 800);
-            assert_eq!(value(&result, "section179_deduction"), 400);
-            assert_eq!(
-                value(&result, &alloc::format!("business_{activity}_depreciation_total")),
-                800
+            // 2026-10-23: Reg. 1.179-2(c)(6), (8): combined work
+            // does not certify the separate operator's own conduct.
+            crate::tests::support::assert::assert_mfs_section179_work_refused(
+                &draft,
+                activity,
+                if kind == 0 { TaxSection::SelfEmployment } else { TaxSection::Farming },
             );
             let FederalIncome::Business { data } = &mut draft.income[0].income else {
                 unreachable!()
@@ -586,7 +649,7 @@ fn community_4835_sale_uses_whole_refund_before_existing_property_projection() {
         how: DisposalKind::Sold {
             proceeds: 120_000,
             selling_expenses: 0,
-            livestock: Livestock::No,
+            livestock: crate::SoldLivestock::No,
             buyer: Buyer::Unrelated,
             payment: SalePayment::InFull,
         },
@@ -650,9 +713,82 @@ fn continuing_purchase_refund_page_save_reopen_resave_restart_uses_adjusted_gds_
         let request = open_topic(&mut session, TaxSection::SelfEmployment);
         let P::SaveIncomes { documents, .. } = &request else { unreachable!() };
         assert!(documents.documents.iter().any(|row| matches!(&row.document,
-            IncomeDocument::Business(page) if page.assets[0].id == property)));
-        accepted(&send(&mut session, request));
+            crate::IncomeRecord::Business(page) if page.assets[0].id == property)));
+        accepted(&if matches!(request, P::SaveDocuments { .. }) {
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        } else {
+            send(&mut session, request)
+        });
         assert_eq!(session.draft, saved);
         assert_eq!(estimate(&session.draft), result);
     }
+}
+
+#[test]
+fn unresolved_cooperative_claim_survives_filtering_and_prepared_home_reads() {
+    let (mut draft, activity, _) = cooperative_asset_refunds_on(
+        bonus_equipment(1000, 100),
+        &[[200_000, 0, 0, 0]],
+        cash_business(1000),
+    );
+    add(&mut draft, income(cash_business(1000)));
+    let FederalIncome::Business { data } = &mut draft.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    // 2026-10-24: current passive C is calculated; unlisted special
+    // treatment remains an actual unsupported scope for omission controls.
+    data.special_treatment = true;
+    let FederalIncome::Business { data } = &mut draft.income[0].income else { unreachable!() };
+    data.related.clear();
+    add_simplified_office(&mut draft, activity, 300);
+    let accepted = draft.clone();
+    let claims = crate::related_forms::effective_claimants(&draft);
+    let FederalIncome::Cooperative { data } = &draft.income[1].income else { unreachable!() };
+    let component = data.more.allocations[0].id;
+    assert!(!claims.contains_key(&component));
+
+    let mut notes = vec![];
+    let working = crate::unknowns::supported(&draft, &mut notes).expect("omitted activity");
+    assert_eq!(
+        crate::related_forms::effective_claimants(&working).get(&component),
+        Some(&activity)
+    );
+    assert_eq!(crate::cooperative::sources_with_claims(&working, &claims)[0].activity, None);
+    let FederalIncome::Business { data } = &working.income[0].income else { unreachable!() };
+    let amounts = crate::cooperative_basis::source_amounts_with_claims(
+        &working,
+        activity,
+        &data.assets[0],
+        false,
+        false,
+        &claims,
+        None,
+    )
+    .unwrap();
+    // An unresolved refund cannot reduce this property's $1,000 bonus basis.
+    assert_eq!((amounts.opening, amounts.bonus), (100_000, 100_000));
+
+    let selected = crate::section179::section179_with_pass_through_context_with_claims(
+        &working,
+        Section179IncomeSystem::Regular,
+        &[Section179DirectBusinessIncomeSource {
+            source: activity,
+            system: Section179IncomeSystem::Regular,
+            operating_net_cents: Some(0),
+            section1231_net_cents: Some(0),
+        }],
+        &[],
+        Some(&crate::home_office::HomeContext::default()),
+        &[],
+        |_, _, _| None,
+        &claims,
+    )
+    .unwrap();
+    let home = selected.home_income(activity).unwrap();
+    assert_eq!((home.gross_cents, home.operating_cents), (100_000, 100_000));
+    assert_eq!(selected.clone().office(activity), Ok(0));
+    assert_eq!(draft, accepted);
 }

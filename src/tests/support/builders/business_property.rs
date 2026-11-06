@@ -16,6 +16,103 @@ pub(in crate::tests) fn k1_capital(short: i64, long: i64) -> ScorpCapital {
     }
 }
 
+// Current K-1 capital and independently retained regular/AMT loss records.
+pub(in crate::tests) fn legacy_k1_capital_sources(long: bool, basis: bool) -> [FederalIncome; 2] {
+    let mut partner = ordinary_partner_source(0, true);
+    partner.separate = Some(PartnerSeparateTotals {
+        interest: 0,
+        dividends: 0,
+        qualified_dividends: 0,
+        royalties: 0,
+        short: if long { 0 } else { 100_000 },
+        long: if long { 100_000 } else { 0 },
+        collectibles: 0,
+        unrecaptured_partnership: 0,
+        unrecaptured_fund: 0,
+        cash_charity: 0,
+        backup_withholding: 0,
+        exempt_interest: 0,
+        foreign_taxes: 0,
+    });
+    for (record, amount) in core::iter::once(&mut partner.regular)
+        .chain(partner.alternative.as_mut())
+        .zip([40_000, 20_000])
+    {
+        let carry =
+            if long { &mut record.capital_carried.long } else { &mut record.capital_carried.short };
+        if basis {
+            carry.basis = amount;
+        } else {
+            carry.risk = amount;
+        }
+    }
+    let mut scorp = complete_ordinary_scorp(0, true);
+    scorp.opening = Some(1_000_000);
+    scorp.loans.clear();
+    scorp.risk.start = ScorpRiskStart::Detailed { capacity: 1_000_000, profit: 0, loss: 0 };
+    let mut capital = k1_capital(if long { 0 } else { 1000 }, if long { 1000 } else { 0 });
+    match (long, basis) {
+        (false, true) => capital.basis_short = 40_000,
+        (true, true) => capital.basis_long = 40_000,
+        (false, false) => capital.risk_short = 40_000,
+        (true, false) => capital.risk_long = 40_000,
+    }
+    scorp.capital = Some(capital);
+    let mut alternative = amt_records(&scorp);
+    let capital = alternative.capital.as_mut().unwrap();
+    match (long, basis) {
+        (false, true) => capital.basis_short = 20_000,
+        (true, true) => capital.basis_long = 20_000,
+        (false, false) => capital.risk_short = 20_000,
+        (true, false) => capital.risk_long = 20_000,
+    }
+    scorp.amt = Some(alternative);
+    [
+        FederalIncome::Partnership { data: partner },
+        FederalIncome::Scorp { data: scorp_source(scorp) },
+    ]
+}
+
+// A native component and a separate legacy K-1 share the annual capital owners.
+pub(in crate::tests) fn mixed_native_legacy_capital_draft(
+    k3: bool,
+    legacy_first: bool,
+) -> FederalDraft {
+    use crate::tests::support::builders::k1res::configure_component_capital_positive_release;
+    use crate::tests::support::client::k1res::component_capital_session;
+
+    let (mut session, mut native) = component_capital_session(false, 100);
+    configure_component_capital_positive_release(&mut native);
+    let entry = session
+        .draft
+        .income
+        .iter_mut()
+        .find(|entry| matches!(entry.income, FederalIncome::PartnershipActivities { .. }))
+        .unwrap();
+    entry.income = native;
+    let foreign = crate::tests::foreign::foreign::passive_fund_return(60_000);
+    session.draft.credits = foreign.credits;
+    for entry in foreign.income {
+        add(&mut session.draft, entry);
+    }
+    let [_, mut legacy] = legacy_k1_capital_sources(false, true);
+    let FederalIncome::Scorp { data } = &mut legacy else { unreachable!() };
+    let mut data = edit_scorp(data);
+    // Independent AMT source gain; its retained basis loss remains $200.
+    data.amt.as_mut().unwrap().capital.as_mut().unwrap().short = 150_000;
+    if k3 {
+        let mut statement = crate::tests::foreign::foreign::k3_blank();
+        statement.us_gross = 300_000;
+        data.schedule_k3 = Some(statement);
+    }
+    drop(data);
+    add(&mut session.draft, income(legacy));
+    if legacy_first {
+        session.draft.income.reverse();
+    }
+    session.draft
+}
+
 pub(in crate::tests) fn k1_collectible_capital(
     short: i64,
     long: i64,
@@ -26,7 +123,7 @@ pub(in crate::tests) fn k1_collectible_capital(
 pub(in crate::tests) fn collectible_investment_gain(regular: i64, amt: i64) -> FederalIncome {
     let mut item = investment_sale_gain(GainTerm::Long, regular, amt);
     let FederalIncome::Sale { data } = &mut item else { unreachable!() };
-    data.collectible = true;
+    data.form.collectible = true;
     item
 }
 
@@ -59,9 +156,14 @@ pub(in crate::tests) fn passive_property_scorp(ordinary: i64, property: i64) -> 
 pub(in crate::tests) fn passive_property_pool(source: ScorpK1, other: i64) -> (FederalDraft, i64) {
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     if other != 0 {
-        add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(other, false) }));
+        add(
+            &mut d,
+            income(FederalIncome::Scorp {
+                data: scorp_source(complete_ordinary_scorp(other, false)),
+            }),
+        );
     }
     (d, id)
 }
@@ -128,7 +230,7 @@ pub(in crate::tests) fn property_qbi_character_draft(gain: i64, loss: i64) -> Fe
     let mut source = former_passive_property_scorp(0, -loss, 0, 0);
     source.property_qbi = property_qbi(loss, 0);
     source.qbi_statement = complete_ordinary_scorp(0, true).qbi_statement;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     d.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));
     d
 }
@@ -239,7 +341,7 @@ pub(in crate::tests) fn property_excess_draft(
     source.amt = Some(amt_records(&source));
     source.amt.as_mut().unwrap().section1231.as_mut().unwrap().net = -amt_loss * 100;
     let mut draft = complete(status);
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     draft.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));
     draft
 }
@@ -247,6 +349,7 @@ pub(in crate::tests) fn property_excess_draft(
 pub(in crate::tests) fn historical_property_excess_draft() -> FederalDraft {
     let mut draft = property_excess_draft(200000, 150000, 500000, 200000, FederalStatus::Single);
     let FederalIncome::Scorp { data } = &mut draft.income[1].income else { unreachable!() };
+    let mut data = edit_scorp(data);
     let property = data.section1231.as_mut().unwrap();
     property.basis_loss = 10000000;
     property.risk_loss = 10000000;
@@ -256,6 +359,7 @@ pub(in crate::tests) fn historical_property_excess_draft() -> FederalDraft {
     let amt = data.amt.as_mut().unwrap().section1231.as_mut().unwrap();
     amt.basis_loss = 5000000;
     amt.risk_loss = 10000000;
+    drop(data);
     draft
 }
 
@@ -272,7 +376,7 @@ pub(in crate::tests) fn operating_loss_property_gain_draft(
     amt.adjustment = 10000000; // AMT operating loss $300k versus regular $400k.
     amt.section1231.as_mut().unwrap().net = 5000000;
     let mut draft = complete(FederalStatus::Single);
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let prior = if recapture == 0 { vec![] } else { vec![(2025, recapture, recapture)] };
     draft.screening.as_mut().unwrap().section1231 = Some(section1231_history(&prior, &prior));
     draft
@@ -285,16 +389,19 @@ pub(in crate::tests) fn property_loss_operating_profit_draft(
     let mut draft =
         property_excess_draft(400000, 300000, 500000, qualified_loss, FederalStatus::Single);
     let FederalIncome::Scorp { data } = &mut draft.income[1].income else { unreachable!() };
+    let mut data = edit_scorp(data);
     data.ordinary = 10000000;
     data.qbi_statement.as_mut().unwrap().income = qualified_profit * 100;
-    data.amt = Some(amt_records(data));
+    data.amt = Some(amt_records(&data));
     data.amt.as_mut().unwrap().section1231.as_mut().unwrap().net = -30000000;
+    drop(data);
     draft
 }
 
 pub(in crate::tests) fn multiple_fully_recaptured_gains(qualified_second: i64) -> FederalDraft {
     let mut draft = complete_property_gain_draft(false, 50000);
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut data = edit_scorp(data);
         data.qbi_statement.as_mut().unwrap().wages = 10000000;
         data.amt.as_mut().unwrap().section1231.as_mut().unwrap().net = 1000000;
     }
@@ -304,7 +411,7 @@ pub(in crate::tests) fn multiple_fully_recaptured_gains(qualified_second: i64) -
     source.qbi_statement.as_mut().unwrap().wages = 10000000;
     source.amt = Some(amt_records(&source));
     source.amt.as_mut().unwrap().section1231.as_mut().unwrap().net = 2000000;
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     draft.screening.as_mut().unwrap().section1231 =
         Some(section1231_history(&[(2025, 50000, 50000)], &[(2025, 30000, 30000)]));
     draft
@@ -313,6 +420,7 @@ pub(in crate::tests) fn multiple_fully_recaptured_gains(qualified_second: i64) -
 pub(in crate::tests) fn rate_ordered_recapture(regular: i64, amt: i64) -> FederalDraft {
     let mut draft = multiple_fully_recaptured_gains(30000);
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut data = edit_scorp(data);
         data.section1231.as_mut().unwrap().unrecaptured = 2000000;
         data.amt.as_mut().unwrap().section1231.as_mut().unwrap().unrecaptured = 1000000;
     }
@@ -328,11 +436,12 @@ pub(in crate::tests) fn qualified_rate_gain(
 ) -> FederalDraft {
     let mut draft = complete_property_gain_draft(true, recapture);
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut data = edit_scorp(data);
         data.section1231.as_mut().unwrap().unrecaptured = 1200000;
         let facts = &mut data.property_qbi;
         facts.gain = qualified * 100;
         facts.qualified_1250 = qualified_high.map(|amount| amount * 100);
-        data.amt = Some(amt_records(data));
+        data.amt = Some(amt_records(&data));
     }
     draft
 }
@@ -340,6 +449,7 @@ pub(in crate::tests) fn qualified_rate_gain(
 pub(in crate::tests) fn trading_with_unreleased_histories() -> FederalDraft {
     let mut draft = complete_trading_property_interest(10000, -20000);
     if let FederalIncome::Scorp { data } = &mut draft.income[1].income {
+        let mut data = edit_scorp(data);
         data.passive.loss = 300000;
         data.loss_qbi = ScorpLossQbi {
             current: 0,
@@ -349,7 +459,7 @@ pub(in crate::tests) fn trading_with_unreleased_histories() -> FederalDraft {
         };
         data.section1231.as_mut().unwrap().passive_loss = 700000;
         data.property_qbi.losses.passive = vec![loss_year(2020, 7000, 7000, 7000, 7000)];
-        data.amt = Some(amt_records(data));
+        data.amt = Some(amt_records(&data));
         let property = data.amt.as_mut().unwrap().section1231.as_mut().unwrap();
         property.net = -3000000;
         property.passive_loss = 500000;

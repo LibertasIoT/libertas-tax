@@ -2,11 +2,36 @@
 // 2026 draft Form8801 (prior2025 rates) and draft i8801 pp1–5. Current2026
 // Single60,000 W-2 less16,100 standard deduction: taxable43,900, table tax5,023;
 // current TMT0. Prior2025 single exemption88,100, AMT26% below239,100.
-// Every new source is entered through the ordinary More credits editor.
+// Standalone audit sources use the Document center; credit histories use More credits.
 use super::*;
 use crate::tests::cross::interview::{
     accepted, document, from_review, rejected_with, save_documents, w2,
 };
+
+fn save_audit_source(session: &mut Interview, mut audit: FederalBbaAuditInterest) {
+    let mut request = crate::tests::support::client::income_pages::open_document_center(session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.credits.documents.push(crate::CreditDocument::PartnershipAudit(
+        alloc::boxed::Box::new(crate::tests::support::builders::audit_row(audit.clone())),
+    ));
+    accepted(&send(session, request));
+    // No printed partner name: the statement is pending until your section adds it.
+    let id = session.draft.credits.as_ref().unwrap().bba_audit_interest.as_ref().unwrap().id;
+    crate::tests::support::builders::assign_documents(
+        session,
+        TaxSection::MoreCredits,
+        -1,
+        &[id],
+        crate::AddedOwnership::Yours,
+    );
+    audit.id = id;
+    let request = crate::tests::support::client::credit_documents::credit_document_answers_request(
+        session,
+        &[],
+        Some(&audit),
+    );
+    accepted(&send(session, request));
+}
 
 pub(in crate::tests) fn source() -> MinimumTaxHistory {
     MinimumTaxHistory {
@@ -30,7 +55,13 @@ pub(in crate::tests) fn source() -> MinimumTaxHistory {
 }
 pub(in crate::tests) fn session(status: FederalStatus) -> Interview {
     let mut s = Interview::new(TEST_USER, empty_return(status));
-    let page = save_documents(&s.draft, vec![document(0, IncomeDocument::W2(w2(6_000_000)))]);
+    let page = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(6_000_000))) },
+        )],
+    );
     accepted(&send(&mut s, page));
     s
 }
@@ -352,15 +383,13 @@ fn mtc_page_cannot_supply_a_missing_current_filer_through_an_echoed_owner_catalo
 #[test]
 fn mtc_negative_8978_and_energy_credits_use_one_capacity_without_duplicate_decrease() {
     let mut s = session(FederalStatus::Single);
+    save_audit_source(&mut s, bba_interest_reduction());
     let mut page = request(&mut s, MinimumTaxHistories::from_current_unit(source()));
     let P::SaveMoreCredits { value: chosen, .. } = &mut page else { unreachable!() };
-    chosen.credits.extend([
-        MoreCredit::BbaAuditAdjustment(bba_interest_reduction()),
-        MoreCredit::PriorCreditCarryovers {
-            residential_energy_carry: Some(100_000),
-            dc_homebuyer_carry: Some(50_000),
-        },
-    ]);
+    chosen.credits.extend([MoreCredit::PriorCreditCarryovers {
+        residential_energy_carry: Some(100_000),
+        dc_homebuyer_carry: Some(50_000),
+    }]);
     accepted(&send(&mut s, page));
     let r = supported(&s.draft);
     // Current43,900 taxable -> table tax5,023; 8978 prior5,920−5,700=220.
@@ -380,12 +409,10 @@ fn mtc_negative_8978_and_energy_credits_use_one_capacity_without_duplicate_decre
 #[test]
 fn mtc_negative_8978_reduces_general_business_capacity_before_the_mtc_limit() {
     let mut s = session(FederalStatus::Single);
+    save_audit_source(&mut s, bba_interest_reduction());
     let mut page = request(&mut s, MinimumTaxHistories::from_current_unit(source()));
     let P::SaveMoreCredits { value: chosen, .. } = &mut page else { unreachable!() };
-    chosen.credits.extend([
-        MoreCredit::BbaAuditAdjustment(bba_interest_reduction()),
-        MoreCredit::EmployerTip(tip_fica_carryforward(5_000_000)),
-    ]);
+    chosen.credits.extend([MoreCredit::EmployerTip(tip_fica_carryforward(5_000_000))]);
     accepted(&send(&mut s, page));
     let r = supported(&s.draft);
     // 5,023−220=4,803 general-business capacity (TMT0; under25,000).
@@ -405,7 +432,13 @@ fn mtc_negative_8978_reduces_general_business_capacity_before_the_mtc_limit() {
 #[test]
 fn mtc_negative_8978_that_creates_amt_cannot_reuse_the_same_regular_capacity() {
     let mut s = session(FederalStatus::Single);
-    let wages = save_documents(&s.draft, vec![document(0, IncomeDocument::W2(w2(13_000_000)))]);
+    let wages = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(13_000_000))) },
+        )],
+    );
     accepted(&send(&mut s, wages));
     let mut audit = bba_interest_reduction();
     audit.interest_adjustment = -9_000_000;
@@ -413,9 +446,8 @@ fn mtc_negative_8978_that_creates_amt_cannot_reuse_the_same_regular_capacity() {
     audit.prior_wages = 2_500_000;
     audit.prior_taxable_income = 9_925_000;
     audit.prior_income_tax = 1_675_500;
-    let mut page = request(&mut s, MinimumTaxHistories::from_current_unit(source()));
-    let P::SaveMoreCredits { value: chosen, .. } = &mut page else { unreachable!() };
-    chosen.credits.push(MoreCredit::BbaAuditAdjustment(audit));
+    save_audit_source(&mut s, audit);
+    let page = request(&mut s, MinimumTaxHistories::from_current_unit(source()));
     accepted(&send(&mut s, page));
     let r = supported(&s.draft);
     // Current113,900 taxable:1,240+4,560+12,166+1,968=19,934 regular.
@@ -434,7 +466,13 @@ fn mtc_negative_8978_that_creates_amt_cannot_reuse_the_same_regular_capacity() {
 #[test]
 fn mtc_line_22_has_zero_floor_when_negative_8978_exceeds_regular_tax() {
     let mut s = session(FederalStatus::Single);
-    let wages = save_documents(&s.draft, vec![document(0, IncomeDocument::W2(w2(10_000_000)))]);
+    let wages = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w2(10_000_000))) },
+        )],
+    );
     accepted(&send(&mut s, wages));
     let mut audit = bba_interest_reduction();
     audit.interest_adjustment = -9_000_000;
@@ -442,9 +480,8 @@ fn mtc_line_22_has_zero_floor_when_negative_8978_exceeds_regular_tax() {
     audit.prior_wages = 2_500_000;
     audit.prior_taxable_income = 9_925_000;
     audit.prior_income_tax = 1_675_500;
-    let mut page = request(&mut s, MinimumTaxHistories::from_current_unit(source()));
-    let P::SaveMoreCredits { value: chosen, .. } = &mut page else { unreachable!() };
-    chosen.credits.push(MoreCredit::BbaAuditAdjustment(audit));
+    save_audit_source(&mut s, audit);
+    let page = request(&mut s, MinimumTaxHistories::from_current_unit(source()));
     accepted(&send(&mut s, page));
     let r = supported(&s.draft);
     // Table midpoint83,925:1,240+4,560+33,525*.22=13,175.50 ->13,176.

@@ -1,8 +1,9 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
-use crate::tests::support::builders::k1res::{documents, input, ordinary_multi_current_qbi_parent};
-use crate::tests::support::client::income_pages::catalog_preview_document;
+use crate::tests::cross::interview::accepted;
+use crate::tests::support::builders::k1res::expected_input;
+use crate::tests::support::builders::k1res::{documents, ordinary_multi_current_qbi_parent};
 use crate::tests::support::client::k1res::ordinary_multi_current_qbi_session;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::*;
 
 #[test]
@@ -19,17 +20,12 @@ fn current_component_statement_corrects_qbi_without_replacing_taxable_operating_
     assert_eq!(value(&result, "qbi_deduction"), 600);
     let saved = session.draft.clone();
     let dirty = session.dirty;
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    let mut preview = catalog_preview_document(documents(&mut request)[0].document.clone());
-    let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-    *preview_id = id;
-    assert!(matches!(
-        send(&mut session, preview),
-        Reply::Response(P::IncomePreview { preview: Some(600_000), .. })
-    ));
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+
     assert_eq!(session.draft, saved);
     assert_eq!(session.dirty, dirty);
-    let IncomeDocument::K1PartnershipActivities(page) = &mut documents(&mut request)[0].document
+    let crate::K1Document::K1PartnershipActivities(page) = &mut documents(&mut request)[0].document
     else {
         unreachable!()
     };
@@ -49,19 +45,22 @@ fn current_component_statement_corrects_qbi_without_replacing_taxable_operating_
     };
     *current_income = 200_000;
     assert!(matches!(
-        send(&mut session, crate::tests::support::client::estimate_documents_from_save(&request)),
-        Reply::Response(P::IncomeRunningEstimate { .. })
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            crate::tests::support::client::estimate_documents_from_save(&request)
+        ),
+        Reply::Response(P::Review { .. })
     ));
     assert_eq!(session.draft, saved);
-    accepted(&send(&mut session, request));
+    accepted(&send_fixture(&mut session, request));
     let corrected = supported(&session.draft);
     assert_eq!(value(&corrected, "agi"), 66_000);
     assert_eq!(value(&corrected, "qbi_deduction"), 400);
-    let accepted_source = input(&session.draft.income[0].income);
+    let accepted_source = expected_input(&session.draft, &session.draft.income[0]);
     let mut cold = restart(session.draft.clone());
-    let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let mut reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     assert_eq!(documents(&mut reopened)[0].document, accepted_source);
-    accepted(&send(&mut cold, reopened));
+    accepted(&send_fixture(&mut cold, reopened));
     assert_eq!(supported(&cold.draft), corrected);
 }
 

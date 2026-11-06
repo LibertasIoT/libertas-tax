@@ -1,6 +1,6 @@
 extern crate std;
 use super::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::accepted;
 
 #[test]
 fn unit13_niit_binding_cap_known_current_payers_bound_existing_r5_answer() {
@@ -177,26 +177,29 @@ fn unit13_niit_binding_cap_invalid_owner_amount_is_refused_and_bounds_regenerate
 fn unit13_niit_binding_cap_source_correction_makes_single_owner_automatic_and_cleans_old_choice() {
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         for reversed in [false, true] {
-            let d = persist_niit_binding(niit_binding_fixture(injured, reversed));
+            let source_fixture = crate::tests::support::builders::known_fact_partnership_draft(
+                niit_binding_fixture(injured, reversed),
+            );
+            let d = persist_niit_binding(source_fixture);
             let mut ids: Vec<_> = d.income.iter().map(|entry| entry.id).collect();
             ids.sort_unstable();
             let source = d
                 .income
                 .iter()
                 .find(|entry| {
-                    entry.owner == Owner::Taxpayer
+                    entry.owner == crate::DocumentOwner::Yours
                         && matches!(entry.income, FederalIncome::Partnership { .. })
                 })
                 .unwrap()
                 .id;
             let mut session = restart(d);
-            let mut request = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { documents, .. } = &mut request else { panic!() };
-            let document = documents.documents.iter_mut().find(|entry| entry.id == source).unwrap();
-            let IncomeDocument::K1Partnership(data) = &mut document.document else { panic!() };
-            data.more
-                .deductions
-                .retain(|deduction| deduction.code != PartnerDeductionCode::InvestmentInterest);
+            let mut request =
+                crate::tests::support::client::income_pages::open_document_center(&mut session);
+            let P::SaveDocuments { documents, .. } = &mut request else { panic!() };
+            let document =
+                documents.common.k1.documents.iter_mut().find(|entry| entry.id == source).unwrap();
+            let crate::K1Document::K1Partnership(data) = &mut document.document else { panic!() };
+            data.form.deductions.retain(|deduction| deduction.code != "H");
             accepted(&send(&mut session, request));
             let r = assert_niit_binding_money_with_paid(&session.draft, 10000);
             assert_eq!(column(&r, "15", "b"), if injured == Owner::Taxpayer { 0 } else { 5000 });

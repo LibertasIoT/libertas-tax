@@ -257,7 +257,7 @@
       "nullable": true,
       "rulesOnly": true,
       "value": {
-        "thousandths_of_gallon": 1000,
+        "gallons": 1,
         "actual_cost": 25
       },
       "expectedErrors": []
@@ -268,7 +268,7 @@
       "nullable": true,
       "rulesOnly": true,
       "value": {
-        "thousandths_of_gallon": 1000,
+        "gallons": 1,
         "actual_cost": 24
       },
       "expectedErrors": [

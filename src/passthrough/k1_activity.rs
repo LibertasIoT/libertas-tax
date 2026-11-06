@@ -203,7 +203,7 @@ fn property_identity_issue(
 }
 
 impl K1ActivityChoiceContext {
-    fn from_source_properties(
+    pub(crate) fn from_source_properties(
         source: Option<&K1ActivitySources>,
         properties: &[crate::K1InvestmentProperty],
         sales: &[crate::K1Section179Sale],
@@ -320,7 +320,8 @@ pub enum K1ActivityPersonalSource {
         /// [SetText]
         /// The actual gross personal-service income is
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         gross_personal_services: Option<i64>,
     },
     /// The personal-service source records are unavailable.
@@ -331,11 +332,13 @@ pub enum K1ActivityPersonalSource {
 pub struct K1CurrentSourceParts {
     /// Actual documented positive current income of this source character, before owner limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub income: i64,
     /// Actual documented current loss of this source character, as a positive magnitude.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub loss: i64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -401,7 +404,7 @@ pub struct K1StatementActivity {
 // Complete source payloads stay inline, matching the normal App wire model.
 #[allow(clippy::large_enum_variant)]
 pub enum K1StatementAmt {
-    /// The source establishes identical regular and AMT monetary parts.
+    /// Use regular monetary parts as the AMT baseline; printed depletion adjustments are applied automatically.
     SameAsRegular,
     /// Actual different AMT source records.
     Separate { amounts: K1StatementAmounts },
@@ -419,7 +422,8 @@ pub struct K1RetainedLossCarry {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: Option<i64>,
     /// Actual loss retained only by at-risk limits; already passed basis.
     /// [NullText]
@@ -427,7 +431,8 @@ pub struct K1RetainedLossCarry {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk: Option<i64>,
 }
 
@@ -441,7 +446,8 @@ pub struct K1RetainedSeHistory {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: Option<i64>,
     /// Actual retained at-risk-limited SE-character amount.
     /// [NullText]
@@ -449,7 +455,8 @@ pub struct K1RetainedSeHistory {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk: Option<i64>,
     /// Actual retained passive-limited SE-character amount.
     /// [NullText]
@@ -457,7 +464,8 @@ pub struct K1RetainedSeHistory {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub passive: Option<i64>,
 }
 
@@ -465,12 +473,14 @@ pub struct K1RetainedSeHistory {
 pub struct K1StatementProperty {
     /// Actual current net section1231 source, before owner limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub net: i64,
     /// Actual current business-property unrecaptured1250 component; not additional income.
     /// It may exceed the net when other actual property losses offset gains.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecaptured: i64,
     /// Actual prior property loss suspended only by basis.
     /// [NullText]
@@ -478,7 +488,8 @@ pub struct K1StatementProperty {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_loss: Option<i64>,
     /// Actual prior property loss suspended only by at-risk limits.
     /// [NullText]
@@ -486,7 +497,8 @@ pub struct K1StatementProperty {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk_loss: Option<i64>,
     /// Actual prior property loss suspended only by passive limits.
     /// [NullText]
@@ -494,7 +506,8 @@ pub struct K1StatementProperty {
     /// [SetText]
     /// The actual retained source amount is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub passive_loss: Option<i64>,
 }
 
@@ -512,19 +525,23 @@ pub struct K1StatementPartnerCapitalCarry {
 pub struct K1StatementAmounts {
     /// Signed source result of the activity's declared box, excluding separate items.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub operating: i64,
     /// Actual tax-exempt interest attributed to this source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub exempt_interest: i64,
     /// Other actual tax-exempt income attributed to this source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub exempt_other: i64,
     /// Actual noncapital nondeductible expense attributed to this source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub nondeductible: i64,
     /// Documented portfolio source parts; not repeated in operating income.
     pub portfolio: K1StatementPortfolio,
@@ -532,7 +549,8 @@ pub struct K1StatementAmounts {
     pub operating_carry: K1RetainedLossCarry,
     /// Actual operating loss carried only by passive limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -546,11 +564,13 @@ pub struct K1StatementAmounts {
     pub property: Option<K1StatementProperty>,
     /// Current section179 source amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub section179: i64,
     /// Prior section179 source amount suspended only by basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -558,7 +578,8 @@ pub struct K1StatementAmounts {
     pub section179_basis_carry: Option<i64>,
     /// Prior section179 business-income carry; not deducted from basis again.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -566,7 +587,8 @@ pub struct K1StatementAmounts {
     pub section179_business_carry: Option<i64>,
     /// Part of that business-income carry for actual sold-property sources.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -574,11 +596,13 @@ pub struct K1StatementAmounts {
     pub section179_sold_carry: Option<i64>,
     /// Actual cash charity source amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cash_charity: i64,
     /// Actual charity balance suspended only by basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -586,11 +610,13 @@ pub struct K1StatementAmounts {
     pub charity_basis_carry: Option<i64>,
     /// Actual foreign tax source amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub foreign_taxes: i64,
     /// Actual foreign tax balance suspended only by basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -606,39 +632,48 @@ pub struct K1StatementAmounts {
 pub struct K1StatementPortfolio {
     /// Taxable portfolio interest.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub interest: i64,
     /// Ordinary dividends including their qualified part.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub dividends: i64,
     /// Qualified dividend portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub qualified_dividends: i64,
     /// Portfolio royalty source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub royalties: i64,
     /// Signed short-term portfolio source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub short: i64,
     /// Signed long-term portfolio source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub long: i64,
     /// Signed collectible component, not additional capital income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub collectibles: i64,
     /// Unrecaptured gain from partnership-interest sales.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecaptured_partnership: i64,
     /// Unrecaptured gain from funds/estates/trusts.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecaptured_fund: i64,
 }
 
@@ -666,12 +701,14 @@ pub enum K1ComponentQualified {
         /// Actual current ordinary qualified source portion, not final deduction.
         #[libertas_money("USD", 2)]
         // Encoding safety: signs() exposes a positive native magnitude.
-        #[libertas_number(min = -9223372036854775807)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = -100000000000, max = 100000000000)]
         current_income: i64,
         /// Actual signed current property qualified source portion.
         #[libertas_money("USD", 2)]
         // Encoding safety: signs() exposes a positive native magnitude.
-        #[libertas_number(min = -9223372036854775807)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = -100000000000, max = 100000000000)]
         current_property: i64,
         /// Actual existing qualified histories/gross allocation, not another loss ledger.
         records: crate::partnership_qbi::PartnerQbiRecords,
@@ -679,7 +716,8 @@ pub enum K1ComponentQualified {
     Scorp {
         /// Actual current qualified income portion, not final deduction.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         current_income: i64,
         ordinary: crate::ScorpLossQbi,
         property: crate::ScorpPropertyQbi,
@@ -747,19 +785,23 @@ pub enum K1RiskSource {
 pub struct K1RiskInvestmentParts {
     /// Actual cash contributions assigned by source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub contributions: i64,
     /// Actual cash withdrawals assigned by source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub distributions: i64,
     /// Actual loan investment assigned by source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub loan_advances: i64,
     /// Actual principal returns assigned by source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub loan_repayments: i64,
 }
 
@@ -879,9 +921,11 @@ pub struct K1QbiBlockPage {
     /// The source allocation is unavailable.
     /// [SetText]
     /// The source establishes these allocations
+    #[libertas_hidden]
     pub allocations: Option<Vec<K1QbiAllocationPage>>,
     /// Individual aggregation group for this block; empty means none.
     #[libertas_default("")]
+    #[libertas_hidden]
     pub qbi_group: String,
 }
 
@@ -911,30 +955,36 @@ pub enum K1ReportedQbiStatement {
 pub struct K1ScorpBlockStatement {
     /// Actual signed CURRENT ordinary amount on this reported business/block statement.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     /// Actual signed CURRENT property amount on this reported business/block statement.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub section1231_qbi: i64,
     /// Original allocated W-2 wages, once for this indivisible reported block.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub wages: i64,
     /// Original allocated unadjusted basis of qualified property, once for this block.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub property: i64,
     /// Original specified-service classification; no current eligibility is computed here.
     /// Check the original Section 199A statement and ask its issuer when classification is missing.
     pub service: bool,
     /// Original qualified REIT dividend amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reit_dividends: i64,
     /// Original qualified PTP source amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub ptp_income: i64,
 }
 
@@ -942,7 +992,8 @@ pub struct K1ScorpBlockStatement {
 pub struct K1StatementScorpCapitalCarry {
     /// Actual retained basis short source portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -950,7 +1001,8 @@ pub struct K1StatementScorpCapitalCarry {
     pub basis_short: Option<i64>,
     /// Actual retained basis long source portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -958,7 +1010,8 @@ pub struct K1StatementScorpCapitalCarry {
     pub basis_long: Option<i64>,
     /// Actual retained basis collectibles source portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -966,7 +1019,8 @@ pub struct K1StatementScorpCapitalCarry {
     pub basis_collectibles: Option<i64>,
     /// Actual retained risk short source portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -974,7 +1028,8 @@ pub struct K1StatementScorpCapitalCarry {
     pub risk_short: Option<i64>,
     /// Actual retained risk long source portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -982,7 +1037,8 @@ pub struct K1StatementScorpCapitalCarry {
     pub risk_long: Option<i64>,
     /// Actual retained risk collectibles source portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -994,23 +1050,28 @@ pub struct K1StatementScorpCapitalCarry {
 pub struct K1EntityOnlyAmounts {
     /// Actual entity-only exempt interest source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub exempt_interest: i64,
     /// Actual entity-only exempt other source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub exempt_other: i64,
     /// Actual entity-only nondeductible source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub nondeductible: i64,
     /// Actual entity-only cash charity source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cash_charity: i64,
     /// Actual entity-only charity basis carry source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -1018,11 +1079,13 @@ pub struct K1EntityOnlyAmounts {
     pub charity_basis_carry: Option<i64>,
     /// Actual entity-only foreign taxes source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub foreign_taxes: i64,
     /// Actual entity-only foreign basis carry source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This retained source amount is unavailable.
     /// [SetText]
@@ -1053,22 +1116,27 @@ pub struct K1PartnerSeSource {
     /// [SetText]
     /// The source reports
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub reported: Option<i64>,
+    #[libertas_hidden]
     pub history: K1RetainedSeHistory,
     /// Actual source gross and farming/nonfarming character.
     /// [NullText]
     /// The actual SE gross source is unavailable.
     /// [SetText]
     /// Use the actual gross source
+    #[libertas_hidden]
     pub gross: Option<crate::PartnerSeGross>,
     /// Actual guaranteed service-payment source subset.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub guaranteed_services: i64,
     /// Actual guaranteed capital-payment source subset.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub guaranteed_capital: i64,
 }
 
@@ -1093,6 +1161,8 @@ pub struct K1StatementActivityPage {
     /// Actual statement activity character.
     pub kind: K1StatementKind,
     /// Actual personal-service source facts for this activity, separate from passive and SE classification.
+    #[libertas_hidden]
+    #[libertas_default(Unavailable)]
     pub personal_services: K1ActivityPersonalSource,
     /// Actual regular-tax self-employment source, independent of AMT amounts.
     pub self_employment: K1StatementSe,
@@ -1103,8 +1173,11 @@ pub struct K1StatementActivityPage {
     /// The source partition is unavailable.
     /// [SetText]
     /// Use these documented source parts
+    #[libertas_hidden]
     pub regular: Option<K1StatementAmounts>,
     /// Actual AMT source fact; never inferred from absence.
+    #[libertas_hidden]
+    #[libertas_default(Unavailable)]
     pub alternative: K1StatementAmt,
     /// Actual accepted same-parent at-risk source.
     /// [NullText]
@@ -1113,6 +1186,7 @@ pub struct K1StatementActivityPage {
     /// The actual source is
     #[libertas_number(min = 1)]
     #[libertas_enum_source("^<K1ComponentDetailsPage>.choices.risk")]
+    #[libertas_hidden]
     pub risk_group: Option<i64>,
     /// Actual accepted same-parent passive source.
     /// [NullText]
@@ -1121,6 +1195,7 @@ pub struct K1StatementActivityPage {
     /// The actual source is
     #[libertas_number(min = 1)]
     #[libertas_enum_source("^<K1ComponentDetailsPage>.choices.passive")]
+    #[libertas_hidden]
     pub passive_group: Option<i64>,
 }
 
@@ -1131,12 +1206,15 @@ pub struct K1ActivitySourcesPage {
     /// The sale-to-activity source attribution is unavailable.
     /// [SetText]
     /// The actual sale sources belong to these activities
+    #[libertas_hidden]
     pub section179_sale_sources: Option<Vec<K1Section179SaleSourcePage>>,
     /// Actual statement activities.
     pub components: Vec<K1StatementActivityPage>,
     /// Actual separately identified at-risk groups.
+    #[libertas_hidden]
     pub risk_groups: Vec<K1RiskGroup>,
     /// Actual separately identified passive groups.
+    #[libertas_hidden]
     pub passive_groups: Vec<K1PassiveGroup>,
     /// Actual section199A businesses or indivisible reported aggregates.
     pub qbi_blocks: Vec<K1QbiBlockPage>,
@@ -1145,14 +1223,18 @@ pub struct K1ActivitySourcesPage {
     /// The entity-only source attribution is unavailable.
     /// [SetText]
     /// The entity-only source amounts are
+    #[libertas_hidden]
     pub entity_only: Option<K1EntityOnlyAmounts>,
     /// Actual alternative-minimum-tax entity-only source; absence is never copied as zero.
+    #[libertas_hidden]
+    #[libertas_default(Unavailable)]
     pub alternative_entity_only: K1EntityOnlyAmt,
     /// Actual whole-property source associations; no credit amount or computed allowance.
     /// [NullText]
     /// The property-to-activity source attribution is unavailable.
     /// [SetText]
     /// The actual property sources belong to these activities
+    #[libertas_hidden]
     pub investment_property_sources: Option<Vec<K1InvestmentPropertySourcePage>>,
 }
 
@@ -1628,9 +1710,13 @@ impl K1ComponentQualified {
 impl K1ActivitySources {
     #[cfg(test)]
     pub(crate) fn source_rule(&self, partnership: bool) -> Option<&'static str> {
-        self.source_issue(partnership).map(|issue| issue.key)
+        self.source_issue_with_alignment(partnership, true).map(|issue| issue.key)
     }
-    fn source_issue(&self, partnership: bool) -> Option<ValidationIssue> {
+    fn source_issue_with_alignment(
+        &self,
+        partnership: bool,
+        check_paper: bool,
+    ) -> Option<ValidationIssue> {
         if let Some(issue) = sale_source_issue(self.section179_sale_sources.as_deref()) {
             return Some(issue);
         }
@@ -1909,10 +1995,10 @@ impl K1ActivitySources {
         }
         // All qualified scalar and retained-history owners above have validated
         // these sources before any signed magnitude or subset accumulation.
-        self.qualified_source_issue()
+        self.qualified_source_issue(check_paper)
     }
 
-    fn qualified_source_issue(&self) -> Option<ValidationIssue> {
+    fn qualified_source_issue(&self, check_paper: bool) -> Option<ValidationIssue> {
         use alloc::collections::BTreeMap;
         // One authoritative tax control per component/character/stage/year.
         // Only the block's original/remaining qualified subsets are summed.
@@ -1936,7 +2022,7 @@ impl K1ActivitySources {
                         ),
                         K1ReportedQbiStatement::Unavailable => None,
                     };
-                    if reported.is_some_and(|v| v.map(exact::whole) != actual) {
+                    if check_paper && reported.is_some_and(|v| v.map(exact::whole) != actual) {
                         return Some(
                             ValidationIssue::new("K1_QBI_PRINTED_CURRENT_RECONCILE")
                                 .at_field("statement")
@@ -2013,10 +2099,12 @@ impl K1ActivitySources {
                     ("ordinary", &component.qualified_current_controls.ordinary, [0, 1]),
                     ("property", &component.qualified_current_controls.property, [2, 3]),
                 ] {
-                    if controls.as_ref().is_some_and(|v| {
-                        current[indices[0]] > exact::whole(v.income)
-                            || current[indices[1]] > exact::whole(v.loss)
-                    }) {
+                    if check_paper
+                        && controls.as_ref().is_some_and(|v| {
+                            current[indices[0]] > exact::whole(v.income)
+                                || current[indices[1]] > exact::whole(v.loss)
+                        })
+                    {
                         return Some(
                             ValidationIssue::new("K1_QBI_CURRENT_ABOVE_COMPONENT_SOURCE")
                                 .at_field(field)
@@ -2148,7 +2236,8 @@ impl K1ActivityChoiceContext {
 pub struct PartnerEntityBasis {
     /// Opening outside basis for this whole partnership interest.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// The opening basis source is unavailable.
     /// [SetText]
@@ -2156,31 +2245,38 @@ pub struct PartnerEntityBasis {
     pub opening: Option<i64>,
     /// Actual cash capital contributed, excluding guaranteed payments and loan shares.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub contributions: i64,
     /// Beginning allocated partnership liabilities for outside basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub opening_liabilities: i64,
     /// Ending allocated partnership liabilities for outside basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub ending_liabilities: i64,
     /// Partnership liabilities personally assumed during the year.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub assumed: i64,
     /// Personal liabilities assumed by the partnership.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub transferred: i64,
     /// Actual cash distributions, including premiums charged against them.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub distributions: i64,
     /// Prior basis-only nondeductible expense control; not a deductible loss.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// The prior nondeductible amount source is unavailable.
     /// [SetText]
@@ -2194,7 +2290,8 @@ pub struct PartnerEntityBasis {
 pub struct ScorpEntityBasis {
     /// Opening stock basis for the whole shareholding.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// The opening basis source is unavailable.
     /// [SetText]
@@ -2202,15 +2299,18 @@ pub struct ScorpEntityBasis {
     pub opening: Option<i64>,
     /// Actual additional stock tax basis, excluding shareholder loans.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub additions: i64,
     /// Actual nondividend distributions.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub distributions: i64,
     /// Prior basis-only nondeductible expense control under the continuing election.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// The prior nondeductible amount source is unavailable.
     /// [SetText]
@@ -2232,7 +2332,8 @@ pub struct ScorpEntityLoan {
     /// [SetText]
     /// The actual AMT opening basis is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub alternative_basis: Option<i64>,
 }
 
@@ -2273,7 +2374,12 @@ pub struct PartnerEntitySource {
     /// The interest holding period is
     pub interest_term: Option<crate::GainTerm>,
     /// What happened to the whole interest during the year.
-    pub disposition: crate::K1Disposition,
+    /// [NullText]
+    /// What happened to this interest is not answered yet
+    /// [SetText]
+    /// What happened to this interest is
+    #[libertas_hidden]
+    pub disposition: Option<crate::K1Disposition>,
     /// The actual separately identified whole-interest sale gain parts.
     pub sale: crate::PartnerSaleParts,
     /// Actual Schedule K-3 source.
@@ -2337,7 +2443,12 @@ pub struct ScorpEntitySource {
     /// The share holding period is
     pub stock_term: Option<crate::GainTerm>,
     /// What happened to the whole shareholding during the year.
-    pub disposition: crate::K1Disposition,
+    /// [NullText]
+    /// What happened to this interest is not answered yet
+    /// [SetText]
+    /// What happened to this interest is
+    #[libertas_hidden]
+    pub disposition: Option<crate::K1Disposition>,
     /// Actual Schedule K-3 source.
     /// [NullText]
     /// There is no Schedule K-3 source.
@@ -2372,14 +2483,22 @@ pub struct PartnerEntitySourcePage {
     /// This entity's AMT carryover history is unavailable.
     /// [SetText]
     /// The actual AMT carryover history is
+    #[libertas_hidden]
     pub amt_section179_income_carry: Option<crate::Section179IncomeCarryHistory>,
     /// Whole-interest regular-tax basis source.
-    pub regular: PartnerEntityBasis,
+    #[libertas_hidden]
+    /// [NullText]
+    /// No retained personal records were supplied with this source.
+    /// [SetText]
+    /// Retained personal records
+    #[libertas_default($null)]
+    pub regular: Option<PartnerEntityBasis>,
     /// Whole-interest separate AMT basis source.
     /// [NullText]
     /// The separate AMT global basis source is unavailable.
     /// [SetText]
     /// The actual AMT global basis source is
+    #[libertas_hidden]
     pub alternative: Option<PartnerEntityBasis>,
     /// This is a publicly traded partnership under section7704(b).
     pub publicly_traded: bool,
@@ -2390,9 +2509,15 @@ pub struct PartnerEntitySourcePage {
     /// No holding period is established.
     /// [SetText]
     /// The interest holding period is
+    #[libertas_hidden]
     pub interest_term: Option<crate::GainTerm>,
     /// What happened to the whole interest during the year.
-    pub disposition: crate::K1Disposition,
+    /// [NullText]
+    /// What happened to this interest is not answered yet
+    /// [SetText]
+    /// What happened to this interest is
+    #[libertas_hidden]
+    pub disposition: Option<crate::K1Disposition>,
     /// The actual separately identified whole-interest sale gain parts.
     pub sale: crate::PartnerSaleParts,
     /// Actual Schedule K-3 source.
@@ -2410,15 +2535,30 @@ pub struct PartnerEntitySourcePage {
     /// The investment-property source is unconfirmed.
     /// [SetText]
     /// The source confirmation is
+    /// [Hidden]
     pub investment_confirmed: Option<crate::K1InvestmentConfirmation>,
     /// Actual low-income housing acquisition confirmation.
     /// [NullText]
     /// The housing source is unconfirmed.
     /// [SetText]
     /// The housing confirmation is
+    /// [Hidden]
     pub housing_confirmed: Option<bool>,
 }
 impl PartnerEntitySourcePage {
+    pub(crate) fn regular_record(&self) -> PartnerEntityBasis {
+        self.regular.clone().unwrap_or(PartnerEntityBasis {
+            opening: None,
+            contributions: 0,
+            opening_liabilities: 0,
+            ending_liabilities: 0,
+            assumed: 0,
+            transferred: 0,
+            distributions: 0,
+            prior_nondeductible: None,
+            complete: false,
+        })
+    }
     fn record(
         &self,
         reporting_period: Option<crate::K1EntityTaxPeriod>,
@@ -2428,7 +2568,7 @@ impl PartnerEntitySourcePage {
             reporting_period,
             section179_sales,
             amt_section179_income_carry: self.amt_section179_income_carry.clone(),
-            regular: self.regular.clone(),
+            regular: self.regular_record(),
             alternative: self.alternative.clone(),
             publicly_traded: self.publicly_traded,
             final_k1: self.final_k1,
@@ -2447,7 +2587,7 @@ impl PartnerEntitySourcePage {
     fn from_record(source: &PartnerEntitySource) -> Self {
         Self {
             amt_section179_income_carry: source.amt_section179_income_carry.clone(),
-            regular: source.regular.clone(),
+            regular: Some(source.regular.clone()),
             alternative: source.alternative.clone(),
             publicly_traded: source.publicly_traded,
             final_k1: source.final_k1,
@@ -2473,16 +2613,25 @@ pub struct ScorpEntitySourcePage {
     /// This entity's AMT carryover history is unavailable.
     /// [SetText]
     /// The actual AMT carryover history is
+    #[libertas_hidden]
     pub amt_section179_income_carry: Option<crate::Section179IncomeCarryHistory>,
     /// Whole-shareholding regular-tax stock basis source.
-    pub regular: ScorpEntityBasis,
+    #[libertas_hidden]
+    /// [NullText]
+    /// No retained personal records were supplied with this source.
+    /// [SetText]
+    /// Retained personal records
+    #[libertas_default($null)]
+    pub regular: Option<ScorpEntityBasis>,
     /// Whole-shareholding separate AMT stock basis source.
     /// [NullText]
     /// The separate AMT stock basis source is unavailable.
     /// [SetText]
     /// The actual AMT stock basis source is
+    #[libertas_hidden]
     pub alternative: Option<ScorpEntityBasis>,
     /// Actual shareholder loans, each retaining its same-source AMT basis.
+    #[libertas_hidden]
     pub loans: Vec<ScorpEntityLoan>,
     /// This is the final K-1.
     pub final_k1: bool,
@@ -2491,9 +2640,15 @@ pub struct ScorpEntitySourcePage {
     /// No share holding period is established.
     /// [SetText]
     /// The share holding period is
+    #[libertas_hidden]
     pub stock_term: Option<crate::GainTerm>,
     /// What happened to the whole shareholding during the year.
-    pub disposition: crate::K1Disposition,
+    /// [NullText]
+    /// What happened to this interest is not answered yet
+    /// [SetText]
+    /// What happened to this interest is
+    #[libertas_hidden]
+    pub disposition: Option<crate::K1Disposition>,
     /// Actual Schedule K-3 source.
     /// [NullText]
     /// There is no Schedule K-3 source.
@@ -2509,15 +2664,27 @@ pub struct ScorpEntitySourcePage {
     /// The investment-property source is unconfirmed.
     /// [SetText]
     /// The source confirmation is
+    /// [Hidden]
     pub investment_confirmed: Option<crate::K1InvestmentConfirmation>,
     /// Actual low-income housing acquisition confirmation.
     /// [NullText]
     /// The housing source is unconfirmed.
     /// [SetText]
     /// The housing confirmation is
+    /// [Hidden]
     pub housing_confirmed: Option<bool>,
 }
 impl ScorpEntitySourcePage {
+    pub(crate) fn regular_record(&self) -> ScorpEntityBasis {
+        self.regular.clone().unwrap_or(ScorpEntityBasis {
+            opening: None,
+            additions: 0,
+            distributions: 0,
+            prior_nondeductible: None,
+            losses_first: false,
+            complete: false,
+        })
+    }
     fn record(
         &self,
         reporting_period: Option<crate::K1EntityTaxPeriod>,
@@ -2527,7 +2694,7 @@ impl ScorpEntitySourcePage {
             reporting_period,
             section179_sales,
             amt_section179_income_carry: self.amt_section179_income_carry.clone(),
-            regular: self.regular.clone(),
+            regular: self.regular_record(),
             alternative: self.alternative.clone(),
             loans: self.loans.clone(),
             final_k1: self.final_k1,
@@ -2545,7 +2712,7 @@ impl ScorpEntitySourcePage {
     fn from_record(source: &ScorpEntitySource) -> Self {
         Self {
             amt_section179_income_carry: source.amt_section179_income_carry.clone(),
-            regular: source.regular.clone(),
+            regular: Some(source.regular.clone()),
             alternative: source.alternative.clone(),
             loans: source.loans.clone(),
             final_k1: source.final_k1,
@@ -2564,11 +2731,13 @@ impl ScorpEntitySourcePage {
 pub struct K1CurrentProperty {
     /// Original current section1231 source net, excluding separately entered section179 sale records.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub net: i64,
     /// Original business-asset unrecaptured section1250 rate component, not additional income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecaptured: i64,
 }
 
@@ -2576,17 +2745,20 @@ pub struct K1CurrentProperty {
 pub struct K1CurrentStatementTotals {
     /// Original current box1 amount before owner limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub ordinary: i64,
     /// Original current box2 amount before owner limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub rental_real_estate: i64,
     /// Original current box3 amount before owner limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub other_rental: i64,
     /// Original current business/rental property source control, excluding carryovers.
@@ -2599,32 +2771,38 @@ pub struct K1CurrentStatementTotals {
     pub portfolio: K1StatementPortfolio,
     /// Original tax-exempt interest control.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub exempt_interest: i64,
     /// Original other tax-exempt income control.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub exempt_other: i64,
     /// Original noncapital nondeductible expense control.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub nondeductible: i64,
     /// Original current section179 amount, excluding business-income carries.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub section179: i64,
     /// Original current cash charity amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub cash_charity: i64,
     /// Original current foreign-tax amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(blank = 0)]
     pub foreign_taxes: i64,
     /// Original existing-code income and deduction control totals.
@@ -2672,7 +2850,8 @@ impl K1PriorFuelSource {
 pub struct PartnerPersonSource {
     /// Original guaranteed service-payment control.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2680,7 +2859,8 @@ pub struct PartnerPersonSource {
     pub guaranteed_services: Option<i64>,
     /// Original guaranteed capital-payment control.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2688,7 +2868,8 @@ pub struct PartnerPersonSource {
     pub guaranteed_capital: Option<i64>,
     /// Original box13 codeR payment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2696,7 +2877,8 @@ pub struct PartnerPersonSource {
     pub pensions: Option<i64>,
     /// Actual health-premium subset already included in service payments.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2704,7 +2886,8 @@ pub struct PartnerPersonSource {
     pub health_guaranteed: Option<i64>,
     /// Actual health-premium subset charged against cash distributions.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2713,7 +2896,8 @@ pub struct PartnerPersonSource {
     pub health_distributions: Option<i64>,
     /// Original deferred-compensation additional tax source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2721,7 +2905,8 @@ pub struct PartnerPersonSource {
     pub deferred_compensation_tax: Option<i64>,
     /// Original conservation reserve program source.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2729,9 +2914,10 @@ pub struct PartnerPersonSource {
     pub crp_payments: Option<i64>,
     /// Actual limited-partner treatment under section1402(a)(13) is established.
     /// [NullText]
-    /// The actual limited-partner treatment is unavailable.
+    /// Self-employment classification is not established yet
     /// [SetText]
-    /// The actual limited-partner treatment is
+    /// Limited-partner treatment for self-employment tax applies
+    #[libertas_hidden]
     pub limited_for_se: Option<bool>,
     /// Original box14 codeA control before partner-level adjustments.
     /// [NullText]
@@ -2739,15 +2925,18 @@ pub struct PartnerPersonSource {
     /// [SetText]
     /// The actual reported net self-employment source is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = -9223372036854775807)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub reported_se: Option<i64>,
     /// Original retained SE-character controls, each stage separate.
+    #[libertas_hidden]
     pub se_history: K1RetainedSeHistory,
     /// Original gross self-employment income control.
     /// [NullText]
     /// The original gross self-employment source is unavailable.
     /// [SetText]
     /// The original gross self-employment source is
+    #[libertas_hidden]
     pub se_gross: Option<Vec<crate::PartnerSeGross>>,
     /// Actual current fuel-credit source.
     /// [NullText]
@@ -2760,6 +2949,7 @@ pub struct PartnerPersonSource {
     /// The prior fuel-credit recovery source is unavailable.
     /// [SetText]
     /// The actual prior fuel-credit recovery source is
+    #[libertas_hidden]
     pub prior_fuel_credit: Option<K1PriorFuelSource>,
 }
 
@@ -2769,7 +2959,8 @@ pub struct PartnerPersonSource {
 pub struct ScorpPersonSource {
     /// Actual federal backup withholding, included once as a payment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2777,7 +2968,8 @@ pub struct ScorpPersonSource {
     pub withholding: Option<i64>,
     /// Actual specified private-activity bond interest included in tax-exempt interest.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     /// [NullText]
     /// This personal source amount is unavailable.
     /// [SetText]
@@ -2834,7 +3026,8 @@ pub struct K1ActivityPartnerBenefits {
     /// [SetText]
     /// The actual source is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub from_distributions: Option<i64>,
     /// Actual retirement choice; no plan is a separate known choice.
     /// [NullText]
@@ -2878,6 +3071,16 @@ pub struct PartnerActivityK1 {
     pub entity: PartnerEntitySource,
     /// Original regular-tax current statement controls.
     pub current: K1CurrentStatementTotals,
+    /// Printed alternative minimum tax code rows, retaining each sign and statement reference.
+    pub amt: Vec<crate::K1CodeRow>,
+    /// Actual activity allocation of the printed depletion adjustment.
+    /// [NullText]
+    /// The activity allocation is unavailable.
+    /// [SetText]
+    /// The statement's activity allocation is
+    #[libertas_hidden]
+    #[libertas_default($null)]
+    pub depletion_sources: Option<Vec<crate::K1DepletionSourceAllocation>>,
     /// Original separate AMT current statement controls.
     /// [NullText]
     /// The separate AMT current source is unavailable.
@@ -2916,6 +3119,16 @@ pub struct ScorpActivityK1 {
     pub entity: ScorpEntitySource,
     /// Original regular-tax current statement controls.
     pub current: K1CurrentStatementTotals,
+    /// Printed alternative minimum tax code rows, retaining each sign and statement reference.
+    pub amt: Vec<crate::K1CodeRow>,
+    /// Actual activity allocation of the printed depletion adjustment.
+    /// [NullText]
+    /// The activity allocation is unavailable.
+    /// [SetText]
+    /// The statement's activity allocation is
+    #[libertas_hidden]
+    #[libertas_default($null)]
+    pub depletion_sources: Option<Vec<crate::K1DepletionSourceAllocation>>,
     /// Original separate AMT current statement controls.
     /// [NullText]
     /// The separate AMT current source is unavailable.
@@ -2965,12 +3178,20 @@ pub struct K1ComponentDetailsPage {
 
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read the entity name and the marked current source controls from this Schedule K-1 (Form 1065) and its actual attached statement. Verify the document year against the supplied facts and report a mismatch or illegible or conflicting values as an error. Keep every printed sign; parentheses indicate a loss. Ordinary, rental real estate and other rental are boxes 1, 2 and 3. Tax-exempt income and nondeductible expense must be explicitly identified by the source. Read the current section 179, cash-charity and foreign-tax amounts only when the source establishes the matching current aggregate; do not combine unlike codes, invent an allocation or infer an unavailable amount. A clearly blank marked amount is zero. Read section179_sales from the actual attached fully taxable property sale statement: description, acquired and sold dates and regular price, cost plus selling expense, depreciation excluding section179, and passed-through section179. Return an empty list only when that statement reports no such sale. Never import alternative AMT source facts or accepted sale IDs, and never invent a sale-to-activity association. Read reporting_period only from this entity's actual current beginning and ending dates; return null when unavailable and never borrow another source's dates or the individual's calendar year. Read only marked fields. Never infer or replace opening basis, loans, at-risk or passive groups, participation, component or QBI block identities, historical balances, actual component allocations, AMT differences, personal benefit facts or elections. Those are separate records the filer supplies. Leave every unmarked value unchanged.",
+    instruction = "Read each printed party block into partnership, partner. Copy names, identification numbers and addresses exactly as printed, preserving masking, punctuation and leading zeros; use empty text for absent identity fields. Never infer a recipient from household names. Read the entity name and the marked current source controls from this Schedule K-1 (Form 1065) and its actual attached statement. Verify the document year against the supplied facts and report a mismatch or illegible or conflicting values as an error. Keep every printed sign; parentheses indicate a loss. Ordinary, rental real estate and other rental are boxes 1, 2 and 3. Tax-exempt income and nondeductible expense must be explicitly identified by the source. Read the current section 179, cash-charity and foreign-tax amounts only when the source establishes the matching current aggregate; do not combine unlike codes, invent an allocation or infer an unavailable amount. A clearly blank marked amount is zero. Read section179_sales from the actual attached fully taxable property sale statement: description, acquired and sold dates and regular price, cost plus selling expense, depreciation excluding section179, and passed-through section179. Return an empty list only when that statement reports no such sale. Never import alternative AMT source facts or accepted sale IDs, and never invent a sale-to-activity association. Read reporting_period only from this entity's actual current beginning and ending dates; return null when unavailable and never borrow another source's dates or the individual's calendar year. Read only marked fields. Never infer or replace opening basis, loans, at-risk or passive groups, participation, component or QBI block identities, historical balances, actual component allocations, AMT differences, personal benefit facts or elections. Those are separate records the filer supplies. Leave every unmarked value unchanged.",
     validation = "$.document_facts",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    duplicate_identity = "@.partnership.federal_id,@.partner.federal_id,@.reporting_period.began,@.reporting_period.ended,@.current.ordinary,@.current.rental_real_estate,@.current.other_rental,@.current.exempt_interest,@.current.exempt_other,@.current.nondeductible,@.current.section179,@.current.cash_charity,@.current.foreign_taxes",
+    form_date_order = "MonthDayYear"
 )]
 pub struct K1PartnershipActivitiesPage {
+    /// Items A and B partnership
+    #[libertas_llm_doc_field]
+    pub partnership: crate::PrintedParty,
+    /// Items E and F partner
+    #[libertas_llm_doc_field]
+    pub partner: crate::PrintedParty,
     /// Actual physical section179 sale sources, each retaining its regular and AMT availability.
     /// Save new sources before selecting their activity associations.
     #[libertas_llm_doc_field]
@@ -2982,20 +3203,28 @@ pub struct K1PartnershipActivitiesPage {
     /// This entity's actual tax period is
     #[libertas_llm_doc_field]
     pub reporting_period: Option<crate::K1EntityTaxPeriod>,
-    /// Entity name on the actual K-1.
-    #[libertas_llm_doc_field]
-    #[libertas_size(min = 1)]
-    pub name: String,
     /// Genuine whole-interest source facts; no aggregate at-risk worksheet.
     pub entity: PartnerEntitySourcePage,
     /// Original current regular-tax statement controls.
     #[libertas_llm_doc_field]
     pub current: K1CurrentStatementTotals,
+    /// Printed alternative minimum tax code rows, retaining each sign and statement reference.
+    #[libertas_llm_doc_field]
+    pub amt: Vec<crate::K1CodeRow>,
+    /// Actual activity allocation of the printed depletion adjustment.
+    /// [NullText]
+    /// The activity allocation is unavailable.
+    /// [SetText]
+    /// The statement's activity allocation is
+    #[libertas_hidden]
+    #[libertas_default($null)]
+    pub depletion_sources: Option<Vec<crate::K1DepletionSourceAllocation>>,
     /// Original separate AMT current statement controls.
     /// [NullText]
     /// The separate AMT current source is unavailable.
     /// [SetText]
     /// The actual separate AMT current source is
+    #[libertas_hidden]
     pub alternative_current: Option<K1CurrentStatementTotals>,
     /// Actual distinct activities, groups and reported QBI source blocks.
     pub activities: K1ComponentDetailsPage,
@@ -3008,6 +3237,7 @@ pub struct K1PartnershipActivitiesPage {
     /// Other actual K-1 boxes requiring additional source worksheets.
     pub unentered: Vec<crate::PartnerK1Item>,
     /// Additional actual situations requiring their source worksheets.
+    #[libertas_hidden]
     pub special: Vec<crate::PartnerSpecial>,
 }
 
@@ -3016,6 +3246,8 @@ impl K1PartnershipActivitiesPage {
         PartnerActivityK1 {
             entity: self.entity.record(self.reporting_period, self.section179_sales.clone()),
             current: self.current.clone(),
+            amt: self.amt.clone(),
+            depletion_sources: self.depletion_sources.clone(),
             alternative_current: self.alternative_current.clone(),
             activities: self.activities.record(),
             person: self.person.clone(),
@@ -3027,11 +3259,14 @@ impl K1PartnershipActivitiesPage {
     }
     pub(crate) fn from_record(name: &str, source: &PartnerActivityK1) -> Self {
         Self {
-            name: name.into(),
+            partnership: crate::PrintedParty::from_name(name.into()),
+            partner: Default::default(),
             reporting_period: source.entity.reporting_period,
             section179_sales: source.entity.section179_sales.clone(),
             entity: PartnerEntitySourcePage::from_record(&source.entity),
             current: source.current.clone(),
+            amt: source.amt.clone(),
+            depletion_sources: source.depletion_sources.clone(),
             alternative_current: source.alternative_current.clone(),
             activities: K1ComponentDetailsPage::from_record(
                 &source.activities,
@@ -3046,12 +3281,20 @@ impl K1PartnershipActivitiesPage {
 }
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read the entity name and the marked current source controls from this Schedule K-1 (Form 1120-S) and its actual attached statement. Verify the document year against the supplied facts and report a mismatch or illegible or conflicting values as an error. Keep every printed sign; parentheses indicate a loss. Ordinary, rental real estate and other rental are boxes 1, 2 and 3. Tax-exempt income and nondeductible expense must be explicitly identified by the source. Read the current section 179, cash-charity and foreign-tax amounts only when the source establishes the matching current aggregate; do not combine unlike codes, invent an allocation or infer an unavailable amount. A clearly blank marked amount is zero. Read section179_sales from the actual attached fully taxable property sale statement: description, acquired and sold dates and regular price, cost plus selling expense, depreciation excluding section179, and passed-through section179. Return an empty list only when that statement reports no such sale. Never import alternative AMT source facts or accepted sale IDs, and never invent a sale-to-activity association. Read reporting_period only from this entity's actual current beginning and ending dates; return null when unavailable and never borrow another source's dates or the individual's calendar year. Read only marked fields. Never infer or replace opening basis, loans, at-risk or passive groups, participation, component or QBI block identities, historical balances, actual component allocations, AMT differences, personal benefit facts or elections. Those are separate records the filer supplies. Leave every unmarked value unchanged.",
+    instruction = "Read each printed party block into corporation, shareholder. Copy names, identification numbers and addresses exactly as printed, preserving masking, punctuation and leading zeros; use empty text for absent identity fields. Never infer a recipient from household names. Read the entity name and the marked current source controls from this Schedule K-1 (Form 1120-S) and its actual attached statement. Verify the document year against the supplied facts and report a mismatch or illegible or conflicting values as an error. Keep every printed sign; parentheses indicate a loss. Ordinary, rental real estate and other rental are boxes 1, 2 and 3. Tax-exempt income and nondeductible expense must be explicitly identified by the source. Read the current section 179, cash-charity and foreign-tax amounts only when the source establishes the matching current aggregate; do not combine unlike codes, invent an allocation or infer an unavailable amount. A clearly blank marked amount is zero. Read section179_sales from the actual attached fully taxable property sale statement: description, acquired and sold dates and regular price, cost plus selling expense, depreciation excluding section179, and passed-through section179. Return an empty list only when that statement reports no such sale. Never import alternative AMT source facts or accepted sale IDs, and never invent a sale-to-activity association. Read reporting_period only from this entity's actual current beginning and ending dates; return null when unavailable and never borrow another source's dates or the individual's calendar year. Read only marked fields. Never infer or replace opening basis, loans, at-risk or passive groups, participation, component or QBI block identities, historical balances, actual component allocations, AMT differences, personal benefit facts or elections. Those are separate records the filer supplies. Leave every unmarked value unchanged.",
     validation = "$.document_facts",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    duplicate_identity = "@.corporation.federal_id,@.shareholder.federal_id,@.reporting_period.began,@.reporting_period.ended,@.current.ordinary,@.current.rental_real_estate,@.current.other_rental,@.current.exempt_interest,@.current.exempt_other,@.current.nondeductible,@.current.section179,@.current.cash_charity,@.current.foreign_taxes",
+    form_date_order = "MonthDayYear"
 )]
 pub struct K1ScorpActivitiesPage {
+    /// Items A and B corporation
+    #[libertas_llm_doc_field]
+    pub corporation: crate::PrintedParty,
+    /// Items E and F1 shareholder
+    #[libertas_llm_doc_field]
+    pub shareholder: crate::PrintedParty,
     /// Actual physical section179 sale sources, each retaining its regular and AMT availability.
     /// Save new sources before selecting their activity associations.
     #[libertas_llm_doc_field]
@@ -3063,20 +3306,28 @@ pub struct K1ScorpActivitiesPage {
     /// This entity's actual tax period is
     #[libertas_llm_doc_field]
     pub reporting_period: Option<crate::K1EntityTaxPeriod>,
-    /// Entity name on the actual K-1.
-    #[libertas_llm_doc_field]
-    #[libertas_size(min = 1)]
-    pub name: String,
     /// Genuine whole-interest source facts; no aggregate at-risk worksheet.
     pub entity: ScorpEntitySourcePage,
     /// Original current regular-tax statement controls.
     #[libertas_llm_doc_field]
     pub current: K1CurrentStatementTotals,
+    /// Printed alternative minimum tax code rows, retaining each sign and statement reference.
+    #[libertas_llm_doc_field]
+    pub amt: Vec<crate::K1CodeRow>,
+    /// Actual activity allocation of the printed depletion adjustment.
+    /// [NullText]
+    /// The activity allocation is unavailable.
+    /// [SetText]
+    /// The statement's activity allocation is
+    #[libertas_hidden]
+    #[libertas_default($null)]
+    pub depletion_sources: Option<Vec<crate::K1DepletionSourceAllocation>>,
     /// Original separate AMT current statement controls.
     /// [NullText]
     /// The separate AMT current source is unavailable.
     /// [SetText]
     /// The actual separate AMT current source is
+    #[libertas_hidden]
     pub alternative_current: Option<K1CurrentStatementTotals>,
     /// Actual distinct activities, groups and reported QBI source blocks.
     pub activities: K1ComponentDetailsPage,
@@ -3089,6 +3340,7 @@ pub struct K1ScorpActivitiesPage {
     /// Other actual K-1 boxes requiring additional source worksheets.
     pub unentered: Vec<crate::ScorpK1Item>,
     /// Additional actual situations requiring their source worksheets.
+    #[libertas_hidden]
     pub special: Vec<crate::ScorpSpecial>,
 }
 
@@ -3097,6 +3349,8 @@ impl K1ScorpActivitiesPage {
         ScorpActivityK1 {
             entity: self.entity.record(self.reporting_period, self.section179_sales.clone()),
             current: self.current.clone(),
+            amt: self.amt.clone(),
+            depletion_sources: self.depletion_sources.clone(),
             alternative_current: self.alternative_current.clone(),
             activities: self.activities.record(),
             person: self.person.clone(),
@@ -3107,11 +3361,14 @@ impl K1ScorpActivitiesPage {
     }
     pub(crate) fn from_record(name: &str, source: &ScorpActivityK1) -> Self {
         Self {
-            name: name.into(),
+            corporation: crate::PrintedParty::from_name(name.into()),
+            shareholder: Default::default(),
             reporting_period: source.entity.reporting_period,
             section179_sales: source.entity.section179_sales.clone(),
             entity: ScorpEntitySourcePage::from_record(&source.entity),
             current: source.current.clone(),
+            amt: source.amt.clone(),
+            depletion_sources: source.depletion_sources.clone(),
             alternative_current: source.alternative_current.clone(),
             activities: K1ComponentDetailsPage::from_record(
                 &source.activities,
@@ -3176,6 +3433,18 @@ impl Default for K1ComponentDetailsPage {
     }
 }
 impl K1ComponentDetailsPage {
+    pub(crate) fn prune_child_references(
+        &mut self,
+        properties: &[crate::K1InvestmentProperty],
+        sales: &[crate::K1Section179Sale],
+    ) -> bool {
+        let mut record = self.record();
+        if !prune_child_references(&mut record, properties, sales) {
+            return false;
+        }
+        *self = Self::from_record(&record, properties, sales);
+        true
+    }
     fn record(&self) -> K1ComponentStatement {
         match &self.statement {
             K1ComponentStatementPage::Unavailable => K1ComponentStatement::Unavailable,
@@ -3203,6 +3472,39 @@ impl K1ComponentDetailsPage {
             },
         }
     }
+}
+
+/// Associations to physical children disappear with those children; personal groups remain.
+pub(crate) fn prune_child_references(
+    statement: &mut K1ComponentStatement,
+    properties: &[crate::K1InvestmentProperty],
+    sales: &[crate::K1Section179Sale],
+) -> bool {
+    let Some(source) = statement.source_mut() else { return false };
+    let components: Vec<_> = source.components.iter().map(|v| v.id).collect();
+    let mut removed = false;
+    for block in &mut source.qbi_blocks {
+        if let Some(rows) = &mut block.allocations {
+            let before = rows.len();
+            rows.retain(|row| components.contains(&row.component));
+            removed |= rows.len() != before;
+        }
+    }
+    if let Some(rows) = &mut source.section179_sale_sources {
+        let before = rows.len();
+        rows.retain(|row| {
+            components.contains(&row.component) && sales.iter().any(|v| v.id == row.sale)
+        });
+        removed |= rows.len() != before;
+    }
+    if let Some(rows) = &mut source.investment_property_sources {
+        let before = rows.len();
+        rows.retain(|row| {
+            components.contains(&row.component) && properties.iter().any(|v| v.id() == row.property)
+        });
+        removed |= rows.len() != before;
+    }
+    removed
 }
 
 impl K1ComponentStatement {
@@ -3238,8 +3540,74 @@ fn same_source_kind(a: &crate::FederalIncome, b: &crate::FederalIncome) -> bool 
         )
     )
 }
+// Expose one participation record per actual legal activity, never its
+// duplicated statement members. Limited-partner interests cannot use test (4)
+// under Reg. 1.469-5T(e)(2); rental and trading classifications stay separate.
+pub(crate) fn ordinary_participation_sources(
+    income: &crate::FederalIncome,
+) -> Option<Vec<crate::ScorpParticipation>> {
+    use crate::{FederalIncome as I, PartnerParticipation as P, ScorpTradeKind as T};
+    let mut records = Vec::new();
+    match income {
+        I::Partnership { data } if data.trade_kind == T::Ordinary => {
+            if let P::General { facts } = data.participation.as_ref()? {
+                records.push(facts.clone());
+            }
+        }
+        I::Scorp { data } if crate::ScorpK1::from(data).trade_kind == T::Ordinary => {
+            records.push(crate::ScorpK1::from(data).participation?)
+        }
+        I::PartnershipActivities { .. } | I::ScorpActivities { .. } => {
+            let source = source(income)?;
+            if source.components.iter().any(|component| {
+                component.kind == K1StatementKind::TradeBusiness
+                    && !source
+                        .passive_groups
+                        .iter()
+                        .any(|group| Some(group.id) == component.passive_group)
+            }) {
+                return None;
+            }
+            for group in &source.passive_groups {
+                match &group.participation {
+                    K1ActivityParticipation::Partnership {
+                        facts: P::General { facts },
+                        trade_kind: T::Ordinary,
+                    }
+                    | K1ActivityParticipation::Scorp { facts, trade_kind: T::Ordinary } => {
+                        records.push(facts.clone())
+                    }
+                    K1ActivityParticipation::Unavailable => return None,
+                    _ => {}
+                }
+            }
+        }
+        I::EstateTrustPortfolio { data } => {
+            let data = &crate::FederalEstateTrustPortfolioK1::from(data);
+            for activity in &data.activities.activities {
+                if activity.kind == crate::EstateActivityKind::Business {
+                    match &activity.participation {
+                        crate::EstateParticipation::Material(facts) => records.push(facts.clone()),
+                        _ => return None,
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Some(records)
+}
+
 pub(crate) fn source_ids(income: &crate::FederalIncome) -> Vec<i64> {
     source(income).map_or_else(Vec::new, |v| v.ids().collect())
+}
+pub(crate) fn physical_child_ids(income: &crate::FederalIncome) -> Vec<i64> {
+    let mut ids = source(income).map_or_else(Vec::new, |v| {
+        v.components.iter().map(|v| v.id).chain(v.qbi_blocks.iter().map(|v| v.id)).collect()
+    });
+    ids.extend(section179_sales(income).iter().map(|v| v.id));
+    ids.extend(investment_properties(income).iter().map(crate::K1InvestmentProperty::id));
+    ids
 }
 // Metadata follows ids()/ids_mut() exactly; the existing allocator still owns
 // uniqueness and assignment once. Identity is hidden, so locate its actual row.
@@ -3312,8 +3680,8 @@ pub(crate) fn page_issue(
     accepted: &[crate::FederalIncomeEntry],
 ) -> Option<ValidationIssue> {
     let old = accepted.iter().find(|v| item.id > 0 && v.id == item.id);
-    let name = match &item.document {
-        crate::IncomeDocument::K1PartnershipActivities(value) => {
+    let (name, party_field) = match &item.document {
+        crate::IncomeSource::K1 { value: crate::K1Document::K1PartnershipActivities(value) } => {
             if value
                 .person
                 .as_ref()
@@ -3326,13 +3694,19 @@ pub(crate) fn page_issue(
                         .in_field("person"),
                 );
             }
-            &value.name
+            (&value.partnership.name, "partnership")
         }
-        crate::IncomeDocument::K1ScorpActivities(value) => &value.name,
+        crate::IncomeSource::K1 { value: crate::K1Document::K1ScorpActivities(value) } => {
+            (&value.corporation.name, "corporation")
+        }
         _ => return None,
     };
     if !source_name(name) {
-        return Some(ValidationIssue::new("K1_ACTIVITY_SOURCE_SIZE_INVALID").at_field("name"));
+        return Some(
+            ValidationIssue::new("K1_ACTIVITY_SOURCE_SIZE_INVALID")
+                .at_field("name")
+                .in_field(party_field),
+        );
     }
     // Accepted parent/role authorization runs once on the converted
     // candidate graph before the existing global allocator assigns IDs.
@@ -3340,8 +3714,8 @@ pub(crate) fn page_issue(
 }
 pub(crate) fn income_issue(income: &crate::FederalIncome) -> Option<ValidationIssue> {
     let structural = match income {
-        crate::FederalIncome::PartnershipActivities { data } => data.issue(),
-        crate::FederalIncome::ScorpActivities { data } => data.issue(),
+        crate::FederalIncome::PartnershipActivities { data } => data.issue_with_mode(false),
+        crate::FederalIncome::ScorpActivities { data } => data.issue_with_mode(false),
         _ => return None,
     };
     if structural.is_some() {
@@ -3394,7 +3768,7 @@ pub(crate) fn section179_amounts_in_range(entries: &[crate::FederalIncomeEntry])
 // Established benefit facts are the normal benefits section's authority.
 // A K1 Page records only its printed payment/subset facts and cannot erase or
 // replace those accepted plans when reopened, resaved or converted from Single.
-fn managed_payment(income: &crate::FederalIncome) -> Option<i64> {
+pub(crate) fn managed_payment(income: &crate::FederalIncome) -> Option<i64> {
     match income {
         crate::FederalIncome::Partnership { data } => Some(data.health_distributions),
         crate::FederalIncome::PartnershipActivities { data } => {
@@ -3430,7 +3804,7 @@ pub(crate) fn preserve_person_sources(
                 data.health_insurance = old.health_insurance.clone()
             }
             Some(crate::FederalIncome::Scorp { data: old }) => {
-                data.health_insurance = Some(old.health_insurance.clone())
+                data.health_insurance = Some(old.personal.health_insurance.clone())
             }
             _ => {}
         },
@@ -3602,7 +3976,31 @@ impl PartnerActivityK1 {
     pub(crate) fn rule(&self) -> Option<&'static str> {
         self.issue().map(|issue| issue.key)
     }
-    fn issue(&self) -> Option<ValidationIssue> {
+    pub(crate) fn issue(&self) -> Option<ValidationIssue> {
+        self.issue_with_mode(true)
+    }
+    pub(crate) fn issue_with_mode(&self, require_answers: bool) -> Option<ValidationIssue> {
+        self.issue_with_alignment(require_answers, require_answers)
+    }
+    pub(crate) fn topic_issue(&self, require_answers: bool) -> Option<ValidationIssue> {
+        self.issue_with_alignment(require_answers, true)
+    }
+    fn issue_with_alignment(
+        &self,
+        require_answers: bool,
+        check_paper: bool,
+    ) -> Option<ValidationIssue> {
+        if require_answers && let Some(issue) = self.depletion_source_issue() {
+            return Some(issue);
+        }
+        if require_answers && self.entity.disposition.is_none() {
+            return Some(
+                ValidationIssue::new("DOCUMENT_K1_DISPOSITION")
+                    .at_field("disposition")
+                    .in_field("entity"),
+            );
+        }
+
         if let Some(issue) = self.entity.regular.issue() {
             return Some(issue.in_field("regular").in_field("entity"));
         }
@@ -3629,7 +4027,10 @@ impl PartnerActivityK1 {
                 .then(|| ValidationIssue::new("K1_ACTIVITY_SOURCE_AMOUNT_INVALID").at_field(field))
         };
         if let Some(issue) = [
-            intrinsic("disposition", self.entity.disposition.valid()),
+            intrinsic(
+                "disposition",
+                self.entity.disposition.as_ref().is_none_or(crate::K1Disposition::valid),
+            ),
             intrinsic("sale", self.entity.sale.valid()),
             self.entity
                 .schedule_k3
@@ -3642,7 +4043,7 @@ impl PartnerActivityK1 {
                     })
                 })
                 .map(|issue| issue.in_field("schedule_k3")),
-            crate::K1Credit::issue_list(&self.entity.credits),
+            crate::K1Credit::issue_list_with_mode(&self.entity.credits, require_answers),
             intrinsic(
                 "investment_property",
                 crate::K1InvestmentProperty::valid_list(&self.entity.investment_property),
@@ -3679,31 +4080,66 @@ impl PartnerActivityK1 {
                     .map(|issue| in_source_field(issue, "alternative_current"))
             })
             .or_else(|| {
-                self.activities.source().and_then(|v| v.source_issue(true)).map(|issue| {
-                    in_source_field(
-                        in_source_field(in_source_field(issue, "source"), "statement"),
-                        "activities",
-                    )
-                })
+                self.activities
+                    .source()
+                    .and_then(|v| v.source_issue_with_alignment(true, check_paper))
+                    .map(|issue| {
+                        in_source_field(
+                            in_source_field(in_source_field(issue, "source"), "statement"),
+                            "activities",
+                        )
+                    })
             })
             .or_else(|| {
                 self.activities
                     .source()
-                    .and_then(|v| self.current.reconcile_issue(v, false))
+                    .and_then(|v| {
+                        check_paper.then(|| self.current.reconcile_issue(v, false)).flatten()
+                    })
                     .map(|issue| in_source_field(issue, "current"))
             })
             .or_else(|| {
                 self.activities
                     .source()
                     .and_then(|v| {
-                        self.alternative_current.as_ref().and_then(|c| c.reconcile_issue(v, true))
+                        check_paper
+                            .then(|| {
+                                self.alternative_current
+                                    .as_ref()
+                                    .and_then(|c| c.reconcile_issue(v, true))
+                            })
+                            .flatten()
                     })
                     .map(|issue| in_source_field(issue, "alternative_current"))
             })
     }
 }
 impl ScorpActivityK1 {
-    fn issue(&self) -> Option<ValidationIssue> {
+    pub(crate) fn issue(&self) -> Option<ValidationIssue> {
+        self.issue_with_mode(true)
+    }
+    pub(crate) fn issue_with_mode(&self, require_answers: bool) -> Option<ValidationIssue> {
+        self.issue_with_alignment(require_answers, require_answers)
+    }
+    pub(crate) fn topic_issue(&self, require_answers: bool) -> Option<ValidationIssue> {
+        self.issue_with_alignment(require_answers, true)
+    }
+    fn issue_with_alignment(
+        &self,
+        require_answers: bool,
+        check_paper: bool,
+    ) -> Option<ValidationIssue> {
+        if require_answers && let Some(issue) = self.depletion_source_issue() {
+            return Some(issue);
+        }
+        if require_answers && self.entity.disposition.is_none() {
+            return Some(
+                ValidationIssue::new("DOCUMENT_K1_DISPOSITION")
+                    .at_field("disposition")
+                    .in_field("entity"),
+            );
+        }
+
         if let Some(issue) = self.entity.regular.issue() {
             return Some(issue.in_field("regular").in_field("entity"));
         }
@@ -3730,7 +4166,10 @@ impl ScorpActivityK1 {
                 .then(|| ValidationIssue::new("K1_ACTIVITY_SOURCE_AMOUNT_INVALID").at_field(field))
         };
         if let Some(issue) = [
-            intrinsic("disposition", self.entity.disposition.valid()),
+            intrinsic(
+                "disposition",
+                self.entity.disposition.as_ref().is_none_or(crate::K1Disposition::valid),
+            ),
             self.entity
                 .schedule_k3
                 .as_ref()
@@ -3742,7 +4181,7 @@ impl ScorpActivityK1 {
                     })
                 })
                 .map(|issue| issue.in_field("schedule_k3")),
-            crate::K1Credit::issue_list(&self.entity.credits),
+            crate::K1Credit::issue_list_with_mode(&self.entity.credits, require_answers),
             intrinsic(
                 "investment_property",
                 crate::K1InvestmentProperty::valid_list(&self.entity.investment_property),
@@ -3813,24 +4252,35 @@ impl ScorpActivityK1 {
                     .map(|issue| in_source_field(issue, "alternative_current"))
             })
             .or_else(|| {
-                self.activities.source().and_then(|v| v.source_issue(false)).map(|issue| {
-                    in_source_field(
-                        in_source_field(in_source_field(issue, "source"), "statement"),
-                        "activities",
-                    )
-                })
+                self.activities
+                    .source()
+                    .and_then(|v| v.source_issue_with_alignment(false, check_paper))
+                    .map(|issue| {
+                        in_source_field(
+                            in_source_field(in_source_field(issue, "source"), "statement"),
+                            "activities",
+                        )
+                    })
             })
             .or_else(|| {
                 self.activities
                     .source()
-                    .and_then(|v| self.current.reconcile_issue(v, false))
+                    .and_then(|v| {
+                        check_paper.then(|| self.current.reconcile_issue(v, false)).flatten()
+                    })
                     .map(|issue| in_source_field(issue, "current"))
             })
             .or_else(|| {
                 self.activities
                     .source()
                     .and_then(|v| {
-                        self.alternative_current.as_ref().and_then(|c| c.reconcile_issue(v, true))
+                        check_paper
+                            .then(|| {
+                                self.alternative_current
+                                    .as_ref()
+                                    .and_then(|c| c.reconcile_issue(v, true))
+                            })
+                            .flatten()
                     })
                     .map(|issue| in_source_field(issue, "alternative_current"))
             })

@@ -1,0 +1,26 @@
+{
+  "rules": [
+    {"order": 118000, "rule": {"select": "^<Deductions>.car_loans", "layout": "summary", "paths": ["value.lender.name", "value.box_1"]}},
+    {"order": 135000, "rule": {"select": "^<SaveMedical>", "include_description": true}},
+    {"order": 136000, "rule": {"select": "^<SaveTaxes>", "include_description": true}},
+    {"order": 137000, "rule": {"select": "^<SaveOtherItemized>", "include_description": true}},
+    {"order": 183000, "rule": {"select": "^<SaveDeductions>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 183040, "rule": {"select": "^<SaveSpouseItemizes>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 183050, "rule": {"select": "^<SaveSpouseBoxes>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 194000, "rule": {"select": "^<SaveMedical>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 195000, "rule": {"select": "^<SaveTaxes>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 196000, "rule": {"select": "^<SaveOtherItemized>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 532000, "rule": {"select": "^<SaltElection>", "flatten": true}},
+    {"order": 753000, "rule": {"select": "^<Deductions>.itemize_override", "promote": {"use_parent_name": false}}},
+    {"order": 754000, "rule": {"select": "^<CarePremium>.person", "promote": {"use_parent_name": false}}},
+    {"order": 755000, "rule": {"select": "^<Taxes>.kind", "promote": {"use_parent_name": false}}},
+    {"order": 756000, "rule": {"select": "^<FinalAnnuityLoss>.contract", "promote": {"use_parent_name": false}}},
+    {"order": 757000, "rule": {"select": "^<AnnuityContract>.label", "promote": true}},
+    {"order": 816000, "rule": {"select": "^<SaveDeductions.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 816100, "rule": {"select": "^<BeginSpouseBoxes.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 816200, "rule": {"select": "^<SaveSpouseBoxes.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 830000, "rule": {"select": "^<SaveMedical.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 831000, "rule": {"select": "^<SaveTaxes.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 832000, "rule": {"select": "^<SaveOtherItemized.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

@@ -1,7 +1,7 @@
 use crate::FederalResult;
 use crate::farm_land::ResolvedFarmLandSale;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use libertas_macros::*;
+use crate::kernel::lines::{LineValue, row as calculation_row};
+use crate::line_emission::emit as emit_lines;
 
 // The section 1062 election (FarmLandSale.deferral). Choosing it states the
 // ten years of qualifying use, a qualified individual farmer buyer and the
@@ -21,24 +21,7 @@ pub(crate) fn report(sale: &ResolvedFarmLandSale, r: &mut FederalResult) {
     );
 }
 
-/// Farmland tax installment election
-/// Payment timing only: the full estimated federal tax remains unchanged. The first installment is included in the current amount due; the remaining balance is deferred, not forgiven. File Form 1062, a separate Schedule A and covenant for each elected sale. The App does not file or pay. Later installments are due on the unextended return deadlines for the next three years; default or death can accelerate the unpaid balance. Whole-dollar rounding may require a final installment adjustment.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct FarmTaxInstallments {
-    /// Tax attributable to all elected sales
-    #[libertas_money("USD", 2)]
-    pub applicable: i64,
-    /// First installment due by the unextended return deadline
-    #[libertas_money("USD", 2)]
-    pub first: i64,
-    /// Remaining liability deferred to later years
-    #[libertas_money("USD", 2)]
-    pub remaining: i64,
-    /// Net current federal tax position before other payments and refundable credits
-    /// Annual tax less the deferred balance. A negative amount contributes to the estimated overpayment; it is not negative annual tax or forgiveness of future installments.
-    #[libertas_money("USD", 2)]
-    pub current: i64,
-}
+pub use crate::return_carriers::FarmTaxInstallments;
 
 pub(crate) struct TaxContext<'a> {
     pub pool: &'a crate::extended_rules::RentalResult,
@@ -62,10 +45,11 @@ pub(crate) struct TaxContext<'a> {
     pub ready: bool,
 }
 
-pub(crate) fn calculate(
+pub(crate) fn calculate_with_claims(
     draft: &crate::FederalDraft,
     context: TaxContext<'_>,
     r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Option<FarmTaxInstallments> {
     use crate::kernel::ratio::{fraction, positive};
     let mut gain = 0;
@@ -74,7 +58,8 @@ pub(crate) fn calculate(
     // "leased to a farmer" as well as farmed land.
     for source in crate::farm::sources(draft) {
         for record in &source.farm.land_sales {
-            let sale = record.resolve(draft, source.entry.id, source.farm)?;
+            let sale =
+                record.resolve_with_claims(draft, source.entry.id, source.farm, source_claims)?;
             if sale.deferral {
                 elected = true;
                 if !qualifies(&sale) {
@@ -97,7 +82,11 @@ pub(crate) fn calculate(
         );
         return None;
     }
-    let property = match crate::section1231::without_elected_land(draft, context.pool) {
+    let property = match crate::section1231::without_elected_land_with_claims(
+        draft,
+        context.pool,
+        source_claims,
+    ) {
         Ok(value) => value,
         Err(error) => {
             error.report_at(

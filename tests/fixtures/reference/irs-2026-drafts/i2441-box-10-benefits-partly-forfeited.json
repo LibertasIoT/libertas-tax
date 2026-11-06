@@ -1,0 +1,76 @@
+{
+ "source": {
+  "title": "Instructions for Form 2441 (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 7",
+  "example": "Line 14, Example (employer set aside $7,500)",
+  "url": "https://www.irs.gov/pub/irs-dft/i2441--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "7fdecfe193df435542bb452ba108bee011bef7032fda8abe972d6fbd5de233e7"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "filer single, born 1985-06-15, W-2 wages $60,000 with $6,000 withholding",
+   "reason": "the example gives no income; earned income exceeds the expenses"
+  },
+  {
+   "fact": "one child born 2019-06-15 (under 13) lives with the filer all year; the care provider is an unrelated organization paid the qualified expenses",
+   "reason": "the example gives only the qualified expenses"
+  },
+  {
+   "fact": "the plan maximum is $7,500",
+   "reason": "the example: the employer set aside $7,500; the 2026 exclusion limit for a single filer is $7,500"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19850615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 60000,
+     "withholding": 6000,
+     "social_wages": 60000,
+     "social_tax": 3720,
+     "medicare_wages": 60000,
+     "medicare_tax": 870,
+     "care_benefits": 7500
+    }
+   ]
+  },
+  {
+   "page": "care_children",
+   "children": [
+    [
+     "CAREY",
+     "SAMPLE",
+     20190615,
+     7450
+    ]
+   ]
+  },
+  {
+   "page": "care",
+   "plan_maximum": 7500,
+   "forfeited": 50
+  }
+ ],
+ "expected": [
+  {
+   "form": "2441",
+   "line": "12",
+   "amount": 7500,
+   "provenance": "printed"
+  },
+  {
+   "form": "2441",
+   "line": "14",
+   "amount": 50,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

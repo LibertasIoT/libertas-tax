@@ -57,7 +57,8 @@ pub enum SourceCents {
     Reported {
         /// Actual source amount
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Bound each source amount to leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }
@@ -77,5 +78,81 @@ impl SourceCents {
                 if *amount >= 0 { Ok(()) } else { Err("SOURCE_CENTS_NEGATIVE") }
             },
         )
+    }
+}
+
+/// Availability of a nonnegative count in an actual source
+/// Units belong to the asking field. A documented zero is distinct from an unknown count.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    libertas_macros::LibertasAvroEncode,
+    libertas_macros::LibertasAvroDecode,
+    libertas_macros::LibertasExport,
+)]
+#[libertas_inline_choices]
+pub enum SourceUnits {
+    /// The source count is unavailable
+    Unavailable,
+    /// The records establish no count (documented zero)
+    NotReported,
+    /// The records establish this number
+    Reported {
+        /// Actual source units
+        #[libertas_number(min = 0)]
+        units: u32,
+    },
+}
+
+impl SourceUnits {
+    // u32 supplies the nonnegative domain. Callers apply source-specific
+    // upper bounds through the same reported-value check as monetary sources.
+    pub(crate) fn source_fact(&self) -> Result<SourceFact<u32>, &'static str> {
+        let fact = match self {
+            Self::Reported { units } => SourceFact::Reported(*units),
+            Self::NotReported => SourceFact::NotReported,
+            Self::Unavailable => SourceFact::Unavailable,
+        };
+        fact.check_reported(|_| Ok(()))
+    }
+}
+
+/// Availability of a calendar date in an actual source
+/// Use Reported for a date established by records; no date is distinct from unknown.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    libertas_macros::LibertasAvroEncode,
+    libertas_macros::LibertasAvroDecode,
+    libertas_macros::LibertasExport,
+)]
+#[libertas_inline_choices]
+pub enum SourceDate {
+    /// The source date is unavailable
+    Unavailable,
+    /// The records establish no date
+    NotReported,
+    /// The records establish this date
+    Reported {
+        /// Actual source date
+        #[libertas_date_only]
+        date: u32,
+    },
+}
+
+impl SourceDate {
+    pub(crate) fn source_fact(&self) -> Result<SourceFact<u32>, &'static str> {
+        let fact = match self {
+            Self::Reported { date } => SourceFact::Reported(*date),
+            Self::NotReported => SourceFact::NotReported,
+            Self::Unavailable => SourceFact::Unavailable,
+        };
+        fact.check_reported(|date| {
+            if super::calendar::valid_date(*date) { Ok(()) } else { Err("SOURCE_DATE_INVALID") }
+        })
     }
 }

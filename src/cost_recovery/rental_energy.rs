@@ -7,242 +7,15 @@ use crate::kernel::{
     ratio::{self, exact},
     source_fact::SourceFact,
 };
-use crate::{FederalIncome, FederalRental, SourceCents};
-use alloc::{string::String, vec::Vec};
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
+use crate::{FederalIncome, FederalRental};
+use alloc::vec::Vec;
 
-/// A physical building's section 179D records
-/// Enter each actual whole building once, even when several cost rows belong to it.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_llm_doc_trans(
-    instruction = "Read one actual physical building's section 179D certification or conditioned-area schedule exactly. Return only the printed building designation and conditioned whole-building square footage, retaining the printed decimal precision. Report missing, illegible, conflicting or multiple-building values as errors. Do not calculate area, ownership shares or a deduction. Do not change record IDs, cost-source associations, ownership fractions or current/prior deduction histories; those remain actual personal records.",
-    doc_type = "application/pdf,image/*"
-)]
-pub struct RentalEnergyBuildingFacts {
-    /// Record identity
-    #[libertas_hidden]
-    #[libertas_default(0)]
-    pub id: i64,
-    /// Building designation on the certification and ownership records
-    #[libertas_size(min = 1)]
-    #[libertas_llm_doc_field]
-    pub building_source: String,
-    /// Conditioned building area in square feet
-    /// Copy the documented whole-building area, with up to two decimal places. Do not enter just your ownership share.
-    #[libertas_pattern(r"^[0-9]+(\.[0-9]{1,2})?$")]
-    #[libertas_llm_doc_field]
-    pub square_feet: String,
-    /// Numerator of your documented ownership share of the building allowance
-    #[libertas_number(min = 1)]
-    pub ownership_numerator: i64,
-    /// Denominator of that ownership share
-    #[libertas_number(min = 1)]
-    pub ownership_denominator: i64,
-    /// Building deduction history from all relevant parties' records
-    /// Include the current year and each of the preceding three years. Each year needs an actual record establishing all relevant parties' deductions or their absence; an empty list is unavailable history. Do not enter the cost of this year's project here.
-    /// ----
-    /// Documentary year
-    pub deductions: Vec<RentalEnergyDeductionSource>,
-}
-
-/// A documented year's whole-building section 179D deductions
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RentalEnergyDeductionSource {
-    /// Actual tax year of the deduction records
-    pub tax_year: u32,
-    /// Source identifying the applicable claimants and their complete records
-    #[libertas_size(min = 1)]
-    pub claimant_source: String,
-    /// Deductions established by those records
-    /// For the current year, include other parties' already claimed deductions, excluding the new cost-row claims entered here. Not reported means the records establish no deductions, not missing records.
-    pub amount: SourceCents,
-}
-
-/// System covered by the certification
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RentalEnergySystem {
-    /// Interior lighting
-    InteriorLighting,
-    /// Heating, cooling, ventilation and hot water
-    HeatingCoolingVentilationHotWater,
-    /// Building envelope
-    BuildingEnvelope,
-}
-
-/// Actual energy certification
-/// Use the qualified professional's signed certification; the App does not calculate engineering savings or certify legal qualification.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_llm_doc_trans(
-    instruction = "Read one signed section 179D energy certification exactly. Return only the printed certifier name, certification date, professional license and jurisdiction, reference-standard and qualified-software declaration, and savings percentage. Preserve printed percentage precision; do not compute engineering savings or legal qualification. Report missing, illegible or conflicting selected facts as errors. Do not invent or change the retained document reference, unrelated-party personal answer, physical-building or cost-row IDs, ownership, prior basis or deduction histories. A Form 7205 computed deduction is not a savings percentage.",
-    doc_type = "application/pdf,image/*"
-)]
-pub struct RentalEnergyCertification {
-    /// Certification document reference
-    #[libertas_size(min = 1)]
-    pub source_reference: String,
-    /// Certifier's name
-    #[libertas_size(min = 1)]
-    #[libertas_llm_doc_field(allow_empty = false)]
-    pub certifier: String,
-    /// Certification date
-    #[libertas_date_only]
-    #[libertas_llm_doc_field(allow_empty = false)]
-    pub certified: u32,
-    /// Professional license and building jurisdiction on the certification
-    #[libertas_size(min = 1)]
-    #[libertas_llm_doc_field(allow_empty = false)]
-    pub license_source: String,
-    /// The certifier is unrelated to you
-    pub unrelated_to_claimant: bool,
-    /// Reference standard and qualified-software declaration on the certification
-    #[libertas_size(min = 1)]
-    #[libertas_llm_doc_field(allow_empty = false)]
-    pub calculation_source: String,
-    /// Printed savings percentage
-    /// Copy the actual percentage, including up to two decimal places; do not calculate savings yourself.
-    #[libertas_pattern(r"^[0-9]{1,3}(\.[0-9]{1,2})?$")]
-    #[libertas_llm_doc_field(allow_empty = false)]
-    pub savings_percent: String,
-}
-
-/// Increased section 179D amount
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RentalEnergyIncreasedAmount {
-    /// Ordinary amount; no increased amount claimed
-    Ordinary,
-    /// Installation actually began before January 29, 2023
-    EarlyInstallation,
-    /// Actual wage and apprenticeship compliance records
-    WageAndApprenticeship {
-        /// Reference to the retained compliance records
-        #[libertas_size(min = 1)]
-        source_reference: String,
-    },
-}
-
-/// Actual section 179D project treatment
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RentalEnergyProject {
-    /// Certified energy-efficient commercial building property
-    Eecbp {
-        /// Certification
-        /// [NullText]
-        /// A qualifying certification has not been established
-        /// [SetText]
-        /// The actual certification is
-        #[libertas_default($null)]
-        certification: Option<RentalEnergyCertification>,
-    },
-    /// Elected energy-efficient building retrofit
-    /// This source is retained for review; its final-certification-year adjusted-basis calculation is not yet available.
-    Retrofit {
-        /// Original building service date
-        #[libertas_date_only]
-        original_building_service: u32,
-        /// Qualified retrofit plan established
-        #[libertas_date_only]
-        plan_established: u32,
-        /// Baseline certification date
-        #[libertas_date_only]
-        baseline_certified: u32,
-        /// Actual baseline certification source
-        #[libertas_size(min = 1)]
-        baseline_source: String,
-        /// Actual final certification
-        final_certification: RentalEnergyCertification,
-        /// Actual election source
-        #[libertas_size(min = 1)]
-        election_source: String,
-    },
-}
-
-/// A section 179D claim on this cost row
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RentalEnergyClaim {
-    /// Actual physical building
-    /// Save the physical building's documentary facts in More about this property before claiming from its cost rows.
-    pub physical_building: i64,
-    /// Project and cost-source reference
-    /// Identify this cost subset once. Do not repeat the same source costs on another row.
-    #[libertas_size(min = 1)]
-    pub project_source: String,
-    /// Certified system
-    pub system: RentalEnergySystem,
-    /// Actual construction commencement
-    #[libertas_date_only]
-    pub construction_began: u32,
-    /// Actual installation commencement
-    #[libertas_date_only]
-    pub installation_began: u32,
-    /// Your actual qualifying cost within this row's depreciable cost
-    /// This is already your ownership share. Exclude the building's other costs and costs entered on another row.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub qualifying_cost: i64,
-    /// Actual project treatment
-    pub project: RentalEnergyProject,
-    /// Increased amount treatment
-    pub increased: RentalEnergyIncreasedAmount,
-}
-
-/// A section 179D cost-row claim in the rental editor
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RentalEnergyClaimPage {
-    /// Actual physical building
-    /// Save the physical building's documentary facts in More about this property before claiming from its cost rows.
-    #[libertas_enum_source("$.rental_energy_buildings")]
-    pub physical_building: i64,
-    /// Project and cost-source reference
-    /// Identify this cost subset once. Do not repeat the same source costs on another row.
-    #[libertas_size(min = 1)]
-    pub project_source: String,
-    /// Certified system
-    pub system: RentalEnergySystem,
-    /// Actual construction commencement
-    #[libertas_date_only]
-    pub construction_began: u32,
-    /// Actual installation commencement
-    #[libertas_date_only]
-    pub installation_began: u32,
-    /// Your actual qualifying cost within this row's depreciable cost
-    /// This is already your ownership share. Exclude the building's other costs and costs entered on another row.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub qualifying_cost: i64,
-    /// Actual project treatment
-    pub project: RentalEnergyProject,
-    /// Increased amount treatment
-    pub increased: RentalEnergyIncreasedAmount,
-}
-
-impl From<&RentalEnergyClaim> for RentalEnergyClaimPage {
-    fn from(source: &RentalEnergyClaim) -> Self {
-        Self {
-            physical_building: source.physical_building,
-            project_source: source.project_source.clone(),
-            system: source.system.clone(),
-            construction_began: source.construction_began,
-            installation_began: source.installation_began,
-            qualifying_cost: source.qualifying_cost,
-            project: source.project.clone(),
-            increased: source.increased.clone(),
-        }
-    }
-}
-impl From<&RentalEnergyClaimPage> for RentalEnergyClaim {
-    fn from(source: &RentalEnergyClaimPage) -> Self {
-        Self {
-            physical_building: source.physical_building,
-            project_source: source.project_source.clone(),
-            system: source.system.clone(),
-            construction_began: source.construction_began,
-            installation_began: source.installation_began,
-            qualifying_cost: source.qualifying_cost,
-            project: source.project.clone(),
-            increased: source.increased.clone(),
-        }
-    }
-}
+pub use crate::rental_energy_model::{
+    BuildingRecoveryRecord, RentalEnergyBuildingFacts, RentalEnergyBuildingFactsPage,
+    RentalEnergyCertification, RentalEnergyClaim, RentalEnergyClaimPage,
+    RentalEnergyDeductionSource, RentalEnergyIncreasedAmount, RentalEnergyProject,
+    RentalEnergySystem,
+};
 
 pub(crate) const HISTORY: &str = "ISSUE_RENTAL_ENERGY_HISTORY_UNAVAILABLE";
 pub(crate) const CERTIFICATION: &str = "ISSUE_RENTAL_ENERGY_CERTIFICATION_UNAVAILABLE";
@@ -251,64 +24,18 @@ pub(crate) const YEAR: &str = "ISSUE_RENTAL_ENERGY_YEAR_UNAVAILABLE";
 pub(crate) const BASIS: &str = "ISSUE_RENTAL_ENERGY_BASIS_UNAVAILABLE";
 pub(crate) const HISTORICAL_BASIS: &str = "ISSUE_RENTAL_ENERGY_HISTORICAL_BASIS_UNAVAILABLE";
 
-// Printed decimal precision is two places, matching the source declaration.
-// Preserve the source as an exact ratio; checked arithmetic never truncates it.
-fn decimal(value: &str) -> Option<exact::Exact> {
-    if value.ends_with('.') {
-        return None;
-    }
-    let (whole, tail) = value.split_once('.').map_or((value, ""), |parts| parts);
-    if whole.is_empty()
-        || tail.len() > 2
-        || !whole.bytes().chain(tail.bytes()).all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    let scale = 10_i64.checked_pow(tail.len() as u32)?;
-    let numerator = whole
-        .parse::<i64>()
-        .ok()?
-        .checked_mul(scale)?
-        .checked_add(if tail.is_empty() { 0 } else { tail.parse().ok()? })?;
-    exact::ratio(numerator, scale)
-}
-
-pub(crate) fn ids(income: &FederalIncome) -> Vec<i64> {
-    match income {
-        FederalIncome::Rental { data } => data
-            .energy_buildings
-            .iter()
-            .map(|b| b.id)
-            .chain(data.buildings.iter().map(|b| b.id))
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-pub(crate) fn ids_mut(income: &mut FederalIncome) -> Vec<&mut i64> {
-    match income {
-        FederalIncome::Rental { data } => {
-            let associated = !data.energy_buildings.is_empty()
-                || data.buildings.iter().any(|cost| cost.energy.is_some());
-            data.energy_buildings
-                .iter_mut()
-                .map(|b| &mut b.id)
-                .chain(
-                    data.buildings
-                        .iter_mut()
-                        .filter(|cost| associated || cost.id != 0)
-                        .map(|b| &mut b.id),
-                )
-                .collect()
-        }
-        _ => Vec::new(),
-    }
+// Printed precision is two decimal places, matching the source declaration: the stored natural
+// value becomes an exact ratio of whole hundredths through the shared boundary.
+fn decimal(value: f64) -> Option<exact::Exact> {
+    exact::ratio(crate::kernel::natural::exact(value, 100)?, 100)
 }
 
 pub(crate) fn source_issue(v: &FederalRental) -> Option<&'static str> {
     let valid_date = crate::federal_rules::valid_date;
     for building in &v.energy_buildings {
-        if building.building_source.trim().is_empty()
-            || decimal(&building.square_feet).is_none_or(|area| area <= exact::whole(0))
+        if building.recovery.as_ref().is_some_and(|facts| !facts.valid())
+            || building.building_source.trim().is_empty()
+            || decimal(building.square_feet).is_none_or(|area| area <= exact::whole(0))
             || building.ownership_numerator <= 0
             || building.ownership_denominator < building.ownership_numerator
         {
@@ -352,7 +79,7 @@ pub(crate) fn source_issue(v: &FederalRental) -> Option<&'static str> {
                 || c.calculation_source.trim().is_empty()
                 || !valid_date(c.certified)
                 || c.certified < claim.installation_began
-                || decimal(&c.savings_percent)
+                || decimal(c.savings_percent)
                     .is_none_or(|p| p < exact::whole(0) || p > exact::whole(100))
         }) || matches!(&claim.increased, RentalEnergyIncreasedAmount::WageAndApprenticeship { source_reference } if source_reference.trim().is_empty())
             || matches!(claim.increased, RentalEnergyIncreasedAmount::EarlyInstallation)
@@ -407,7 +134,7 @@ pub(crate) fn calculate(v: &FederalRental, year: i32) -> Prepared {
                 match &claim.project {
                     RentalEnergyProject::Eecbp { certification: Some(cert) } => {
                         cert.unrelated_to_claimant
-                            && decimal(&cert.savings_percent)
+                            && decimal(cert.savings_percent)
                                 .is_none_or(|savings| savings >= exact::whole(25))
                     }
                     _ => true,
@@ -471,7 +198,7 @@ pub(crate) fn calculate(v: &FederalRental, year: i32) -> Prepared {
                 result.boundaries.push(BASIS);
                 continue;
             }
-            let Some(savings) = decimal(&cert.savings_percent) else {
+            let Some(savings) = decimal(cert.savings_percent) else {
                 result.boundaries.push(CERTIFICATION);
                 continue;
             };
@@ -501,7 +228,7 @@ pub(crate) fn calculate(v: &FederalRental, year: i32) -> Prepared {
         if eligible.is_empty() {
             continue;
         }
-        let Some(area) = decimal(&building.square_feet) else { continue };
+        let Some(area) = decimal(building.square_feet) else { continue };
         let Some(ownership) =
             exact::ratio(building.ownership_numerator, building.ownership_denominator)
         else {
@@ -551,12 +278,6 @@ pub(crate) fn graph_issue(draft: &crate::FederalDraft) -> Option<&'static str> {
     None
 }
 
-impl crate::community::Divide for RentalEnergyClaim {
-    fn divided(&self, share: crate::community::Share) -> Self {
-        Self { qualifying_cost: share.filer(self.qualifying_cost), ..self.clone() }
-    }
-}
-
 // Compute each real whole-building cap before the existing community owner
 // projects its monetary source share. Never apply a whole cap to divided cost.
 pub(crate) fn for_source(draft: &crate::FederalDraft, source: i64, whole: bool) -> Prepared {
@@ -581,7 +302,7 @@ pub(crate) fn for_source(draft: &crate::FederalDraft, source: i64, whole: bool) 
     let mut prepared = calculate(data, draft.tax_year);
     if !whole
         && let Some(share) = draft.setup.as_ref().and_then(|setup| {
-            crate::community::share(setup, entry.owner, entry.community, &entry.income)
+            crate::community::share(setup, entry.owner.owned(), entry.community, &entry.income)
         })
     {
         for reduction in &mut prepared.reductions {

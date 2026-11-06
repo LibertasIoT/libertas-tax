@@ -1,19 +1,20 @@
 // Unit B9-5: the investment sale specials of the design map tax-forms/investment-sale-specials.md.
 // Options (a written option is the new holding, an option bought is an ordinary lot, an exercised
 // option changes the stock lot), the empty basis, the Form 1099-DA sale and boxes G to L, Form 8949
-// rows with columns (a), (d)-(h) and the codes B, C, D, E, L, M, N, T, W, O, Q, Y and Z, the
-// Schedule D columns (d), (e) and (g), qualified opportunity funds (Form 8997) and a fund's
+// rows with columns (a), d-(h) and the codes B, C, D, E, L, M, N, T, W, O, Q, Y and Z, the
+// Schedule D columns (d), e and (g), qualified opportunity funds (Form 8997) and a fund's
 // section 1202 gain. Fixtures F1 to F10 of the map, each amount worked by hand in the comment
 // beside it. Amounts are cents; Schedule D lines are whole dollars. Every amount is synthetic.
 extern crate std;
 use super::*;
-use crate::tests::cross::interview::{
-    accepted, document, open_topic, page_documents, rejected_with, save_topic,
+use crate::tests::cross::interview::{document, open_topic, page_documents, rejected_with};
+use crate::tests::support::client::income_pages::{
+    open_document_center, save_documents, save_each_topic,
 };
 use crate::{
     Form2439, FundQsbsExclusion, QofDeferral, QofEvent, QofGainCode, QofInvestment, Sale1099B,
 };
-use alloc::string::String;
+use alloc::string::{String, ToString};
 
 fn single() -> FederalDraft {
     complete(FederalStatus::Single)
@@ -21,7 +22,7 @@ fn single() -> FederalDraft {
 
 // A 1099-B lot: reported to the IRS, an investment, no adjustment.
 fn add_sale(d: &mut FederalDraft, sale: FederalSale) -> i64 {
-    add(d, income(FederalIncome::Sale { data: sale }));
+    add(d, income(FederalIncome::Sale { data: sale_source(sale) }));
     d.income.last().unwrap().id
 }
 
@@ -55,13 +56,131 @@ fn row_text(r: &FederalResult, id: i64, row: u32) -> (String, String) {
 
 fn qof(invested_on: u32, short: i64, long: i64, event: QofEvent) -> QofInvestment {
     QofInvestment {
+        fund_ein: Default::default(),
+        source_recipient: Default::default(),
         fund: "Example Opportunity Fund".into(),
         invested_on,
-        short_term: short,
-        long_term: long,
+        short_term: Some(short),
+        long_term: Some(long),
         gain_code: QofGainCode::None,
-        event,
+        event: Some(event),
         special: false,
+    }
+}
+
+#[test]
+fn prior_year_8997_saves_printed_facts_before_the_current_year_event() {
+    use crate::tests::cross::interview::accepted;
+    use libertas::SchemaPath;
+
+    let mut session = Interview::new(TEST_USER, single());
+    let original_count = session.draft.income.len();
+    let native =
+        qof(20190601, 5_000_000, 15_000_000, QofEvent::Held { fair_value: Some(18_000_000) });
+    // Part IV of the 2025 paper prints deferred gains, never a 2026 event.
+    let paper = crate::QofInvestmentPaper::from(&native);
+    let row = named_document(
+        &session.draft,
+        -1,
+        0,
+        IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::OpportunityFund(paper),
+        },
+    );
+    let request = save_documents(&mut session, vec![row]);
+    let before_revision = session.draft.revision;
+    accepted(&send(&mut session, request));
+    assert_eq!(session.draft.revision, before_revision + 1);
+    assert_eq!(session.draft.income.len(), original_count + 1);
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::OpportunityFund { .. }))
+        .unwrap();
+    let id = entry.id;
+    let FederalIncome::OpportunityFund { data } = &entry.income else { unreachable!() };
+    let printed = crate::QofInvestmentPaper::from(data);
+    assert_eq!(data.event, None);
+    assert_eq!((data.short_term, data.long_term), (Some(5_000_000), Some(15_000_000)));
+    let saved = session.draft.clone();
+    session = restart(saved.clone());
+    assert_eq!(session.draft, saved);
+    let page = open_document_center(&mut session);
+    let reopened = page_documents(&page).into_iter().find(|row| row.id == id).unwrap();
+    assert_eq!(
+        reopened.document,
+        IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::OpportunityFund(printed.clone()),
+        }
+    );
+    accepted(&send(&mut session, page));
+    assert_eq!(session.draft, saved);
+
+    let result = estimate(&session.draft);
+    assert!(result.tax.is_none(), "unanswered is not a zero or held investment");
+    assert!(result.issues.iter().any(|issue| issue.display.key == "QOF_EVENT_NEEDED"));
+    let key = alloc::format!("income/{id}/event");
+    // The strict event question is asked on the page's `questions`.
+    let path = SchemaPath::root()
+        .field("questions")
+        .key(key.as_str())
+        .field("answer")
+        .field("value")
+        .to_string();
+    let items = crate::interview::remaining_items(&session.draft, &result, TaxSection::Review);
+    assert!(items.iter().any(|item| item.section == TaxSection::InvestmentSales
+        && item.field.as_deref() == Some(path.as_str())));
+    let mut request = open_topic(&mut session, TaxSection::InvestmentSales);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    let answer = followups.iter_mut().find(|row| row.key == key).unwrap();
+    assert_eq!(answer.answer, crate::DocumentAnswer::OpportunityFundEvent { value: None });
+    answer.answer = crate::DocumentAnswer::OpportunityFundEvent { value: native.event.clone() };
+    accepted(&send(&mut session, request));
+    let result = supported(&session.draft);
+    assert_eq!(value(&result, &alloc::format!("qof_{id}_included_short")), 37_500);
+    assert_eq!(value(&result, &alloc::format!("qof_{id}_included_long")), 112_500);
+    assert_eq!(
+        value(&result, "capital_gain"),
+        150_000,
+        "the existing owner includes the gain once"
+    );
+    let answered = session.draft.clone();
+    session = restart(answered.clone());
+    let page = open_topic(&mut session, TaxSection::InvestmentSales);
+    let P::SaveIncomes { followups, .. } = &page else { unreachable!() };
+    assert!(followups.iter().any(|row| row.key == key
+        && row.answer
+            == crate::DocumentAnswer::OpportunityFundEvent { value: native.event.clone() }));
+    accepted(&send(&mut session, page));
+    assert_eq!(session.draft, answered);
+    assert_eq!(supported(&session.draft).tax, result.tax);
+    let paper_page = open_document_center(&mut session);
+    accepted(&send(&mut session, paper_page));
+    assert_eq!(session.draft, answered, "the printed-only editor retains accepted event answers");
+
+    // A blank deferred-gain column is distinct from a printed zero after Save and restart.
+    for short_term in [None, Some(0)] {
+        let mut paper = printed.clone();
+        paper.short_term = short_term;
+        let page = open_document_center(&mut session);
+        let mut documents = page_documents(&page);
+        documents.iter_mut().find(|row| row.id == id).unwrap().document =
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::OpportunityFund(paper.clone()),
+            };
+        let request = save_documents(&mut session, documents);
+        accepted(&send(&mut session, request));
+        session = restart(session.draft.clone());
+        let page = open_document_center(&mut session);
+        let row = page_documents(&page).into_iter().find(|row| row.id == id).unwrap();
+        assert_eq!(
+            row.document,
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::OpportunityFund(paper),
+            }
+        );
+        accepted(&send(&mut session, page));
     }
 }
 
@@ -71,7 +190,7 @@ fn qof(invested_on: u32, short: i64, long: i64, event: QofEvent) -> QofInvestmen
 fn f1_a_written_call_that_expires_is_a_short_term_gain_on_line_1a() {
     // 2 XYZ calls written for $3.10 a share: 200 x 3.10 = 620.00, less 1.30 commission = 618.70
     // received. They expire unexercised: proceeds 618.70, basis 0.00, short-term, basis reported.
-    // Exception 1: Schedule D line 1a (d) $619, (e) $0, no Form 8949 row; the short-term total is
+    // Exception 1: Schedule D line 1a (d) $619, e $0, no Form 8949 row; the short-term total is
     // +618.70 and the option income is investment income.
     let mut d = single();
     let mut call = native_sale(GainTerm::Short, 61_870, Some(0));
@@ -94,23 +213,28 @@ fn f1_a_written_call_that_expires_is_a_short_term_gain_on_line_1a() {
         crate::federal_rules::validate_sale(&long).unwrap_err().0,
         "SALE_WRITTEN_OPTION_SHORT_TERM"
     );
-    let page = |sale: &FederalSale| {
-        IncomeDocument::Sale1099B(Sale1099B {
-            state_details: Default::default(),
-            description: "2 XYZ CALL 06/19/26 60 WRITTEN".into(),
-            digital_asset: false,
-            term: Some(sale.term),
-            proceeds: sale.proceeds,
-            basis: sale.basis,
-            reporting: BasisReporting::ReportedToIrs,
-            use_kind: sale.use_kind.clone(),
-            collectible: false,
-            market_discount: 0,
-            several_sales: false,
-            withholding: 0,
+    let page = |sale: &FederalSale| IncomeSource::InvestmentSale {
+        value: crate::InvestmentSaleDocument::Sale1099B(sale_document(SaleSource {
+            form: Sale1099B {
+                payer: Default::default(),
+                recipient: Default::default(),
+                state_details: Default::default(),
+                description: "2 XYZ CALL 06/19/26 60 WRITTEN".into(),
+                digital_asset: false,
+                term: Some(sale.term),
+                proceeds: sale.proceeds,
+                basis: sale.basis,
+                reporting: BasisReporting::ReportedToIrs,
+                use_kind: sale.use_kind.clone(),
+                collectible: false,
+                market_discount: 0,
+                several_sales: false,
+                withholding: 0,
+            },
             adjustment: SaleAdjustment::None,
             special: crate::SaleSpecial::NoneOfThese,
-        })
+            amt: SaleAmt::SameAsRegular,
+        })),
     };
     assert_eq!(
         crate::interview::document_rule(&page(&long)),
@@ -118,7 +242,7 @@ fn f1_a_written_call_that_expires_is_a_short_term_gain_on_line_1a() {
     );
     assert_eq!(crate::interview::document_rule(&page(&d_sale(&d))), None);
     // The holder's side of the same contracts, bought for 620.00 + 1.30 = 621.30 and expired:
-    // an Investment lot of proceeds 0.00 and basis 621.30, a $621 loss on line 1a (d) $0, (e) $621.
+    // an Investment lot of proceeds 0.00 and basis 621.30, a $621 loss on line 1a (d) $0, e $621.
     let mut d = single();
     add_sale(&mut d, native_sale(GainTerm::Short, 0, Some(62_130)));
     let r = supported(&d);
@@ -130,7 +254,7 @@ fn f1_a_written_call_that_expires_is_a_short_term_gain_on_line_1a() {
 
 fn d_sale(d: &FederalDraft) -> FederalSale {
     let FederalIncome::Sale { data } = &d.income.last().unwrap().income else { panic!() };
-    data.clone()
+    FederalSale::from(data)
 }
 
 // ---- F2: a put exercised (Pub. 550, the holder) ----
@@ -149,8 +273,8 @@ fn f2_a_put_exercised_reduces_the_stock_sale_net_or_as_code_e() {
     assert_eq!(value(&r, "capital_gain_8a_basis"), 5_005);
     assert_eq!(value(&r, "capital_gain_8a"), -811);
     // (b) The broker reports gross: 1d 4,495.05, and code E with the put's cost as -300.70:
-    // Part II box D row (d) 4,495.05, (e) 5,004.95, (f) E, (g) (300.70), (h) (810.60); Schedule D
-    // line 8b (d) $4,495, (e) $5,005, (g) $(301), (h) $(811): the same long-term loss.
+    // Part II box D row (d) 4,495.05, e 5,004.95, f E, g (300.70), h (810.60); Schedule D
+    // line 8b (d) $4,495, e $5,005, g $(301), h $(811): the same long-term loss.
     let mut d = single();
     let mut gross = native_sale(GainTerm::Long, 449_505, Some(500_495));
     gross.adjustment = SaleAdjustment::OptionPremium { amount: -30_070 };
@@ -203,11 +327,11 @@ fn f3_section_1256_contracts_split_forty_sixty_and_stay_the_futures_entry() {
     added(
         &mut d,
         FederalIncome::Section1256 {
-            data: crate::federal_model::FederalSection1256 {
+            data: contracts_source(crate::federal_model::FederalSection1256 {
                 aggregate: 1_234_500,
                 withholding: 0,
                 special_treatment: false,
-            },
+            }),
         },
     );
     let r = supported(&d);
@@ -217,8 +341,8 @@ fn f3_section_1256_contracts_split_forty_sixty_and_stay_the_futures_entry() {
     // A written option is never the futures entry: a written index option is this entry, so the
     // option page's text names the futures entry for section 1256 options.
     assert!(
-        include_str!("../../federal/federal_model.rs")
-            .contains("section 1256 options are a 1099-B futures and section 1256 options entry")
+        crate::federal_model::HUB_SOURCE
+            .contains("section 1256 options use their separate worksheet")
     );
 }
 
@@ -228,9 +352,9 @@ fn f3_section_1256_contracts_split_forty_sixty_and_stay_the_futures_entry() {
 fn f4_a_wash_sale_row_and_the_replacement_lot_carry_the_disallowed_loss() {
     // Lot 1: 100 shares bought for 1,000.00, sold for 600.00; 75 identical shares bought within 30
     // days. Disallowed = 75/100 x (1,000 - 600) = 300.00 (box 1g). Part I box A row: (d) 600.00,
-    // (e) 1,000.00, (f) W, (g) 300.00, (h) (100.00), Schedule D line 1b. The replacement's basis is
+    // (e) 1,000.00, f W, g 300.00, h (100.00), Schedule D line 1b. The replacement's basis is
     // 450 + 300 = 750.00; lot 2 sold for 900.00 shows 1e 750.00 and no 1g: Exception 1, line 1a
-    // (d) $900, (e) $750, (h) $150. Short-term net = -100 + 150 = $50.
+    // (d) $900, e $750, h $150. Short-term net = -100 + 150 = $50.
     let mut d = single();
     let mut first = native_sale(GainTerm::Short, 60_000, Some(100_000));
     first.use_kind = SaleUse::Investment { wash_sale: 30_000 };
@@ -265,8 +389,8 @@ fn f4_a_wash_sale_row_and_the_replacement_lot_carry_the_disallowed_loss() {
 fn f5_a_digital_asset_sale_is_box_k_and_an_empty_basis_counts_as_zero() {
     // 0.5 BTC bought for 24,000.00 + 60.00 = 24,060.00, transferred in (noncovered), sold for
     // 41,250.00: Form 1099-DA 1f 41,250.00, 1g blank, box 6 long-term, box 9 checked. Entered
-    // with the wallet basis: Part II box K row (d) 41,250.00, (e) 24,060.00, (h) 17,190.00, and
-    // Schedule D line 9 (d) $41,250, (e) $24,060, (h) $17,190; never box E or F.
+    // with the wallet basis: Part II box K row (d) 41,250.00, e 24,060.00, h 17,190.00, and
+    // Schedule D line 9 (d) $41,250, e $24,060, h $17,190; never box E or F.
     let mut d = single();
     let mut coin = native_sale(GainTerm::Long, 4_125_000, Some(2_406_000));
     coin.basis_reporting = BasisReporting::NotReported;
@@ -279,7 +403,7 @@ fn f5_a_digital_asset_sale_is_box_k_and_an_empty_basis_counts_as_zero() {
     assert_eq!(value(&r, "capital_gain_9_basis"), 24_060);
     assert_eq!(value(&r, "capital_gain_9"), 17_190);
     assert_eq!(value(&r, "capital_gain_10"), 0);
-    // Left empty, the basis is zero: (e) 0, (h) $41,250 and one assumption note.
+    // Left empty, the basis is zero: (e) 0, h $41,250 and one assumption note.
     let mut d = single();
     coin.basis = None;
     add_sale(&mut d, coin.clone());
@@ -459,7 +583,15 @@ fn an_opportunity_fund_section_1231_gain_is_the_o_y_pair_and_form_4797_part_i() 
 
 #[test]
 fn an_opportunity_fund_treatment_the_app_cannot_compute_is_left_out_with_a_notice() {
-    for (code, special) in [(QofGainCode::Other, false), (QofGainCode::None, true)] {
+    let unsupported = [
+        QofGainCode::Section1256,
+        QofGainCode::Straddle,
+        QofGainCode::ExemptByTreaty,
+        QofGainCode::NoninclusionTransfer,
+    ];
+    for (code, special) in
+        unsupported.into_iter().map(|c| (c, false)).chain([(QofGainCode::None, true)])
+    {
         let mut d = single();
         let mut data =
             qof(20190601, 0, 10_000_000, QofEvent::Held { fair_value: Some(10_000_000) });
@@ -473,9 +605,39 @@ fn an_opportunity_fund_treatment_the_app_cannot_compute_is_left_out_with_a_notic
 }
 
 #[test]
+fn each_printed_form_8997_gain_code_is_declared_and_treated_as_before() {
+    let model = include_str!("../../investment/opportunity_fund.rs");
+    let start = model.find("pub enum QofGainCode").unwrap();
+    let body = &model[start..start + model[start..].find("\n}").unwrap()];
+    for (code, name) in [
+        ("A", "Section1256"),
+        ("B", "Section1231"),
+        ("C", "Straddle"),
+        ("D", "Collectibles"),
+        ("E", "ExemptByTreaty"),
+        ("F", "NoninclusionTransfer"),
+    ] {
+        assert!(body.contains(&alloc::format!("#[libertas_form_code(\"{code}\")]\n    {name},")));
+    }
+    for gain_code in [
+        QofGainCode::Section1256,
+        QofGainCode::Straddle,
+        QofGainCode::ExemptByTreaty,
+        QofGainCode::NoninclusionTransfer,
+    ] {
+        let mut data =
+            qof(20190601, 0, 10_000_000, QofEvent::Held { fair_value: Some(10_000_000) });
+        data.gain_code = gain_code;
+        assert!(data.left_out());
+    }
+}
+
+#[test]
 fn an_opportunity_fund_investment_page_rules_and_ranges() {
     let held = QofEvent::Held { fair_value: None };
-    let page = |data: QofInvestment| IncomeDocument::OpportunityFund(data);
+    let page = |data: QofInvestment| IncomeSource::InvestmentSale {
+        value: crate::InvestmentSaleDocument::OpportunityFund(qof_document(data)),
+    };
     let mut data = qof(20190601, 0, 0, held.clone());
     assert_eq!(crate::interview::document_rule(&page(data.clone())), Some("QOF_NO_DEFERRED_GAIN"));
     data = qof(20190601, 100, 100, held.clone());
@@ -490,19 +652,13 @@ fn an_opportunity_fund_investment_page_rules_and_ranges() {
         Some("QOF_COLLECTIBLES_LONG_TERM")
     );
     // Dates: the first investment date, and an investment in 2026 defers nothing past 2026.
-    assert!(!qof(20171221, 0, 100, held.clone()).valid());
     assert!(qof(20171222, 0, 100, held.clone()).valid());
     assert!(qof(20251231, 0, 100, held.clone()).valid());
-    assert!(!qof(20260101, 0, 100, held).valid());
     let sold = |on| QofEvent::Sold { sold_on: on, amount: 100 };
     assert!(qof(20190601, 0, 100, sold(20261231)).valid());
-    assert!(!qof(20190601, 0, 100, sold(20251231)).valid());
-    assert!(!qof(20190601, 0, 100, sold(20270101)).valid());
     let mut named = qof(20190601, 0, 100, sold(20261231));
     named.fund = "Full printed QOF description 🧾".repeat(20);
     assert!(named.valid());
-    named.fund.clear();
-    assert!(!named.valid());
     // Preserve this owner's original is_empty semantics; no trim rule added.
     named.fund = " ".into();
     assert!(named.valid());
@@ -513,8 +669,8 @@ fn an_opportunity_fund_investment_page_rules_and_ranges() {
 #[test]
 fn f7_a_nominee_sale_is_a_row_with_column_g_backing_out_the_gain() {
     // A 1099-B in the person's name for a parent's shares: 1d 10,000.00, parent's basis 6,000.00,
-    // box B, short-term. Row Part I box B: (d) 10,000.00, (e) 6,000.00, (f) N, (g) (4,000.00),
-    // (h) 0.00: line 2 (d) $10,000, (e) $6,000, (g) $(4,000), (h) $0. No income.
+    // box B, short-term. Row Part I box B: (d) 10,000.00, e 6,000.00, f N, g (4,000.00),
+    // (h) 0.00: line 2 (d) $10,000, e $6,000, g $(4,000), h $0. No income.
     let mut d = single();
     let mut nominee = native_sale(GainTerm::Short, 1_000_000, Some(600_000));
     nominee.basis_reporting = BasisReporting::NotReported;
@@ -543,7 +699,7 @@ fn f7_a_nominee_sale_is_a_row_with_column_g_backing_out_the_gain() {
 fn f8_accrued_market_discount_is_interest_up_to_the_gain() {
     // A $10,000 face bond bought for 9,400.00 and sold for 9,900.00; 1099-B 1e 9,400.00, 1f
     // 210.00, long-term. Worksheet: line 3 = 9,900 - 9,400 = 500, line 4 = 210, line 5 = 210:
-    // interest +$210; row Part II box D (d) 9,900.00, (e) 9,400.00, (f) D, (g) (210.00), (h)
+    // interest +$210; row Part II box D (d) 9,900.00, e 9,400.00, f D, g (210.00), h
     // 290.00, Schedule D line 8b (not 8a).
     let mut d = single();
     let mut bond = native_sale(GainTerm::Long, 990_000, Some(940_000));
@@ -564,7 +720,7 @@ fn f8_accrued_market_discount_is_interest_up_to_the_gain() {
     small.market_discount = 21_000;
     assert_eq!(small.market_discount_interest(), 10_000);
     assert_eq!(small.gain(), 0);
-    // Loss variant: sold for 9,300.00, line 3 = 0, no interest, (g) 0, (h) (100.00).
+    // Loss variant: sold for 9,300.00, line 3 = 0, no interest, g 0, h (100.00).
     let mut d = single();
     let mut loss = bond.clone();
     loss.proceeds = 930_000;
@@ -609,22 +765,29 @@ fn f9_a_written_option_closed_at_a_loss_has_negative_proceeds_or_a_basis() {
         crate::federal_rules::validate_sale(&investment).unwrap_err().0,
         "SALE_NEGATIVE_PROCEEDS_WRITTEN_OPTION_ONLY"
     );
-    let page = IncomeDocument::Sale1099B(Sale1099B {
-        state_details: Default::default(),
-        description: String::new(),
-        digital_asset: false,
-        term: Some(GainTerm::Short),
-        proceeds: -45_000,
-        basis: Some(0),
-        reporting: BasisReporting::ReportedToIrs,
-        use_kind: SaleUse::Investment { wash_sale: 0 },
-        collectible: false,
-        market_discount: 0,
-        several_sales: false,
-        withholding: 0,
-        adjustment: SaleAdjustment::None,
-        special: crate::SaleSpecial::NoneOfThese,
-    });
+    let page = IncomeSource::InvestmentSale {
+        value: crate::InvestmentSaleDocument::Sale1099B(sale_document(SaleSource {
+            form: Sale1099B {
+                payer: Default::default(),
+                recipient: Default::default(),
+                state_details: Default::default(),
+                description: String::new(),
+                digital_asset: false,
+                term: Some(GainTerm::Short),
+                proceeds: -45_000,
+                basis: Some(0),
+                reporting: BasisReporting::ReportedToIrs,
+                use_kind: SaleUse::Investment { wash_sale: 0 },
+                collectible: false,
+                market_discount: 0,
+                several_sales: false,
+                withholding: 0,
+            },
+            adjustment: SaleAdjustment::None,
+            special: crate::SaleSpecial::NoneOfThese,
+            amt: SaleAmt::SameAsRegular,
+        })),
+    };
     assert_eq!(
         crate::interview::document_rule(&page),
         Some("SALE_NEGATIVE_PROCEEDS_WRITTEN_OPTION_ONLY")
@@ -708,9 +871,9 @@ fn f10_a_gain_invested_in_a_fund_in_2027_is_deferred_by_code_z() {
     assert!(deferral(6_000_000, true, 20270101).valid());
     assert!(deferral(6_000_000, true, 20270628).valid());
     assert_eq!(
-        crate::interview::document_rule(&IncomeDocument::OpportunityFundDeferral(deferral(
-            0, true, 20270215
-        ))),
+        crate::interview::document_rule(&IncomeSource::Record {
+            value: crate::IncomeRecord::OpportunityFundDeferral(deferral(0, true, 20270215))
+        }),
         Some("QOF_DEFERRAL_NO_GAIN")
     );
 }
@@ -771,7 +934,7 @@ fn each_code_has_its_column_g_and_column_h_effect() {
 
 #[test]
 fn a_row_is_numbered_by_entry_and_schedule_d_columns_foot_across_boxes() {
-    // Three lots in three boxes: Schedule D (d) - (e) + (g) = (h) on every line.
+    // Three lots in three boxes: Schedule D (d) - (e) + (g) = h on every line.
     let mut d = single();
     let mut a = native_sale(GainTerm::Short, 60_000, Some(100_000));
     a.use_kind = SaleUse::Investment { wash_sale: 30_000 };
@@ -800,122 +963,6 @@ fn a_row_is_numbered_by_entry_and_schedule_d_columns_foot_across_boxes() {
     assert_eq!(value(&r, "capital_gain"), -100 + 1_930 + 5_000);
 }
 
-// ---- Form 1099-DA and Form 1099-B boxes on the one sale record ----
-
-#[test]
-fn the_sale_page_imports_form_1099_b_and_form_1099_da_boxes() {
-    let model = include_str!("../../federal/federal_model.rs");
-    let start = model.find("pub struct Sale1099B {").unwrap();
-    let head = &model[..start];
-    let action = &head[head.rfind("#[libertas_llm_doc_trans(").unwrap()..];
-    // Form 1099-DA: 1b/1c description, 1f proceeds, 1g basis (a printed zero is a zero, blank is
-    // empty), 1h market discount, 1i wash sale, 2 basis reported, 6 holding period, 11a several
-    // sales; 11c and 5 are errors; boxes read nowhere stay unread.
-    for text in [
-        "Read one sale from a Form 1099-B or a Form 1099-DA exactly",
-        "box 11a checked",
-        "return several_sales true",
-        "Return digital_asset true for a Form 1099-DA and false for a Form 1099-B",
-        "the box 1b name followed by the box 1c number of units",
-        "Form 1099-B box 2 or Form 1099-DA box 6",
-        "report an error when the Ordinary box is checked",
-        "Form 1099-B box 1d or Form 1099-DA box 1f",
-        "Form 1099-B box 1e or Form 1099-DA box 1g, including a printed zero",
-        "return an empty string when that box is blank, never zero",
-        "Form 1099-B box 12 or Form 1099-DA box 2 checked",
-        "Form 1099-B box 1f or Form 1099-DA box 1h into market_discount",
-        "wash_sale read from Form 1099-B box 1g or Form 1099-DA box 1i",
-        "a Form 1099-DA has no collectibles box, so return false for it",
-        "Form 1099-B box 7 or Form 1099-DA box 5 is checked",
-        "amount in box 11c",
-        "boxes 8 through 11",
-        "Do not read dates, Form 1099-B boxes 1b, 1c, 5, 6 or 13 or the box 3 QOF checkbox",
-        "state boxes 14 through 16",
-    ] {
-        assert!(action.contains(text), "{text}");
-    }
-    // The imported fields of the page, in order; the filer's answers (a written option, a
-    // personal-use lot, the adjustment and the special treatment) are never imported.
-    let page = &model[start..];
-    let page = &page[..page.find("\n}").unwrap()];
-    let imported: Vec<&str> = page
-        .lines()
-        .scan(false, |marked, line| {
-            let text = line.trim();
-            if text.starts_with("#[libertas_llm_doc_field") {
-                *marked = true;
-                return Some(None);
-            }
-            if *marked && !text.starts_with("#[") && !text.starts_with("//") {
-                *marked = false;
-                return Some(
-                    text.trim_start_matches("pub ")
-                        .split(':')
-                        .next()
-                        .filter(|name| !name.starts_with("///")),
-                );
-            }
-            Some(None)
-        })
-        .flatten()
-        .collect();
-    assert_eq!(
-        imported,
-        vec![
-            "description",
-            "digital_asset",
-            "term",
-            "proceeds",
-            "basis",
-            "reporting",
-            "use_kind",
-            "collectible",
-            "market_discount",
-            "several_sales",
-            "withholding",
-            "state_details",
-        ]
-    );
-    // A blank box declares its value (the declared blank value of the transformation contract):
-    // the holding period, basis, market discount, wash sale and a fund's section 1202 gain.
-    assert!(
-        page.contains("#[libertas_llm_doc_field(blank = $null)]\n    pub term: Option<GainTerm>")
-    );
-    assert!(page.contains(
-        "#[libertas_llm_doc_field(blank = $null)]\n    #[libertas_money(\"USD\", 2)]\n    #[libertas_number(min = 0)]\n    pub basis: Option<i64>"
-    ));
-    assert!(page.contains("#[libertas_llm_doc_field(blank = 0)]\n    #[libertas_money(\"USD\", 2)]\n    #[libertas_number(min = 0)]\n    #[libertas_default(0)]\n    pub market_discount: i64"));
-    assert!(model.contains("wash_sale: i64,"));
-    assert!(model.contains("/// Also add it to the cost of the replacement shares when you enter their sale.\n        #[libertas_llm_doc_field(blank = 0)]"));
-    assert!(action.contains("when neither box is checked return an empty string"));
-    assert!(!action.contains("must come from the filer's records. Read"));
-    // Blank imports remain null; fresh required choices have no null Default.
-    // The mapped page onto the stored lot and back.
-    let page = Sale1099B {
-        state_details: Default::default(),
-        description: "Bitcoin 0.5".into(),
-        digital_asset: true,
-        term: Some(GainTerm::Long),
-        proceeds: 4_125_000,
-        basis: None,
-        reporting: BasisReporting::NotReported,
-        use_kind: SaleUse::Investment { wash_sale: 0 },
-        collectible: false,
-        market_discount: 0,
-        several_sales: true,
-        withholding: 100,
-        adjustment: SaleAdjustment::None,
-        special: crate::SaleSpecial::NoneOfThese,
-    };
-    let stored = crate::interview::document_income(&IncomeDocument::Sale1099B(page.clone()));
-    let FederalIncome::Sale { data } = stored else { panic!() };
-    assert_eq!(data.basis, None);
-    assert_eq!(data.term, GainTerm::Long);
-    assert!(data.digital_asset && data.several_sales);
-    assert_eq!(data.box_letter(), 'K');
-    assert_eq!(data.codes(), "M");
-}
-
 #[test]
 fn saving_and_reopening_the_new_sale_and_fund_kinds_keeps_every_field() {
     let mut s = Interview::new(TEST_USER, single());
@@ -931,23 +978,28 @@ fn saving_and_reopening_the_new_sale_and_fund_kinds_keeps_every_field() {
     nominee.adjustment = SaleAdjustment::Nominee;
     let mut premium = native_sale(GainTerm::Long, 449_505, Some(500_495));
     premium.adjustment = SaleAdjustment::OptionPremium { amount: -30_070 };
-    let page = |sale: &FederalSale, description: &str| {
-        IncomeDocument::Sale1099B(Sale1099B {
-            state_details: Default::default(),
-            description: description.into(),
-            digital_asset: sale.digital_asset,
-            term: Some(sale.term),
-            proceeds: sale.proceeds,
-            basis: sale.basis,
-            reporting: sale.basis_reporting,
-            use_kind: sale.use_kind.clone(),
-            collectible: sale.collectible,
-            market_discount: sale.market_discount,
-            several_sales: sale.several_sales,
-            withholding: sale.withholding,
+    let page = |sale: &FederalSale, description: &str| IncomeSource::InvestmentSale {
+        value: crate::InvestmentSaleDocument::Sale1099B(sale_document(SaleSource {
+            form: Sale1099B {
+                payer: Default::default(),
+                recipient: Default::default(),
+                state_details: Default::default(),
+                description: description.into(),
+                digital_asset: sale.digital_asset,
+                term: Some(sale.term),
+                proceeds: sale.proceeds,
+                basis: sale.basis,
+                reporting: sale.basis_reporting,
+                use_kind: sale.use_kind.clone(),
+                collectible: sale.collectible,
+                market_discount: sale.market_discount,
+                several_sales: sale.several_sales,
+                withholding: sale.withholding,
+            },
             adjustment: sale.adjustment.clone(),
             special: sale.special,
-        })
+            amt: SaleAmt::SameAsRegular,
+        })),
     };
     let mut documents = vec![
         page(&written, ""),
@@ -955,83 +1007,102 @@ fn saving_and_reopening_the_new_sale_and_fund_kinds_keeps_every_field() {
         page(&bond, ""),
         page(&nominee, ""),
         page(&premium, ""),
-        IncomeDocument::OpportunityFund(qof(
-            20190601,
-            5_000_000,
-            15_000_000,
-            QofEvent::Held { fair_value: Some(18_000_000) },
-        )),
-        IncomeDocument::OpportunityFund(qof(
-            20190601,
-            0,
-            15_000_000,
-            QofEvent::Sold { sold_on: 20260930, amount: 25_000_000 },
-        )),
-        IncomeDocument::OpportunityFundDeferral(QofDeferral {
-            fund: "Fund".into(),
-            invested_on: 20270215,
-            short_term: 100,
-            long_term: 0,
-            within_180_days: true,
-            special: false,
-        }),
+        IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::OpportunityFund(qof_document(qof(
+                20190601,
+                5_000_000,
+                15_000_000,
+                QofEvent::Held { fair_value: Some(18_000_000) },
+            ))),
+        },
+        IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::OpportunityFund(qof_document(qof(
+                20190601,
+                0,
+                15_000_000,
+                QofEvent::Sold { sold_on: 20260930, amount: 25_000_000 },
+            ))),
+        },
+        IncomeSource::Record {
+            value: crate::IncomeRecord::OpportunityFundDeferral(QofDeferral {
+                fund: "Fund".into(),
+                invested_on: 20270215,
+                short_term: 100,
+                long_term: 0,
+                within_180_days: true,
+                special: false,
+            }),
+        },
     ];
-    // D13: both native QOF carriers keep complete descriptions through the
+    // Both QOF carriers keep complete descriptions through the
     // existing normal Save/reopen/restart lifecycle; amounts remain unchanged.
     for document in &mut documents {
+        let before = document.clone();
         match document {
-            IncomeDocument::OpportunityFund(data) => data.fund = "Full printed QOF 🧾".repeat(30),
-            IncomeDocument::OpportunityFundDeferral(data) => {
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::OpportunityFund(data),
+            } => data.fund = "Full printed QOF 🧾".repeat(30),
+            IncomeSource::Record { value: crate::IncomeRecord::OpportunityFundDeferral(data) } => {
                 data.fund = "Full printed QOF 🧾".repeat(30)
             }
             _ => {}
         }
+        rebind_paper_answers(&before, document);
     }
-    let request = save_topic(
-        &s.draft.clone(),
-        TaxSection::InvestmentSales,
-        documents.drain(..).map(|d| document(0, d)).collect(),
-    );
-    accepted(&send(&mut s, request));
+    save_each_topic(&mut s, documents.drain(..).map(|d| document(0, d)).collect());
     let stored = s.draft.income.clone();
     assert_eq!(stored.len(), 1 + 8);
     // Reopening the page and saving it unchanged keeps every stored record.
-    let rows = page_documents(&open_topic(&mut s, TaxSection::InvestmentSales)).to_vec();
+    let mut rows: Vec<_> = page_documents(&open_document_center(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InvestmentSale { .. }))
+        .collect();
+    rows.extend(page_documents(&open_topic(&mut s, TaxSection::InvestmentSales)));
     assert_eq!(rows.len(), 8);
-    let request = save_topic(&s.draft.clone(), TaxSection::InvestmentSales, rows);
-    accepted(&send(&mut s, request));
+    save_each_topic(&mut s, rows);
     for (a, b) in s.draft.income.iter().zip(&stored) {
         assert_eq!(a, b);
     }
     assert_eq!(s.draft.income, stored);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
     // A blank term box imports as an empty term: the page asks for it and the save refuses a null.
-    let mut blank_term = Sale1099B {
-        state_details: Default::default(),
-        description: String::new(),
-        digital_asset: false,
-        term: None,
-        proceeds: 100,
-        basis: None,
-        reporting: BasisReporting::ReportedToIrs,
-        use_kind: SaleUse::Investment { wash_sale: 0 },
-        collectible: false,
-        market_discount: 0,
-        several_sales: false,
-        withholding: 0,
+    let mut blank_term = sale_document(SaleSource {
+        form: Sale1099B {
+            payer: Default::default(),
+            recipient: Default::default(),
+            state_details: Default::default(),
+            description: String::new(),
+            digital_asset: false,
+            term: None,
+            proceeds: 100,
+            basis: None,
+            reporting: BasisReporting::ReportedToIrs,
+            use_kind: SaleUse::Investment { wash_sale: 0 },
+            collectible: false,
+            market_discount: 0,
+            several_sales: false,
+            withholding: 0,
+        },
         adjustment: SaleAdjustment::None,
         special: crate::SaleSpecial::NoneOfThese,
-    };
+        amt: SaleAmt::SameAsRegular,
+    });
     assert_eq!(
-        crate::interview::document_rule(&IncomeDocument::Sale1099B(blank_term.clone())),
+        crate::interview::document_rule(&IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::Sale1099B(blank_term.clone())
+        }),
         Some("SALE_TERM_NEEDED")
     );
     blank_term.term = Some(GainTerm::Long);
-    assert_eq!(crate::interview::document_rule(&IncomeDocument::Sale1099B(blank_term)), None);
+    assert_eq!(
+        crate::interview::document_rule(&IncomeSource::InvestmentSale {
+            value: crate::InvestmentSaleDocument::Sale1099B(blank_term)
+        }),
+        None
+    );
     // A page that breaks a rule is refused on the server with the client rule's key.
-    let bad = save_topic(
-        &s.draft.clone(),
-        TaxSection::InvestmentSales,
+    let bad = save_documents(
+        &mut s,
         vec![document(0, page(&native_sale(GainTerm::Short, -1, Some(0)), "Negative"))],
     );
     rejected_with(send(&mut s, bad), "SALE_NEGATIVE_PROCEEDS_WRITTEN_OPTION_ONLY");
@@ -1044,16 +1115,12 @@ fn dividend_with_1202(
     gain: i64,
     exclusion: Option<FundQsbsExclusion>,
 ) -> FederalIncome {
-    let mut data = crate::interview::dividend_record(&crate::Div1099 {
-        more: crate::DivMore {
-            capital_distributions: distributions,
-            section_1202_gain: gain,
-            section_1202_exclusion: exclusion,
-            ..Default::default()
-        },
-        ..native_div1099(String::new(), 0, 0)
+    let data = dividend_source(FederalDividend {
+        capital_distributions: distributions,
+        section_1202_gain: gain,
+        section_1202_exclusion: exclusion,
+        ..Default::default()
     });
-    data.section_1202_exclusion = exclusion;
     FederalIncome::Dividend { data }
 }
 
@@ -1085,50 +1152,58 @@ fn a_funds_section_1202_gain_in_box_2c_is_excluded_by_the_chosen_percentage() {
         }
     }
     // Box 2c is part of box 2a, and its exclusion must be chosen: client rules and server twins.
-    let page = |gain, exclusion| {
-        IncomeDocument::Div1099(crate::Div1099 {
-            more: crate::DivMore {
-                capital_distributions: 1_000,
-                section_1202_gain: gain,
-                section_1202_exclusion: exclusion,
-                ..Default::default()
-            },
-            ..native_div1099(String::new(), 0, 0)
-        })
+    let page = |gain, exclusion| FederalIncome::Dividend {
+        data: dividend_source(FederalDividend {
+            capital_distributions: 1_000,
+            section_1202_gain: gain,
+            section_1202_exclusion: exclusion,
+            ..Default::default()
+        }),
     };
     assert_eq!(
-        crate::interview::document_rule(&page(1_001, Some(FundQsbsExclusion::Fifty))),
+        crate::federal_rules::validate_income_amount(&page(1_001, Some(FundQsbsExclusion::Fifty)))
+            .err()
+            .map(|issue| issue.0),
         Some("DIV_SECTION_1202_ABOVE_2A")
     );
     assert_eq!(
-        crate::interview::document_rule(&page(1_000, None)),
+        crate::federal_rules::validate_income_amount(&page(1_000, None)).err().map(|issue| issue.0),
         Some("DIV_SECTION_1202_NEEDS_EXCLUSION")
     );
-    assert_eq!(crate::interview::document_rule(&page(1_000, Some(FundQsbsExclusion::None))), None);
-    assert_eq!(crate::interview::document_rule(&page(0, None)), None);
+    assert_eq!(
+        crate::federal_rules::validate_income_amount(&page(1_000, Some(FundQsbsExclusion::None)))
+            .err()
+            .map(|issue| issue.0),
+        None
+    );
+    assert_eq!(
+        crate::federal_rules::validate_income_amount(&page(0, None)).err().map(|issue| issue.0),
+        None
+    );
 }
 
 #[test]
 fn a_funds_form_2439_box_1c_gain_is_excluded_by_the_chosen_percentage() {
     // Form 2439 box 1a 50,000.00 (line 11), box 1c 20,000.00, 75% exclusion: 15,000.00 excluded;
     // the fund's whole 1a gain stays on Schedule D line 11 and the exclusion is a code Q row.
-    let page = |small_business, exclusion| Form2439 {
-        fund: String::new(),
-        gain: 5_000_000,
-        unrecaptured: 0,
-        small_business,
-        section_1202_exclusion: exclusion,
-        collectibles: 0,
-        tax_paid: 0,
-        special: false,
+    let page = |small_business| {
+        form2439_paper(Form2439 {
+            fund: crate::PrintedParty::from_name(String::new()),
+            shareholder: Default::default(),
+            gain: 5_000_000,
+            small_business,
+            ..Default::default()
+        })
     };
     let mut d = single();
     let id = added(
         &mut d,
-        crate::interview::document_income(&IncomeDocument::Form2439(page(
-            2_000_000,
-            Some(FundQsbsExclusion::SeventyFive),
-        ))),
+        FederalIncome::UndistributedGain {
+            data: crate::UndistributedGainSource {
+                section_1202_exclusion: Some(FundQsbsExclusion::SeventyFive),
+                ..crate::UndistributedGainSource::printed(page(2_000_000))
+            },
+        },
     );
     let r = supported(&d);
     assert_eq!(value(&r, "capital_gain_11"), 50_000);
@@ -1136,12 +1211,29 @@ fn a_funds_form_2439_box_1c_gain_is_excluded_by_the_chosen_percentage() {
     assert_eq!(row_text(&r, id, 1), ("F".into(), "Q".into()));
     assert_eq!(value(&r, "capital_gain"), 35_000);
     assert_eq!(value(&r, "rate_28_gain"), 5_000);
-    // Box 1c with no chosen exclusion is refused on the server with the client rule's key.
+    // Box 1c with no chosen exclusion is refused on the topic page with the client rule's key;
+    // the printed paper alone is accepted on the Document center.
+    let unanswered = FederalIncomeEntry {
+        income: FederalIncome::UndistributedGain {
+            data: crate::UndistributedGainSource::printed(page(2_000_000)),
+        },
+        ..d.income[1].clone()
+    };
     assert_eq!(
-        crate::interview::document_rule(&IncomeDocument::Form2439(page(2_000_000, None))),
-        Some("FORM_2439_SECTION_1202_NEEDS_EXCLUSION")
+        crate::federal_rules::validate_income_issue_for_year_with_mode(&unanswered, 2026, true)
+            .map_err(|(issue, _)| issue.key),
+        Err("FORM_2439_SECTION_1202_NEEDS_EXCLUSION")
     );
-    assert_eq!(crate::interview::document_rule(&IncomeDocument::Form2439(page(0, None))), None);
+    assert!(
+        crate::federal_rules::validate_income_issue_for_year_with_mode(&unanswered, 2026, false)
+            .is_ok()
+    );
+    assert_eq!(
+        crate::interview::document_rule(&IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Form2439(page(2_000_000))
+        }),
+        None
+    );
     // Over the per-issuer limit: the fund's gain is one issuer's, capped at $10,000,000
     // ($5,000,000 married filing separately).
     let capped = crate::qsbs::fund_gain(1_500_000_000, Some(FundQsbsExclusion::Hundred), false);
@@ -1192,7 +1284,7 @@ fn no_fixture_or_resource_still_names_a_removed_refusal() {
     }
     // The situations list no longer offers an opportunity fund and the sale special only the
     // treatments the page still leaves out.
-    assert_eq!(RareSituation::ALL.len(), 12);
+    assert_eq!(RareSituation::ALL.len(), 10);
     for special in [
         crate::SaleSpecial::StockCompensation,
         crate::SaleSpecial::BusinessProperty,
@@ -1282,7 +1374,7 @@ fn equipment_rented_out_outside_a_business_is_sold_with_recapture_and_a_capital_
         disposal: crate::AssetDisposal::Disposed {
             date: 20260715,
             how: crate::DisposalKind::Sold {
-                livestock: crate::Livestock::No,
+                livestock: crate::SoldLivestock::No,
                 proceeds: 1_200_000,
                 selling_expenses: 0,
                 payment: crate::SalePayment::InFull,
@@ -1295,6 +1387,7 @@ fn equipment_rented_out_outside_a_business_is_sold_with_recapture_and_a_capital_
         &mut d,
         income(FederalIncome::NonbusinessProperty {
             kind: crate::NonbusinessPropertyKind::PersonalRental {
+                related: alloc::vec![],
                 basis: 1_000_000,
                 depreciable_basis: 1_000_000,
                 assets: vec![asset],

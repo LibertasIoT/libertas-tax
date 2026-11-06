@@ -99,7 +99,7 @@ fn unit16_f2_scorporation_box13_ah_uses_form3800() {
         line: None,
         amount: 1_200_000,
     });
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let r = supported(&d);
     for (key, expected) in [
         ("taxable_income", 180000),
@@ -254,6 +254,7 @@ fn unit16_proposed_f7_itemized_variant_changes_original_amt() {
     itemized(d.deductions.as_mut().unwrap()).real_estate_taxes = 2_000_000;
     let mut k1 = ordinary_partner_source(0, false);
     k1.housing_confirmed = Some(false);
+    k1.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     k1.credits.push(K1Credit {
         carbon_oxide_origin: None,
         renewable_facility_origin: None,
@@ -312,10 +313,16 @@ fn unit16_standard_qbi_inputs_preserve_original_f6_f7_rows() {
         let agi = if pre1990 { 210000 } else { 120000 };
         let mut d = complete(FederalStatus::Single);
         d.income[0] = wage(1, Owner::Taxpayer, (agi - 19500) * 100, 0);
-        add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(19500, true) }));
+        add(
+            &mut d,
+            income(FederalIncome::Scorp {
+                data: scorp_source(complete_ordinary_scorp(19500, true)),
+            }),
+        );
         if pre1990 {
             let mut data = ordinary_partner_source(0, false);
             data.housing_confirmed = Some(false);
+            data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
             data.credits.push(K1Credit {
                 carbon_oxide_origin: None,
                 renewable_facility_origin: None,
@@ -511,13 +518,16 @@ fn unit16_retained_investment_interest_origin_changes_research_cap_without_rerou
     add(&mut d, income(savings_income(10000, 0)));
     let mut entity = complete_ordinary_scorp(0, true);
     entity.interest = 2_000_000;
-    add(&mut d, income(FederalIncome::Scorp { data: entity }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(entity) }));
     let source = d.income.last().unwrap().id;
     itemized(d.deductions.as_mut().unwrap()).real_estate_taxes = 1_000_000;
     // Hold the approved witness's itemized route fixed. Automatic otherwise
     // correctly compares the new research limit and can prefer standard.
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     d.deductions.as_mut().unwrap().investment_interest = Some(InvestmentBorrowing {
         loans: vec![native_investment_loan(
             "Retained investment borrowing".into(),
@@ -555,7 +565,9 @@ fn unit16_retained_investment_interest_origin_changes_research_cap_without_rerou
         assert_eq!(value(&a, id), expected, "{id}");
     }
     let interest = d.deductions.as_ref().unwrap().investment_interest.as_ref().unwrap();
-    let routed = interest.route(interest.aggregate().calculate(30000, 0, 0, 0)).unwrap();
+    let routed = interest
+        .route(interest.aggregate().calculate([interest.aggregate().paid; 2], 30000, 0, 0, 0))
+        .unwrap();
     assert_eq!(routed.forms, [[10000, 0], [10000, 0]]);
     assert_eq!(routed.sources.get(&0), Some(&[[10000, 0], [10000, 0]]));
     let numerator = |net| net - crate::kernel::ratio::fraction(10000, net, 120000);
@@ -576,7 +588,10 @@ fn unit16_retained_origin_projection_preserves_form4952_allowance_and_carry() {
         InvestmentLimitedAllocation, InvestmentLoan,
     };
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(0, true) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(0, true)) }),
+    );
     let source = d.income.last().unwrap().id;
     let mut borrowing = InvestmentBorrowing {
         loans: vec![
@@ -591,7 +606,7 @@ fn unit16_retained_origin_projection_preserves_form4952_allowance_and_carry() {
         limited_allocation: InvestmentLimitedAllocation::SourceDetermined,
     };
     assert!(borrowing.valid() && borrowing.sources_valid(&d));
-    let forms = borrowing.aggregate().calculate(30000, 0, 0, 0);
+    let forms = borrowing.aggregate().calculate([borrowing.aggregate().paid; 2], 30000, 0, 0, 0);
     assert_eq!(forms, [[30000, 10000], [30000, 10000]]);
     let routed = borrowing.route(forms).unwrap();
     assert_eq!(routed.sources.get(&0), Some(&forms));
@@ -605,7 +620,9 @@ fn unit16_retained_origin_projection_preserves_form4952_allowance_and_carry() {
         Some(&20000)
     );
     borrowing.loans[0].originating_k1 = None;
-    let other = borrowing.route(borrowing.aggregate().calculate(30000, 0, 0, 0)).unwrap();
+    let other = borrowing
+        .route(borrowing.aggregate().calculate([borrowing.aggregate().paid; 2], 30000, 0, 0, 0))
+        .unwrap();
     assert_eq!(other.forms, routed.forms);
     assert_eq!(other.sources, routed.sources);
     assert!(
@@ -793,11 +810,15 @@ fn unit16_r17_nonresearch_k1_catalog_reaches_its_statement_line_for_both_entitie
                 let mut data = complete_ordinary_scorp(0, true);
                 data.credits.push(item.clone());
                 data.housing_confirmed = Some(true);
-                FederalIncome::Scorp { data }
+                data.rental_facts.participation =
+                    code.rental().then_some(crate::K1RentalParticipation::NotActive);
+                FederalIncome::Scorp { data: scorp_source(data) }
             } else {
                 let mut data = ordinary_partner_source(0, true);
                 data.credits.push(item.clone());
                 data.housing_confirmed = Some(true);
+                data.rental_facts.participation =
+                    code.rental().then_some(crate::K1RentalParticipation::NotActive);
                 FederalIncome::Partnership { data }
             };
             add(&mut d, income(source));
@@ -826,6 +847,7 @@ fn unit16_r14_own_form_amount_needs_its_actual_k1_property_relationship() {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 31_610_000, 0);
     let mut k1 = ordinary_partner_source(0, true);
+    k1.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     k1.investment_property = vec![
         K1InvestmentProperty::RehabilitationRental {
             id: 0,
@@ -926,6 +948,7 @@ fn unit16_actual_k1_own_form_uses_property_classification_and_one_basis_reductio
         let mut k1 = ordinary_partner_source(0, true);
         k1.investment_property.push(property);
         k1.investment_confirmed = None;
+        k1.rental_facts.participation = rental.then_some(crate::K1RentalParticipation::NotActive);
         let mut draft = d.clone();
         add(&mut draft, income(FederalIncome::Partnership { data: k1 }));
         let r = supported(&draft);
@@ -982,7 +1005,7 @@ fn unit16_research_k1_current_both_lines_and_history_share_actual_source_cap() {
             amount: 500_000,
         });
     }
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let source = d.income.last().unwrap().id;
     let mut prior = carry(BusinessCredit::Research, 2024, 1000);
     prior.research_source = Some(source);
@@ -1005,10 +1028,11 @@ fn unit16_research_source_excludes_form461_disallowed_loss() {
     d.income[0] = wage(1, Owner::Taxpayer, 50_000_000, 0);
     let mut k1 = sole_qbi_loss(500_000, 1_000_000, 0);
     k1.amt = Some(amt_records(&k1));
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let id = d.income.last().unwrap().id;
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.paying_scorporation = Some(id);
+    data.answers_mut().unwrap().paying_scorporation =
+        Some(crate::business_credit_page::WageScorpEmployer::from_id(id));
     let mut credit = carry(BusinessCredit::Research, 2024, 10_000);
     credit.research_source = Some(id);
     history(&mut d).carryforwards.push(credit);
@@ -1027,10 +1051,11 @@ fn unit16_research_source_uses_only_schedule_d_allowed_loss() {
     let mut k1 = sole_qbi_loss(0, 1_000_000, 0);
     k1.capital = Some(k1_capital(-100_000, 0));
     k1.amt = Some(amt_records(&k1));
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let id = d.income.last().unwrap().id;
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.paying_scorporation = Some(id);
+    data.answers_mut().unwrap().paying_scorporation =
+        Some(crate::business_credit_page::WageScorpEmployer::from_id(id));
     let mut credit = carry(BusinessCredit::Research, 2024, 10_000);
     credit.research_source = Some(id);
     history(&mut d).carryforwards.push(credit);
@@ -1049,7 +1074,7 @@ fn unit16_research_source_counts_portfolio_1250_component_once() {
     let mut k1 = sole_qbi_loss(0, 1_000_000, 0);
     k1.capital = Some(k1_portfolio_1250(10_000, 0, 6000));
     k1.amt = Some(amt_records(&k1));
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let id = d.income.last().unwrap().id;
     let mut credit = carry(BusinessCredit::Research, 2024, 10_000);
     credit.research_source = Some(id);
@@ -1093,10 +1118,11 @@ fn unit16_retained_capital_original_missing_source_witness_keeps_financial_contr
     let mut k1 = sole_qbi_loss(0, 1_000_000, 0);
     k1.interest = 1_000_000;
     k1.amt = Some(amt_records(&k1));
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let id = d.income.last().unwrap().id;
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.paying_scorporation = Some(id);
+    data.answers_mut().unwrap().paying_scorporation =
+        Some(crate::business_credit_page::WageScorpEmployer::from_id(id));
     let mut old = capital_history();
     old.agi = 10_000_000;
     old.deductions = 1_500_000;
@@ -1145,10 +1171,11 @@ fn unit16_current_capital_limit_prorates_entity_and_unrelated_loss_items() {
     let mut k1 = sole_qbi_loss(0, 1_000_000, 0);
     k1.capital = Some(k1_capital(-40_000, 0));
     k1.amt = Some(amt_records(&k1));
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let id = d.income.last().unwrap().id;
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.paying_scorporation = Some(id);
+    data.answers_mut().unwrap().paying_scorporation =
+        Some(crate::business_credit_page::WageScorpEmployer::from_id(id));
     add(&mut d, income(investment_sale_gain(GainTerm::Short, -60_000, -60_000)));
     let mut old = carry(BusinessCredit::Research, 2024, 10_000);
     old.research_source = Some(id);
@@ -1173,11 +1200,12 @@ fn unit16_form461_loss_allocation_uses_actual_loss_sources_before_salary() {
     for loss in [400_000, 100_000] {
         let mut k1 = sole_qbi_loss(loss, 1_000_000, 0);
         k1.amt = Some(amt_records(&k1));
-        add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+        add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
         ids.push(d.income.last().unwrap().id);
     }
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.paying_scorporation = Some(ids[0]);
+    data.answers_mut().unwrap().paying_scorporation =
+        Some(crate::business_credit_page::WageScorpEmployer::from_id(ids[0]));
     for (id, amount) in ids.iter().zip([50_000, 1000]) {
         let mut old = carry(BusinessCredit::Research, 2024, amount);
         old.research_source = Some(*id);
@@ -1206,10 +1234,11 @@ pub(in crate::tests) fn retained_research_draft() -> (FederalDraft, i64) {
     let mut k1 = sole_qbi_loss(0, 1_000_000, 0);
     k1.interest = 1_000_000;
     k1.amt = Some(amt_records(&k1));
-    add(&mut d, income(FederalIncome::Scorp { data: k1 }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(k1) }));
     let id = d.income.last().unwrap().id;
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.paying_scorporation = Some(id);
+    data.answers_mut().unwrap().paying_scorporation =
+        Some(crate::business_credit_page::WageScorpEmployer::from_id(id));
     let mut old = carry(BusinessCredit::Research, 2024, 10_000);
     old.research_source = Some(id);
     history(&mut d).carryforwards.push(old);
@@ -1364,7 +1393,10 @@ pub(in crate::tests) fn retained_charity_draft() -> (FederalDraft, i64) {
         same_filers: true,
     });
     let facts = itemized(ded).clone();
-    ded.choice = DeductionSelection::Itemized { facts };
+    {
+        ded.itemized = facts;
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
+    };
     (d, id)
 }
 
@@ -1744,11 +1776,10 @@ fn unit16_retained_charity_actual_k1_personal_and_other_entity_keep_owner_deduct
             else {
                 unreachable!()
             };
-            match &mut sources[0].origin {
-                ResearchCharityOrigin::CurrentK1 { source } => *source = 987_654_321,
-                ResearchCharityOrigin::OtherEntity(entity) => entity.ein.clear(),
+            if let ResearchCharityOrigin::CurrentK1 { source } = &mut sources[0].origin {
+                *source = 987_654_321;
+                assert!(!d.valid_stored());
             }
-            assert!(!d.valid_stored());
         }
     }
 }
@@ -1756,7 +1787,10 @@ fn unit16_retained_charity_actual_k1_personal_and_other_entity_keep_owner_deduct
 #[test]
 fn unit16_retained_charity_limited_deduction_conserves_owner_amount_and_source_order() {
     let (mut d, first) = retained_charity_draft();
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(0, true) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(0, true)) }),
+    );
     let second = d.income.last().unwrap().id;
     let mut sources = vec![
         ResearchCharityPart {
@@ -1962,7 +1996,10 @@ fn unit16_retained_charity_original_appreciation_is_not_capped_by_unused_portion
 #[test]
 fn unit16_retained_charity_basis_source_rounding_is_independent_of_row_order() {
     let (mut d, first) = retained_charity_draft();
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(0, true) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(0, true)) }),
+    );
     let second = d.income.last().unwrap().id;
     let ded = d.deductions.as_mut().unwrap();
     ded.basis_election = true;
@@ -2049,7 +2086,7 @@ fn unit16_repayment_zero_original_capital_carry_has_no_source_for_refigured_loss
     let mut counterfactual = d.clone();
     counterfactual.deductions.as_mut().unwrap().repayment = RepaymentClaim::None;
     for entry in &mut counterfactual.income {
-        if let FederalIncome::Unemployment { data } = &mut entry.income {
+        if let FederalIncome::GovernmentPayment { data } = &mut entry.income {
             data.repayments.clear();
         }
     }
@@ -2107,7 +2144,7 @@ pub(in crate::tests) fn changed_filer_draft() -> FederalDraft {
     d.income = vec![wage(1, Owner::Taxpayer, 6_000_000, 0), wage(2, Owner::Spouse, 2_000_000, 0)];
     d.next_id = 3;
     let mut interest = income(savings_income(1000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut d, interest);
     let mut retained = carry(BusinessCredit::WorkOpportunity, 2025, 5000);
     retained.filer = CarryFiler::You;
@@ -2231,11 +2268,35 @@ pub(in crate::tests) fn changed_filer_profile(profile: &str) -> FederalDraft {
         "hsa-you" | "hsa-spouse" => {
             d = r4_portfolio_draft();
             let mut entry = income(FederalIncome::MedicalDistribution {
-                data: FederalMedicalDistribution {
+                data: crate::SaSource {
                     origin: HealthDocumentOrigin::Form1099Sa,
-                    gross: 100_000,
-                    account: MedicalSaAccount::Hsa,
-                    payment: MedicalSaPayment::Own {
+                    form: crate::MedicalSaPaper::Form1099Sa(crate::Form1099SaPaper {
+                        gross_distribution: 100_000,
+                        earnings_on_excess_contributions: None,
+                        distribution_code: Some(
+                            crate::Form1099SaDistributionCode::NormalDistributions,
+                        ),
+                        fmv_on_date_of_death: None,
+                        account: MedicalSaAccount::Hsa,
+                        ..Default::default()
+                    }),
+                    medicare_prior: if matches!(
+                        &MedicalSaAccount::Hsa,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(MedicareMsaPrior::None)
+                    } else {
+                        None
+                    },
+                    medicare_from_spouse: if matches!(
+                        &MedicalSaAccount::Hsa,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    payment: Some(MedicalSaPayment::Own {
                         nonmedical: vec![MedicalAccountWithdrawal {
                             date: 20260601,
                             amount: 100_000,
@@ -2243,10 +2304,14 @@ pub(in crate::tests) fn changed_filer_profile(profile: &str) -> FederalDraft {
                         medical: 0,
                         rollover: None,
                         disabled_since: None,
-                    },
+                    }),
                 },
             });
-            entry.owner = if profile == "hsa-you" { Owner::Taxpayer } else { Owner::Spouse };
+            entry.owner = if profile == "hsa-you" {
+                crate::DocumentOwner::Yours
+            } else {
+                crate::DocumentOwner::Spouses
+            };
             add(&mut d, entry);
         }
         "clergy-source" => d = r4_clergy_source_draft(),
@@ -2269,14 +2334,16 @@ pub(in crate::tests) fn changed_filer_profile(profile: &str) -> FederalDraft {
             add(&mut d, income(raised_farm(100, 0)));
             let farm_id = d.income.last().unwrap().id;
             // The existing linked source contributes49c to this actual farm.
-            let FederalIncome::Unemployment { mut data } =
+            let FederalIncome::GovernmentPayment { mut data } =
                 government_unemployment(0, &[], 0).income
             else {
                 unreachable!()
             };
-            data.agriculture_payment = 49;
-            data.agriculture_farm = Some(farm_id);
-            add(&mut d, income(FederalIncome::Unemployment { data }));
+            data.form.agriculture_payments = Some(49);
+
+            add(&mut d, income(FederalIncome::GovernmentPayment { data }));
+            let component = crate::tests::support::builders::farm_government_component(&d);
+            crate::tests::support::builders::relate_farm_component(&mut d, farm_id, component);
         }
         "spouse" => history(&mut d).carryforwards[0].filer = CarryFiler::Spouse,
         "same" => history(&mut d).carryforwards[0].filer = CarryFiler::SameFilers,
@@ -2301,17 +2368,17 @@ pub(in crate::tests) fn changed_filer_profile(profile: &str) -> FederalDraft {
                     add(
                         &mut d,
                         income(FederalIncome::Dividend {
-                            data: FederalDividend {
+                            data: div1099_source(Div1099 {
                                 ordinary: qualified * 100,
                                 qualified: qualified * 100,
                                 capital_distributions: capital * 100,
                                 ..Default::default()
-                            },
+                            }),
                         }),
                     );
                     investment_borrowing(&mut d, 1, 0, 0);
                     let ded = d.deductions.as_mut().unwrap();
-                    ded.choice = DeductionSelection::Standard;
+                    ded.itemize_override = None;
                     ded.investment_interest.as_mut().unwrap().election =
                         InvestmentElection::Allocated {
                             capital: capital * 100,
@@ -2325,11 +2392,11 @@ pub(in crate::tests) fn changed_filer_profile(profile: &str) -> FederalDraft {
                     add(
                         &mut d,
                         income(FederalIncome::Dividend {
-                            data: FederalDividend {
+                            data: div1099_source(Div1099 {
                                 capital_distributions: 1_000_000,
                                 collectible_distributions: 1_000_000,
                                 ..Default::default()
-                            },
+                            }),
                         }),
                     );
                     let record = &mut history(&mut d).carryforwards[0];
@@ -2342,18 +2409,18 @@ pub(in crate::tests) fn changed_filer_profile(profile: &str) -> FederalDraft {
                 "shared-election" => {
                     for owner in [Owner::Taxpayer, Owner::Spouse] {
                         let mut entry = income(FederalIncome::Dividend {
-                            data: FederalDividend {
+                            data: div1099_source(Div1099 {
                                 ordinary: 500_000,
                                 qualified: 500_000,
                                 ..Default::default()
-                            },
+                            }),
                         });
-                        entry.owner = owner;
+                        entry.owner = crate::DocumentOwner::from(owner);
                         add(&mut d, entry);
                     }
                     investment_borrowing(&mut d, 1, 0, 0);
                     let ded = d.deductions.as_mut().unwrap();
-                    ded.choice = DeductionSelection::Standard;
+                    ded.itemize_override = None;
                     ded.investment_interest.as_mut().unwrap().election =
                         InvestmentElection::Allocated { capital: 0, dividends: 500_000 };
                     history(&mut d).carryforwards.push(carry(
@@ -2399,12 +2466,12 @@ fn r4_portfolio_draft() -> FederalDraft {
 fn r4_clergy_source_draft() -> FederalDraft {
     let mut d = r4_portfolio_draft();
     let mut pay = wage(1, Owner::Taxpayer, 5_950_000, 0);
-    if let FederalIncome::Wage { data } = &mut pay.income {
-        data.coverage = W2Coverage::Ministerial;
-        data.social_wages = 0;
-        data.social_tax = 0;
-        data.medicare_wages = 0;
-        data.medicare_tax = 0;
+    if let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut pay.income {
+        data.answers.coverage = Some(W2Coverage::Ministerial);
+        data.form.social_wages = Some(0);
+        data.form.social_tax = Some(0);
+        data.form.medicare_wages = Some(0);
+        data.form.medicare_tax = Some(0);
     }
     d.income[0] = pay;
     let mut fees = cash_business(1600);
@@ -2539,17 +2606,17 @@ fn unit16_r4_delivered_single_owner_elections_keep_the_actual_class_and_no_claim
         add(
             &mut d,
             income(FederalIncome::Dividend {
-                data: FederalDividend {
+                data: div1099_source(Div1099 {
                     ordinary: qualified * 100,
                     qualified: qualified * 100,
                     capital_distributions: capital * 100,
                     ..Default::default()
-                },
+                }),
             }),
         );
         investment_borrowing(&mut d, 1, 0, 0);
         let ded = d.deductions.as_mut().unwrap();
-        ded.choice = DeductionSelection::Standard;
+        ded.itemize_override = None;
         ded.investment_interest.as_mut().unwrap().election =
             InvestmentElection::Allocated { capital: capital * 100, dividends: qualified * 100 };
         assert!(d.injured_spouse.is_none());
@@ -2583,12 +2650,12 @@ fn unit16_r4_delivered_special_pools_and_native_niit_preserve_source_cap() {
         add(
             &mut d,
             income(FederalIncome::Dividend {
-                data: FederalDividend {
+                data: div1099_source(Div1099 {
                     capital_distributions: 1_000_000,
                     collectible_distributions: collectible * 100,
                     unrecaptured_distributions: unrecaptured * 100,
                     ..Default::default()
-                },
+                }),
             }),
         );
         // TP income tax52804/54104/53804/53924 plus actual NIIT2660;
@@ -2627,14 +2694,18 @@ fn unit16_r4_shared_election_without_an_actual_split_retains_only_narrow_carry_w
     let mut d = r4_portfolio_draft();
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(FederalIncome::Dividend {
-            data: FederalDividend { ordinary: 500_000, qualified: 500_000, ..Default::default() },
+            data: div1099_source(Div1099 {
+                ordinary: 500_000,
+                qualified: 500_000,
+                ..Default::default()
+            }),
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     investment_borrowing(&mut d, 1, 0, 0);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.investment_interest.as_mut().unwrap().election =
         InvestmentElection::Allocated { capital: 0, dividends: 500_000 };
     history(&mut d).carryforwards.push(carry(BusinessCredit::WorkOpportunity, 2024, 1000));
@@ -2661,13 +2732,13 @@ fn add_r4_qsbs_sales(d: &mut FederalDraft) {
         let mut entry = income(FederalIncome::QualifiedSmallBusinessSale {
             data: QsbIssuerSale {
                 issuer: "Synthetic R4 Source, Inc.".into(),
-                prior_eligible_gain: 0,
-                special: false,
-                issuer_qualified: true,
-                active_business: true,
-                no_disqualification: true,
-                zone_60_exclusion: Some(false),
-                complete_history: true,
+                prior_eligible_gain: Some(0),
+                special: Some(false),
+                issuer_qualified: Some(true),
+                active_business: Some(true),
+                no_disqualification: Some(true),
+                zone_60_exclusion: Some(crate::QsbsZoneCertification::No),
+                complete_history: Some(true),
                 lots: vec![QsbStockLot {
                     issued,
                     sold: 20260501,
@@ -2679,7 +2750,7 @@ fn add_r4_qsbs_sales(d: &mut FederalDraft) {
                 withholding: 0,
             },
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(d, entry);
     }
 }

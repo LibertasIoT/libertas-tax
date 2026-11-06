@@ -21,6 +21,7 @@ fn fixture() -> FederalDraft {
             },
             special: false,
             qbi: InstallmentQbi::NotQualified,
+            livestock: None,
         },
     }];
     s.related_exchanges = vec![EarlierRelatedExchange {
@@ -148,19 +149,23 @@ fn unit13_earlier_property_actual_client_save_reopen_restart() {
                 let row = documents
                     .documents
                     .iter_mut()
-                    .find(|d| matches!(d.document, IncomeDocument::InstallmentPayments(_)))
+                    .find(|d| matches!(d.document, crate::IncomeRecord::InstallmentPayments(_)))
                     .unwrap();
                 row.owner = Owner::Taxpayer;
-                let IncomeDocument::InstallmentPayments(sale) = &mut row.document else { panic!() };
+                let crate::IncomeRecord::InstallmentPayments(sale) = &mut row.document else {
+                    panic!()
+                };
                 sale.payments = 700_000;
             } else {
                 let row = documents
                     .documents
                     .iter_mut()
-                    .find(|d| matches!(d.document, IncomeDocument::RelatedExchange(_)))
+                    .find(|d| matches!(d.document, crate::IncomeRecord::RelatedExchange(_)))
                     .unwrap();
                 row.owner = Owner::Spouse;
-                let IncomeDocument::RelatedExchange(exchange) = &mut row.document else { panic!() };
+                let crate::IncomeRecord::RelatedExchange(exchange) = &mut row.document else {
+                    panic!()
+                };
                 exchange.deferred = 400_000;
             }
             page

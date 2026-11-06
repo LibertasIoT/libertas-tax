@@ -2,9 +2,9 @@ use super::*;
 fn amount(r: &FederalResult, id: &str) -> i64 {
     r.lines.iter().find(|v| v.id == id).map_or(0, |v| v.amount / 100)
 }
-fn w2(d: &mut FederalDraft) -> &mut FederalWage {
+fn w2(d: &mut FederalDraft) -> FixtureEdit<'_, WageSource, FederalWage> {
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data
+    edit_wage(data)
 }
 fn draft(status: FederalStatus, pay: i64, withheld: i64) -> FederalDraft {
     let mut d = empty_return(status);
@@ -27,7 +27,7 @@ fn railroad(
     medicare: i64,
     additional: i64,
 ) {
-    let w = w2(d);
+    let mut w = w2(d);
     w.social_wages = 0;
     w.social_tax = 0;
     w.medicare_wages = 0;
@@ -49,7 +49,7 @@ fn wage_specials_a_allocated_tips_without_tp_and_noncash() {
         coverage: TipCoverage::SocialAndMedicare,
     });
     w2(&mut d).work_deductions.tips_claim =
-        TipsClaim::Yes { w2_tips: 0, form4137_tips: 300_000, tips_eligible: true };
+        TipsClaim::Yes { w2_tips: 0, form4137_tips: 300_000, tips_eligible: Some(true) };
     let r = supported(&d);
     for (id, v) in [
         ("agi", 29_000),
@@ -61,6 +61,44 @@ fn wage_specials_a_allocated_tips_without_tp_and_noncash() {
         assert_eq!(amount(&r, id), v, "{id}");
     }
     assert_eq!(r.refund, Some(27_700));
+    let mut eligibility = d.clone();
+    for value in [Some(false), None, Some(true)] {
+        if let TipsClaim::Yes { tips_eligible, .. } =
+            &mut w2(&mut eligibility).work_deductions.tips_claim
+        {
+            *tips_eligible = value;
+        }
+        assert!(eligibility.valid_stored());
+        let result = estimate(&eligibility);
+        if value.is_none() {
+            assert!(result.tax.is_none());
+            assert!(
+                result.issues.iter().any(|issue| issue.display.key == "W2_TP_OCCUPATION_NEEDED")
+            );
+        } else {
+            let result = supported(&eligibility);
+            assert_eq!(
+                amount(&result, "tips_deduction"),
+                if value == Some(true) { 3000 } else { 0 }
+            );
+        }
+    }
+    for value in [Some(false), None, Some(true)] {
+        w2(&mut eligibility).work_deductions.overtime_claim =
+            OvertimeClaim::Yes { overtime: 80_000, overtime_eligible: value };
+        assert!(eligibility.valid_stored());
+        let result = estimate(&eligibility);
+        if value.is_none() {
+            assert!(result.tax.is_none());
+            assert!(result.issues.iter().any(|issue| issue.display.key == "W2_TT_FLSA_NEEDED"));
+        } else {
+            let result = supported(&eligibility);
+            assert_eq!(
+                amount(&result, "overtime_deduction"),
+                if value == Some(true) { 800 } else { 0 }
+            );
+        }
+    }
     w2(&mut d).employee_tips.as_mut().unwrap().noncash = 20_000;
     let r = supported(&d);
     assert_eq!(amount(&r, "agi"), 29_200);
@@ -70,11 +108,12 @@ fn wage_specials_a_allocated_tips_without_tp_and_noncash() {
 #[test]
 fn wage_specials_b_combat_election_and_decline() {
     let mut d = child_return(9000);
-    let w = w2(&mut d);
+    let mut w = w2(&mut d);
     w.social_wages = 2_400_000;
     w.social_tax = 148_800;
     w.medicare_wages = 2_400_000;
     w.medicare_tax = 34_800;
+    drop(w);
     code(&mut d, W2Code::Q, 15_000);
     let r = supported(&d);
     assert_eq!(amount(&r, "agi"), 9000);
@@ -183,11 +222,12 @@ fn wage_specials_d_rrta_tip_income_and_single_employer_limit() {
 #[test]
 fn wage_specials_e_medicaid_credit_election_and_box1_exclusion() {
     let mut d = child_return(0);
-    let w = w2(&mut d);
+    let mut w = w2(&mut d);
     w.social_wages = 1_800_000;
     w.social_tax = 111_600;
     w.medicare_wages = 1_800_000;
     w.medicare_tax = 26_100;
+    drop(w);
     code(&mut d, W2Code::II, 18_000);
     let r = supported(&d);
     assert_eq!(amount(&r, "agi"), 0);
@@ -249,14 +289,14 @@ fn wage_specials_a_actual_months_occupation_and_reported_tips() {
         coverage: TipCoverage::SocialAndMedicare,
     });
     w2(&mut d).work_deductions.tips_claim =
-        TipsClaim::Yes { w2_tips: 0, form4137_tips: 151_500, tips_eligible: true };
+        TipsClaim::Yes { w2_tips: 0, form4137_tips: 151_500, tips_eligible: Some(true) };
     let r = supported(&d);
     assert_eq!(return_line(&r, "1c"), 151_500);
     assert_eq!(amount(&r, "employee_tips_0_social_tax"), 93);
     assert_eq!(amount(&r, "employee_tips_0_medicare_tax"), 22);
     assert_eq!(amount(&r, "tips_deduction"), 1515);
     if let TipsClaim::Yes { tips_eligible, .. } = &mut w2(&mut d).work_deductions.tips_claim {
-        *tips_eligible = false;
+        *tips_eligible = Some(false);
     }
     assert_eq!(amount(&supported(&d), "tips_deduction"), 0);
     w2(&mut d).social_tips = 600_000;
@@ -269,7 +309,7 @@ fn wage_specials_a_actual_months_occupation_and_reported_tips() {
         coverage: TipCoverage::SocialAndMedicare,
     });
     w2(&mut d).work_deductions.tips_claim =
-        TipsClaim::Yes { w2_tips: 600_000, form4137_tips: 900_000, tips_eligible: true };
+        TipsClaim::Yes { w2_tips: 600_000, form4137_tips: 900_000, tips_eligible: Some(true) };
     assert_eq!(amount(&supported(&d), "tips_deduction"), 9000);
 }
 
@@ -278,16 +318,18 @@ fn wage_specials_c_other_owner_and_unsupported_business() {
     let mut d = draft(FederalStatus::Joint, 50_000, 5000);
     w2(&mut d).statutory_employee = true;
     let mut entry = income(cash_business(0));
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut d, entry);
     let id = d.income[1].id;
     w2(&mut d).statutory_business = Some(id);
     assert!(
         estimate(&d).issues.iter().any(|v| v.display.key == "ISSUE_STATUTORY_BUSINESS_OTHER_OWNER")
     );
-    d.income[1].owner = Owner::Taxpayer;
+    d.income[1].owner = crate::DocumentOwner::Yours;
     if let FederalIncome::Business { data } = &mut d.income[1].income {
-        data.material_participation = false;
+        // 2026-10-24: current passive C is calculated; unlisted special
+        // treatment remains an actual unsupported scope for omission controls.
+        data.special_treatment = true;
     }
     let r = supported(&d);
     assert_eq!(amount(&r, "agi"), 0);
@@ -363,7 +405,7 @@ fn wage_specials_f_household_threshold_and_both_spouse_boxes() {
     let mut d = draft(FederalStatus::Separate, 60_000, 0);
     d.setup.as_mut().unwrap().separate_spouse = SeparateSpouseBoxes::BornAndBlind;
     assert_eq!(amount(&supported(&d), "deduction"), 19_400);
-    d.deductions.as_mut().unwrap().spouse_itemizes = true;
+    d.deductions.as_mut().unwrap().spouse_itemizes = Some(true);
     assert!(
         estimate(&d)
             .issues
@@ -379,6 +421,7 @@ fn wage_specials_b_each_spouses_combat_election_and_exact_tie() {
     code(&mut d, W2Code::Q, 15_000);
     let mut spouse = wage(2, Owner::Spouse, 0, 0);
     if let FederalIncome::Wage { data } = &mut spouse.income {
+        let mut data = edit_wage(data);
         data.other_box12.push(W2CodeAmount { code: W2Code::Q, amount: 2_000_000 });
     }
     add(&mut d, spouse);
@@ -443,7 +486,9 @@ fn wage_specials_statutory_unsupported_business_omits_box1_partitions_once() {
     let id = d.income[1].id;
     w2(&mut d).statutory_business = Some(id);
     if let FederalIncome::Business { data } = &mut d.income[1].income {
-        data.material_participation = false;
+        // 2026-10-24: current passive C is calculated; unlisted special
+        // treatment remains an actual unsupported scope for omission controls.
+        data.special_treatment = true;
     }
     let original = d.clone();
     let r = supported(&d);

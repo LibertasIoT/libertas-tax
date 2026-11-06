@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"order": 605000, "rule": {"select": "^<K1Credit>", "flatten": {"name_row": false}}},
+    {"order": 606000, "rule": {"select": "^<WorkOpportunityGroup>", "flatten": true}},
+    {"order": 607000, "rule": {"select": "^<WorkOpportunityEmployeePage>", "flatten": {"name_row": false}}},
+    {"order": 608000, "rule": {"select": "^<HealthCreditService>", "flatten": true}},
+    {"order": 609000, "rule": {"select": "^<HealthCreditEmployeePage>", "flatten": {"name_row": false}}},
+    {"order": 610000, "rule": {"select": "^<PaidLeaveEmployeePage>", "flatten": {"name_row": false}}},
+    {"order": 611000, "rule": {"select": "^<BusinessCreditCarryforward>", "flatten": {"name_row": false}}},
+    {"order": 612000, "rule": {"select": "^<BusinessCreditCarryback>", "flatten": {"name_row": false}}},
+    {"order": 782000, "rule": {"select": "^<K1Credit>.code", "promote": true}},
+    {"order": 783000, "rule": {"select": "^<WorkOpportunityEmployeePage>.label", "promote": true}},
+    {"order": 784000, "rule": {"select": "^<WorkOpportunityCreditPage>.employees", "promote": true}},
+    {"order": 785000, "rule": {"select": "^<HealthCreditEmployeePage>.label", "promote": true}},
+    {"order": 786000, "rule": {"select": "^<PaidLeaveEmployeePage>.label", "promote": true}},
+    {"order": 787000, "rule": {"select": "^<SmallEmployerHealthCreditPage>.employees", "promote": true}},
+    {"order": 788000, "rule": {"select": "^<PaidLeaveCreditPage>.employees", "promote": true}},
+    {"order": 789000, "rule": {"select": "^<BusinessCreditCarryforward>.credit", "promote": true}},
+    {"order": 790000, "rule": {"select": "^<BusinessCreditCarryback>.credit", "promote": true}},
+    {"order": 791000, "rule": {"select": "^<BusinessCreditHistory>.carryforwards", "promote": true}}
+  ]
+}

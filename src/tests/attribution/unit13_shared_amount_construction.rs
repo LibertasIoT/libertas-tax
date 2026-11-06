@@ -11,11 +11,11 @@ fn fixture(answer: Option<i64>) -> FederalDraft {
     let mut d = injured_return((200_000, 60_000), (50_000, 10_000), 0, claim);
     for (owner, amount) in [(Owner::Taxpayer, 20_000), (Owner::Spouse, 10_000)] {
         let mut entry = income(savings_income(amount, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let deductions = d.deductions.as_mut().unwrap();
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     itemized(deductions).investment_property_taxes = 100_000;
     d
 }

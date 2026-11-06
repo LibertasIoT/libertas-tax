@@ -2,6 +2,42 @@ use crate::tests::*;
 pub(in crate::tests) fn foreign_pay(wages: i64) -> FederalIncome {
     FederalIncome::ForeignEmployment { data: ForeignWages { wages: wages * 100 } }
 }
+pub(in crate::tests) fn foreign_employee179_return(
+    status: FederalStatus,
+    w2_dollars: i64,
+    foreign_employer_dollars: i64,
+) -> FederalDraft {
+    let mut draft = complete(status);
+    draft.income.clear();
+    let mut job = wage(0, Owner::Taxpayer, w2_dollars * 100, 0);
+    let FederalIncome::Wage { data } = &mut job.income else { unreachable!() };
+    let mut data = edit_wage(data);
+    data.abroad = w2_dollars * 100;
+    drop(data);
+    add(&mut draft, job);
+    add(&mut draft, income(foreign_pay(foreign_employer_dollars)));
+    let FederalIncome::Business { mut data } = cash_business(0) else { unreachable!() };
+    data.assets.push(elected_asset(300_000, 300_000, BonusElection::ElectOut));
+    add(&mut draft, income(FederalIncome::Business { data }));
+    let source = draft.income.last().unwrap().id;
+    let mut page = crate::tests::cross::interview::business(0);
+    let mut property =
+        crate::tests::cross::interview::asset(30_000_000, 20260601, AssetClass::Five);
+    property.acquired = Some(20250120);
+    property.gds_mut().unwrap().history = AssetHistory::New {
+        first_year: FirstYearDeduction::Section179 {
+            description: "Foreign-pay-funded equipment".into(),
+            elected: 30_000_000,
+        },
+    };
+    page.assets.push(property);
+    crate::tests::support::client::save_native_asset_identities(
+        draft,
+        source,
+        IncomeSource::Record { value: IncomeRecord::Business(page) },
+        TaxSection::SelfEmployment,
+    )
+}
 // A bona fide residence that began in 2020 and continues.
 pub(in crate::tests) fn residence() -> ForeignQualification {
     ForeignQualification::Residence {
@@ -99,7 +135,7 @@ pub(in crate::tests) fn wholly_foreign_credit_return(
     wages: i64,
 ) -> FederalDraft {
     let mut d = complete(status);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income.clear();
     add(&mut d, income(foreign_pay(wages)));
     d.credits.as_mut().unwrap().foreign_tax = ForeignTaxClaim::Ordinary {
@@ -212,7 +248,10 @@ pub(in crate::tests) fn foreign_medical_itemizing(
     facts.medical = medical * 100;
     facts.personal_tax = PersonalTaxElection::Sales { paid: sales * 100 };
     facts.personal_property_taxes = property * 100;
-    ded.choice = DeductionSelection::Itemized { facts: facts.clone() };
+    {
+        ded.itemized = facts.clone();
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
+    };
 }
 
 pub(in crate::tests) fn foreign_mortgage(d: &mut FederalDraft, interest: i64) {
@@ -446,11 +485,17 @@ pub(in crate::tests) fn employee_housing(
     expenses: i64,
     location: ForeignHousingLocation,
 ) {
-    if d.screening.as_ref().unwrap().foreign_earned.iter().all(|c| c.owner != d.income[0].owner) {
-        set_claim(d, foreign_claim(d.income[0].owner));
+    if d.screening
+        .as_ref()
+        .unwrap()
+        .foreign_earned
+        .iter()
+        .all(|c| c.owner != d.income[0].owner.owned())
+    {
+        set_claim(d, foreign_claim(d.income[0].owner.owned()));
     }
     let owner = d.income[0].owner;
-    claim_mut(d, owner).housing = housing_claim(expenses, location, None);
+    claim_mut(d, owner.owned()).housing = housing_claim(expenses, location, None);
 }
 
 // A business run abroad (no Form 2555 record: nothing of it is excluded).
@@ -495,13 +540,20 @@ pub(in crate::tests) fn self_employed_housing(
     d: &mut FederalDraft,
     prior: Option<HousingCarryover>,
 ) {
-    if d.screening.as_ref().unwrap().foreign_earned.iter().all(|c| c.owner != d.income[0].owner) {
-        let mut claim = foreign_claim(d.income[0].owner);
+    if d.screening
+        .as_ref()
+        .unwrap()
+        .foreign_earned
+        .iter()
+        .all(|c| c.owner != d.income[0].owner.owned())
+    {
+        let mut claim = foreign_claim(d.income[0].owner.owned());
         claim.exclusion = false;
         set_claim(d, claim);
     }
     let owner = d.income[0].owner;
-    claim_mut(d, owner).housing = housing_claim(50000, ForeignHousingLocation::General, prior);
+    claim_mut(d, owner.owned()).housing =
+        housing_claim(50000, ForeignHousingLocation::General, prior);
 }
 
 // Unit k3: a K-1's Schedule K-3 and its box 21 / box 16 code F foreign taxes.
@@ -555,13 +607,13 @@ pub(in crate::tests) fn foreign_income_owner_fixture() -> FederalDraft {
     let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     add(&mut d, income(savings_income(5000, 0)));
     let mut second = income(savings_income(15_000, 0));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     d
 }
 
 pub(in crate::tests) fn add_foreign_owner_income(d: &mut FederalDraft, owner: Owner, wages: i64) {
     let mut entry = income(foreign_pay(wages));
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     add(d, entry);
 }

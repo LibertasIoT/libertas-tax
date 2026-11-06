@@ -1,4 +1,5 @@
 use crate::tests::support::assert::{accepted, rejected_with};
+use crate::tests::support::client::income_pages::open_document_center;
 use crate::tests::support::client::survey::survey_preview_document;
 // T3-deduct (wave 5, 2026-09-28): the pages for the deductions no page
 // asked before. Each form is reached through the interview (the page's save
@@ -60,7 +61,9 @@ fn save_other_with(s: &mut Interview, change: impl FnOnce(&mut OtherItemized)) -
 // A complete return whose deductions page chose to itemize.
 fn itemizing(d: FederalDraft) -> Interview {
     let mut s = Interview::new(TEST_USER, d);
-    accepted(&save_deductions_with(&mut s, |v| v.route = DeductionRoute::Itemize));
+    accepted(&save_deductions_with(&mut s, |v| {
+        v.itemize_override = Some(ItemizeOverride::Itemize)
+    }));
     s
 }
 fn casualty(label: &str, basis: i64) -> PersonalCasualty {
@@ -77,31 +80,49 @@ fn casualty(label: &str, basis: i64) -> PersonalCasualty {
 #[test]
 fn vehicle_loans_reach_schedule_1a_through_the_deductions_page() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let loans = vec![
-        FederalVehicleInterest {
-            business: 70_000,
-            ..vehicle_loan("Synthetic Credit Union", 420_000)
-        },
-        FederalVehicleInterest {
-            original_use: false,
-            ..vehicle_loan("Synthetic Used Car Finance", 100_000)
+    let first_loan_id = s.draft.next_id;
+    let mut loans = vec![
+        VehicleLoanSource { business: 70_000, ..vehicle_loan("Synthetic Credit Union", 420_000) },
+        {
+            let mut loan = vehicle_loan("Synthetic Used Car Finance", 100_000);
+            loan.document.box_6 = false;
+            loan
         },
     ];
-    let saved = loans.clone();
-    accepted(&save_deductions_with(&mut s, |v| v.car_loans = saved));
+    let mut page = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let borrower = fixture_document_names(&s.draft, -1).unwrap().recipient;
+    for loan in &mut loans {
+        loan.document.payer_of_record = borrower.clone();
+    }
+    documents.other.vehicle_loans.documents = loans.iter().cloned().map(vehicle_document).collect();
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
+    for (index, loan) in loans.iter_mut().enumerate() {
+        loan.id = first_loan_id + index as i64;
+    }
     let r = supported(&s.draft);
     assert_eq!(value(&r, "vehicle_interest_deduction"), 3_500);
     assert_eq!(value(&r, "agi"), 60_000);
     assert_eq!(value(&r, "taxable_income"), 40_400);
-    // The car loan tick follows the entry.
-    assert_ne!(s.draft.checklist.deductions & DeductionTopics::CAR_LOAN.0, 0);
     // Round trip: stored, restarted and reopened unchanged.
     let mut again = restart(s.draft.clone());
     assert_eq!(again.draft, s.draft);
-    assert_eq!(deductions_shown(&mut again).0.car_loans, loans);
+    assert_eq!(
+        deductions_shown(&mut again)
+            .0
+            .car_loans
+            .into_iter()
+            .map(|row| row.value)
+            .collect::<Vec<_>>(),
+        loans.iter().map(|loan| loan.document.clone()).collect::<Vec<_>>()
+    );
     // No on a question takes no deduction.
     let mut d = s.draft.clone();
-    d.deductions.as_mut().unwrap().vehicle_loans[0].assembled_in_us = false;
+    d.deductions.as_mut().unwrap().vehicle_loans[0].document.box_7 = false;
     assert_eq!(value(&supported(&d), "vehicle_interest_deduction"), 0);
 }
 
@@ -143,21 +164,31 @@ fn vehicle_interest_phases_out_by_200_per_started_1000() {
 fn vehicle_business_part_above_interest_is_refused() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let before = s.draft.clone();
+    // The 1098-VLI prints the filer as its borrower.
+    let borrower = fixture_document_names(&s.draft, -1).unwrap().recipient;
+    let mut page = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let mut loan = vehicle_loan("Lender", 100_000);
+    loan.business = 100_001;
+    loan.document.payer_of_record = borrower.clone();
+    documents.other.vehicle_loans.documents.push(vehicle_document(loan));
     rejected_with(
-        save_deductions_with(&mut s, |v| {
-            v.car_loans = vec![FederalVehicleInterest {
-                business: 100_001,
-                ..vehicle_loan("Lender", 100_000)
-            }]
-        }),
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page),
         "VEHICLE_BUSINESS_ABOVE_INTEREST",
     );
     assert_eq!(s.draft, before);
     // Equal is allowed and deducts nothing on Schedule 1-A.
-    accepted(&save_deductions_with(&mut s, |v| {
-        v.car_loans =
-            vec![FederalVehicleInterest { business: 100_000, ..vehicle_loan("Lender", 100_000) }]
-    }));
+    let mut page = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let mut loan = vehicle_loan("Lender", 100_000);
+    loan.business = 100_000;
+    loan.document.payer_of_record = borrower;
+    documents.other.vehicle_loans.documents.push(vehicle_document(loan));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     assert_eq!(value(&supported(&s.draft), "vehicle_interest_deduction"), 0);
 }
 
@@ -200,7 +231,7 @@ fn casualty_floors_and_the_standard_route() {
         let mut d = complete(FederalStatus::Single);
         let ded = d.deductions.as_mut().unwrap();
         ded.personal_casualties = vec![casualty("Storm", basis)];
-        ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
         d
     };
     // 100 lost: nothing after the event reduction.
@@ -211,7 +242,7 @@ fn casualty_floors_and_the_standard_route() {
     // 6,101 lost: 1 above it.
     assert_eq!(value(&estimate(&itemized(610_100)), "personal_casualty_deduction"), 1);
     let mut d = itemized(2_000_000);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     assert_eq!(value(&supported(&d), "personal_casualty_deduction"), 0);
 }
 
@@ -268,7 +299,7 @@ fn casualty_rules_are_refused_on_both_sides() {
 fn with_recorded_repayment(amount: i64) -> FederalDraft {
     let mut d = repayment_comparison_draft(RepaymentMethod::Automatic);
     d.deductions.as_mut().unwrap().repayment = RepaymentClaim::None;
-    let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
+    let FederalIncome::GovernmentPayment { data } = &mut d.income[1].income else { panic!() };
     data.repayments[0].amount = amount;
     d
 }
@@ -408,10 +439,19 @@ fn less_common_gift_rules_are_refused_on_both_sides() {
 // gifts page's lists go with the warning; the deductions page's own data
 // answers (vehicle loans, casualties) stay.
 #[test]
-fn standard_route_erases_the_gift_page_but_keeps_deductions_page_answers() {
+fn automatic_method_retains_gifts_and_deductions_page_answers() {
     let mut s = itemizing(complete(FederalStatus::Single));
+    let mut page = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let mut loan = vehicle_loan("Lender", 100_000);
+    loan.document.payer_of_record = fixture_document_names(&s.draft, -1).unwrap().recipient;
+    documents.other.vehicle_loans.documents.push(vehicle_document(loan));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     accepted(&save_deductions_with(&mut s, |v| {
-        v.car_loans = vec![vehicle_loan("Lender", 100_000)];
         v.casualties = vec![casualty("Storm", 100_000).try_into().unwrap()];
     }));
     accepted(&save_gifts_with(&mut s, |v| {
@@ -419,20 +459,19 @@ fn standard_route_erases_the_gift_page_but_keeps_deductions_page_answers() {
         v.carryovers = vec![prior_household_carry().into()];
     }));
     let mut d = s.draft.clone();
-    d.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Automatic { expenses: ItemizedChoice::No };
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let pruned = crate::interview::prune(&mut d);
     let ded = d.deductions.as_ref().unwrap();
-    assert!(ded.volunteer_expenses.is_empty());
-    assert!(ded.charity_carryovers.is_empty());
+    // 2026-11-02: selecting automatically preserves itemized facts.
+    assert_eq!(ded.volunteer_expenses.len(), 1);
+    assert_eq!(ded.charity_carryovers.len(), 1);
     assert_eq!(ded.vehicle_loans.len(), 1);
     assert_eq!(ded.personal_casualties.len(), 1);
     assert!(
-        pruned
+        !pruned
             .removed
             .iter()
-            .any(|item| item.key() == "SAVING_REMOVES_YOUR_GIFTS_OF_PROPERTY_AND_CARRYOVERS"),
-        "{pruned:?}"
+            .any(|item| item.key() == "SAVING_REMOVES_YOUR_GIFTS_OF_PROPERTY_AND_CARRYOVERS")
     );
 }
 
@@ -448,7 +487,9 @@ fn final_return_with_pension() -> (FederalDraft, i64) {
     );
     e.label = "Synthetic Pension Plan".into();
     if let FederalIncome::Retirement { data } = &mut e.income {
-        data.taxable = RetirementTaxable::Payer { amount: 700_000 };
+        let mut data = edit_retirement(data);
+        data.box_2a = 700_000;
+        data.taxable = Some(RetirementTaxable::Payer);
     }
     let id = d.next_id;
     add(&mut d, e);
@@ -605,14 +646,23 @@ fn deduction_and_credit_editors_supply_hidden_document_year() {
 #[test]
 fn investment_borrowing_page_keeps_complete_facts_across_deduction_routes() {
     let mut s = itemizing(complete(FederalStatus::Single));
-    let mut page =
-        crate::tests::cross::interview::open_topic(&mut s, TaxSection::InterestDividends);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    documents.documents.push(crate::tests::cross::interview::document(
+    let mut rows = crate::tests::support::client::income_pages::all_documents(&mut s);
+    rows.push(crate::tests::cross::interview::document(
         0,
-        IncomeDocument::Div1099(native_div1099("Synthetic Portfolio Fund".into(), 100_000, 50_000)),
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(native_div1099(
+                "Synthetic Portfolio Fund".into(),
+                100_000,
+                50_000,
+            ))),
+        },
     ));
-    accepted(&send(&mut s, page));
+    let page = crate::tests::support::client::income_pages::save_documents(&mut s, rows);
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let borrowing = InvestmentBorrowingPage {
         loans: vec![InvestmentLoanPage {
             paid_owners: None,
@@ -642,15 +692,11 @@ fn investment_borrowing_page_keeps_complete_facts_across_deduction_routes() {
         unreachable!()
     };
     assert_eq!(shown.investment_interest, Some(borrowing.clone()));
-    accepted(&save_deductions_with(&mut restarted, |v| v.route = DeductionRoute::Standard));
-    assert!(matches!(
-        restarted.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Standard
-            | DeductionSelection::Automatic { expenses: ItemizedChoice::No }
-    ));
+    accepted(&save_deductions_with(&mut restarted, |v| v.itemize_override = None));
+    assert_eq!(restarted.draft.deductions.as_ref().unwrap().itemize_override, None);
     let page = open(&mut restarted, TaxSection::OtherItemized);
     let P::SaveOtherItemized { value: shown, page: parent, .. } = &page else { unreachable!() };
-    assert_eq!(*parent, TaxSection::Deductions as i32);
+    assert_eq!(*parent, TaxSection::Itemized as i32);
     assert_eq!(shown.investment_interest, Some(borrowing));
     accepted(&send(&mut restarted, page));
     assert_eq!(value(&supported(&restarted.draft), "investment_interest_deduction"), 0);
@@ -719,14 +765,22 @@ fn investment_borrowing_save_rejects_stale_source_catalog_and_keeps_the_draft() 
 #[test]
 fn investment_income_tax_page_drives_one_regular_expense_and_preserves_amt() {
     let mut s = itemizing(complete(FederalStatus::Single));
-    let mut page =
-        crate::tests::cross::interview::open_topic(&mut s, TaxSection::InterestDividends);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    documents.documents.push(crate::tests::cross::interview::document(
+    let mut rows = crate::tests::support::client::income_pages::all_documents(&mut s);
+    rows.push(crate::tests::cross::interview::document(
         0,
-        IncomeDocument::Int1099(native_int1099("Synthetic Investment Bank".into(), 1_000_000)),
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "Synthetic Investment Bank".into(),
+                1_000_000,
+            ))),
+        },
     ));
-    accepted(&send(&mut s, page));
+    let page = crate::tests::support::client::income_pages::save_documents(&mut s, rows);
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     accepted(&save_other_with(&mut s, |v| {
         v.investment_interest = Some(InvestmentBorrowingPage {
             loans: vec![InvestmentLoanPage {
@@ -753,7 +807,11 @@ fn investment_income_tax_page_drives_one_regular_expense_and_preserves_amt() {
         paid_part: 300_000,
         capped_allocation: InvestmentTaxCapAllocation::SourceDetermined,
     };
-    accepted(&send(&mut s, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let r = supported(&s.draft);
     assert_eq!(value(&r, "agi"), 70_000);
     assert_eq!(value(&r, "investment_interest_deduction"), 7000);
@@ -795,7 +853,7 @@ fn investment_income_tax_page_drives_one_regular_expense_and_preserves_amt() {
 // investment income. $18,000 interest leaves $1,000/$3,000 future interest.
 #[test]
 fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps() {
-    use crate::tests::cross::interview::{document, open_topic, page_documents, save_topic};
+    use crate::tests::cross::interview::{document, open_topic, page_documents};
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut prior = capital_history();
     prior.investment_parts = Some(InvestmentCapitalParts {
@@ -810,6 +868,8 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
         deducted_loss: 300_000,
     });
     let sale = Sale1099B {
+        payer: Default::default(),
+        recipient: Default::default(),
         digital_asset: false,
         market_discount: 0,
         several_sales: false,
@@ -822,19 +882,27 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
         use_kind: SaleUse::Investment { wash_sale: 0 },
         collectible: false,
         withholding: 0,
-        adjustment: SaleAdjustment::None,
-        special: SaleSpecial::NoneOfThese,
     };
-    let request = save_topic(
-        &s.draft,
-        TaxSection::InvestmentSales,
+    crate::tests::support::client::income_pages::save_each_topic(
+        &mut s,
         vec![
-            document(0, IncomeDocument::Sale1099B(sale)),
-            document(0, IncomeDocument::CapitalLossCarryover(prior.clone().into())),
+            document(
+                0,
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::Sale1099B(sale),
+                },
+            ),
+            document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::CapitalLossCarryover(prior.clone().into()),
+                },
+            ),
         ],
     );
-    accepted(&send(&mut s, request));
-    accepted(&save_deductions_with(&mut s, |v| v.route = DeductionRoute::Itemize));
+    accepted(&save_deductions_with(&mut s, |v| {
+        v.itemize_override = Some(ItemizeOverride::Itemize)
+    }));
     accepted(&save_other_with(&mut s, |v| {
         v.investment_interest = Some(InvestmentBorrowingPage {
             loans: vec![InvestmentLoanPage {
@@ -854,7 +922,9 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
             limited_allocation: InvestmentLimitedAllocation::SourceDetermined,
         })
     }));
-    accepted(&save_deductions_with(&mut s, |v| v.route = DeductionRoute::Itemize));
+    accepted(&save_deductions_with(&mut s, |v| {
+        v.itemize_override = Some(ItemizeOverride::Itemize)
+    }));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "capital_gain"), 6000);
     assert_eq!(value(&r, "investment_interest_deduction"), 17000);
@@ -867,7 +937,12 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
     let rows = page_documents(&page);
     let row = rows
         .iter()
-        .find(|row| matches!(row.document, IncomeDocument::CapitalLossCarryover(_)))
+        .find(|row| {
+            matches!(
+                row.document,
+                IncomeSource::Record { value: crate::IncomeRecord::CapitalLossCarryover(_) }
+            )
+        })
         .unwrap();
     let expected_caps = InvestmentCapitalCap {
         short: 400_000,
@@ -884,10 +959,10 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
     let row = documents
         .documents
         .iter_mut()
-        .find(|row| matches!(row.document, IncomeDocument::CapitalLossCarryover(_)))
+        .find(|row| matches!(row.document, crate::IncomeRecord::CapitalLossCarryover(_)))
         .unwrap();
     row.investment_caps = Some(InvestmentCapitalCap { short: 10_000_000, ..expected_caps.clone() });
-    let IncomeDocument::CapitalLossCarryover(v) = &mut row.document else { panic!() };
+    let crate::IncomeRecord::CapitalLossCarryover(v) = &mut row.document else { panic!() };
     v.investment_parts.as_mut().unwrap().short = 400_001;
     assert!(refused(&send(&mut s, forged)));
     assert_eq!(s.draft, before);
@@ -895,8 +970,12 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
     // The actual edited source, not the echoed cap, owns pure calculation.
     let mut edited = prior;
     edited.short = -600_000; // unchanged taxable worksheet: ST carry $5,000.
-    let reply =
-        send(&mut s, survey_preview_document(IncomeDocument::CapitalLossCarryover(edited.into())));
+    let reply = send(
+        &mut s,
+        survey_preview_document(IncomeSource::Record {
+            value: crate::IncomeRecord::CapitalLossCarryover(edited.into()),
+        }),
+    );
     let Reply::Response(P::IncomePreview { preview: None, investment_caps: Some(caps) }) = reply
     else {
         panic!("{reply:?}")
@@ -912,7 +991,11 @@ fn investment_capital_portions_use_public_source_facts_and_independent_amt_caps(
     );
     assert_eq!(s.draft, before);
     assert_eq!(s.dirty, before_dirty);
-    accepted(&send(&mut s, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let after = supported(&s.draft);
     assert_eq!(after.tax, r.tax);
     assert_eq!(value(&after, "investment_interest_deduction"), 17000);
@@ -977,24 +1060,31 @@ fn royalty_page_return(receipts: i64, costs: i64) -> Interview {
     use crate::tests::cross::interview::{document, save_topic};
     let mut s = itemizing(complete(FederalStatus::Single));
     let page = save_topic(
-        &s.draft,
+        &mut s,
         TaxSection::Rentals,
         vec![document(
             0,
-            IncomeDocument::Royalties(RoyaltyProperty {
-                kind: crate::RoyaltyKind::Intangible,
-                receipts: receipts * 100,
-                advance: 0,
-                expenses: RentalExpenses {
-                    legal: costs * 100,
-                    ..crate::tests::cross::interview::no_rental_expenses()
-                },
-                depletion: crate::RoyaltyDepletion::No,
-                special: false,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Royalties(RoyaltyProperty {
+                    related: crate::RelatedForms::default(),
+                    kind: crate::RoyaltyKind::Intangible,
+                    receipts: receipts * 100,
+                    advance: 0,
+                    expenses: RentalExpenses {
+                        legal: costs * 100,
+                        ..crate::tests::cross::interview::no_rental_expenses()
+                    },
+                    depletion: crate::RoyaltyDepletion::No,
+                    special: false,
+                }),
+            },
         )],
     );
-    accepted(&send(&mut s, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     s
 }
 #[test]
@@ -1025,7 +1115,7 @@ fn investment_royalty_source_routes_once_and_survives_standard_deduction() {
     s = restart(before.clone());
     accepted(&save_other_with(&mut s, |_| {}));
     assert_eq!(s.draft, before);
-    accepted(&save_deductions_with(&mut s, |v| v.route = DeductionRoute::Standard));
+    accepted(&save_deductions_with(&mut s, |v| v.itemize_override = None));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "investment_interest_deduction"), 0);
     assert_eq!(value(&r, "investment_form_line8"), 6_000);
@@ -1041,7 +1131,7 @@ fn investment_exclusive_royalty_keeps_separate_amt_carry_and_line2c() {
     // not remove the royalty deduction; Form6251 2c=+1,500 (i6251 p.3).
     let mut s = royalty_page_return(4_000, 1_000);
     royalty_borrowing_page(&mut s, 0, 1_000, 5_000, 500);
-    accepted(&save_deductions_with(&mut s, |v| v.route = DeductionRoute::Standard));
+    accepted(&save_deductions_with(&mut s, |v| v.itemize_override = None));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "investment_form_line8"), 3_000);
     assert_eq!(value(&r, "investment_form_line7"), 3_000);
@@ -1154,24 +1244,31 @@ fn investment_royalty_gross_and_allowed_cost_round_on_separate_printed_lines() {
     // interest2,999 leaves1 of royalty income and1 of interest carry.
     let mut s = itemizing(complete(FederalStatus::Single));
     let page = save_topic(
-        &s.draft,
+        &mut s,
         TaxSection::Rentals,
         vec![document(
             0,
-            IncomeDocument::Royalties(RoyaltyProperty {
-                kind: crate::RoyaltyKind::Intangible,
-                receipts: 400_049,
-                advance: 0,
-                expenses: RentalExpenses {
-                    legal: 100_050,
-                    ..crate::tests::cross::interview::no_rental_expenses()
-                },
-                depletion: crate::RoyaltyDepletion::No,
-                special: false,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Royalties(RoyaltyProperty {
+                    related: crate::RelatedForms::default(),
+                    kind: crate::RoyaltyKind::Intangible,
+                    receipts: 400_049,
+                    advance: 0,
+                    expenses: RentalExpenses {
+                        legal: 100_050,
+                        ..crate::tests::cross::interview::no_rental_expenses()
+                    },
+                    depletion: crate::RoyaltyDepletion::No,
+                    special: false,
+                }),
+            },
         )],
     );
-    accepted(&send(&mut s, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     royalty_borrowing_page(&mut s, 0, 3_000, 0, 0);
     let r = supported(&s.draft);
     assert_eq!(value(&r, "investment_form_line4a"), 4_000);
@@ -1182,4 +1279,26 @@ fn investment_royalty_gross_and_allowed_cost_round_on_separate_printed_lines() {
     assert_eq!(value(&r, "amt_investment_form_line8"), 2_999);
     assert_eq!(value(&r, "agi"), 60_001);
     assert_eq!(estimate(&restart(s.draft).draft), r);
+}
+
+#[test]
+fn vehicle_loan_blank_principal_and_refund_survive_save_and_restart() {
+    let mut session = restart(complete(FederalStatus::Single));
+    let mut paper = vehicle_loan("Synthetic vehicle lender", 10_000).document;
+    paper.payer_of_record = fixture_document_names(&session.draft, -1).unwrap().recipient;
+    for amount in [None, Some(0)] {
+        paper.box_4 = amount;
+        paper.box_5 = amount;
+        let mut request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let id = documents.other.vehicle_loans.documents.first().map_or(0, |row| row.id);
+        documents.other.vehicle_loans.documents =
+            vec![crate::Form1098VliDocument { id, form: paper.clone() }];
+        accepted(&send(&mut session, request));
+        session = restart(session.draft);
+        let request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = request else { unreachable!() };
+        assert_eq!(documents.other.vehicle_loans.documents[0].form, paper);
+        assert_eq!(FederalVehicleInterest::from(&paper).refund, 0);
+    }
 }

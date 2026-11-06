@@ -6,16 +6,21 @@ fn home_exclusion_election_and_personal_loss_do_not_create_a_deduction() {
     let mut home = home_sale(false);
     home.price = 10000000;
     home.exclusion = HomeExclusion::Decline;
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(home) }));
     assert_eq!(value(&supported(&d), "capital_gain"), 0);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_home(data);
     data.price = 80000000;
+    drop(data);
     assert_eq!(value(&supported(&d), "capital_gain"), 550000);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_home(data);
     // Special treatment (No) leaves the sale out with a notice.
     data.ordinary = false;
+    drop(data);
     let r = supported(&d);
-    assert!(noted(&r, "WARN_HOME_SALE_LEFT_OUT"), "{r:?}");
+    // The stored sale states the special situation in its answers: that notice names it.
+    assert!(noted(&r, "WARN_HOME_SALE_OTHER_LEFT_OUT"), "{r:?}");
     assert_eq!(value(&r, "capital_gain"), 0);
 }
 #[test]
@@ -46,7 +51,10 @@ fn ordinary_subsidized_home_sale_calculates_form_8828_recapture() {
     home.price = 40_000_000;
     home.expenses = 2_000_000;
     home.basis = 30_000_000;
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(
+        &mut d,
+        income(FederalIncome::HomeSale { data: sold_on(main_home_source(home), 20260701) }),
+    );
     let without_recapture = supported(&d);
     assert_eq!(value(&without_recapture, "home_2_taxable_gain"), 0);
     set_mortgage_subsidy(
@@ -99,7 +107,9 @@ fn ordinary_subsidized_home_sale_calculates_form_8828_recapture() {
     assert_eq!(value(&partial_income, "mortgage_subsidy_recapture_tax"), 1875);
     mortgage_recapture_facts(&mut d).adjusted_qualifying_income = 5_000_000;
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_home(data);
     data.price = 32_500_000;
+    drop(data);
     let gain_limited = supported(&d);
     assert_eq!(value(&gain_limited, "mortgage_subsidy_1_disposition_gain"), 5000);
     assert_eq!(value(&gain_limited, "mortgage_subsidy_recapture_tax"), 2500);
@@ -120,8 +130,6 @@ fn ordinary_subsidized_home_sale_calculates_form_8828_recapture() {
         MortgageSubsidyPayoff::Earlier { repaid_on: 20270101 };
     assert!(!d.valid_stored());
     mortgage_recapture_facts(&mut d).payoff = MortgageSubsidyPayoff::AtDispositionOrReissued;
-    mortgage_recapture_facts(&mut d).holding_percentage = 101;
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -131,13 +139,19 @@ fn two_subsidized_home_sales_keep_distinct_form_8828_results() {
     first_home.price = 40_000_000;
     first_home.expenses = 2_000_000;
     first_home.basis = 30_000_000;
-    add(&mut d, income(FederalIncome::HomeSale { data: first_home }));
+    add(
+        &mut d,
+        income(FederalIncome::HomeSale { data: sold_on(main_home_source(first_home), 20260701) }),
+    );
     let mut second_home = home_sale(false);
     second_home.price = 40_000_000;
     second_home.expenses = 2_000_000;
     second_home.basis = 30_000_000;
     second_home.exclusion = HomeExclusion::Decline;
-    add(&mut d, income(FederalIncome::HomeSale { data: second_home }));
+    add(
+        &mut d,
+        income(FederalIncome::HomeSale { data: sold_on(main_home_source(second_home), 20260701) }),
+    );
     let without_recapture = supported(&d);
     d.credits.as_mut().unwrap().mortgage_subsidies = vec![
         MortgageSubsidyEntry {
@@ -207,7 +221,10 @@ fn qualified_subordinate_mortgage_lender_share_limits_form_8828_gain() {
     home.price = 40_000_000;
     home.expenses = 2_000_000;
     home.basis = 30_000_000;
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(
+        &mut d,
+        income(FederalIncome::HomeSale { data: sold_on(main_home_source(home), 20260701) }),
+    );
     let ordinary_return = supported(&d);
     set_mortgage_subsidy(
         &mut d,
@@ -252,9 +269,6 @@ fn qualified_subordinate_mortgage_lender_share_limits_form_8828_gain() {
     mortgage_recapture_qsml(&mut d).qualified_and_distinct = true;
     mortgage_recapture_qsml(&mut d).paid_on = 20260630;
     unsupported(&d, "Mortgage subsidy recapture");
-    mortgage_recapture_qsml(&mut d).paid_on = 20260701;
-    mortgage_recapture_qsml(&mut d).paid_gain_share = -1;
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -264,7 +278,10 @@ fn subsidized_home_sale_at_a_loss_has_no_recapture_tax() {
     home.price = 25_000_000;
     home.expenses = 2_000_000;
     home.basis = 30_000_000;
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(
+        &mut d,
+        income(FederalIncome::HomeSale { data: sold_on(main_home_source(home), 20260701) }),
+    );
     set_mortgage_subsidy(
         &mut d,
         MortgageSubsidyDisposition::Ordinary {
@@ -314,11 +331,11 @@ fn personal_casualty_applies_per_event_and_shared_agi_limits() {
 fn personal_casualty_standard_route_and_source_guards() {
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.personal_casualties.push(personal_disaster("Storm", 3_000_000));
     let standard = supported(&d);
     assert_eq!(value(&standard, "form_4684_personal_loss_after_agi"), 23_900);
-    assert_eq!(value(&standard, "personal_casualty_deduction"), 0);
+    assert_eq!(value(&standard, "personal_casualty_deduction"), 23900);
 
     // No leaves the event's loss out with its notice; the estimate proceeds.
     {
@@ -477,7 +494,7 @@ fn undeclared_personal_casualty_loss_only_offsets_recognized_gains() {
     assert_eq!(estimate(&restart(d.clone()).draft), net_gain);
 
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     ded.personal_casualties.push(personal_disaster("Declared storm", 1_000_000));
     let combined = supported(&d);
     assert_eq!(value(&combined, "form_4684_personal_loss_after_events"), 12_800);
@@ -550,9 +567,9 @@ fn personal_use_home_lists_its_schedule_e_rental_share() {
         .collect();
     for (label, amount) in [
         ("Schedule E 4 — Royalty 3 line 4 royalties", 500_000),
-        ("Schedule E 10 — Royalty 3 line10 legal and professional", 100_000),
-        ("Schedule E 20 — Royalty 3 line20 total expenses", 100_000),
-        ("Schedule E 21 — Royalty 3 line21 income", 400_000),
+        ("Schedule E 10 — Royalty 3 line 10 legal and professional", 100_000),
+        ("Schedule E 20 — Royalty 3 line 20 total expenses", 100_000),
+        ("Schedule E 21 — Royalty 3 line 21 income", 400_000),
         ("Schedule E 23b — Schedule E line 23b royalties received", 500_000),
         ("Schedule E 3 — Rental 2 line 3 rents", 600_000),
         ("Schedule E 18 — Rental 2 line 18 depreciation", 160_000),

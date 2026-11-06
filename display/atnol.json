@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 669000, "rule": {"select": "^<AtnolYear>.year", "promote": true}}
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 251000, "rule": {"select": "^<ArcherCorrection>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}},
+    {"order": 252000, "rule": {"select": "^<ArcherCorrection>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}},
+    {"order": 253000, "rule": {"select": "^<ArcherCorrectionPage>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}},
+    {"order": 254000, "rule": {"select": "^<ArcherCorrectionPage>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HEALTH_CORRECTION_SOURCE", "fields": ["document", "failed_deposit", "year", "contributed_on", "payer"]}, {"title": "DISPLAY_HEALTH_CORRECTION_RETURN", "fields": ["principal", "earnings", "returned", "deadline"]}]}}
+  ]
+}

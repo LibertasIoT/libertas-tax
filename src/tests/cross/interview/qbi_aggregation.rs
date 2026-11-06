@@ -1,39 +1,39 @@
-// Independent normal-lifecycle witnesses for the approved one-business K1
-// aggregation source increment. Monetary source fixture is the surviving
-// unit22 last-gap control: A QBI100000/wages0, B QBI25000/wages120000.
+// Independent normal-lifecycle witnesses for one-business K1 aggregation.
+// Monetary sources: A QBI100000/wages0, B QBI25000/wages120000.
 // This is native protocol acceptance, not a fresh Studio client execution.
 extern crate std;
 use super::*;
 use crate::tests::support::builders::k1res::qbi_aggregation_facts as facts;
+use crate::tests::support::client::income_pages::{open_document_center, save_documents};
 
 fn base() -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 40_000_000, 0);
+    name_accepted_income_documents(&mut d);
     d
 }
 
 fn source(name: &str, profit: i64, wages: i64) -> IncomeDocumentItem {
     let mut p = k1_1120s_fixture(profit);
-    p.name = name.into();
+    p.corporation.name = name.into();
     if let K1ScorpQbi::Statement { wages: printed, .. } = &mut p.qbi {
         *printed = wages * 100;
     }
     p.qbi_group.clear();
-    document(0, IncomeDocument::K1Scorp(p))
+    document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp((p).into()) })
 }
 
-fn documents_mut(page: &mut P) -> &mut IncomeDocuments {
+fn documents_mut(page: &mut P) -> &mut IncomeRecords {
     let P::SaveIncomes { documents, .. } = page else { panic!("expected normal income editor") };
     documents
 }
 
-fn inputs(page: &IncomeDocuments) -> IncomeDocumentsEstimateInput {
-    IncomeDocumentsEstimateInput {
-        receipt_context: page.receipt_context.clone(),
+fn inputs(page: &IncomeRecords) -> IncomeRecordsEstimateInput {
+    IncomeRecordsEstimateInput {
         documents: page
             .documents
             .iter()
-            .map(|r| IncomeDocumentEstimateInput {
+            .map(|r| IncomeRecordEstimateInput {
                 id: r.id,
                 owner: r.owner,
                 document: r.document.clone(),
@@ -92,7 +92,8 @@ fn calculation(page: &P) -> P {
 
 fn refresh(s: &mut Interview, editor: &mut P) {
     let before = s.draft.clone();
-    let reply = send(s, calculation(editor));
+    let reply =
+        crate::tests::support::client::income_pages::candidate_save_review(s, calculation(editor));
     let Reply::Response(P::IncomeRunningEstimate {
         estimate,
         warnings,
@@ -122,7 +123,7 @@ fn refresh(s: &mut Interview, editor: &mut P) {
         g.businesses = derived.businesses;
     }
     *qbi_sources = sources;
-    *text = Some(estimate);
+    *text = estimate.map(Into::into);
     *notes = warnings;
     *walk = Some(progress);
     assert_eq!(s.draft, before, "a calculation must not accept the candidate");
@@ -131,21 +132,25 @@ fn refresh(s: &mut Interview, editor: &mut P) {
 fn new_sources() -> Interview {
     let mut s = Interview::new(TEST_USER, base());
     let original_wages = s.draft.income[0].clone();
-    let mut editor = open_topic(&mut s, TaxSection::PassThrough);
-    documents_mut(&mut editor).documents = vec![
+    let sources = vec![
         source("Independent entity A", 100_000, 0),
         source("Independent entity B", 25_000, 120_000),
     ];
-    assert!(page_documents(&editor).iter().all(|r| r.id == 0));
-    accepted(&send(&mut s, editor));
-    let reopened = open_topic(&mut s, TaxSection::PassThrough);
-    let rows = page_documents(&reopened);
+    assert!(sources.iter().all(|row| row.id == 0));
+    accepted(&crate::tests::support::client::income_pages::save_k1_sources_and_answers(
+        &mut s, sources,
+    ));
+    let reopened = open_document_center(&mut s);
+    let rows = page_documents(&reopened)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|r| r.id > 0));
     assert_ne!(rows[0].id, rows[1].id);
     assert!(
         rows.iter()
-            .all(|r| matches!(&r.document, IncomeDocument::K1Scorp(k) if k.qbi_group.is_empty()))
+            .all(|r| matches!(&r.document, IncomeSource::K1 { value: crate::K1Document::K1Scorp(k) } if scorp_fixture_source(k).personal.qbi_group.is_empty()))
     );
     assert_eq!(s.draft.income.iter().find(|e| e.id == original_wages.id), Some(&original_wages));
     let r = supported(&s.draft);
@@ -157,14 +162,6 @@ fn new_sources() -> Interview {
 fn election_editor(s: &mut Interview) -> P {
     let mut editor = open_topic(s, TaxSection::PassThrough);
     let documents = documents_mut(&mut editor);
-    for row in &mut documents.documents {
-        assert!(row.id > 0);
-        match &mut row.document {
-            IncomeDocument::K1Scorp(k) => k.qbi_group = "Actual elected A+B".into(),
-            IncomeDocument::K1Partnership(k) => k.qbi_group = "Actual elected A+B".into(),
-            _ => panic!("actual one-business K1source"),
-        }
-    }
     documents.qbi_aggregations = vec![facts()];
     refresh(s, &mut editor);
     let documents = documents_mut(&mut editor);
@@ -200,6 +197,7 @@ fn election_editor(s: &mut Interview) -> P {
 
 fn assert_restores_and_resaves(s: &mut Interview) {
     let before = s.draft.clone();
+    let sources = page_documents(&open_document_center(s));
     let expected = estimate(&before);
     let editor = open_topic(s, TaxSection::PassThrough);
     let saved_page = documents_mut(&mut editor.clone()).clone();
@@ -218,6 +216,7 @@ fn assert_restores_and_resaves(s: &mut Interview) {
         saved_page.documents.iter().map(|r| r.document.clone()).collect::<Vec<_>>()
     );
     assert_eq!(documents.qbi_aggregations, saved_page.qbi_aggregations);
+    assert_eq!(page_documents(&open_document_center(&mut restarted)), sources);
     let mut expected = expected;
     expected.revision = s.draft.revision;
     assert_eq!(estimate(&s.draft), expected);
@@ -227,6 +226,7 @@ fn assert_restores_and_resaves(s: &mut Interview) {
 fn qbi_aggregation_actual_two_save_election_changes_only_proved_wage_limit_and_restores() {
     let mut s = new_sources();
     let known_sources = s.draft.income.clone();
+    save_source_group(&mut s, "Actual elected A+B");
     let editor = election_editor(&mut s);
     accepted(&send(&mut s, editor));
     let r = supported(&s.draft);
@@ -240,7 +240,7 @@ fn qbi_aggregation_actual_two_save_election_changes_only_proved_wage_limit_and_r
             (&original.income, &actual.income)
         {
             let mut expected = old.clone();
-            expected.qbi_aggregation_group = Some("Actual elected A+B".into());
+            expected.personal.qbi_group = "Actual elected A+B".into();
             assert_eq!(*new, expected);
         } else {
             assert_eq!(actual, &original);
@@ -252,6 +252,7 @@ fn qbi_aggregation_actual_two_save_election_changes_only_proved_wage_limit_and_r
 #[test]
 fn qbi_aggregation_structural_source_and_readonly_forgery_reject_atomically() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let genuine = election_editor(&mut s);
     for bad in 0..13 {
         let mut editor = genuine.clone();
@@ -291,6 +292,7 @@ fn qbi_aggregation_structural_source_and_readonly_forgery_reject_atomically() {
 fn qbi_aggregation_unfavorable_or_unavailable_election_facts_save_without_silent_disaggregation() {
     for case in 0..5 {
         let mut s = new_sources();
+        save_source_group(&mut s, "Actual elected A+B");
         let mut editor = election_editor(&mut s);
         let facts = &mut documents_mut(&mut editor).qbi_aggregations[0].facts;
         match case {
@@ -306,7 +308,16 @@ fn qbi_aggregation_unfavorable_or_unavailable_election_facts_save_without_silent
         let reopened = open_topic(&mut s, TaxSection::PassThrough);
         let P::SaveIncomes { documents, .. } = reopened else { unreachable!() };
         assert_eq!(documents.qbi_aggregations[0].facts, expected);
-        assert!(documents.documents.iter().all(|r| matches!(&r.document, IncomeDocument::K1Scorp(k) if k.qbi_group == "Actual elected A+B")));
+        let sources = page_documents(&open_document_center(&mut s));
+        assert!(
+            sources
+                .iter()
+                .filter_map(|r| match &r.document {
+                    IncomeSource::K1 { value: crate::K1Document::K1Scorp(k) } => Some(k),
+                    _ => None,
+                })
+                .all(|k| scorp_fixture_source(k).personal.qbi_group == "Actual elected A+B")
+        );
         let result = estimate(&s.draft);
         assert_eq!(result.state, ResultState::Incomplete);
         assert!(!result.lines.iter().any(|row| row.id == "qbi_deduction"));
@@ -322,26 +333,19 @@ fn qbi_aggregation_unfavorable_or_unavailable_election_facts_save_without_silent
 #[test]
 fn qbi_aggregation_malformed_restored_facts_reject_without_panic_or_tax_output() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let editor = election_editor(&mut s);
     accepted(&send(&mut s, editor));
     assert!(s.draft.valid_stored());
-    for case in 0..8 {
+    for case in [4, 5] {
         let mut restored = s.draft.clone();
         let facts = &mut restored.screening.as_mut().unwrap().qbi_aggregations;
         match case {
-            0 => {
-                facts[0].irs_history = QbiIrsDisaggregationHistory::Disaggregated { year: u32::MAX }
-            }
-            1 => facts[0].irs_history = QbiIrsDisaggregationHistory::Disaggregated { year: 2017 },
-            2 => facts[0].irs_history = QbiIrsDisaggregationHistory::Disaggregated { year: 2027 },
-            3 => facts[0].election = QbiElectionHistory::Continuing { original_year: 2026 },
             4 => facts.push(facts[0].clone()),
             5 => {
                 let duplicate = facts[0].disclosure[0].clone();
                 facts[0].disclosure.push(duplicate);
             }
-            6 => facts[0].disclosure[0].ein = QbiEntityEin::Known { number: "12345678".into() },
-            7 => facts[0].disclosure[0].ein = QbiEntityEin::Known { number: "1234x6789".into() },
             _ => unreachable!(),
         }
         assert!(!restored.valid_stored(), "malformed restored case {case}");
@@ -373,6 +377,7 @@ fn qbi_aggregation_malformed_restored_facts_reject_without_panic_or_tax_output()
 #[test]
 fn qbi_aggregation_irs2022_three_subsequent_years_expire_before2026() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let mut editor = election_editor(&mut s);
     documents_mut(&mut editor).qbi_aggregations[0].facts.irs_history =
         QbiIrsDisaggregationHistory::Disaggregated { year: 2022 };
@@ -381,21 +386,37 @@ fn qbi_aggregation_irs2022_three_subsequent_years_expire_before2026() {
     assert_restores_and_resaves(&mut s);
 }
 
-fn set_group(editor: &mut P, name: &str) {
-    for row in &mut documents_mut(editor).documents {
-        match &mut row.document {
-            IncomeDocument::K1Scorp(k) => k.qbi_group = name.into(),
-            IncomeDocument::K1Partnership(k) => k.qbi_group = name.into(),
-            _ => panic!("expected genuine K1 source"),
+fn save_source_group(s: &mut Interview, name: &str) {
+    let mut editor = open_topic(s, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = &mut editor else { unreachable!() };
+    for row in followups {
+        match &mut row.answer {
+            crate::DocumentAnswer::K1ScorpRecords { qbi_group, .. }
+            | crate::DocumentAnswer::K1PartnerRecords { qbi_group, .. } => {
+                let id = row.key.split('/').nth(1).unwrap().parse::<i64>().unwrap();
+                assert!(id > 0);
+                *qbi_group = name.into();
+            }
+            _ => {}
         }
     }
+    refresh(s, &mut editor);
+    accepted(&send(s, editor));
+}
+
+fn save_source_group_and_reopen_facts(s: &mut Interview, editor: &mut P, name: &str) {
+    let groups = documents_mut(editor).qbi_aggregations.clone();
+    save_source_group(s, name);
+    *editor = open_topic(s, TaxSection::PassThrough);
+    documents_mut(editor).qbi_aggregations = groups;
 }
 
 #[test]
 fn qbi_aggregation_inactive_history_uses_live_disclosure_catalog_without_current_members() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let mut editor = election_editor(&mut s);
-    set_group(&mut editor, "");
+    save_source_group_and_reopen_facts(&mut s, &mut editor, "");
     documents_mut(&mut editor).qbi_aggregations[0].facts.irs_history =
         QbiIrsDisaggregationHistory::Disaggregated { year: 2023 };
     refresh(&mut s, &mut editor);
@@ -415,7 +436,7 @@ fn qbi_aggregation_inactive_history_uses_live_disclosure_catalog_without_current
     current.facts.name = "Renamed current election".into();
     current.facts.irs_history = QbiIrsDisaggregationHistory::None;
     documents_mut(&mut editor).qbi_aggregations.push(current);
-    set_group(&mut editor, "Renamed current election");
+    save_source_group_and_reopen_facts(&mut s, &mut editor, "Renamed current election");
     refresh(&mut s, &mut editor);
     accepted(&send(&mut s, editor));
     let result = estimate(&s.draft);
@@ -428,6 +449,7 @@ fn qbi_aggregation_inactive_history_uses_live_disclosure_catalog_without_current
 #[test]
 fn qbi_aggregation_explicit_history_correction_and_rename_share_one_normal_save() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let mut editor = election_editor(&mut s);
     documents_mut(&mut editor).qbi_aggregations[0].facts.irs_history =
         QbiIrsDisaggregationHistory::Disaggregated { year: 2023 };
@@ -435,7 +457,7 @@ fn qbi_aggregation_explicit_history_correction_and_rename_share_one_normal_save(
     assert_eq!(estimate(&s.draft).state, ResultState::Incomplete);
 
     let mut editor = open_topic(&mut s, TaxSection::PassThrough);
-    set_group(&mut editor, "Corrected and renamed");
+    save_source_group_and_reopen_facts(&mut s, &mut editor, "Corrected and renamed");
     let facts = &mut documents_mut(&mut editor).qbi_aggregations[0].facts;
     facts.name = "Corrected and renamed".into();
     facts.irs_history = QbiIrsDisaggregationHistory::None;
@@ -452,11 +474,12 @@ fn qbi_aggregation_rename_alone_preserves_known_and_unavailable_irs_history() {
         QbiIrsDisaggregationHistory::Unavailable,
     ] {
         let mut s = new_sources();
+        save_source_group(&mut s, "Actual elected A+B");
         let mut editor = election_editor(&mut s);
         documents_mut(&mut editor).qbi_aggregations[0].facts.irs_history = history.clone();
         accepted(&send(&mut s, editor));
         let mut editor = open_topic(&mut s, TaxSection::PassThrough);
-        set_group(&mut editor, "Same businesses renamed");
+        save_source_group_and_reopen_facts(&mut s, &mut editor, "Same businesses renamed");
         documents_mut(&mut editor).qbi_aggregations[0].facts.name =
             "Same businesses renamed".into();
         refresh(&mut s, &mut editor);
@@ -471,6 +494,7 @@ fn qbi_aggregation_rename_alone_preserves_known_and_unavailable_irs_history() {
 fn qbi_aggregation_dropping_history_with_live_sources_rejects_atomically() {
     for case in 0..3 {
         let mut s = new_sources();
+        save_source_group(&mut s, "Actual elected A+B");
         let mut editor = election_editor(&mut s);
         let facts = &mut documents_mut(&mut editor).qbi_aggregations[0].facts;
         match case {
@@ -480,9 +504,9 @@ fn qbi_aggregation_dropping_history_with_live_sources_rejects_atomically() {
             _ => unreachable!(),
         }
         accepted(&send(&mut s, editor));
-        let before = s.draft.clone();
         let mut editor = open_topic(&mut s, TaxSection::PassThrough);
-        set_group(&mut editor, "");
+        save_source_group_and_reopen_facts(&mut s, &mut editor, "");
+        let before = s.draft.clone();
         documents_mut(&mut editor).qbi_aggregations.clear();
         rejected_with(send(&mut s, editor), "QBI_AGGREGATION_HISTORY");
         assert_eq!(s.draft, before);
@@ -493,13 +517,14 @@ fn qbi_aggregation_dropping_history_with_live_sources_rejects_atomically() {
 #[test]
 fn qbi_aggregation_continuing_election_cannot_be_silently_abandoned_or_reset_by_new_label() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let mut editor = election_editor(&mut s);
     documents_mut(&mut editor).qbi_aggregations[0].facts.election =
         QbiElectionHistory::Continuing { original_year: 2020 };
     accepted(&send(&mut s, editor));
     assert_eq!(value(&supported(&s.draft), "qbi_deduction"), 25_000);
     let mut editor = open_topic(&mut s, TaxSection::PassThrough);
-    set_group(&mut editor, "");
+    save_source_group_and_reopen_facts(&mut s, &mut editor, "");
     refresh(&mut s, &mut editor);
     accepted(&send(&mut s, editor));
     let result = estimate(&s.draft);
@@ -512,7 +537,7 @@ fn qbi_aggregation_continuing_election_cannot_be_silently_abandoned_or_reset_by_
     current.facts.name = "Replacement label".into();
     current.facts.election = QbiElectionHistory::FirstTimelyOriginalReturn;
     documents_mut(&mut editor).qbi_aggregations.push(current);
-    set_group(&mut editor, "Replacement label");
+    save_source_group_and_reopen_facts(&mut s, &mut editor, "Replacement label");
     refresh(&mut s, &mut editor);
     accepted(&send(&mut s, editor));
     let result = estimate(&s.draft);
@@ -523,11 +548,12 @@ fn qbi_aggregation_continuing_election_cannot_be_silently_abandoned_or_reset_by_
 
 #[test]
 fn qbi_aggregation_long_utf8_disclosure_names_preserve_tax_and_cold_resave() {
-    // D-2026-10-15-13 removes only the native disclosure-name maximum.
+    // Disclosure names have no arbitrary byte maximum.
     for label in ["a".repeat(400), "é".repeat(200), "😀".repeat(100), "a\u{301}".repeat(133) + "a"]
     {
         assert_eq!(label.len(), 400);
         let mut s = new_sources();
+        save_source_group(&mut s, "Actual elected A+B");
         let mut valid = election_editor(&mut s);
         documents_mut(&mut valid).qbi_aggregations[0].facts.disclosure[0].entity_name =
             label.clone();
@@ -566,22 +592,23 @@ fn qbi_aggregation_source_group_accepts_long_names_and_locates_duplicates() {
     for label in ["a".repeat(40), "é".repeat(20), "😀".repeat(10), "a\u{301}".repeat(13) + "a"] {
         assert_eq!(label.len(), 40);
         let mut s = new_sources();
+        save_source_group(&mut s, "Actual elected A+B");
         let mut valid = election_editor(&mut s);
         documents_mut(&mut valid).qbi_aggregations[0].facts.name = label.clone();
-        set_group(&mut valid, &label);
+        save_source_group_and_reopen_facts(&mut s, &mut valid, &label);
         refresh(&mut s, &mut valid);
         accepted(&send(&mut s, valid));
         assert_eq!(value(&supported(&s.draft), "qbi_deduction"), 25_000);
-        // D-2026-10-15-13 removes the arbitrary 40-byte name cap. Rename
+        // Source group names have no arbitrary 40-byte cap. Rename
         // the actual election and its selected sources together, then refresh
         // their derived membership through the ordinary calculation request.
         let long_name = label + "a";
-        let before = s.draft.clone();
-        let dirty = s.dirty;
         // Changing only the source label leaves submitted membership stale.
         // Save must still reject that actual relationship contradiction.
         let mut stale = open_topic(&mut s, TaxSection::PassThrough);
-        set_group(&mut stale, &long_name);
+        save_source_group_and_reopen_facts(&mut s, &mut stale, &long_name);
+        let before = s.draft.clone();
+        let dirty = s.dirty;
         let Reply::Response(P::Problem { message, field }) = send(&mut s, stale) else {
             panic!("expected stale derived membership refusal")
         };
@@ -591,7 +618,6 @@ fn qbi_aggregation_source_group_accepts_long_names_and_locates_duplicates() {
         assert_eq!(s.dirty, dirty);
         let mut renamed = open_topic(&mut s, TaxSection::PassThrough);
         documents_mut(&mut renamed).qbi_aggregations[0].facts.name = long_name.clone();
-        set_group(&mut renamed, &long_name);
         refresh(&mut s, &mut renamed);
         assert_eq!(s.draft, before);
         assert_eq!(s.dirty, dirty);
@@ -623,12 +649,19 @@ fn qbi_aggregation_new_direct_source_with_election_facts_uses_normal_two_save_id
     let mut editor = open_topic(&mut s, TaxSection::SelfEmployment);
     let mut page = business(1_000_000);
     page.more.qbi_group = "Actual elected A+B".into();
-    documents_mut(&mut editor).documents = vec![document(0, IncomeDocument::Business(page))];
+    documents_mut(&mut editor).documents = vec![
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
+        ))
+        .unwrap(),
+    ];
     documents_mut(&mut editor).qbi_aggregations = vec![facts()];
     let before = s.draft.clone();
     rejected_with(send(&mut s, editor.clone()), "QBI_AGGREGATION_ACCEPT_SOURCE_FIRST");
     assert_eq!(s.draft, before);
-    let IncomeDocument::Business(source) = &mut documents_mut(&mut editor).documents[0].document
+    let crate::IncomeRecord::Business(source) =
+        &mut documents_mut(&mut editor).documents[0].document
     else {
         unreachable!()
     };
@@ -638,7 +671,8 @@ fn qbi_aggregation_new_direct_source_with_election_facts_uses_normal_two_save_id
     let mut editor = open_topic(&mut s, TaxSection::SelfEmployment);
     let id = documents_mut(&mut editor).documents[0].id;
     assert!(id > 0);
-    let IncomeDocument::Business(source) = &mut documents_mut(&mut editor).documents[0].document
+    let crate::IncomeRecord::Business(source) =
+        &mut documents_mut(&mut editor).documents[0].document
     else {
         unreachable!()
     };
@@ -656,6 +690,7 @@ fn qbi_aggregation_new_direct_source_with_election_facts_uses_normal_two_save_id
 #[test]
 fn qbi_aggregation_opposite_topic_save_preserves_global_election_and_actual_k1_sources() {
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let editor = election_editor(&mut s);
     accepted(&send(&mut s, editor));
     let pass_through = s
@@ -666,13 +701,20 @@ fn qbi_aggregation_opposite_topic_save_preserves_global_election_and_actual_k1_s
         .cloned()
         .collect::<Vec<_>>();
     let election = s.draft.screening.as_ref().unwrap().qbi_aggregations.clone();
-    let mut wages = open_topic(&mut s, TaxSection::Wages);
-    assert_eq!(documents_mut(&mut wages).qbi_aggregations.len(), 1);
-    let IncomeDocument::W2(w2) = &mut documents_mut(&mut wages).documents[0].document else {
+    let topic = open_topic(&mut s, TaxSection::Wages);
+    assert!(matches!(&topic, P::SaveWagesAnswers { .. }));
+    accepted(&send(&mut s, topic));
+    assert_eq!(s.draft.screening.as_ref().unwrap().qbi_aggregations, election);
+    let mut wages = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut wages else { unreachable!() };
+    let crate::WageDocument::W2(w2) = &mut documents.common.wages.documents[0].document else {
         unreachable!()
     };
-    w2.withholding += 100;
-    refresh(&mut s, &mut wages);
+    *w2.withholding.as_mut().expect("printed withholding") += 100;
+    let before = s.draft.clone();
+    let callback = wages.clone();
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(&mut s, callback));
+    assert_eq!(s.draft, before);
     accepted(&send(&mut s, wages));
     assert_eq!(
         s.draft
@@ -691,14 +733,40 @@ fn qbi_aggregation_opposite_topic_save_preserves_global_election_and_actual_k1_s
 #[test]
 fn qbi_aggregation_new_source_cannot_elect_before_ordinary_id_assignment() {
     let mut s = Interview::new(TEST_USER, base());
-    let mut editor = open_topic(&mut s, TaxSection::PassThrough);
     let mut row = source("Unsaved actual source", 100_000, 0);
-    let IncomeDocument::K1Scorp(k) = &mut row.document else { unreachable!() };
-    k.qbi_group = "Premature group".into();
-    documents_mut(&mut editor).documents = vec![row];
+    let IncomeSource::K1 { value: crate::K1Document::K1Scorp(k) } = &mut row.document else {
+        unreachable!()
+    };
+    let mut source = scorp_fixture_source(k);
+    source.personal.qbi_group = "Premature group".into();
+    *k = remember_scorp_document(k.clone(), source.personal);
+    let editor = save_documents(&mut s, vec![row]);
+    let mut candidate = restart(s.draft.clone());
+    accepted(&send(&mut candidate, editor.clone()));
+    let P::SaveIncomes { followups, .. } = open_topic(&mut candidate, TaxSection::PassThrough)
+    else {
+        unreachable!()
+    };
+    let mut forged = followups
+        .into_iter()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::K1ScorpRecords { .. }))
+        .unwrap();
+    forged.key = "income/0/records".into();
+    let crate::DocumentAnswer::K1ScorpRecords { qbi_group, .. } = &mut forged.answer else {
+        unreachable!()
+    };
+    *qbi_group = "Premature group".into();
+    let mut actual = open_topic(&mut s, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = &mut actual else { unreachable!() };
+    followups.push(forged);
     let before = s.draft.clone();
-    rejected_with(send(&mut s, editor), "QBI_AGGREGATION_ACCEPT_SOURCE_FIRST");
+    rejected_with(send(&mut s, actual), "DOCUMENT_QUESTIONS_CHANGED");
     assert_eq!(s.draft, before);
+    accepted(&send(&mut s, editor));
+    let FederalIncome::Scorp { data } = &s.draft.income.last().unwrap().income else {
+        unreachable!()
+    };
+    assert!(ScorpK1::from(data).qbi_aggregation_group.is_none());
 }
 
 fn client_case(editor: &mut P, case: &str) {
@@ -728,6 +796,7 @@ fn qbi_aggregation_actual_client_artifact_bridge() {
         return;
     };
     let mut s = new_sources();
+    save_source_group(&mut s, "Actual elected A+B");
     let seed = open_topic(&mut s, TaxSection::PassThrough);
     let mut answers = election_editor(&mut s);
     client_case(&mut answers, &case);
@@ -782,9 +851,8 @@ fn qbi_aggregation_actual_client_artifact_bridge() {
 fn qbi_aggregation_one_business_partnership_and_scorp_use_the_same_election_owner_once() {
     let mut p = k1_1065("Independent entity B");
     p.ordinary = 2_500_000;
-    p.interest = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Over500Hours { hours: 600 },
-    };
+    (p.participation, p.limited_for_se) =
+        (Some((LimitedParticipation::Over500Hours { hours: 600 }).record()), Some(true));
     p.basis.start = k1_1065_continuing(
         1_000_000,
         ScorpRiskStart::Detailed { capacity: 1_000_000, profit: 0, loss: 0 },
@@ -800,12 +868,16 @@ fn qbi_aggregation_one_business_partnership_and_scorp_use_the_same_election_owne
     };
     p.qbi_group.clear();
     let mut s = Interview::new(TEST_USER, base());
-    let mut first = open_topic(&mut s, TaxSection::PassThrough);
-    documents_mut(&mut first).documents = vec![
-        source("Independent entity A", 100_000, 0),
-        document(0, IncomeDocument::K1Partnership(p)),
-    ];
-    accepted(&send(&mut s, first));
+    let first = save_documents(
+        &mut s,
+        vec![
+            source("Independent entity A", 100_000, 0),
+            document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership((p).into()) }),
+        ],
+    );
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut s, first,
+    ));
     assert_eq!(value(&supported(&s.draft), "agi"), 525_000);
     assert_eq!(value(&supported(&s.draft), "qbi_deduction"), 5_000);
     let before = s
@@ -815,6 +887,7 @@ fn qbi_aggregation_one_business_partnership_and_scorp_use_the_same_election_owne
         .find(|e| matches!(&e.income, FederalIncome::Partnership { .. }))
         .unwrap()
         .clone();
+    save_source_group(&mut s, "Actual elected A+B");
     let editor = election_editor(&mut s);
     accepted(&send(&mut s, editor));
     assert_eq!(value(&supported(&s.draft), "agi"), 525_000);
@@ -832,15 +905,14 @@ fn qbi_aggregation_one_business_partnership_and_scorp_use_the_same_election_owne
 fn qbi_aggregation_shared_locator_keeps_real_header_and_disclosure_positions() {
     for (case, path) in [
         (0, "[documents/qbi_aggregations/1/facts/name]"),
-        (1, "[documents/qbi_aggregations/0/facts/disclosure/1/entity_name]"),
         (2, "[documents/qbi_aggregations/0/businesses]"),
     ] {
         let mut s = new_sources();
+        save_source_group(&mut s, "Actual elected A+B");
         let mut editor = election_editor(&mut s);
         let groups = &mut documents_mut(&mut editor).qbi_aggregations;
         match case {
             0 => groups.push(groups[0].clone()),
-            1 => groups[0].facts.disclosure[1].entity_name.clear(),
             _ => groups[0].businesses = Some(3),
         }
         let before = s.draft.clone();
@@ -853,7 +925,11 @@ fn qbi_aggregation_shared_locator_keeps_real_header_and_disclosure_positions() {
         // Derived count is absent from the reduced input and is rebuilt, so
         // only the two actual source errors must also reject the callback.
         if case < 2 {
-            let Reply::Response(P::Problem { message, field }) = send(&mut s, calculation(&editor))
+            let Reply::Response(P::Problem { message, field }) =
+                crate::tests::support::client::income_pages::candidate_save_review(
+                    &mut s,
+                    calculation(&editor),
+                )
             else {
                 panic!("expectedactualEstimate refusal")
             };

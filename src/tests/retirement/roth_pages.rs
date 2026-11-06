@@ -1,7 +1,7 @@
 use crate::tests::support::assert::{accepted, rejected_with};
 use crate::tests::support::builders::survey::survey_uncatalogued_document as unanswered_document;
-// Roth IRA distributions on the 1099-R (unit u6-roth, 2026-09-28): box 7a
-// codes Q, J and T on the Retirement and Social Security topic, onto the Roth
+// Roth IRA distributions on the 1099-R: box 7a
+// codes Q, J and T in the Document center, onto the Roth
 // income kind, and the topic's "Roth IRA history" kind (Form 8606 Part III
 // lines 22 and 24). Each form is reached through the interview; every
 // expected amount is worked by hand from the 2026 draft Form 8606 and its
@@ -14,6 +14,7 @@ use crate::tests::support::builders::survey::survey_uncatalogued_document as una
 // 1,240 + 12% x 31,525 = $5,023.
 use super::*;
 use crate::tests::cross::interview::from_review;
+use crate::tests::support::client::income_pages::{open_documents, page_documents, save_topic};
 
 fn retirement_page(s: &mut Interview) -> P {
     match from_review(s, TaxSection::Retirement) {
@@ -22,26 +23,25 @@ fn retirement_page(s: &mut Interview) -> P {
     }
 }
 fn save_retirement(s: &mut Interview, documents: Vec<IncomeDocumentItem>) -> Reply {
-    let mut request = retirement_page(s);
-    let P::SaveIncomes { documents: page, .. } = &mut request else { unreachable!() };
-    page.documents = documents;
-    send(s, request)
+    crate::tests::support::client::save_retirement_fixture(s, documents)
 }
 fn retirement_documents(s: &mut Interview) -> Vec<IncomeDocumentItem> {
-    let P::SaveIncomes { documents, .. } = retirement_page(s) else { unreachable!() };
-    documents.documents
+    let mut rows: Vec<_> = page_documents(&open_documents(s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+        .collect();
+    rows.extend(page_documents(&retirement_page(s)));
+    rows
 }
-fn item(owner: Owner, document: IncomeDocument) -> IncomeDocumentItem {
+fn item(owner: Owner, document: IncomeSource) -> IncomeDocumentItem {
     unanswered_document(owner, 0, document)
 }
 // A Roth IRA 1099-R: box 2a left blank is entered as box 1.
-fn roth_1099(gross: i64, withholding: i64, roth: RothIraCode) -> R1099 {
+fn roth_1099(gross: i64, withholding: i64, roth: RothIraCode) -> R1099Answered {
     let code = DistributionCode::RothIra { sequence: None, rolled_over: 0, roth };
-    R1099 {
-        withholding,
-        allowed_methods: vec![0],
-        ..crate::tests::cross::interview::r1099(gross, code, false)
-    }
+    let mut source = crate::tests::cross::interview::r1099(gross, code, false);
+    source.source_mut().form.withholding = Some(withholding);
+    source
 }
 fn early(distributed: u32) -> RothIraCode {
     RothIraCode::Early { repaid: None, distributed, exception: None }
@@ -55,11 +55,16 @@ fn history(first_year: u32, regular: i64, conversions: Vec<RothConversion>) -> R
 fn conversion(year: u32, taxable: i64, nontaxable: i64) -> RothConversion {
     RothConversion { year, taxable, nontaxable }
 }
-fn roth(r: R1099) -> IncomeDocumentItem {
-    item(Owner::Taxpayer, IncomeDocument::R1099(r))
+fn roth(r: R1099Answered) -> IncomeDocumentItem {
+    item(
+        Owner::Taxpayer,
+        IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(r)),
+        },
+    )
 }
 fn roth_history_item(h: RothIraHistory) -> IncomeDocumentItem {
-    item(Owner::Taxpayer, IncomeDocument::RothHistory(h))
+    item(Owner::Taxpayer, IncomeSource::Record { value: crate::IncomeRecord::RothHistory(h) })
 }
 fn filer_born(birth: u32) -> Interview {
     let mut d = complete(FederalStatus::Single);
@@ -99,7 +104,7 @@ fn code_q_is_qualified_with_no_history_by_hand() {
     let FederalIncome::Roth { data } = &s.draft.income.last().unwrap().income else {
         panic!("a Roth IRA 1099-R is the Roth income kind")
     };
-    assert_eq!(data.code, RothCode::Qualified);
+    assert_eq!(RothWithdrawal::from(data).code, RothCode::Qualified);
     assert!(s.draft.adjustments.as_ref().unwrap().roth_history.is_empty());
 }
 
@@ -215,8 +220,16 @@ fn code_j_and_history_round_trip() {
     let documents = retirement_documents(&mut again);
     assert_eq!(
         documents.iter().map(|d| &d.document).collect::<Vec<_>>(),
-        sent.iter().map(|d| &d.document).collect::<Vec<_>>()
+        expected_named_sources(
+            &s.draft,
+            Owner::Taxpayer,
+            sent.iter().map(|d| d.document.clone()).collect()
+        )
+        .iter()
+        .collect::<Vec<_>>()
     );
+    let request = open_documents(&mut again);
+    accepted(&send(&mut again, request));
     let request = retirement_page(&mut again);
     accepted(&send(&mut again, request));
     assert_eq!(again.draft, saved_draft);
@@ -237,7 +250,15 @@ fn code_j_and_history_round_trip() {
         let mut again = restart(s.draft.clone());
         assert_eq!(
             retirement_documents(&mut again)[0].document,
-            IncomeDocument::R1099(roth_1099(100_000, 0, code))
+            expected_named_source(
+                &s.draft,
+                Owner::Taxpayer,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(roth_1099(
+                        100_000, 0, code
+                    )))
+                }
+            )
         );
     }
 }
@@ -356,9 +377,10 @@ fn refused_in(documents: Vec<IncomeDocumentItem>, section: &str, needle: &str) {
 
 #[test]
 fn roth_unknowns_and_the_removed_refusals_take_the_conservative_path() {
-    let with_history = |r: R1099| vec![roth(r), roth_history_item(history(2015, 0, vec![]))];
+    let with_history =
+        |r: R1099Answered| vec![roth(r), roth_history_item(history(2015, 0, vec![]))];
     // Code J or T without a history, and a nonqualified one without
-    // amounts: no basis is assumed, with a warning (batch 6).
+    // amounts: no basis is assumed, with a warning.
     for (documents, key) in [
         (vec![roth(roth_1099(100_000, 0, early(20260601)))], "WARN_ROTH_HISTORY_ASSUMED_NONE"),
         (
@@ -418,20 +440,33 @@ fn roth_page_rules_reject_on_the_server() {
         );
     }
     let mut other = roth_1099(100_000, 0, RothIraCode::Qualified);
-    other.more = RMore { box_10: 5_000, ..RMore::default() };
+    other.source_mut().form.box_10 = Some(5_000);
     rejected_with(save_retirement(&mut s, vec![roth(other)]), "R_ROTH_OTHER_BOXES");
     let mut pso = roth_1099(100_000, 0, RothIraCode::Qualified);
-    pso.public_safety = vec![PublicSafetyPaid {
+    pso.set_public_safety(vec![PublicSafetyPaid {
         coverage: PublicSafetyPaidCoverage::Medical,
         premiums: 10_000,
         funded: 10_000,
-    }];
-    rejected_with(save_retirement(&mut s, vec![roth(pso)]), "PSO_NOT_FROM_AN_IRA");
+    }]);
+    rejected_with(
+        crate::tests::support::client::retirement_pso_ira_refusal(&s.draft, pso),
+        "PSO_NOT_FROM_AN_IRA",
+    );
     // A spouse's history belongs on a joint return only.
-    let reply = current_document_refusal(
+    let request = save_topic(
+        &mut s,
+        TaxSection::Retirement,
+        vec![item(
+            Owner::Spouse,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::RothHistory(history(2015, 0, vec![])),
+            },
+        )],
+    );
+    let reply = current_income_refusal(
         "income-source-9392",
         &mut s,
-        vec![item(Owner::Spouse, IncomeDocument::RothHistory(history(2015, 0, vec![])))],
+        request,
         "MESSAGE_ROTH_IRA_HISTORY_YOUR_SPOUSE_S_GOES_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_JOINTL",
         "[documents/documents/0/owner]",
     );
@@ -450,8 +485,22 @@ fn leaving_joint_erases_the_spouses_roth_history_and_1099_r() {
     accepted(&save_retirement(
         &mut s,
         vec![
-            item(Owner::Spouse, IncomeDocument::R1099(roth_1099(100_000, 0, early(20260601)))),
-            item(Owner::Spouse, IncomeDocument::RothHistory(history(2015, 200_000, vec![]))),
+            item(
+                Owner::Spouse,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(roth_1099(
+                        100_000,
+                        0,
+                        early(20260601),
+                    ))),
+                },
+            ),
+            item(
+                Owner::Spouse,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::RothHistory(history(2015, 200_000, vec![])),
+                },
+            ),
             roth_history_item(history(2012, 0, vec![])),
         ],
     ));
@@ -463,20 +512,10 @@ fn leaving_joint_erases_the_spouses_roth_history_and_1099_r() {
     let histories = &d.adjustments.as_ref().unwrap().roth_history;
     assert_eq!(histories.len(), 1);
     assert_eq!(histories[0].owner, Owner::Taxpayer);
-    assert!(!d.income.iter().any(|e| e.owner == Owner::Spouse));
+    // Household changes retain statement facts for an explicit correction.
+    assert_eq!(d.income, s.draft.income);
     assert!(
         result.removed.iter().any(|item| item.key() == "SAVING_KIND_ROTH_IRA_HISTORY"),
         "{result:?}"
     );
-}
-
-#[test]
-fn unticking_retirement_removes_the_roth_history() {
-    let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    accepted(&save_retirement(&mut s, vec![roth_history_item(history(2012, 0, vec![]))]));
-    let mut d = crate::interview::with_ticks(s.draft.clone());
-    assert!(!d.adjustments.as_ref().unwrap().roth_history.is_empty());
-    d.checklist.income &= !IncomeTopics::RETIREMENT.0;
-    crate::interview::prune(&mut d);
-    assert!(d.adjustments.as_ref().unwrap().roth_history.is_empty());
 }

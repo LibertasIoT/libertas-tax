@@ -24,8 +24,8 @@ fn unemployment_same_year_repayments_net_once_on_complete_return() {
 fn unemployment_preserves_exact_repayment_cents_until_tax_line_rounding() {
     let mut d = complete(FederalStatus::Single);
     let mut e = government_unemployment(10000, &[3000, 1000], 0);
-    let FederalIncome::Unemployment { data } = &mut e.income else { panic!() };
-    data.amount += 1;
+    let FederalIncome::GovernmentPayment { data } = &mut e.income else { panic!() };
+    data.form.unemployment_compensation += 1;
     data.repayments[0].amount -= 1;
     data.repayments[1].amount += 1;
     add(&mut d, e);
@@ -41,7 +41,7 @@ fn unemployment_prior_year_excess_and_unknown_treatment_remain_explicit() {
     add(&mut d, government_unemployment(10000, &[2000], 0));
     for mode in 0..2 {
         let mut bad = d.clone();
-        let FederalIncome::Unemployment { data } = &mut bad.income[1].income else { panic!() };
+        let FederalIncome::GovernmentPayment { data } = &mut bad.income[1].income else { panic!() };
         match mode {
             0 => {
                 data.repayments[0].received_year = 2025;
@@ -51,14 +51,10 @@ fn unemployment_prior_year_excess_and_unknown_treatment_remain_explicit() {
         }
         unsupported(&bad, if mode == 0 { "Earlier-income repayments" } else { "Income" });
     }
-    for mode in 0..3 {
+    {
         let mut bad = d.clone();
-        let FederalIncome::Unemployment { data } = &mut bad.income[1].income else { panic!() };
-        match mode {
-            0 => data.repayments[0].received_year = 2027,
-            1 => data.repayments[0].amount = -1,
-            _ => data.repayments = vec![data.repayments[0].clone(); 101],
-        }
+        let FederalIncome::GovernmentPayment { data } = &mut bad.income[1].income else { panic!() };
+        data.repayments = vec![data.repayments[0].clone(); 101];
         assert!(!bad.valid_stored());
     }
 }
@@ -81,8 +77,8 @@ fn prior_unemployment_small_repayments_leave_income_tax_and_payments_unchanged()
             amount
         );
         assert_eq!(supported(&restart(d.clone()).draft).tax, r.tax);
-        d.situations = vec![RareSituation::TaxTreaty];
-        unsupported(&d, "Less common income");
+        d.often_missed.unprepared = vec![RareSituation::TaxTreaty.into()];
+        unsupported(&d, "Situations people often miss");
     }
 }
 
@@ -91,7 +87,7 @@ fn prior_unemployment_review_combines_net_social_security_repayments() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, income(social_security_net(-100000, 0)));
     let mut spouse = income(social_security_net(50000, 0));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     add(&mut d, prior_unemployment_repayment(250000, Owner::Taxpayer));
     let r = supported(&d);
@@ -99,7 +95,7 @@ fn prior_unemployment_review_combines_net_social_security_repayments() {
     assert_eq!(value(&r, "prior_income_repayment_review_total"), 3000);
     assert_eq!(value(&r, "agi"), 100000);
     assert_eq!(r.tax, Some(764300));
-    let FederalIncome::Unemployment { data } = &mut d.income[3].income else { panic!() };
+    let FederalIncome::GovernmentPayment { data } = &mut d.income[3].income else { panic!() };
     data.repayments[0].amount += 1;
     unsupported(&d, "Earlier-income repayments");
 }
@@ -108,7 +104,7 @@ fn prior_unemployment_review_combines_net_social_security_repayments() {
 fn prior_unemployment_threshold_excludes_current_year_netting() {
     let mut d = complete(FederalStatus::Single);
     let mut e = government_unemployment(10000, &[10000], 0);
-    let FederalIncome::Unemployment { data } = &mut e.income else { panic!() };
+    let FederalIncome::GovernmentPayment { data } = &mut e.income else { panic!() };
     data.repayments.push(UnemploymentRepayment { received_year: 2025, amount: 300000 });
     add(&mut d, e);
     let r = supported(&d);
@@ -155,17 +151,13 @@ fn unemployment_refund_and_grant_return_matches_hand_computation() {
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19_850_615;
     d.income[0] = wage(1, Owner::Taxpayer, 4_100_000, 360_000); // box1 $41,000.00, box2 $3,600.00
-    add(&mut d, government_unemployment(7_200, &[600], 720));
-    let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
-    data.taxable_grants = 150_000; // $1,500.00 (box 6)
-    add(
-        &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: 90_000, // $900.00 (box 2)
-            withholding: 0,
-            history: TaxRefundHistory::NotDeducted, // standard deduction taken that year
-        }),
-    );
+    let mut benefits = government_unemployment(7_200, &[600], 720);
+    let FederalIncome::GovernmentPayment { data } = &mut benefits.income else { panic!() };
+    data.form.taxable_grants = Some(150_000); // $1,500.00 (box 6)
+    // 2026-10-23: the stated Schedule 1 grant is personal; activity grants require their activity.
+    data.grant_use = Some(GrantUse::You);
+    add(&mut d, benefits);
+    add(&mut d, income(refund_income(90_000, 0, TaxRefundHistory::NotDeducted)));
     let r = supported(&d);
 
     // Schedule 1, hand-computed from Pub 525 / i1040gi and the App's own

@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 399000, "rule": {"select": "^<AdoptionChildPage>", "flatten": {"name_row": false}}},
+    {"order": 400000, "rule": {"select": "^<AdoptionBenefitHistory>", "flatten": true}},
+    {"order": 401000, "rule": {"select": "^<AdoptionBenefits>", "flatten": true}},
+    {"order": 402000, "rule": {"select": "^<AdoptionLimits>", "flatten": true}},
+    {"order": 666000, "rule": {"select": "^<AdoptionChildPage>.label", "promote": true}},
+    {"order": 969000, "rule": {"select": "^<AdoptionChildInitial>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_ADOPT_CHILD", "fields": ["label", "kind", "home_over_half_year", "eligible"]}, {"title": "DISPLAY_ADOPT_EXPENSES", "fields": ["limits", "expenses", "prior"]}, {"title": "DISPLAY_ADOPT_BENEFITS", "fields": ["benefits", "wages"]}]}}
+  ]
+}

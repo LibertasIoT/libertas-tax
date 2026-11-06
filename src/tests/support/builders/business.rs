@@ -3,6 +3,9 @@ use crate::tests::*;
 pub(in crate::tests) fn cash_business(profit: i64) -> FederalIncome {
     FederalIncome::Business {
         data: FederalBusiness {
+            improvement_buildings: Vec::new(),
+            interest_limit_election: None,
+            related: Default::default(),
             principal_business: Default::default(),
             business_code: None,
             ein: Default::default(),
@@ -50,7 +53,10 @@ pub(in crate::tests) fn cash_business(profit: i64) -> FederalIncome {
             paid_leave_credit: None,
             tips: None,
             overtime: None,
-            material_participation: true,
+            material_participation: crate::ParticipationFacts {
+                hours: 501,
+                test: crate::ParticipationTest::Over500,
+            },
             at_risk: crate::RentalAtRisk::All,
             specified_service: false,
             payroll: BusinessPayroll::No,
@@ -87,7 +93,7 @@ pub(in crate::tests) fn health_business(
 pub(in crate::tests) fn sep_business(profit: i64, contribution: i64) -> FederalIncome {
     let mut entry = cash_business(profit);
     let FederalIncome::Business { data } = &mut entry else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { rate: 2500, contribution: contribution * 100 };
+    data.retirement = BusinessRetirement::Sep { rate: 25.0, contribution: contribution * 100 };
     entry
 }
 
@@ -159,14 +165,14 @@ pub(in crate::tests) fn source_expenses_business(
     amount: i64,
 ) -> i64 {
     let mut entry = income(cash_business(-amount));
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     add(d, entry);
     d.income.last().unwrap().id
 }
 
 pub(in crate::tests) fn add_ebl_business(d: &mut FederalDraft, owner: Owner, net: i64) {
     let mut entry = income(cash_business(net));
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     add(d, entry);
 }
 
@@ -183,4 +189,57 @@ pub(in crate::tests) fn current_risk_business(profit: i64, capacity_cents: i64) 
     let FederalIncome::Business { data } = &mut source else { unreachable!() };
     data.at_risk = simplified_rental_risk(capacity_cents, 0, 0, [0; 4]).unwrap();
     source
+}
+
+pub(in crate::tests) fn direct_participation_with_omitted_k1(
+    mut draft: FederalDraft,
+) -> (FederalDraft, i64) {
+    add(&mut draft, income(cash_business(1000)));
+    let direct = draft.income.last().unwrap().id;
+    let mut other = scorp_document();
+    let mut facts = participation_facts();
+    facts.minutes = 300 * 60;
+    facts.other_business_over_100 = true;
+    other.participation = Some(facts);
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(other) }));
+    (draft, direct)
+}
+
+// Current ordinary domestic source with accepted absence of prior losses and
+// unlisted special treatment, but no material-participation test established.
+pub(in crate::tests) fn passive_business(profit: i64) -> FederalIncome {
+    let mut source = cash_business(profit);
+    let FederalIncome::Business { data } = &mut source else { unreachable!() };
+    data.material_participation =
+        crate::ParticipationFacts { hours: 0, test: crate::ParticipationTest::None };
+    source
+}
+
+pub(in crate::tests) fn ministerial_housing_business_return(
+    passive: bool,
+    exempt: bool,
+) -> FederalDraft {
+    let mut draft = complete(FederalStatus::Single);
+    draft.income[0] = wage(1, Owner::Taxpayer, 26_000_000, 0);
+    let mut source = if passive { passive_business(20_000) } else { cash_business(20_000) };
+    let FederalIncome::Business { data } = &mut source else { unreachable!() };
+    data.ministerial = true;
+    data.expenses = vec![ordinary_business_expense(
+        BusinessExpenseCategory::Other { label: "Ministerial operating costs".into() },
+        1_000_000,
+    )];
+    add(&mut draft, income(source));
+    draft.screening.as_mut().unwrap().clergy = vec![ClergyClaim {
+        owner: Owner::Taxpayer,
+        role: ClergyRole::Minister {
+            housing: MinisterHousing::Allowance {
+                designated: 1_000_000,
+                spent: 1_000_000,
+                fair_rental_value: 1_000_000,
+            },
+            form_4361: exempt,
+            employee_expenses: 0,
+        },
+    }];
+    draft
 }

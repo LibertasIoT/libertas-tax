@@ -1,21 +1,28 @@
 // Preserve the shared client helper API while each domain owns its implementation.
 use super::builders;
 
-mod captures;
+mod acceptance_bridge;
+mod broker;
+pub(in crate::tests) mod credit_documents;
 mod income;
+pub(in crate::tests) use broker::{
+    admit_broker_paper, broker_answers_page, broker_b_editor, broker_da_editor, broker_source,
+    ordinary_broker_answers,
+};
+pub(in crate::tests) mod deductions;
 mod injured;
 mod lifecycle;
 mod native_record_files;
+pub(in crate::tests) mod own_questions;
 mod property;
 
-pub(in crate::tests) use captures::{
-    captured_rental_request_before_nullable_risk, captured_request_before_k1_activity_context,
-};
 pub(crate) use income::save_farms;
 pub(in crate::tests) use income::{
+    answer_only_retirement_treatment, current_installment_session, current_installment_session_for,
     d6_business_boundary_source, d6_mixed_direct_sources, d6_ptp_source_session,
-    education_bond_session, estimate_documents_from_save, save_educator, save_ira_people,
-    save_native_cash_sources, save_student_loan,
+    education_bond_session, estimate_documents_from_save, reject_unavailable_related_components,
+    retirement_pso_ira_refusal, save_educator, save_ira_people, save_native_cash_sources,
+    save_retirement_fixture, save_student_loan,
 };
 pub(crate) use injured::{
     injured_capacity_accepted_session, injured_capacity_answer_page_is_pure,
@@ -25,7 +32,8 @@ pub(crate) use injured::{
 pub(crate) use lifecycle::{TEST_USER, exchange};
 pub(in crate::tests) use lifecycle::{error, restart, reviewed, send, status_message, status_text};
 pub(in crate::tests) use property::{
-    bind_saved_mileage_ids, bind_saved_property_ids, save_native_asset_identities,
+    bind_saved_mileage_ids, bind_saved_property_ids, save_elected_business_asset,
+    save_native_asset_identities,
 };
 
 // Retain the existing topic-call path alongside internal injured-editor use.
@@ -56,6 +64,7 @@ pub(in crate::tests) use injured::{
 pub(in crate::tests) use income::injured_income_source_roundtrip;
 
 mod care;
+pub(in crate::tests) mod charity;
 pub(in crate::tests) mod injured_income;
 pub(in crate::tests) use care::care_w2_sources;
 
@@ -70,12 +79,13 @@ pub(in crate::tests) mod qbi_consolidated;
 
 pub(in crate::tests) mod unit50_interview_native;
 
-pub(in crate::tests) use income::save_native_credit_sources;
+pub(in crate::tests) use income::{admit_native_fixture_facts, save_native_credit_sources};
 mod source_controls;
 pub(in crate::tests) use source_controls::{
     SecondaryCorrection, SourceScope, current_document_refusal, current_income_key,
     current_income_refusal, current_source_acceptance, current_source_refusal,
-    income_editor_resave, source_calculation,
+    information_return_refusal, railroad_answer_case, retained_marketplace_conflict,
+    source_calculation,
 };
 
 mod home;
@@ -83,3 +93,14 @@ pub(in crate::tests) mod injured_original;
 pub(in crate::tests) use home::save_home_offices;
 
 pub(in crate::tests) mod cohorts;
+pub(in crate::tests) mod nonmacrs;
+
+pub(in crate::tests) use lifecycle::{answer_no_estimates, answer_payment_method};
+
+mod often_missed;
+pub(in crate::tests) use often_missed::{
+    answer_often_missed, save_often_missed_marketplace_source,
+};
+
+pub(in crate::tests) mod contribution_documents;
+pub(in crate::tests) mod undeclared_forms;

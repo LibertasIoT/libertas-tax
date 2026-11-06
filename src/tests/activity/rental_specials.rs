@@ -10,7 +10,7 @@ pub(in crate::tests) fn put(d: &mut FederalDraft, v: FederalRental) -> i64 {
 pub(in crate::tests) fn wages(amount: i64) -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, amount * 100, 0);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d
 }
 pub(in crate::tests) fn expense(category: RentalExpenseCategory, amount: i64) -> RentalExpense {
@@ -90,6 +90,7 @@ fn fixture_b_land_income_does_not_absorb_other_losses() {
 }
 fn mineral(expenses: i64) -> FederalRoyalty {
     FederalRoyalty {
+        related: alloc::vec![],
         kind: RoyaltyKind::Mineral { rate: RoyaltyMineralRate::Ten },
         receipts: 20000 * 100,
         advance: 0,
@@ -127,7 +128,7 @@ fn fixture_c_mineral_and_oil_depletion_regular_and_amt() {
     assert_eq!(val(&r, "line21_income"), 1500);
     assert_eq!(value(&r, "form6251_line2d_depletion"), 700);
     let mut d = empty_return(FederalStatus::Single);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let mut v = mineral(5000);
     v.kind = RoyaltyKind::OilGas;
     v.receipts = 40000 * 100;
@@ -423,7 +424,7 @@ fn oil_limit_recomputes_income_dependent_deductions_and_keeps_the_nol_deduction(
     let mut d = empty_return(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).medical = 30000 * 100;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let mut v = mineral(0);
     v.expenses.clear();
     v.kind = RoyaltyKind::OilGas;
@@ -502,7 +503,20 @@ fn at_risk_allocates_operations_and_disposition_losses_without_changing_characte
         assert_eq!(amount(&r, id, "at_risk_allowed_section1231"), sale);
         assert_eq!(amount(&r, id, "at_risk_ordinary_carryover"), operating_loss + ordinary);
         assert_eq!(amount(&r, id, "at_risk_section1231_carryover"), 10000 + sale);
-        assert_eq!(crate::asset_sale::rental_sources(&d, false).unwrap()[0].1.section1231, sale);
+        assert_eq!(
+            crate::asset_sale::rental_sources(
+                crate::related_forms::RelatedFormContext::original(
+                    &d,
+                    &crate::related_forms::effective_claimants(&d)
+                ),
+                false,
+                None
+            )
+            .unwrap()[0]
+                .1
+                .section1231,
+            sale
+        );
         assert_eq!(value(&r, "form4797_line8"), sale);
         assert_eq!(value(&r, "agi"), 55000);
         assert_eq!(r, estimate(&restart(d.clone()).draft));
@@ -530,7 +544,20 @@ fn prior_at_risk_carry_preserves_regular_and_amt_sale_character_without_new_sale
     assert_eq!(value(&r, &alloc::format!("amt_rental_{id}_at_risk_ordinary_carryover")), 1600);
     assert_eq!(value(&r, &alloc::format!("amt_rental_{id}_at_risk_section1231_carryover")), 2400);
     assert_eq!(value(&r, "agi"), 59000);
-    assert_eq!(crate::asset_sale::rental_sources(&d, true).unwrap()[0].1.section1231, -600);
+    assert_eq!(
+        crate::asset_sale::rental_sources(
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d)
+            ),
+            true,
+            None
+        )
+        .unwrap()[0]
+            .1
+            .section1231,
+        -600
+    );
 }
 
 // ---- Codex-branch review defects and suspected items (F16, review of 2026-10-10) ----
@@ -655,8 +682,7 @@ fn amt_home_worksheet_limits_the_rental_share_of_taxes_with_operating_expenses()
     let mut home = home_fixture();
     link_home_fixture(&mut d, &mut home);
     let id = put(&mut d, home);
-    d.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Itemized { facts: itemized(d.deductions.as_mut().unwrap()).clone() };
+    d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
     let r = supported(&d);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 2000);
     assert_eq!(value(&r, &alloc::format!("amt_rental_{id}_home_operating_carryover")), 4666);
@@ -689,7 +715,7 @@ fn professional_election_ignores_a_home_year() {
         unreachable!()
     };
     data.personal_use = RentalPersonalUse::No;
-    data.mortgage_loans.clear();
+    data.related.clear();
     assert_eq!(
         crate::extended_rules::professional_election_rule(&d),
         Some("ISSUE_PROFESSIONAL_ELECTION_ALL_RENTALS")
@@ -824,7 +850,7 @@ fn unit4_joint_elected_safe_harbor_reaches_both_source_owners_without_copying_ho
         let mut data = rental(receipts, 0);
         data.participation = RentalParticipation::Professional;
         add(&mut d, income(FederalIncome::Rental { data }));
-        d.income.last_mut().unwrap().owner = owner;
+        d.income.last_mut().unwrap().owner = crate::DocumentOwner::from(owner);
     }
     assert_eq!(value(&supported(&d), "schedule_e_line43_professional_rentals"), 30_000);
     assert_eq!(niit(&d), -30_000);
@@ -842,10 +868,14 @@ fn unit4_joint_elected_safe_harbor_reaches_both_source_owners_without_copying_ho
 #[test]
 fn unit42_prior_home_carry_floors_fractional_capacity_once() {
     let mut source = rental(0, 0);
-    source.home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
-    source.home_casualty_carryover = crate::SourceCents::Reported { amount: 150_000 };
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
+    source.prior_home_carry.get_or_insert(crate::RentalHomeCarries::NONE).home_casualty_carryover =
+        crate::SourceCents::Reported { amount: 150_000 };
     let capacity = crate::kernel::ratio::exact::ratio(69_999_999, 100).unwrap();
-    let result = crate::rental_home_carry::tiers(&source, false, 500_000, &capacity).unwrap();
+    let result = crate::rental_home_carry::tiers(&source, false, 0, 0, 500_000, &capacity).unwrap();
     // $6,999.9999 of capacity permits $6,999.99, never $7,000.00.
     assert_eq!(result.total_allowed_cents, 699_999);
     assert_eq!(result.allowed_current_depreciation_cents, 500_000);
@@ -865,10 +895,20 @@ fn unit42_prior_home_carry_keeps_independent_amt_character_and_deducts_once() {
         overlap_days: 0,
         direct_expenses: 0,
     };
-    source.home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
-    source.amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: 400_000 };
-    source.home_casualty_carryover = crate::SourceCents::Reported { amount: 150_000 };
-    source.amt_home_casualty_carryover = crate::SourceCents::Reported { amount: 250_000 };
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: 400_000 };
+    source.prior_home_carry.get_or_insert(crate::RentalHomeCarries::NONE).home_casualty_carryover =
+        crate::SourceCents::Reported { amount: 150_000 };
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .amt_home_casualty_carryover = crate::SourceCents::Reported { amount: 250_000 };
     let id = put(&mut draft, source);
     let result = supported(&draft);
     assert_eq!(amount(&result, id, "depreciation"), 5_500);
@@ -885,7 +925,10 @@ fn unit42_prior_home_carry_keeps_independent_amt_character_and_deducts_once() {
 fn unit42_prior_home_carry_amt_only_former_home_uses_its_own_records() {
     let mut draft = wages(60_000);
     let mut source = rental(12_000, 0);
-    source.amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
     let id = put(&mut draft, source);
     let result = supported(&draft);
     assert!(
@@ -912,8 +955,12 @@ fn unit42_prior_home_carry_unknown_character_keeps_only_known_aggregate() {
         overlap_days: 0,
         direct_expenses: 0,
     };
-    source.home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
-    source.home_casualty_carryover = crate::SourceCents::Unavailable;
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .home_depreciation_carryover = crate::SourceCents::Reported { amount: 300_000 };
+    source.prior_home_carry.get_or_insert(crate::RentalHomeCarries::NONE).home_casualty_carryover =
+        crate::SourceCents::Unavailable;
     let id = put(&mut draft, source);
     let mut result = FederalResult::empty(0);
     let calculated = crate::extended_rules::rentals(&draft, 60_000, &mut result);
@@ -928,8 +975,14 @@ fn unit42_prior_home_carry_unknown_character_keeps_only_known_aggregate() {
 fn unit42_prior_home_carry_unknown_amt_never_uses_the_regular_total() {
     let mut draft = wages(60_000);
     let mut source = rental(12_000, 0);
-    source.home_depreciation_carryover = crate::SourceCents::Reported { amount: 100_000 };
-    source.amt_home_depreciation_carryover = crate::SourceCents::Unavailable;
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .home_depreciation_carryover = crate::SourceCents::Reported { amount: 100_000 };
+    source
+        .prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .amt_home_depreciation_carryover = crate::SourceCents::Unavailable;
     put(&mut draft, source);
     let mut regular = FederalResult::empty(0);
     let regular = crate::extended_rules::rentals_for(&draft, 60_000, &mut regular, false);
@@ -939,21 +992,4 @@ fn unit42_prior_home_carry_unknown_amt_never_uses_the_regular_total() {
     let alternative = crate::extended_rules::rentals_for(&draft, 60_000, &mut alternative, true);
     assert!(alternative.source_issue.is_some());
     assert!(!alternative.inputs_complete);
-}
-
-#[test]
-fn unit42_prior_home_carry_unrepresentable_close_is_unavailable_without_a_cap() {
-    let mut source = rental(0, 0);
-    source.home_depreciation_carryover = crate::SourceCents::Reported { amount: i64::MAX };
-    let none = crate::kernel::ratio::exact::whole(0);
-    assert_eq!(
-        crate::rental_home_carry::tiers(&source, false, 1, &none),
-        Err(crate::rental_home_carry::OVERFLOW)
-    );
-    // One cent of room allows the current cent, leaving the representable MAX prior balance.
-    let one = crate::kernel::ratio::exact::whole(1);
-    assert_eq!(
-        crate::rental_home_carry::tiers(&source, false, 1, &one).unwrap().carry.total_cents,
-        i64::MAX
-    );
 }

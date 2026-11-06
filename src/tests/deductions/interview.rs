@@ -1,4 +1,5 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+use crate::tests::support::client::income_pages::open_document_center;
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::support::assert::{accepted, rejected_with};
 use super::*;
 // Shared native producers and page traversal; keep established topic-call paths.
@@ -7,8 +8,8 @@ use crate::tests::cross::interview::{
     PAGE_ADJUSTMENTS, PAGE_DEDUCTIONS, PAGE_INCOME, PAGE_ITEMIZED, PAGE_REVIEW,
     assert_available_sections, at_the_deductions_page, at_the_gifts_page, back, checklist_of,
     continue_hub, deductions_value, empty_facts, gifts, go_on, go_to, goods_gift, hub_rows,
-    hub_tail, itemized_hub, navigate, open_itemized_topic, past_credits, refusal, row_of,
-    save_deductions, save_gift_carryovers, save_medical, save_mortgages, save_setup,
+    itemized_hub, navigate, not_started_rows, open_itemized_topic, past_credits, refusal, row_of,
+    save_deductions, save_gift_carryovers, save_medical, save_often_missed, save_spouse_boxes,
     send_past_less_common, shown, stored_facts, walk_on_to_review,
 };
 
@@ -16,6 +17,8 @@ use crate::tests::cross::interview::{
 fn educator_and_1098e_pages_map_onto_their_claims() {
     let d = complete(FederalStatus::Single);
     let mut s = Interview::new(TEST_USER, d);
+    let sources = open_document_center(&mut s);
+    accepted(&send(&mut s, sources));
     // Educator: one row reaches the taxpayer's claim.
     let request = go_to(&s.draft, PAGE_REVIEW, TaxSection::Educator);
     let Reply::Edit(P::SaveEducator { allowed_owners, .. }) = send(&mut s, request) else {
@@ -61,28 +64,41 @@ fn educator_and_1098e_pages_map_onto_their_claims() {
     // paid with no form are stored as entered and reopen unchanged (T2-33x).
     let request = go_to(&s.draft, PAGE_REVIEW, TaxSection::StudentLoan);
     assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveStudentLoan { .. })));
-    let forms = vec![
-        Form1098E { interest: 30_000, box_2: Form1098EBox2::NotChecked },
-        Form1098E {
-            interest: 45_000,
-            box_2: Form1098EBox2::Checked { additional_interest: 5_000 },
-        },
-    ];
-    let request = save_student_loan(
-        &s.draft,
-        StudentLoanInterest {
-            forms: forms.clone(),
-            other_interest: 12_000,
-            employer_paid_interest: 0,
-        },
-    );
+    let first_form_id = s.draft.next_id;
+    let mut forms = vec![box_1(30_000), box_2(45_000, 5_000)];
+    for form in &mut forms {
+        form.document.borrower = fixture_document_names(&s.draft, -1).unwrap().recipient;
+    }
+    let mut center = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut center else { unreachable!() };
+    documents.common.student_loans.documents = student_documents(&forms);
+    accepted(&send(&mut s, center));
+    for (index, form) in forms.iter_mut().enumerate() {
+        form.id = first_form_id + index as i64;
+    }
+    let navigation = go_to(&s.draft, PAGE_REVIEW, TaxSection::StudentLoan);
+    let Reply::Edit(mut request @ P::SaveStudentLoan { .. }) = send(&mut s, navigation) else {
+        panic!("expected student loan topic")
+    };
+    let P::SaveStudentLoan { value, .. } = &mut request else { unreachable!() };
+    value.other_interest = 12_000;
+    value.forms[1].additional_interest =
+        crate::StudentLoanAdditionalInterest::Checked { additional_interest: 5_000 };
     assert!(matches!(send(&mut s, request), Reply::Response(P::Review { .. })));
     let adjustments = s.draft.adjustments.as_ref().unwrap();
     assert_eq!(
         adjustments.student_loan,
         StudentLoanClaim {
             student_loan_interest: 12_000,
-            forms: forms.clone(),
+            forms: forms
+                .iter()
+                .cloned()
+                .map(|source| crate::StudentLoanSource {
+                    assigned: crate::DocumentRecipient::Taxpayer,
+                    owner_source: Some(crate::OwnerSource::Matched),
+                    ..source
+                })
+                .collect(),
             employer_paid_interest: 0,
         }
     );
@@ -92,9 +108,16 @@ fn educator_and_1098e_pages_map_onto_their_claims() {
     let Reply::Edit(P::SaveStudentLoan { value, .. }) = send(&mut s, request) else {
         panic!("expected the student loan page")
     };
-    assert_eq!(value.forms, forms);
+    assert_eq!(
+        value.forms.into_iter().map(|row| row.value).collect::<Vec<_>>(),
+        forms.iter().map(|source| source.document.clone()).collect::<Vec<_>>()
+    );
     assert_eq!(value.other_interest, 12_000);
     // Interest with no form alone is a claim.
+    let mut center = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut center else { unreachable!() };
+    documents.common.student_loans.documents.clear();
+    accepted(&send(&mut s, center));
     let request = save_student_loan(
         &s.draft,
         StudentLoanInterest { forms: vec![], other_interest: 40_000, employer_paid_interest: 0 },
@@ -118,22 +141,21 @@ fn educator_and_1098e_pages_map_onto_their_claims() {
 }
 
 #[test]
-fn standard_route_is_the_m1_default() {
+fn automatic_deduction_is_the_default() {
     // The deductions page follows the adjustments hub and opens complete on
     // the standard deduction with no gifts: M1's stored "nothing applies".
     let (mut s, page) = at_the_deductions_page(FederalStatus::Single);
     let P::SaveDeductions { page: at, previous, progress, .. } = &page else { unreachable!() };
-    // M3-P19: Back opens the previous shown section, the adjustments hub
-    // (every return walks it, gate fixes batch A); setup, you, people, the
-    // checklist, income, adjustments, deductions, credits, other taxes,
-    // federal payments and the review.
+    // Back opens adjustments. Documents and income without a form precede
+    // the checklist and financial sections; payments appears only when needed.
     assert_eq!((*at, *previous), (PAGE_DEDUCTIONS, PAGE_ADJUSTMENTS));
-    assert!(shown(progress).contains("2026 federal · section 7 of 11"));
-    let (value, routes) = deductions_value(&page);
+    assert!(shown(progress).contains("2026 federal · section 9 of 12"));
+    let value = deductions_value(&page);
     assert_eq!(
         value,
         &Deductions {
-            route: DeductionRoute::Standard,
+            car_refunds: Default::default(),
+            itemize_override: None,
             cash_gifts: 0,
             fund_cash_gifts: 0,
             other_cash_gifts: 0,
@@ -142,15 +164,16 @@ fn standard_route_is_the_m1_default() {
             repayment: RepaymentClaim::None,
         }
     );
-    assert_eq!(routes, &[0, 1, 2]);
     // Back returns to the income hub.
     let request = back(&s.draft, PAGE_INCOME);
     assert!(matches!(send(&mut s, request), Reply::Response(P::Hub { page: PAGE_INCOME, .. })));
-    // Next stores exactly M1's record, records the section and, with no
-    // itemizing, reaches the credits section (amended for M3-P11), which
-    // every return walks for More credits (gate fixes batch A).
+    // Next preserves M1's record and passes the empty credits summary to
+    // the last required question.
     let before = s.draft.clone();
-    assert!(matches!(send(&mut s, page), Reply::Edit(P::SaveMoreCredits { .. })));
+    assert!(matches!(
+        send(&mut s, page),
+        Reply::Response(P::BeginOftenMissed { .. }) | Reply::Edit(P::SaveOftenMissed { .. })
+    ));
     let m1 = complete(FederalStatus::Single);
     assert_eq!(s.draft.deductions, m1.deductions);
     assert_eq!(s.draft.setup, m1.setup);
@@ -158,13 +181,20 @@ fn standard_route_is_the_m1_default() {
         s.draft.finished_sections,
         vec![
             TaxSection::Children,
+            TaxSection::IncomeWithoutForm,
             TaxSection::Checklist,
             TaxSection::Income,
             TaxSection::Adjustments,
+            TaxSection::Documents,
             TaxSection::Deductions,
+            TaxSection::Credits,
+            TaxSection::OtherTaxes,
+            TaxSection::Payments,
         ]
     );
-    assert_eq!(s.draft.revision, before.revision + 1);
+    // The empty standard route was already completed during the ordinary walk.
+    // Confirming it again is an exact no-op.
+    assert_eq!(s.draft, before);
     assert_eq!(estimate(&s.draft).return_lines, estimate(&m1).return_lines);
     // The itemized hub does not exist for the standard deduction.
     let request = navigate(&s.draft, TaxSection::Itemized);
@@ -172,28 +202,56 @@ fn standard_route_is_the_m1_default() {
 }
 
 #[test]
-fn compare_and_itemize_map_onto_the_selection() {
+fn automatic_deductions_walk_accepted_medical_and_investment_plans() {
+    for (bit, topic) in [
+        (MissedBenefits::MEDICAL, TaxSection::Medical),
+        (MissedBenefits::INVESTMENT_INTEREST, TaxSection::OtherItemized),
+    ] {
+        let (mut s, _) = at_the_deductions_page(FederalStatus::Single);
+        let mut planned = s.draft.often_missed.clone();
+        planned.benefits |= bit.0;
+        accepted(&save_often_missed(&mut s, planned.clone()));
+        assert!(crate::interview::planned_sections(&s.draft).contains(&topic));
+        let request = save_deductions(&s.draft, None, 0);
+        let reply = send_past_less_common(&mut s, request);
+        assert!(
+            matches!(
+                (&reply, topic),
+                (Reply::Edit(P::SaveMedical { .. }), TaxSection::Medical)
+                    | (Reply::Edit(P::SaveOtherItemized { .. }), TaxSection::OtherItemized)
+            ),
+            "{topic:?}: {reply:?}"
+        );
+        assert_eq!(s.draft.deductions.as_ref().unwrap().itemize_override, None);
+        assert_eq!(stored_facts(&s), empty_facts());
+        planned.benefits &= !bit.0;
+        accepted(&save_often_missed(&mut s, planned));
+        assert!(!crate::interview::planned_sections(&s.draft).contains(&topic));
+        assert_eq!(s.draft.deductions.as_ref().unwrap().itemize_override, None);
+        let request = navigate(&s.draft, TaxSection::Itemized);
+        assert!(matches!(send(&mut s, request), Reply::Response(P::Problem { .. })));
+        assert_eq!(restart(s.draft.clone()).draft, s.draft);
+    }
+}
+
+#[test]
+fn automatic_and_override_preserve_the_same_itemized_facts() {
     let (mut s, _) = at_the_deductions_page(FederalStatus::Single);
-    // Compare keeps the automatic comparison and opens the itemized hub.
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
-    assert_eq!(
-        s.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Automatic { expenses: ItemizedChoice::Yes { facts: empty_facts() } }
-    );
+    // 2026-11-02: automatic comparison uses the planned deduction topics.
+    s.draft.checklist.paid |= PaidTopics::TAXES.0;
+    let request = save_deductions(&s.draft, None, 0);
+    let hub =
+        crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
+    assert_eq!(s.draft.deductions.as_ref().unwrap().itemize_override, None);
+    assert_eq!(stored_facts(&s), empty_facts());
     let P::Hub { previous, suggested, allowed_sections, progress, .. } = &hub else {
         unreachable!()
     };
-    // M3-P19: an itemizer's topics are walked only when planned; with
-    // nothing planned and More itemized deductions passed, the hub suggests
-    // Continue to the next shown section, credits (gate fixes batch A).
+    // The planned tax payment makes Taxes the next suggested topic.
     assert_eq!(*previous, PAGE_DEDUCTIONS);
-    assert_eq!(*suggested, TaxSection::Credits);
-    // The deductions page, all five topics (M3-P10 opens the last two), and
-    // the next section (the credits hub since M3-P11).
-    // M3-P15: more itemized deductions before the next section.
-    // M3-P18: and the checklist after the deductions page.
-    // M3-P19: the next section is the next shown one, credits.
+    assert_eq!(*suggested, TaxSection::Taxes);
+    // The available destinations include the checklist, all five itemized
+    // topics, and credits as the next shown section.
     assert_available_sections(
         allowed_sections,
         &[
@@ -204,33 +262,31 @@ fn compare_and_itemize_map_onto_the_selection() {
             TaxSection::Mortgage,
             TaxSection::GiftCarryovers,
             TaxSection::OtherItemized,
-            TaxSection::MoreItemized,
             TaxSection::Credits,
         ]
         .map(|t| t as i32),
     );
-    // Setup, you, people, the checklist, income, adjustments, deductions,
-    // credits, other taxes, federal payments and the review; the walk has
-    // nothing left, so the hub is the section summary.
+    // Setup, you, people, documents, income without a form, checklist, income,
+    // adjustments, deductions, credits, other taxes and review; returning
+    // from the tax editor displays the itemized section summary.
     assert!(
-        shown(progress).contains("section 7 of 11 · You're done with itemized deductions"),
+        shown(progress).contains("section 9 of 12 · Itemized deductions"),
         "{}",
         shown(progress)
     );
-    // Nothing is entered, visited or suggested: every topic is "Not
-    // started" (amended for M3-N1: every destination is a row).
+    assert!(!shown(progress).contains("You're done with itemized deductions"));
+    // Taxes is planned; the other topics are not started. No topic has
+    // entered facts or a saved visit yet, and every destination is a row.
     assert_eq!(
         hub_rows(&hub),
-        hub_tail(
-            &[
+        core::iter::once(("Taxes you paid".into(), "Planned".into(), TaxSection::Taxes))
+            .chain(not_started_rows(&[
                 TaxSection::Medical,
-                TaxSection::Taxes,
                 TaxSection::Mortgage,
                 TaxSection::GiftCarryovers,
                 TaxSection::OtherItemized
-            ],
-            TaxSection::MoreItemized
-        )
+            ]))
+            .collect::<Vec<_>>()
     );
     // Medical: the expenses and one premium for you, whose age at the end of
     // 2026 (born June 15, 1980: 46) comes from your page.
@@ -255,12 +311,13 @@ fn compare_and_itemize_map_onto_the_selection() {
             people: value.people.clone(),
         },
     );
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
+    let hub =
+        crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     let facts = stored_facts(&s);
     assert_eq!(facts.medical, 1_200_000);
     // The premium names its person by identity; the age that sets its limit
     // is read from the people page (46 here), shared with the other coverage
-    // records by that identity (F3, 2026-10-09).
+    // records by that identity.
     assert_eq!(
         facts.long_term_care,
         vec![MedicalCarePremium {
@@ -271,7 +328,7 @@ fn compare_and_itemize_map_onto_the_selection() {
     );
     assert_eq!(crate::interview::person_age(&s.draft, -1), Some(46));
     let P::Hub { suggested, .. } = &hub else { unreachable!() };
-    assert_eq!(*suggested, TaxSection::Credits);
+    assert_eq!(*suggested, TaxSection::Taxes);
     assert_eq!(
         hub_rows(&hub)[0],
         row_of("Medical and dental expenses", "$13200.00", TaxSection::Medical)
@@ -308,7 +365,7 @@ fn compare_and_itemize_map_onto_the_selection() {
         page: PAGE_ITEMIZED,
         previous: PAGE_ITEMIZED,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value: Taxes {
@@ -319,7 +376,8 @@ fn compare_and_itemize_map_onto_the_selection() {
             personal_property: 0,
         },
     };
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
+    let hub =
+        crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     let facts = stored_facts(&s);
     assert_eq!(
         facts.personal_tax,
@@ -338,16 +396,26 @@ fn compare_and_itemize_map_onto_the_selection() {
         panic!("expected the mortgage page, got {page:?}")
     };
     assert!(value.loans.is_empty());
-    let request = save_mortgages(
-        &s.draft,
-        Mortgages {
-            loans: vec![first_lender_mortgage(900_000, 40_000_000, AverageBalance::WithinLimit)],
-        },
-    );
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
+    let mut request = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let borrower = fixture_document_names(&s.draft, -1).unwrap().recipient;
+    documents.common.mortgages.documents.push(mortgage_document(Mortgage1098 {
+        borrower: borrower.clone(),
+        ..first_lender_mortgage(900_000, 40_000_000, AverageBalance::WithinLimit)
+    }));
+    accepted(&send(&mut s, request));
+    let request = navigate(&s.draft, TaxSection::Itemized);
+    let hub = itemized_hub(send(&mut s, request));
     assert_eq!(
-        s.draft.deductions.as_ref().unwrap().mortgage,
+        s.draft.deductions.as_ref().unwrap().mortgage.iter().map(mortgage_loan).collect::<Vec<_>>(),
         vec![MortgageLoan {
+            printed: Some(crate::PrintedDocumentNames {
+                recipient: borrower,
+                issuer: Some(Default::default()),
+                assigned: crate::DocumentRecipient::Taxpayer,
+                owner_source: Some(crate::OwnerSource::Matched),
+                ..Default::default()
+            }),
             id: loan_id,
             property: "".into(),
             lender: MortgageLender::Institution,
@@ -371,7 +439,7 @@ fn compare_and_itemize_map_onto_the_selection() {
         panic!("expected the mortgage page")
     };
     assert_eq!(value.loans.len(), 1);
-    assert_eq!(value.loans[0].interest, 900_000);
+    assert_eq!(value.loans[0].value.box_1, 900_000);
     // Charity carryovers: one prior-year balance.
     let page = open_itemized_topic(&mut s, TaxSection::GiftCarryovers);
     let P::SaveGiftCarryovers { value, .. } = &page else {
@@ -382,6 +450,7 @@ fn compare_and_itemize_map_onto_the_selection() {
         &s.draft,
         GiftCarryovers {
             gifts: vec![],
+            vehicles: vec![],
             appraisals: vec![],
             appraisal_choices: vec![],
             basis_election: false,
@@ -400,7 +469,8 @@ fn compare_and_itemize_map_onto_the_selection() {
             less_common: vec![],
         },
     );
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
+    let hub =
+        crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     assert_eq!(
         s.draft.deductions.as_ref().unwrap().charity_carryovers,
         vec![CharityCarryover {
@@ -426,7 +496,7 @@ fn compare_and_itemize_map_onto_the_selection() {
         page: PAGE_ITEMIZED,
         previous: PAGE_ITEMIZED,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value: OtherItemized {
@@ -456,7 +526,8 @@ fn compare_and_itemize_map_onto_the_selection() {
             bond_instruments: Vec::new(),
         },
     };
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
+    let hub =
+        crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     let facts = stored_facts(&s);
     assert_eq!(
         s.draft.deductions.as_ref().unwrap().investment_interest(),
@@ -470,9 +541,8 @@ fn compare_and_itemize_map_onto_the_selection() {
         })
     );
     assert_eq!(facts.investment_property_taxes, 30_000);
-    // The hub suggests continuing, which records it and walks the later
-    // sections to the review (each asks its less-common page, gate fixes
-    // batch A).
+    // Continue records this section and walks the later sections to Review,
+    // including each applicable less-common page.
     let P::Hub { suggested, .. } = &hub else { unreachable!() };
     assert_eq!(*suggested, TaxSection::Credits);
     let reply = send(&mut s, go_on(&hub));
@@ -480,21 +550,23 @@ fn compare_and_itemize_map_onto_the_selection() {
     assert!(s.draft.finished_sections.contains(&TaxSection::Itemized));
     // Itemize is the line 19 election with the same facts.
     let compared = stored_facts(&s);
-    let request = save_deductions(&s.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&s.draft, Some(ItemizeOverride::Itemize), 0);
     itemized_hub(send_past_less_common(&mut s, request));
     assert_eq!(
-        s.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Itemized { facts: compared }
+        s.draft.deductions.as_ref().unwrap().itemize_override,
+        Some(ItemizeOverride::Itemize)
     );
+    assert_eq!(stored_facts(&s), compared);
     let request = navigate(&s.draft, TaxSection::Deductions);
     let Reply::Edit(page) = send(&mut s, request) else { panic!("expected the deductions page") };
-    assert_eq!(deductions_value(&page).0.route, DeductionRoute::Itemize);
-    // Each topic page saved unchanged stores nothing new.
+    assert_eq!(deductions_value(&page).itemize_override, Some(ItemizeOverride::Itemize));
+    // The accepted source editor and each record topic save unchanged.
     let before = s.draft.clone();
+    let source = open_document_center(&mut s);
+    accepted(&send(&mut s, source));
     for topic in [
         TaxSection::Medical,
         TaxSection::Taxes,
-        TaxSection::Mortgage,
         TaxSection::GiftCarryovers,
         TaxSection::OtherItemized,
     ] {
@@ -504,66 +576,98 @@ fn compare_and_itemize_map_onto_the_selection() {
     assert_eq!(s.draft, before);
 }
 
+// 2026-11-02: spouse itemizing is an independent required separate-return fact.
 #[test]
-fn spouse_itemizes_is_offered_only_on_a_separate_return() {
-    // A single return: three routes, and the fourth is refused on save.
-    let (mut s, page) = at_the_deductions_page(FederalStatus::Single);
-    assert_eq!(deductions_value(&page).1, &[0, 1, 2]);
-    let before = s.draft.clone();
-    let request = save_deductions(&s.draft, DeductionRoute::SpouseItemizes, 0);
-    error(current_source_refusal(
-        "secondary-admission-3160",
-        &mut s,
-        request,
-        "MESSAGE_YOUR_SPOUSE_S_ITEMIZING_DECIDES_YOUR_DEDUCTION_ONLY_ON_A_MARRIED_FILING_SEPA",
-        Some("[value/route]"),
-        SourceScope::Secondary(SecondaryCorrection::DeductionChoice),
-    ));
-    assert_eq!(s.draft, before);
-    // A separate return offers it; it is Itemize plus the spouse answer.
-    let (mut s, page) = at_the_deductions_page(FederalStatus::Separate);
-    assert_eq!(deductions_value(&page).1, &[0, 1, 2, 3]);
-    let request = save_deductions(&s.draft, DeductionRoute::SpouseItemizes, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
-    assert!(s.draft.deductions.as_ref().unwrap().spouse_itemizes);
-    assert_eq!(
-        s.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Itemized { facts: empty_facts() }
+fn spouse_itemizing_is_required_only_on_a_separate_return_and_survives_restart() {
+    use crate::tests::support::builders::spouse_itemizes_request;
+    let (mut s, mut page) = at_the_deductions_page(FederalStatus::Separate);
+    s.draft.deductions.as_mut().unwrap().spouse_itemizes = None;
+    let P::SaveDeductions { cookie, revision, .. } = &mut page else { unreachable!() };
+    *cookie = s.draft.cookie.clone();
+    *revision = s.draft.revision;
+    assert!(matches!(send(&mut s, page), Reply::Response(P::BeginSpouseItemizes { .. })));
+    assert!(
+        estimate(&s.draft).issues.iter().any(|i| i.display.key == "ISSUE_ANSWER_SPOUSE_ITEMIZES")
     );
-    let request = go_to(&s.draft, PAGE_ITEMIZED, TaxSection::Deductions);
-    let Reply::Edit(page) = send(&mut s, request) else { panic!("expected the deductions page") };
-    assert_eq!(deductions_value(&page).0.route, DeductionRoute::SpouseItemizes);
-    // Itemize clears the spouse answer and keeps the election.
-    let request = save_deductions(&s.draft, DeductionRoute::Itemize, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
+    let request = spouse_itemizes_request(&s.draft, true);
+    accepted(&send(&mut s, request));
+    assert!(s.draft.spouse_itemizes());
+    assert_eq!(
+        supported(&s.draft).return_lines,
+        supported(&restart(s.draft.clone()).draft).return_lines
+    );
+    let request = spouse_itemizes_request(&s.draft, false);
+    accepted(&send(&mut s, request));
+    assert_eq!(s.draft.deductions.as_ref().unwrap().spouse_itemizes, Some(false));
     assert!(!s.draft.spouse_itemizes());
-    assert!(matches!(
-        s.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Itemized { .. }
-    ));
-    // Leaving the separate return keeps "my spouse itemizes" and the
-    // itemized facts, and reopens the deductions page (walk-owned data,
-    // level 2): its own save refuses the route on a single return, so it
-    // opens with the route to change.
-    let request = save_deductions(&s.draft, DeductionRoute::SpouseItemizes, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
-    let request = save_setup(&s.draft, ReturnSetup { filing: Filing::Single });
-    send(&mut s, request);
-    assert!(!s.draft.spouse_itemizes());
-    assert!(s.draft.deductions.as_ref().unwrap().spouse_itemizes);
-    assert!(!s.draft.finished_sections.contains(&TaxSection::Deductions));
+    let (mut single, _) = at_the_deductions_page(FederalStatus::Single);
+    let before = single.draft.clone();
+    let request = spouse_itemizes_request(&single.draft, true);
+    assert!(matches!(send(&mut single, request), Reply::Response(P::Problem { .. })));
+    assert_eq!(single.draft, before);
+}
+
+// Your spouse's standard deduction boxes are asked on their own step after the
+// deductions page of a separate return while the standard deduction can
+// apply: unanswered on a client-built editor until saved, never seeded and
+// never on the deductions page, then reopened with the saved answer. A spouse
+// who itemizes leaves them unasked.
+#[test]
+fn separate_return_asks_spouse_boxes_on_their_own_step_unanswered() {
+    let issue = "ISSUE_ANSWER_YOUR_SPOUSE_STANDARD_DEDUCTION_BOXES";
+    let asks = |d: &FederalDraft| estimate(d).issues.iter().any(|i| i.display.key == issue);
+    let boxes = |s: &Interview| s.draft.setup.as_ref().unwrap().separate_spouse;
+    let (mut s, _) = at_the_deductions_page(FederalStatus::Separate);
+    s.draft.setup.as_mut().unwrap().separate_spouse = crate::SeparateSpouseBoxes::NotAnswered;
+    assert!(asks(&s.draft));
+    let request = save_deductions(&s.draft, None, 0);
+    accepted(&send(&mut s, request));
+    let request = crate::tests::support::builders::spouse_itemizes_request(&s.draft, false);
+    let Reply::Response(P::BeginSpouseBoxes { page, previous, .. }) = send(&mut s, request) else {
+        panic!("the step opens unanswered after the deductions page")
+    };
+    assert_eq!((page, previous), (PAGE_DEDUCTIONS, PAGE_DEDUCTIONS));
+    assert_eq!(boxes(&s), crate::SeparateSpouseBoxes::NotAnswered);
+    // The estimate's issue opens the same step.
     let request = navigate(&s.draft, TaxSection::Deductions);
-    let Reply::Edit(page) = send(&mut s, request) else { panic!("expected the deductions page") };
-    let (value, routes) = deductions_value(&page);
-    assert_eq!(value.route, DeductionRoute::SpouseItemizes);
-    assert_eq!(routes, &[0, 1, 2]);
+    assert!(matches!(send(&mut s, request), Reply::Response(P::BeginSpouseBoxes { .. })));
+    let request = save_spouse_boxes(&s.draft, SpouseBoxes::Blind);
+    accepted(&send(&mut s, request));
+    assert_eq!(boxes(&s), crate::SeparateSpouseBoxes::Blind);
+    assert!(!asks(&s.draft));
+    // The saved answer reopens by EditRequest after the deductions page.
+    let request = navigate(&s.draft, TaxSection::Deductions);
+    let Reply::Edit(mut page @ P::SaveDeductions { .. }) = send(&mut s, request) else {
+        panic!("expected the deductions page")
+    };
+    // Its Next as the walk reaches it (not back to the review).
+    let P::SaveDeductions { review, .. } = &mut page else { unreachable!() };
+    *review = false;
+    assert!(matches!(
+        {
+            accepted(&send(&mut s, page));
+            let request = crate::tests::support::builders::spouse_itemizes_request(&s.draft, false);
+            send(&mut s, request)
+        },
+        Reply::Edit(P::SaveSpouseBoxes { value: SpouseBoxes::Blind, .. })
+    ));
+    // A spouse who itemizes files, so the boxes are no longer asked.
+    let request = crate::tests::support::builders::spouse_itemizes_request(&s.draft, true);
+    send(&mut s, request);
+    assert_eq!(boxes(&s), crate::SeparateSpouseBoxes::NotAnswered);
+    assert!(!asks(&s.draft));
+    // No other return has the step.
+    let (mut s, _) = at_the_deductions_page(FederalStatus::Single);
+    let request = save_spouse_boxes(&s.draft, SpouseBoxes::NoneOfThese);
+    assert!(matches!(send(&mut s, request), Reply::Response(P::Problem { .. })));
 }
 
 #[test]
-fn standard_erases_the_itemized_facts() {
+fn clearing_itemize_override_preserves_facts_and_topic_completion() {
     let (mut s, _) = at_the_deductions_page(FederalStatus::Single);
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
+    s.draft.checklist.paid |= PaidTopics::TAXES.0;
+    let request = save_deductions(&s.draft, None, 0);
+    crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     let request = P::SaveTaxes {
         user: TEST_USER,
         cookie: s.draft.cookie.clone(),
@@ -571,7 +675,7 @@ fn standard_erases_the_itemized_facts() {
         page: PAGE_ITEMIZED,
         previous: PAGE_ITEMIZED,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value: Taxes {
@@ -583,8 +687,7 @@ fn standard_erases_the_itemized_facts() {
         },
     };
     itemized_hub(send_past_less_common(&mut s, request));
-    // M3-P19: Continue opens the next shown section, credits, walked with
-    // the rest to the review (gate fixes batch A).
+    // Continue opens the next shown section, then the remaining walk reaches review.
     let request = continue_hub(&s.draft, PAGE_ITEMIZED);
     let reply = send(&mut s, request);
     walk_on_to_review(&mut s, reply);
@@ -592,40 +695,34 @@ fn standard_erases_the_itemized_facts() {
     assert!(s.draft.finished_sections.contains(&TaxSection::Taxes));
     // Moving between the itemizing routes keeps the facts.
     let facts = stored_facts(&s);
-    let request = save_deductions(&s.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&s.draft, Some(ItemizeOverride::Itemize), 0);
     itemized_hub(send_past_less_common(&mut s, request));
     assert_eq!(stored_facts(&s), facts);
     assert_eq!(facts.personal_tax, PersonalTaxElection::Sales { paid: 150_000 });
-    // Standard erases them and forgets the itemized hub and its topics.
-    let request = save_deductions(&s.draft, DeductionRoute::Standard, 0);
-    assert!(matches!(send(&mut s, request), Reply::Response(P::Review { .. })));
+    assert_eq!(value(&supported(&s.draft), "deduction"), 5_500);
+    // 2026-11-02: returning to automatic retains entered facts and saved topics.
+    let finished = s.draft.finished_sections.clone();
+    let request = save_deductions(&s.draft, None, 0);
+    accepted(&send(&mut s, request));
+    assert_eq!(s.draft.deductions.as_ref().unwrap().itemize_override, None);
+    assert_eq!(stored_facts(&s), facts);
+    assert_eq!(value(&supported(&s.draft), "deduction"), 16_100);
+    assert_eq!(s.draft.finished_sections, finished);
+    let mut restarted = restart(s.draft.clone());
+    let page = open_itemized_topic(&mut restarted, TaxSection::Taxes);
+    let P::SaveTaxes { value: taxes, .. } = &page else { unreachable!() };
+    assert_eq!(taxes.kind, SaltElection::SalesTax { paid: 150_000 });
+    assert_eq!(taxes.real_estate, 400_000);
+    let mut larger = page;
+    let P::SaveTaxes { value: taxes, .. } = &mut larger else { unreachable!() };
+    taxes.real_estate = 2_000_000;
+    accepted(&send(&mut restarted, larger));
+    assert_eq!(value(&supported(&restarted.draft), "deduction"), 21_500);
+    assert_eq!(restarted.draft.deductions.as_ref().unwrap().itemize_override, None);
     assert_eq!(
-        s.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Automatic { expenses: ItemizedChoice::No }
+        supported(&restart(restarted.draft.clone()).draft).return_lines,
+        supported(&restarted.draft).return_lines
     );
-    assert_eq!(
-        s.draft.finished_sections,
-        vec![
-            TaxSection::Children,
-            TaxSection::Checklist,
-            TaxSection::Income,
-            TaxSection::Adjustments,
-            TaxSection::Deductions,
-            TaxSection::MoreCredits,
-            TaxSection::Credits,
-            TaxSection::OtherTaxes,
-            TaxSection::Payments,
-        ]
-    );
-    let request = navigate(&s.draft, TaxSection::Taxes);
-    error(send(&mut s, request));
-    // Comparing again starts from nothing; with nothing planned the hub
-    // suggests Continue (M3-P19; M3-P9 suggested the first topic).
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
-    let hub = itemized_hub(send_past_less_common(&mut s, request));
-    assert_eq!(stored_facts(&s), empty_facts());
-    let P::Hub { suggested, .. } = &hub else { unreachable!() };
-    assert_eq!(*suggested, TaxSection::Credits);
 }
 
 #[test]
@@ -646,7 +743,7 @@ fn cash_gifts_reach_the_non_itemizer_deduction() {
         (FederalStatus::Joint, 250_000, 200_000),
     ] {
         let (mut s, _) = at_the_deductions_page(status);
-        let request = save_deductions(&s.draft, DeductionRoute::Standard, gifts);
+        let request = save_deductions(&s.draft, None, gifts);
         let reply = send(&mut s, request);
         let Reply::Response(P::Review { result, .. }) = past_credits(&mut s, reply) else {
             panic!("expected the review")
@@ -659,11 +756,11 @@ fn cash_gifts_reach_the_non_itemizer_deduction() {
         let Reply::Edit(page) = send(&mut s, request) else {
             panic!("expected the deductions page")
         };
-        assert_eq!(deductions_value(&page).0.cash_gifts, gifts);
+        assert_eq!(deductions_value(&page).cash_gifts, gifts);
     }
     // No gift means no claim and no line 12f amount.
     let (mut s, _) = at_the_deductions_page(FederalStatus::Single);
-    let request = save_deductions(&s.draft, DeductionRoute::Standard, 0);
+    let request = save_deductions(&s.draft, None, 0);
     let reply = send(&mut s, request);
     let Reply::Response(P::Review { result, .. }) = past_credits(&mut s, reply) else {
         panic!("expected the review")
@@ -697,31 +794,30 @@ fn educator_twice_is_rejected_on_save() {
 }
 
 #[test]
-fn unit15_standard_route_keeps_all_cash_splits_and_checklist_tracks_each() {
+fn unit15_automatic_keeps_gift_facts_and_all_cash_splits() {
     for (fund, other) in [(123_400, 0), (0, 234_500)] {
-        let mut s = at_the_gifts_page(DeductionRoute::Itemize, 0);
+        let mut s = at_the_gifts_page(Some(ItemizeOverride::Itemize), 0);
         let request = save_gift_carryovers(
             &s.draft,
             gifts(vec![goods_gift(GoodsKind::Books, 50_000, 20_000)], vec![], vec![]),
         );
         itemized_hub(send_past_less_common(&mut s, request));
-        let mut request = save_deductions(&s.draft, DeductionRoute::Standard, 0);
+        let property = s.draft.deductions.as_ref().unwrap().property_gifts.clone();
+        let mut request = save_deductions(&s.draft, None, 0);
         let P::SaveDeductions { value, .. } = &mut request else { unreachable!() };
         value.fund_cash_gifts = fund;
         value.other_cash_gifts = other;
         accepted(&send(&mut s, request));
         let ded = s.draft.deductions.as_ref().unwrap();
-        assert!(ded.property_gifts.is_empty());
+        // 2026-11-02: automatic selection retains the accepted property facts.
+        assert_eq!(ded.property_gifts, property);
         assert_eq!(
             (ded.cash_charity, ded.fund_cash_charity, ded.other_cash_charity),
             (0, fund, other)
         );
         let saved = s.draft.clone();
         let reply = send(&mut s, navigate(&saved, TaxSection::Checklist));
-        assert_eq!(
-            checklist_of(&reply).deductions & DeductionTopics::GIFTS.0,
-            DeductionTopics::GIFTS.0
-        );
+        assert_eq!(checklist_of(&reply).paid & PaidTopics::GIFTS.0, PaidTopics::GIFTS.0);
         assert_eq!(return_line(&supported(&s.draft), "12f"), 0);
         let mut again = restart(s.draft.clone());
         assert_eq!(again.draft, s.draft);
@@ -733,4 +829,128 @@ fn unit15_standard_route_keeps_all_cash_splits_and_checklist_tracks_each() {
         };
         assert_eq!((value.fund_cash_gifts, value.other_cash_gifts), (fund, other));
     }
+}
+
+#[test]
+fn mortgage_box4_calls_all_existing_refund_origins_only_for_a_positive_refund() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    for (refund, expected) in
+        [(0, vec![]), (1, vec![0, 1, 2]), (50_000, vec![0, 1, 2]), (0, vec![])]
+    {
+        let mut request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        if documents.common.mortgages.documents.is_empty() {
+            let mut mortgage =
+                first_lender_mortgage(100_000, 20_000_000, AverageBalance::WithinLimit);
+            mortgage.borrower = accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+            documents.common.mortgages.documents.push(mortgage_document(mortgage));
+        }
+        documents.common.mortgages.documents[0].form.box_4 = refund;
+        accepted(&send(&mut session, request));
+        let before = session.draft.clone();
+        let P::SaveMortgages { value, .. } =
+            crate::tests::cross::interview::linked_mortgage_editor(&mut session)
+        else {
+            unreachable!()
+        };
+        assert_eq!(value.loans[0].allowed_refund_origins, expected);
+        assert_eq!(session.draft, before);
+    }
+}
+
+#[test]
+fn mortgage_refund_choices_rebuild_on_reopen_without_changing_loan_facts_or_save_checks() {
+    use crate::tests::cross::interview::{
+        linked_mortgage_editor, linked_mortgage_form, linked_mortgage_rows,
+        save_linked_mortgage_rows,
+    };
+
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let mut loan = linked_mortgage_form("Synthetic home");
+    // The server uses actual box 4, never the editor's echoed allowed set.
+    loan.more.allowed_refund_origins = vec![99];
+    accepted(&save_linked_mortgage_rows(&mut session, vec![loan]));
+    let mut loan = linked_mortgage_rows(&mut session).remove(0);
+    assert!(loan.more.allowed_refund_origins.is_empty());
+    let loan_facts = loan.more.details.clone();
+    let lender = loan.more.lender.clone();
+    let identity = loan.id;
+    loan.refund = 10_000;
+    let before = session.draft.clone();
+    rejected_with(
+        save_linked_mortgage_rows(&mut session, vec![loan.clone()]),
+        "MORTGAGE_REFUND_ORIGIN_NEEDED",
+    );
+    assert_eq!(session.draft, before);
+    // A withheld row never changes native refund treatment or weakens Save.
+    loan.more.refund_origin = Some(MortgageRefundOrigin::ThisYear);
+    accepted(&save_linked_mortgage_rows(&mut session, vec![loan]));
+    assert_eq!(
+        mortgage_loan(&session.draft.deductions.as_ref().unwrap().mortgage[0]).refund_of_interest,
+        MortgageInterestRefund::Yes {
+            amount: 10_000,
+            origin: Some(MortgageRefundOrigin::ThisYear)
+        },
+    );
+    let mut session = restart(session.draft);
+    let P::SaveMortgages { .. } = linked_mortgage_editor(&mut session) else { unreachable!() };
+    let mut loan = mortgage_snapshot(&session.draft.deductions.as_ref().unwrap().mortgage[0]);
+    assert_eq!(loan.more.allowed_refund_origins, vec![0, 1, 2]);
+    assert_eq!(loan.more.refund_origin, Some(MortgageRefundOrigin::ThisYear));
+    assert_eq!(
+        (loan.id, loan.more.details.clone(), loan.more.lender.clone()),
+        (identity, loan_facts, lender)
+    );
+    loan.refund = 0;
+    accepted(&save_linked_mortgage_rows(&mut session, vec![loan]));
+    let loan = linked_mortgage_rows(&mut session).remove(0);
+    assert!(loan.more.allowed_refund_origins.is_empty());
+    assert!(loan.more.refund_origin.is_none());
+    assert_eq!(
+        mortgage_loan(&session.draft.deductions.as_ref().unwrap().mortgage[0]).refund_of_interest,
+        MortgageInterestRefund::No,
+    );
+}
+
+// A Form 1098 entered since Home mortgage interest was saved leaves the
+// loan's own facts unanswered (its details, the share you paid, the insurance
+// contract date and the points treatment): the page opens by WorkflowRequest
+// (BeginMortgages) with the answered loans as saved and the new one carrying
+// only what its paper settles. Once answered it reopens by EditRequest.
+#[test]
+fn a_new_form_1098_starts_unanswered_beside_the_saved_loans() {
+    use crate::tests::support::builders::native_income::mortgage_source;
+    let mut d = complete(FederalStatus::Single);
+    let mut saved =
+        mortgage_source(first_lender_mortgage(900_000, 40_000_000, AverageBalance::WithinLimit));
+    saved.id = d.next_id;
+    let mut new = crate::Mortgage1098Source::printed(saved.form.clone());
+    new.id = saved.id + 1;
+    // A smaller second loan: both together stay within the acquisition limit.
+    new.form.box_1 = 100_000;
+    new.form.box_2 = 5_000_000;
+    new.assigned = crate::DocumentRecipient::Taxpayer;
+    new.owner_source = Some(crate::OwnerSource::Added);
+    assert!(saved.answered && !new.answered);
+    let deductions = d.deductions.as_mut().unwrap();
+    deductions.mortgage = vec![saved.clone(), new.clone()];
+    d.next_id = d.next_id.max(new.id + 1);
+    let mut s = Interview::new(TEST_USER, d);
+    let request = navigate(&s.draft, TaxSection::Mortgage);
+    let Reply::Response(P::BeginMortgages { value, .. }) = send(&mut s, request) else {
+        panic!("a new loan's facts are asked by WorkflowRequest")
+    };
+    assert_eq!(value.loans.iter().map(|loan| loan.id).collect::<Vec<_>>(), vec![saved.id]);
+    assert_eq!(value.loans[0].details, saved.details.clone().into());
+    assert_eq!(value.new_loans.iter().map(|loan| loan.id).collect::<Vec<_>>(), vec![new.id]);
+    // The paper settles the lender and the box 3 date; the rest is asked.
+    assert_eq!(value.new_loans[0].lender, crate::MortgageLender::Institution);
+    assert_eq!(value.new_loans[0].debt_date, crate::MortgageDebtDate::Origination);
+    let page = crate::tests::cross::interview::linked_mortgage_editor(&mut s);
+    accepted(&send(&mut s, page));
+    let loans = &s.draft.deductions.as_ref().unwrap().mortgage;
+    assert!(loans.iter().all(|loan| loan.answered));
+    assert_eq!(loans[0].details, saved.details);
+    let request = navigate(&s.draft, TaxSection::Mortgage);
+    assert!(matches!(send(&mut s, request), Reply::Edit(P::SaveMortgages { .. })));
 }

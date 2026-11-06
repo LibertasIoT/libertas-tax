@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 183100, "rule": {"select": "^<SaveIncomeWithoutForm>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 183200, "rule": {"select": "^<SaveIncomeWithoutForm>.value", "flatten": {"name_row": false}}},
+    {"order": 183300, "rule": {"select": "^<SaveIncomeWithoutForm.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 183400, "rule": {"select": "^<BeginIncomeWithoutForm.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

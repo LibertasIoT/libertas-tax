@@ -34,9 +34,9 @@ use crate::validation::ValidationIssue;
 //   Evidence: method_change.rs; federal_model.rs FederalBusiness::receipts and
 //   operating_cost_before_supplies; extended_rules.rs rental_use_for and the Schedule E rows;
 //   unknowns.rs method_changes; tests: src/tests/cost_recovery/method_change.rs.
-use crate::kernel::lines::line_cents;
 use crate::kernel::phase;
 use crate::kernel::ratio::fraction;
+use crate::line_emission::line_cents;
 use crate::{FederalResult, IssueContext, Message, MessageArg};
 use alloc::{boxed::Box, format, vec, vec::Vec};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
@@ -89,7 +89,8 @@ pub enum Adjustment481 {
     Decrease {
         /// Amount of the decrease (line 26, without the minus sign)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
     },
     /// Increase in income spread over four years
@@ -97,7 +98,8 @@ pub enum Adjustment481 {
     FourYears {
         /// Amount of the increase (line 26)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
         /// The rest of this increase is taken in 2026
         /// Yes when this activity stopped in 2026: you closed it, sold or transferred substantially all of its assets, incorporated it or contributed it to a partnership. Also Yes when a change you made for 2026 requires taking the rest of this earlier adjustment now (Form 3115 line 27). A rental sold in 2026 on this page and an owner who died in 2026 always take the rest. Your closing or sale records and your 2026 Form 3115 show this.
@@ -117,7 +119,8 @@ pub enum Adjustment481 {
     TwoYears {
         /// Amount of the increase (line 26)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
         /// The rest of this increase is taken in 2026
         /// Yes when this activity stopped in 2026: you closed it, sold or transferred substantially all of its assets, incorporated it or contributed it to a partnership. Also Yes when a change you made for 2026 requires taking the rest of this earlier adjustment now (Form 3115 line 27). A rental sold in 2026 on this page and an owner who died in 2026 always take the rest. Your closing or sale records and your 2026 Form 3115 show this.
@@ -405,7 +408,8 @@ pub enum MethodChangeAmt {
         /// AMT section 481(a) adjustment (line 26 for the AMT, without the minus sign)
         /// Taken over the same period as the regular-tax amount.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }

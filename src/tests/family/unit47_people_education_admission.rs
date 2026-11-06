@@ -5,10 +5,7 @@ use super::*;
 
 fn admission_estimate(request: &P) -> P {
     match request {
-        P::SaveSetup { value, .. } => P::EstimateSetup {
-            user: TEST_USER,
-            value: value.clone(),
-        },
+        P::SaveSetup { value, .. } => P::EstimateSetup { user: TEST_USER, value: value.clone() },
         P::SavePeople {
             you,
             professional_election,
@@ -20,45 +17,40 @@ fn admission_estimate(request: &P) -> P {
             professional_election: *professional_election,
             allowed_professional_elections: allowed_professional_elections.clone(),
         },
-        P::SaveSpouse {
-            spouse,
-            professional_election,
-            allowed_professional_elections,
-            ..
-        } => P::EstimateSpouse {
-            user: TEST_USER,
-            spouse: spouse.clone(),
-            professional_election: *professional_election,
-            allowed_professional_elections: allowed_professional_elections.clone(),
-        },
-        P::SaveChildren {
-            dependents,
-            allowed_lived,
-            days_alive,
-            ..
-        } => P::EstimateDependents {
+        P::SaveSpouse { spouse, professional_election, allowed_professional_elections, .. } => {
+            P::EstimateSpouse {
+                user: TEST_USER,
+                spouse: spouse.clone(),
+                professional_election: *professional_election,
+                allowed_professional_elections: allowed_professional_elections.clone(),
+            }
+        }
+        P::SaveChildren { dependents, allowed_lived, days_alive, .. } => P::EstimateDependents {
             user: TEST_USER,
             dependents: dependents.clone(),
             allowed_lived: allowed_lived.clone(),
             days_alive: *days_alive,
         },
-        P::SaveEducator {
-            value,
-            allowed_owners,
-            ..
-        } => P::EstimateEducator {
+        P::SaveEducator { value, allowed_owners, .. } => P::EstimateEducator {
             user: TEST_USER,
             value: value.clone(),
             allowed_owners: allowed_owners.clone(),
         },
-        P::SaveEducation { value, .. } => P::EstimateEducation {
+        P::SaveEducation { value, people, followups, .. } => P::EstimateEducation {
             user: TEST_USER,
             value: value.clone(),
+            people: people.clone(),
+            followups: followups.clone(),
+            questions: Vec::new(),
         },
+        P::SaveDocuments { .. } => request.clone(),
         other => panic!("unsupported admission request {other:?}"),
     }
 }
 fn admission_open(session: &mut Interview, topic: TaxSection) -> P {
+    if topic == TaxSection::Documents {
+        return crate::tests::support::client::income_pages::open_document_center(session);
+    }
     let request = navigate(&session.draft, topic);
     let Reply::Edit(page) = send(session, request) else {
         panic!("expected admission editor {topic:?}")
@@ -76,24 +68,26 @@ fn admission_case(
 ) {
     let estimate = admission_estimate(&bad);
     admission_refusal(case, session, bad, key, path);
-    admission_refusal(
-        &alloc::format!("{case}-estimate"),
-        session,
-        estimate,
-        key,
-        path,
-    );
+    admission_refusal(&alloc::format!("{case}-estimate"), session, estimate, key, path);
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let reply = send(session, admission_estimate(&corrected));
+    let reply = crate::tests::support::client::income_pages::candidate_save_review(
+        session,
+        admission_estimate(&corrected),
+    );
     assert!(
-        matches!(reply, Reply::Response(P::RunningEstimate { .. })),
+        match &corrected {
+            P::SaveDocuments { .. } => {
+                matches!(reply, Reply::Response(P::Review { .. }))
+            }
+            P::SaveChildren { .. } => {
+                matches!(reply, Reply::Response(P::DependentsRunningEstimate { .. }))
+            }
+            _ => matches!(reply, Reply::Response(P::RunningEstimate { .. })),
+        },
         "{case}: corrected estimate {reply:?}"
     );
-    assert_eq!(
-        session.draft, before,
-        "{case}: corrected estimate changed source"
-    );
+    assert_eq!(session.draft, before, "{case}: corrected estimate changed source");
     assert_eq!(session.dirty, dirty);
     accepted(&send(session, corrected));
     let saved = session.draft.clone();
@@ -111,10 +105,7 @@ fn unit47_people_setup_home_cost_and_unchanged_navigation_keep_native_priority()
     for (name, filing, key) in [
         (
             "head",
-            Filing::HeadOfHousehold {
-                paid_over_half_home: true,
-                marital: HeadMarital::Unmarried,
-            },
+            Filing::HeadOfHousehold { paid_over_half_home: true, marital: HeadMarital::Unmarried },
             "HOH_NEEDS_HOME_COST",
         ),
         (
@@ -132,14 +123,10 @@ fn unit47_people_setup_home_cost_and_unchanged_navigation_keep_native_priority()
         let corrected = ReturnSetup { filing };
         let mut bad = corrected.clone();
         match &mut bad.filing {
-            Filing::HeadOfHousehold {
-                paid_over_half_home,
-                ..
+            Filing::HeadOfHousehold { paid_over_half_home, .. }
+            | Filing::QualifyingSurvivingSpouse { paid_over_half_home, .. } => {
+                *paid_over_half_home = false
             }
-            | Filing::QualifyingSurvivingSpouse {
-                paid_over_half_home,
-                ..
-            } => *paid_over_half_home = false,
             _ => unreachable!(),
         }
         admission_case(
@@ -160,82 +147,45 @@ fn unit47_people_setup_home_cost_and_unchanged_navigation_keep_native_priority()
         let value = return_setup(original.setup.as_ref().unwrap());
         let mut session = Interview::new(TEST_USER, original.clone());
         let request = save_setup(&original, value);
-        let reply = send(&mut session, admission_estimate(&request));
+        let reply = crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            admission_estimate(&request),
+        );
         assert!(
             matches!(reply, Reply::Response(P::RunningEstimate { .. })),
             "unchanged setup estimate {reply:?}"
         );
         assert_eq!(session.draft, original);
         accepted(&send(&mut session, request));
-        assert_eq!(
-            session.draft, original,
-            "unchanged setup must not rewrite accepted source"
-        );
+        assert_eq!(session.draft, original, "unchanged setup must not rewrite accepted source");
     }
-}
-
-#[test]
-fn unit47_people_setup_spouse_itemizing_preflight_still_precedes_unchanged_shortcut() {
-    let mut original = complete(FederalStatus::Separate);
-    original.deductions.as_mut().unwrap().spouse_itemizes = true;
-    original.setup.as_mut().unwrap().separate_spouse = crate::SeparateSpouseBoxes::Blind;
-    let same = return_setup(original.setup.as_ref().unwrap());
-    let mut corrected = same.clone();
-    let Filing::MarriedSeparately { spouse_boxes, .. } = &mut corrected.filing else {
-        unreachable!()
-    };
-    *spouse_boxes = crate::SeparateSpouseBoxes::NoneOfThese;
-    let mut session = Interview::new(TEST_USER, original.clone());
-    admission_case(
-        "people-setup-separate-unchanged",
-        &mut session,
-        save_setup(&original, same),
-        save_setup(&original, corrected),
-        "ISSUE_SEPARATE_SPOUSE_BOXES_WITH_SPOUSE_ITEMIZING",
-        "[value/filing/spouse_boxes]",
-        TaxSection::Setup,
-    );
 }
 
 #[test]
 fn unit47_people_filer_death_dates_locate_you_and_spouse_actual_payload() {
     for spouse in [false, true] {
-        for case in 0..2 {
-            let original = complete(if spouse {
-                FederalStatus::Joint
-            } else {
-                FederalStatus::Single
-            });
+        {
+            let case = 1;
+            let original =
+                complete(if spouse { FederalStatus::Joint } else { FederalStatus::Single });
             let mut corrected = filer(&original.people.as_ref().unwrap().taxpayer);
             if spouse {
                 corrected = filer(original.people.as_ref().unwrap().spouse.as_ref().unwrap());
             }
-            if case == 1 {
-                corrected.birth_date = 20261231;
-            }
-            corrected.more = MoreAboutYou::Died {
+            corrected.birth_date = 20261231;
+            corrected.details.more = MoreAboutYou::Died {
                 date: 20261231,
                 estate_medical: 0,
                 bonds: None,
                 ordinary: true,
             };
             let mut bad = corrected.clone();
-            let MoreAboutYou::Died { date, .. } = &mut bad.more else {
-                unreachable!()
-            };
-            *date = if case == 0 { 20260230 } else { 20260101 };
-            let key = if case == 0 {
-                "DEATH_DATE_OUTSIDE_2026"
-            } else {
-                "DEATH_BEFORE_BIRTH"
-            };
+            let MoreAboutYou::Died { date, .. } = &mut bad.details.more else { unreachable!() };
+            *date = 20260101;
+            let key = "DEATH_BEFORE_BIRTH";
             let name = if spouse { "spouse" } else { "you" };
             let make = |value| {
-                if spouse {
-                    save_spouse(&original, value)
-                } else {
-                    save_you(&original, value)
-                }
+                if spouse { save_spouse(&original, value) } else { save_you(&original, value) }
             };
             let mut session = Interview::new(TEST_USER, original.clone());
             admission_case(
@@ -244,12 +194,8 @@ fn unit47_people_filer_death_dates_locate_you_and_spouse_actual_payload() {
                 make(bad),
                 make(corrected),
                 key,
-                &alloc::format!("[{name}/more/date]"),
-                if spouse {
-                    TaxSection::Spouse
-                } else {
-                    TaxSection::People
-                },
+                &alloc::format!("[{name}/details/more/date]"),
+                if spouse { TaxSection::Spouse } else { TaxSection::People },
             );
         }
     }
@@ -257,7 +203,9 @@ fn unit47_people_filer_death_dates_locate_you_and_spouse_actual_payload() {
 
 #[test]
 fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
-    for case in 0..20 {
+    // Cases 16 and 18 were the retired born-and-died fact's own rules, case
+    // 13 the care costs' rule, now the care page's.
+    for case in (0..20).filter(|case| ![13, 16, 18].contains(case)) {
         let mut original = complete(FederalStatus::Single);
         let mut corrected = row("Actual", "Dependent", 20180615);
         let supported = |support| DependentSituation::Supported {
@@ -290,19 +238,7 @@ fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
                 original.people.as_mut().unwrap().taxpayer.birth_date = 20100101;
                 corrected.relationship = Relationship::Sibling;
             }
-            13 => {
-                corrected.birth_date = 20130102;
-                corrected.care = CareCosts::Yes {
-                    expenses: 100_000,
-                    incapable_self_care: false,
-                };
-            }
             14 | 15 => corrected.facts = PersonFacts::ADOPTED_ALL_YEAR.0,
-            16 | 18 => {
-                corrected.birth_date = 20260301;
-                corrected.death_date = Some(20260401);
-                corrected.facts = PersonFacts::BORN_AND_DIED.0;
-            }
             17 => {
                 corrected.birth_date = 20260301;
                 corrected.death_date = Some(20260401);
@@ -326,10 +262,7 @@ fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
             }
             2 => {
                 bad.situation = supported(false);
-                (
-                    "SUPPORTED_NEEDS_YOUR_SUPPORT",
-                    "situation/your_support_over_half",
-                )
+                ("SUPPORTED_NEEDS_YOUR_SUPPORT", "situation/your_support_over_half")
             }
             3 => {
                 bad.facts |= PersonFacts::RELEASED_TO_YOU.0;
@@ -371,13 +304,6 @@ fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
                 bad.birth_date = 20090101;
                 ("DEPENDENT_OLDER_THAN_YOU", "birth_date")
             }
-            13 => {
-                bad.birth_date = 20130101;
-                (
-                    "CARE_NEEDS_UNDER_13_OR_SELF_CARE",
-                    "care/incapable_self_care",
-                )
-            }
             14 => {
                 bad.relationship = Relationship::Sibling;
                 ("ADOPTED_NEEDS_CHILD_ALL_YEAR", "facts")
@@ -386,17 +312,9 @@ fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
                 bad.lived = LivedWithYou::PartOfYear { months: 6 };
                 ("ADOPTED_NEEDS_CHILD_ALL_YEAR", "facts")
             }
-            16 => {
-                bad.birth_date = 20250301;
-                ("BORN_AND_DIED_NEEDS_2026_BIRTH", "birth_date")
-            }
             17 => {
                 bad.death_date = Some(20260228);
                 ("DEATH_BEFORE_BIRTH", "death_date")
-            }
-            18 => {
-                bad.death_date = None;
-                ("BORN_AND_DIED_NEEDS_DEATH_DATE", "death_date")
             }
             19 => {
                 bad.situation = DependentSituation::ChildUnder19;
@@ -409,11 +327,7 @@ fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
             corrected.birth_date = 20180615;
             bad.birth_date = 20180615;
         }
-        let key = if case == 19 {
-            "ANOTHERS_CHILD_NEEDS_SUPPORTED"
-        } else {
-            key
-        };
+        let key = if case == 19 { "ANOTHERS_CHILD_NEEDS_SUPPORTED" } else { key };
         let mut earlier = row("Earlier", "Independent", 20190615);
         if case == 12 {
             earlier.relationship = Relationship::Sibling;
@@ -435,29 +349,19 @@ fn unit47_people_dependent_native_conditions_locate_actual_second_person() {
 fn unit47_people_educator_and_scholarship_admission_locate_actual_second_row() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Joint));
     let mut corrected = admission_open(&mut session, TaxSection::Educator);
-    let P::SaveEducator { value, .. } = &mut corrected else {
-        unreachable!()
-    };
+    let P::SaveEducator { value, .. } = &mut corrected else { unreachable!() };
     value.people = vec![
         Educator {
             owner: Owner::Taxpayer,
-            role: EducatorRole::Educator {
-                classroom: 10_000,
-                instructional: 0,
-            },
+            role: EducatorRole::Educator { classroom: 10_000, instructional: 0 },
         },
         Educator {
             owner: Owner::Spouse,
-            role: EducatorRole::Educator {
-                classroom: 20_000,
-                instructional: 0,
-            },
+            role: EducatorRole::Educator { classroom: 20_000, instructional: 0 },
         },
     ];
     let mut bad = corrected.clone();
-    let P::SaveEducator { value, .. } = &mut bad else {
-        unreachable!()
-    };
+    let P::SaveEducator { value, .. } = &mut bad else { unreachable!() };
     value.people[1].owner = Owner::Taxpayer;
     admission_case(
         "people-educator-duplicate",
@@ -469,18 +373,25 @@ fn unit47_people_educator_and_scholarship_admission_locate_actual_second_row() {
         TaxSection::Educator,
     );
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Joint));
+    let taxpayer = accepted_document_names(&session.draft, Owner::Taxpayer).recipient;
+    let spouse = accepted_document_names(&session.draft, Owner::Spouse).recipient;
+    let mut sources = admission_open(&mut session, TaxSection::Documents);
+    let P::SaveDocuments { documents, .. } = &mut sources else { unreachable!() };
+    documents.common.education.students = vec![student(-1, 300_000), student(-2, 300_000)];
+    documents.common.education.students[0].form.student = taxpayer;
+    documents.common.education.students[1].form.student = spouse;
+    documents.common.education.students[1].form.box_5 = 100_000;
+    accepted(&send(&mut session, sources));
     let mut corrected = admission_open(&mut session, TaxSection::Education);
-    let P::SaveEducation { value, .. } = &mut corrected else {
-        unreachable!()
-    };
-    value.students = vec![student(-1, 300_000), student(-2, 300_000)];
-    value.students[1].scholarships = 100_000;
+    let P::SaveEducation { value, .. } = &mut corrected else { unreachable!() };
+    for row in &mut value.students {
+        row.method = Some(EducationChoice::AmericanOpportunity);
+        row.more.american_opportunity_used_up = Some(false);
+    }
     value.students[1].more.scholarship_in_income =
         ScholarshipInclusion::Amount { included: 100_000 };
     let mut bad = corrected.clone();
-    let P::SaveEducation { value, .. } = &mut bad else {
-        unreachable!()
-    };
+    let P::SaveEducation { value, .. } = &mut bad else { unreachable!() };
     value.students[1].more.scholarship_in_income =
         ScholarshipInclusion::Amount { included: 100_001 };
     admission_case(

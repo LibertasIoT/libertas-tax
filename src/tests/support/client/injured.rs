@@ -1,13 +1,13 @@
 use super::income::{save_native_income_topics, save_native_review_topics};
 use super::lifecycle::{TEST_USER, exchange, restart, send};
 use crate::interview::{Interview, Reply};
-use crate::tests::cross::interview::{accepted, from_review, open_topic};
+use crate::tests::cross::interview::{accepted, from_review};
 use crate::tests::support::assert::{supported, value};
 use crate::tests::support::builders::complete;
 use crate::tests::*;
 use crate::{
-    FederalIncome, FederalStatus, InjuredAmountPage, InjuredSpouse, TaxInterviewProtocol as P,
-    TaxSection, WholeReturnTopics,
+    FederalIncome, FederalStatus, InjuredAmountPage, InjuredSpouse, SpouseSituations,
+    TaxInterviewProtocol as P, TaxSection,
 };
 use alloc::vec::Vec;
 
@@ -35,6 +35,8 @@ fn native_editor_with_lists(
         warnings,
         progress,
         value,
+        followups,
+        questions: _,
     }) = reply
     else {
         assert!(new_answers.is_empty());
@@ -93,9 +95,11 @@ fn native_editor_with_lists(
         page,
         previous,
         review,
-        estimate,
+        estimate: estimate.map(Into::into),
         warnings,
         progress,
+        followups,
+        questions: Vec::new(),
         value: InjuredSpouse {
             injured: value.injured,
             debt: value.debt,
@@ -129,7 +133,7 @@ pub(crate) fn injured_capacity_claim() -> Interview {
     // Request the claim through the real checklist/editor. An initially empty
     // source plan has no allocation choices to invent.
     let Reply::Edit(initial @ P::SaveInjuredSpouse { .. }) = injured_capacity_editor_reply(
-        save_whole_return(&mut session, WholeReturnTopics::INJURED_SPOUSE.0),
+        save_whole_return(&mut session, SpouseSituations::INJURED_SPOUSE.0),
     ) else {
         panic!("expected normal injured-spouse editor")
     };
@@ -140,13 +144,12 @@ pub(crate) fn injured_capacity_claim() -> Interview {
     session
 }
 
-pub(crate) fn injured_capacity_sources(session: &mut Interview) -> Vec<i64> {
+pub(crate) fn injured_capacity_sources(session: &mut Interview, insured_count: usize) -> Vec<i64> {
     // Stage1 allocates the actual insured-source identities. One-period rows
     // obtain their receipt amount from linked forms; none have been entered yet.
-    let insured = super::builders::injured_insured_documents();
-    let mut request = crate::tests::cross::interview::open_topic(session, TaxSection::OtherIncome);
-    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    documents.documents = insured;
+    let insured = super::builders::injured_insured_documents(insured_count);
+    let request =
+        super::income_pages::save_topic(session, TaxSection::LongTermCareBenefits, insured);
     crate::tests::cross::interview::accepted(&send(session, request));
     let ids: Vec<_> = session
         .draft
@@ -154,11 +157,11 @@ pub(crate) fn injured_capacity_sources(session: &mut Interview) -> Vec<i64> {
         .iter()
         .filter_map(|e| matches!(e.income, FederalIncome::LtcInsured { .. }).then_some(e.id))
         .collect();
-    assert_eq!(ids.len(), super::builders::INJURED_INSURED_COUNT);
+    assert_eq!(ids.len(), insured_count);
     assert!(ids.iter().all(|id| *id > 0));
     assert_eq!(
         ids.iter().copied().collect::<alloc::collections::BTreeSet<_>>().len(),
-        super::builders::INJURED_INSURED_COUNT
+        insured_count
     );
 
     ids
@@ -169,17 +172,19 @@ pub(crate) fn injured_capacity_forms(session: &mut Interview, ids: &[i64]) -> [O
     // Stage2 enters actual daily contract periods and both physical source
     // forms. The period-source IDs are unanswered until these forms receive
     // their own allocator identities; ordinary SectionC tax is already known.
-    let mut request = crate::tests::cross::interview::open_topic(session, TaxSection::OtherIncome);
+    let request = super::income_pages::open_topic(session, TaxSection::LongTermCareBenefits);
     let mut rows = page_documents(&request).to_vec();
-    super::builders::injured_daily_forms(&mut rows, ids);
-    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    documents.documents = rows;
-    crate::tests::cross::interview::accepted(&send(session, request));
-    assert_eq!(session.draft.income.len(), 1 + super::builders::INJURED_INSURED_COUNT * 3);
+    super::builders::injured_daily_forms(&session.draft, &mut rows, ids);
+    super::income_pages::save_each_topic(session, rows);
+    assert_eq!(session.draft.income.len(), 1 + ids.len() * 3);
     let known_joint = supported(&session.draft);
     // Actual2026 daily allowance$430; $1000 received less$430 = $570 taxable
-    // for each contract day, across the twelve independently insured people.
-    assert_eq!(value(&known_joint, "taxable_ltc_benefits"), 2_496_600);
+    // for each contract day of each independently insured person.
+    assert_eq!(
+        value(&known_joint, "taxable_ltc_benefits"),
+        super::builders::INJURED_TAXABLE_PER_PERIOD
+            * (ids.len() * super::builders::INJURED_CONTRACT_DAYS) as i64
+    );
 
     [
         known_joint.tax,
@@ -194,39 +199,37 @@ pub(crate) fn injured_capacity_payees(session: &mut Interview) {
     use crate::tests::cross::interview::page_documents;
     // Stage3 identifies each day's two actual payments by the accepted source
     // IDs. The native reference owner must reconcile each source's annual total.
-    let mut request = crate::tests::cross::interview::open_topic(session, TaxSection::OtherIncome);
+    let request = super::income_pages::open_topic(session, TaxSection::LongTermCareBenefits);
     let mut rows = page_documents(&request).to_vec();
     super::builders::injured_period_payees(&session.draft, &mut rows);
-    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    documents.documents = rows;
+    let request = super::income_pages::save_topic(session, TaxSection::LongTermCareBenefits, rows);
     crate::tests::cross::interview::accepted(&send(session, request));
     assert!(session.draft.valid_stored());
     assert!(crate::injured_spouse_sources::reference_issue(&session.draft).is_none());
 }
 
-// The derived-source and accepted-answer tests use the same native source graph.
-// Build it once, then give each test its own ordinary cold session and exact IDs.
-pub(crate) fn injured_capacity_source_plan() -> (Interview, Vec<i64>, [Option<i64>; 5]) {
-    extern crate std;
-    type SourcePlan = (crate::FederalDraft, Vec<i64>, [Option<i64>; 5]);
-    static SOURCES: std::sync::OnceLock<SourcePlan> = std::sync::OnceLock::new();
-    let (draft, ids, known_joint) = SOURCES.get_or_init(|| {
-        let mut session = injured_capacity_claim();
-        let ids = injured_capacity_sources(&mut session);
-        let known_joint = injured_capacity_forms(&mut session, &ids);
-        injured_capacity_payees(&mut session);
-        (session.draft, ids, known_joint)
-    });
-    (restart(draft.clone()), ids.clone(), *known_joint)
+// Use the same real source admission path for both the two-row refusal fixture
+// and the twelve-insured producer fixture.
+pub(crate) fn injured_capacity_source_plan(
+    insured_count: usize,
+) -> (Interview, Vec<i64>, [Option<i64>; 5]) {
+    let mut session = injured_capacity_claim();
+    let ids = injured_capacity_sources(&mut session, insured_count);
+    let known_joint = injured_capacity_forms(&mut session, &ids);
+    injured_capacity_payees(&mut session);
+    (session, ids, known_joint)
 }
 
 pub(crate) fn injured_capacity_accepted_session() -> Interview {
-    let (mut session, _, _) = injured_capacity_source_plan();
+    let (mut session, _, _) = injured_capacity_source_plan(1);
     // The normal editor supplies the complete source plan; its fixture adapter
     // explicitly answers every new row with 7,000, never an echoed bound.
     let request = injured_capacity_editor(&mut session);
     crate::tests::cross::interview::accepted(&send(&mut session, request));
-    assert_eq!(session.draft.injured_spouse.as_ref().unwrap().allocations.len(), 4380);
+    assert_eq!(
+        session.draft.injured_spouse.as_ref().unwrap().allocations.len(),
+        super::builders::INJURED_CONTRACT_DAYS
+    );
     let saved = native_draft_records(&session.draft);
     let mut cold = restart(session.draft);
     let request = injured_capacity_editor(&mut cold);
@@ -236,10 +239,15 @@ pub(crate) fn injured_capacity_accepted_session() -> Interview {
 }
 
 pub(crate) fn injured_capacity_calculation(request: &P) -> P {
-    let P::SaveInjuredSpouse { value, .. } = request else {
+    let P::SaveInjuredSpouse { value, followups, .. } = request else {
         panic!("actual injured-spouse editor")
     };
-    P::EstimateInjuredSpouse { user: TEST_USER, value: value.clone() }
+    P::EstimateInjuredSpouse {
+        user: TEST_USER,
+        value: value.clone(),
+        followups: followups.clone(),
+        questions: Vec::new(),
+    }
 }
 
 pub(crate) fn injured_capacity_refusal(
@@ -255,7 +263,7 @@ pub(crate) fn injured_capacity_refusal(
         [("save", request.clone()), ("estimate", injured_capacity_calculation(&request))]
     {
         let draft_before = session.draft.clone();
-        let reply = exchange(session, input, &alloc::format!("injured-4380-{case}-{kind}-reply"));
+        let reply = exchange(session, input, &alloc::format!("injured-ltc-{case}-{kind}-reply"));
         assert_eq!(session.draft, draft_before);
         assert_eq!(session.dirty, dirty);
         if kind == "save" && save_refresh {
@@ -270,7 +278,7 @@ pub(crate) fn injured_capacity_refusal(
                 .expect("actual accepted source plan")
                 .required;
             assert_eq!(value.allocation_rows().cloned().collect::<Vec<_>>(), expected);
-            assert_eq!(value.allocation_rows().count(), 4380);
+            assert_eq!(value.allocation_rows().count(), super::builders::INJURED_CONTRACT_DAYS);
             assert!(value.allocation_rows().all(|row| {
                 (row.joint, row.minimum, row.maximum, row.injured) == (57_000, 7_000, 50_000, 7_000)
             }));
@@ -326,17 +334,18 @@ pub(in crate::tests) fn persist_niit_deduction(
     kind: NiitDeductionExpense,
 ) -> FederalDraft {
     let before = assert_niit_deduction_money(&d);
+    let d = known_fact_partnership_draft(d);
     let ids: Vec<_> = d.income.iter().map(|entry| entry.id).collect();
     assert!(ids.iter().all(|id| *id > 0));
     let mut session = restart(d);
-    save_native_income_topics(&mut session, &[TaxSection::Wages, TaxSection::InterestDividends]);
+    save_native_income_topics(&mut session, &[TaxSection::Documents]);
     if matches!(
         kind,
         NiitDeductionExpense::Estate
             | NiitDeductionExpense::PartnerInterest
             | NiitDeductionExpense::ScorpInterest
     ) {
-        let request = open_topic(&mut session, TaxSection::PassThrough);
+        let request = super::income_pages::open_document_center(&mut session);
         accepted(&send(&mut session, request));
     }
     save_native_review_topics(
@@ -364,10 +373,7 @@ pub(in crate::tests) fn persist_niit_binding(d: FederalDraft) -> FederalDraft {
     assert!(ids.iter().all(|id| *id > 0));
     ids.sort_unstable();
     let mut session = restart(d);
-    save_native_income_topics(
-        &mut session,
-        &[TaxSection::Wages, TaxSection::InterestDividends, TaxSection::PassThrough],
-    );
+    save_native_income_topics(&mut session, &[TaxSection::Documents]);
     for topic in [TaxSection::Deductions, TaxSection::OtherItemized, TaxSection::InjuredSpouse] {
         let Reply::Edit(request) =
             crate::tests::support::client::native_editor(from_review(&mut session, topic), &[])
@@ -426,7 +432,8 @@ pub(in crate::tests) fn persist_niit_zero(d: FederalDraft, deduction_dollars: i6
     assert!(ids.iter().all(|id| *id > 0));
     ids.sort_unstable();
     let mut session = restart(d);
-    save_native_income_topics(&mut session, &[TaxSection::Wages, TaxSection::InterestDividends]);
+    super::income::admit_native_fixture_facts(&mut session);
+    save_native_income_topics(&mut session, &[TaxSection::Documents]);
     save_native_review_topics(&mut session, &[TaxSection::Deductions, TaxSection::OtherItemized]);
     let mut session = restart_stored_niit_draft(session);
     let Reply::Edit(request) = from_review(&mut session, TaxSection::OtherItemized) else {
@@ -485,13 +492,8 @@ pub(in crate::tests) fn persist_current_nua_sources(draft: FederalDraft) -> Fede
     ids.sort_unstable();
     let saved = save_reopen_checked_sources(
         draft,
-        &[
-            TaxSection::Wages,
-            TaxSection::InterestDividends,
-            TaxSection::InvestmentSales,
-            TaxSection::MoreCredits,
-        ],
-        &[TaxSection::InvestmentSales],
+        &[TaxSection::Documents, TaxSection::MoreCredits],
+        &[TaxSection::Documents],
         assert_current_nua_money,
     );
     let mut after_ids: Vec<_> = saved.income.iter().map(|entry| entry.id).collect();

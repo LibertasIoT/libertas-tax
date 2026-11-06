@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 267000, "rule": {"select": "^<NuaShareSale>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SALE_1099B", "fields": ["description", "sold", "proceeds", "withholding"]}, {"title": "DISPLAY_SALE_DISTRIBUTION", "fields": ["distributed", "distribution_value", "deferred_nua"]}]}},
+    {"order": 268000, "rule": {"select": "^<NuaShareSale>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SALE_1099B", "fields": ["description", "sold", "proceeds", "withholding"]}, {"title": "DISPLAY_SALE_DISTRIBUTION", "fields": ["distributed", "distribution_value", "deferred_nua"]}]}}
+  ]
+}

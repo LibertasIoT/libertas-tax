@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 792000, "rule": {"select": "^<BusinessHealthMonth>.month", "promote": true}},
+    {"order": 793000, "rule": {"select": "^<BusinessCareMonth>.month", "promote": true}}
+  ]
+}

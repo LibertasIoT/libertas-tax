@@ -1,0 +1,55 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 18",
+  "example": "Distribution before annuity starting date from a qualified plan, Ann Brown",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "Ann born 1960-06-15; ordinary distribution code 7 with box 2a equal to box 1",
+   "reason": "the example gives no age or form codes"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19600615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7",
+     "gross": 50000,
+     "taxable": 50000,
+     "method": {
+      "kind": "plan_withdrawal",
+      "value": 100000,
+      "investment": 10000
+     }
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 50000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 45000,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

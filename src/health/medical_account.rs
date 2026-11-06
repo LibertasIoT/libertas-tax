@@ -1,6 +1,5 @@
 // Coverage: Form 1099-SA with Form 8853 Sections A-B and Form 8889 Part II for a beneficiary
-//   (unit B6a, 2026-10-09; the Archer MSA, Medicare Advantage MSA and inherited-account kinds
-//   merged into this one document).
+//   (the Archer MSA, Medicare Advantage MSA and inherited-account kinds share this owner).
 //   Lines: Form 8853 Section A Part II lines 6a-9b (6a gross of every Archer MSA form, 6b the
 //   rollover and the returned excess, 7 spending on qualified medical expenses, 8 -> Schedule 1
 //   line 8e, 9a/9b the 20% additional tax unless the payment came after the 65th birthday, the
@@ -13,8 +12,9 @@
 //   or Form 8853 line 6a/10; the estate case is the holder's final return without that reduction;
 //   no additional tax); earnings after the death (box 1 minus box 4) and a returned Archer excess
 //   (box 2) are Schedule 1 line 8z other income, as the 1099-SA recipient instructions say.
-//   Entry: IncomeDocument::Sa1099 (Form 1099-SA, importable; box 3 code 1/3 Own, 2 ExcessReturned,
-//   4/6 Inherited, 5 Prohibited) on the Other income page. Own HSA distributions use this
+//   Entry: OtherIncomeDocument::Sa1099 (Form 1099-SA, importable; box 3 code 1/3 Own, 2 ExcessReturned,
+//   4/6 Inherited, 5 Prohibited), or a separate trustee statement for unreported events.
+//   The intake kind identifies the actual source; only Form 1099-SA requires box 3. Own HSA distributions use this
 //   same canonical source; contribution, correction and testing facts stay with Health accounts.
 //   Exclusions: the Archer MSA Part I contributions are the Health and medical savings accounts page's (Form
 //   8853 Part I, archer_contributions.rs). Trustee statements reuse MedicalDeemed for unreported
@@ -25,7 +25,7 @@
 //   2025), https://www.irs.gov/pub/irs-dft/i8853--dft.pdf and f8853--dft.pdf (2026 drafts),
 //   https://www.irs.gov/pub/irs-dft/i8889--dft.pdf (2026 draft), Pub. 969, 26 U.S.C. 138, 220,
 //   223(f)(8).
-//   Unit20 checkpoint: actual receipt/deposit parts, same-owner HSA/Archer
+//   Actual receipt/deposit parts, same-owner HSA/Archer
 //   destinations and successful-only source-type annual history are projected
 //   once before HSA/retirement/deduction candidates. Failed2026 cash enters the
 //   existing contribution owner; future-designated cash remains source income
@@ -43,47 +43,172 @@
 //   treatment derives from4973(g)/(d), not a published IRS worked example.
 // Native source projection controls: tests/attribution/unit13_account_sources.rs (recipient,
 // source cents, penalty character, correction coordination and Save/restart).
-use crate::federal_rules::{valid_birth, valid_date};
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::dates::{source_valid_date as valid_date, valid_birth};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{self, Exact, whole};
-use crate::{FederalPerson, FederalResult, MedicalRollover};
+use crate::{FederalPerson, MedicalRollover};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// 1099-SA
+/// Internal Form 1099-SA record derived from the stored paper `Form1099SaPaper`
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sa1099 {
+    /// TRUSTEE'S/PAYER'S name, TIN and address
+    pub trustee_payer: crate::PrintedParty,
+    /// RECIPIENT'S name, TIN and address
+    pub recipient: crate::PrintedParty,
+    /// Actual source document
+    pub origin: HealthDocumentOrigin,
+    /// Box 1 gross distribution
+    pub gross: i64,
+    /// Printed box 2 earnings
+    pub box2_earnings: Option<i64>,
+    /// Printed box 4 value on the date of death
+    pub box4_value: Option<i64>,
+    /// Printed box 3 distribution code
+    pub box3_code: Option<u32>,
+    /// Account (box 5)
+    pub account: MedicalSaAccount,
+}
+
+// One-way: every printed box either reaches the internal record or is named as
+// not read by any calculation, so a new box cannot be forgotten.
+impl From<&SaSource> for Sa1099 {
+    fn from(source: &SaSource) -> Self {
+        let SaSource {
+            form,
+            origin,
+            // Topic answers; the internal Form 1099-SA record holds the printed boxes only.
+            medicare_prior: _,
+            medicare_from_spouse: _,
+            payment: _,
+        } = source;
+        match form {
+            MedicalSaPaper::Form1099Sa(form) => {
+                let crate::Form1099SaPaper {
+                    calendar_year: _,
+                    corrected: _,
+                    trustee_payer,
+                    recipient,
+                    // Identifies the account for the trustee; no figure reads it.
+                    account_number: _,
+                    gross_distribution,
+                    earnings_on_excess_contributions,
+                    distribution_code,
+                    fmv_on_date_of_death,
+                    account,
+                } = form;
+                Self {
+                    trustee_payer: trustee_payer.clone(),
+                    recipient: recipient.clone(),
+                    origin: *origin,
+                    gross: *gross_distribution,
+                    box2_earnings: *earnings_on_excess_contributions,
+                    box4_value: *fmv_on_date_of_death,
+                    box3_code: distribution_code.map(|code| code.printed_code()),
+                    account: account.clone(),
+                }
+            }
+            MedicalSaPaper::TrusteeStatement(statement) => {
+                let HsaTrusteeStatementPaper {
+                    trustee_payer,
+                    recipient,
+                    // Identifies the account for the trustee; no figure reads it.
+                    account_number: _,
+                    amount,
+                    account,
+                } = statement;
+                Self {
+                    trustee_payer: trustee_payer.clone(),
+                    recipient: recipient.clone(),
+                    origin: *origin,
+                    gross: *amount,
+                    box2_earnings: None,
+                    box4_value: None,
+                    box3_code: None,
+                    account: account.clone(),
+                }
+            }
+        }
+    }
+}
+
+/// Trustee statement for an HSA or Archer MSA account event
+/// Enter the actual statement; payment treatment and event dates are answered separately.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read one Form 1099-SA (Distributions From an HSA, Archer MSA, or Medicare Advantage MSA) exactly. Its revision has no tax year printed in the title; check the calendar year box against the supplied year and report a mismatch as an error. Use a corrected form in place of the original. Report an illegible amount, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs. Never infer a value that is not printed. Read box 1 gross distribution; a blank box 1 is an error. For box 5 return Hsa, Archer or MedicareAdvantage for the checked box; report an error when none or more than one is checked. For box 3 return Own for code 1 or 3, ExcessReturned with the printed box 2 amount for code 2 (null when genuinely blank; never infer the signed custodian net-income adjustment), Inherited with the box 4 amount as value for code 4 or 6, and Prohibited for code 5; a blank box 3 is an error. Do not read the payer or recipient name, address, TIN or account number, and do not report payment dates, what the money paid for, a rollover, a disability date, the death date, who the beneficiary is or the account's prior-year value; the filer answers those. The file may hold several copies of this form, such as Copy B and Copy C; copies of the same form are one form.",
+    instruction = "Read the actual HSA or Archer MSA trustee statement. Copy trustee_payer and recipient names, identification numbers and addresses as printed, preserving masking, punctuation and leading zeros; use empty text for absent identity fields. Read account_number as printed, or empty text when absent. Read amount as the documented value of the affected account or pledged assets, without deriving a total from other figures; report an absent, illegible or conflicting value as an error. Read account as Hsa or Archer only when the statement identifies it; do not infer the account type. Do not invent Form 1099-SA boxes, a distribution code, event dates, payment treatment, disability, rollover or medical-spending answers.",
     validation = "$.document_facts",
-    doc_type = "application/pdf,image/*"
+    doc_type = "application/pdf,image/*",
+    duplicate_identity = "@.trustee_payer.federal_id,@.recipient.federal_id,@.amount,@.account_number"
 )]
-pub struct Sa1099 {
+pub struct HsaTrusteeStatementPaper {
+    /// Trustee's name, identification number and address
+    #[libertas_llm_doc_field]
+    pub trustee_payer: crate::PrintedParty,
+    /// Account holder's name, identification number and address
+    #[libertas_llm_doc_field]
+    pub recipient: crate::PrintedParty,
+    /// Account number
+    #[libertas_llm_doc_field(allow_empty = true)]
+    #[libertas_default("")]
+    pub account_number: alloc::string::String,
+    /// Documented value of the affected account or pledged assets
+    #[libertas_llm_doc_field(allow_empty = false)]
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub amount: i64,
+    /// Account type named on the statement
+    #[libertas_llm_doc_field]
+    #[libertas_inline_choices]
+    pub account: MedicalSaAccount,
+}
+
+/// Actual medical-account paper
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub enum MedicalSaPaper {
+    /// Form 1099-SA
+    Form1099Sa(crate::Form1099SaPaper),
+    /// Trustee statement for an unreported account event
+    TrusteeStatement(HsaTrusteeStatementPaper),
+}
+
+/// Accepted medical-account document
+/// The printed form and the topic answers it calls for, kept apart.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct SaSource {
+    /// Actual form or trustee statement as printed
+    pub form: MedicalSaPaper,
     /// Actual source document
     /// Choose a real Form1099-SA or the trustee's statement. Unreported account events use a trustee statement; do not fabricate numbered form boxes.
     #[libertas_default(Form1099Sa)]
     pub origin: HealthDocumentOrigin,
-    /// Box 1 gross distribution
-    /// Use one real statement. Report contributions and corrections on Health accounts; ordinary distributions are entered only here.
-    #[libertas_llm_doc_field(allow_empty = false)]
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub gross: i64,
-    /// Account (box 5)
-    #[libertas_llm_doc_field]
-    #[libertas_inline_choices]
-    pub account: MedicalSaAccount,
-    /// What the payment was (box 3 code)
-    #[libertas_llm_doc_field]
-    #[libertas_default(Own)]
-    pub payment: MedicalSaPayment,
+    /// Medicare MSA prior-year records
+    #[libertas_default($null)]
+    pub medicare_prior: Option<MedicareMsaPrior>,
+    /// Medicare MSA inherited from your spouse
+    #[libertas_default($null)]
+    pub medicare_from_spouse: Option<bool>,
+    /// Your payment records
+    #[libertas_default($null)]
+    pub payment: Option<MedicalSaPayment>,
 }
 
 /// Actual medical-account source document
 #[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    LibertasAvroEncode,
+    LibertasAvroDecode,
+    LibertasExport,
 )]
 pub enum HealthDocumentOrigin {
+    #[default]
     /// Form1099-SA
     Form1099Sa,
     /// Trustee statement or documented account event
@@ -91,26 +216,31 @@ pub enum HealthDocumentOrigin {
 }
 
 /// Account (box 5)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
+)]
 pub enum MedicalSaAccount {
+    #[default]
     /// HSA (box 5 HSA)
     /// Includes your own account and an HSA inherited from your spouse. Other beneficiaries choose the inherited payment treatment.
     Hsa,
     /// Archer MSA (box 5 Archer MSA)
     Archer,
     /// Medicare Advantage MSA (box 5 MA MSA)
-    MedicareAdvantage {
-        /// Account at the end of 2025
-        /// Only your own account; ask the trustee for the December 31, 2025 value.
-        prior: MedicareMsaPrior,
-    },
-    /// Medicare Advantage MSA you inherited from your spouse (box 5 MA MSA)
-    /// It is now your own and is taxed like an Archer MSA.
-    MedicareFromSpouse,
+    MedicareAdvantage,
 }
 
 /// What the payment was (box 3 code)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    LibertasAvroEncode,
+    LibertasAvroDecode,
+    LibertasExport,
+    libertas_macros::VariantIndex,
+)]
 pub enum MedicalSaPayment {
     /// Paid from your own account (code 1 or 3)
     /// Including an Archer MSA you inherited from your spouse.
@@ -124,7 +254,8 @@ pub enum MedicalSaPayment {
         /// Unreimbursed medical costs of you, your spouse or your dependents (only your own for a Medicare Advantage MSA) not also deducted on Schedule A. Most insurance premiums do not count. If anyone contributed to an Archer MSA for 2026, only costs of people covered by the high deductible plan then count.
         /// For an HSA, qualifying direct-primary-care fixed fees paid by you can count even above the $150/$300 contribution-eligibility limits. The arrangement must satisfy the qualifying primary-care practitioner/service and sole-fixed-fee terms; employer-paid or cafeteria-plan fees are not your expense. Use substantiated fees under the permitted timing method: each coverage month's first day pro rata, the coverage period's first day, or the payment date. Do not count the same expense again.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         medical: i64,
         /// Actual attempted indirect rollovers
@@ -147,18 +278,7 @@ pub enum MedicalSaPayment {
     },
     /// Excess contributions returned (code 2)
     /// Only the box 2 earnings are taxed this year.
-    ExcessReturned {
-        /// Printed box 2 earnings, if present
-        /// Leave empty for a genuinely blank box. Actual HSA principal and signed custodian gains or losses belong in the linked Health-account correction; a blank printed box never means that signed adjustment was zero. An Archer statement without printed earnings needs the linked actual custodian correction.
-        /// [NullText]
-        /// Printed box 2 is blank
-        /// [SetText]
-        /// The printed box 2 earnings are
-        #[libertas_llm_doc_field]
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        earnings: Option<i64>,
-    },
+    ExcessReturned,
     /// Prohibited transaction (code 5)
     /// The account ended on January 1; box 1 is its value then. Pledging the account as loan security is not calculated.
     Prohibited {
@@ -192,11 +312,6 @@ pub enum MedicalSaPayment {
         // Tax structure: this event or eligibility period must fall by the end of the return year.
         #[libertas_number(min = 19970101, max = 20261231)]
         died: u32,
-        /// Box 4 value on the date of death
-        #[libertas_llm_doc_field(allow_empty = false)]
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        value: i64,
         /// Who inherited it
         #[libertas_inline_choices]
         beneficiary: MedicalBeneficiary,
@@ -227,12 +342,23 @@ pub struct FederalMedicalDistribution {
     pub origin: HealthDocumentOrigin,
     /// Box 1 gross distribution
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross: i64,
+    /// Printed box 2 earnings, absent only when blank
+    pub box2_earnings: Option<i64>,
+    /// Printed box 4 value on the date of death
+    pub box4_value: Option<i64>,
+    /// Printed box 3 code, absent for trustee-only events
+    pub box3_code: Option<u32>,
     /// Account (box 5)
     pub account: MedicalSaAccount,
-    /// What the payment was (box 3 code)
-    pub payment: MedicalSaPayment,
+    /// Your Medicare MSA prior-year records
+    pub medicare_prior: Option<MedicareMsaPrior>,
+    /// Whether this Medicare MSA was inherited from your spouse
+    pub medicare_from_spouse: Option<bool>,
+    /// Your payment records
+    pub payment: Option<MedicalSaPayment>,
 }
 
 /// Nonmedical health or medical savings account payment
@@ -245,7 +371,8 @@ pub struct MedicalAccountWithdrawal {
     pub date: u32,
     /// Nonmedical amount
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -258,11 +385,13 @@ pub enum MedicareMsaPrior {
     Existing {
         /// Total account value on December 31, 2025
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         balance: i64,
         /// Annual HDHP deductible on January 1, 2026
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         deductible: i64,
     },
 }
@@ -279,7 +408,8 @@ pub struct InheritedMedicalPayment {
     pub paid: u32,
     /// Qualified unreimbursed amount you paid
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -303,7 +433,7 @@ impl MedicareMsaPrior {
     }
     // Form 8853 line 13b worksheet: the December 31, 2025 balance over 60% of the
     // January 1 deductible (whole dollars).
-    fn relief(&self) -> Exact {
+    pub(crate) fn relief(&self) -> Exact {
         match self {
             Self::None => whole(0),
             Self::Existing { balance, deductible } => phase::floor(
@@ -412,88 +542,255 @@ pub(crate) fn required_output(
     exact::rounded(value).ok_or(OutputFailure { context })
 }
 
-// Worksheet operands without a required form destination may omit only their
-// explanation, with this owning notice. Required form amounts use the fallible
-// projection above and never this optional path.
-pub(crate) fn explanation_output(
-    value: &Exact,
-    context: crate::IssueContext,
-    r: &mut FederalResult,
-) -> Option<i64> {
-    let amount = exact::rounded(value);
-    if amount.is_none() {
-        crate::federal_rules::note_once_scoped(
-            r,
-            crate::Message::new("MEDICAL_EXPLANATION_UNAVAILABLE", alloc::vec![]),
-            context,
-        );
-    }
-    amount
-}
-
-impl OutputFailure {
-    pub(crate) fn report(self, r: &mut FederalResult) {
-        crate::issue_localized!(
-            r,
-            &self.context,
-            "Medical account output",
-            "MEDICAL_REQUIRED_OUTPUT_UNAVAILABLE",
-            "An actual required medical-account output exceeds its native amount representation.",
-        );
-        r.state = crate::ResultState::Unsupported;
-        crate::federal_rules::withhold_required_source_result(r);
+// A Medicare Advantage MSA inherited from the spouse is the spouse's Archer MSA.
+fn calculation_account(
+    account: &MedicalSaAccount,
+    from_spouse: Option<bool>,
+) -> Option<&MedicalSaAccount> {
+    match account {
+        MedicalSaAccount::MedicareAdvantage => {
+            from_spouse.map(|spouse| if spouse { &MedicalSaAccount::Archer } else { account })
+        }
+        _ => Some(account),
     }
 }
 
-impl Sa1099 {
+fn medical_sa_source_issue(
+    origin: HealthDocumentOrigin,
+    gross: i64,
+    box2_earnings: Option<i64>,
+    box3_code: Option<u32>,
+    box4_value: Option<i64>,
+    account: &MedicalSaAccount,
+) -> Option<crate::validation::ValidationIssue> {
+    use crate::validation::ValidationIssue;
+    if gross < 0 {
+        return Some(
+            ValidationIssue::new(
+                "ISSUE_FEDERAL_RULES_REVIEW_THE_DOCUMENT_AMOUNTS__THEY_MUST_17724C26",
+            )
+            .at_field("gross"),
+        );
+    }
+    if box3_code == Some(2) && !matches!(account, MedicalSaAccount::Hsa | MedicalSaAccount::Archer)
+    {
+        return Some(ValidationIssue::new("SA1099_EXCESS_NOT_ARCHER").at_field("account"));
+    }
+    if box2_earnings.is_some_and(|amount| amount < 0 || (box3_code == Some(2) && amount > gross)) {
+        return Some(ValidationIssue::new("SA1099_EARNINGS_ABOVE_GROSS").at_field("box2_earnings"));
+    }
+    if box4_value.is_some_and(|amount| amount < 0) {
+        return Some(
+            ValidationIssue::new(
+                "ISSUE_FEDERAL_RULES_REVIEW_THE_DOCUMENT_AMOUNTS__THEY_MUST_17724C26",
+            )
+            .at_field("box4_value"),
+        );
+    }
+    if (origin == HealthDocumentOrigin::Form1099Sa
+        && !box3_code.is_some_and(|code| (1..=6).contains(&code)))
+        || (origin == HealthDocumentOrigin::TrusteeStatement && box3_code.is_some())
+    {
+        return Some(ValidationIssue::new("SA1099_PRINTED_CODE_NEEDED").at_field("box3_code"));
+    }
+    if matches!(box3_code, Some(4 | 6)) && box4_value.is_none() {
+        return Some(ValidationIssue::new("SA1099_DEATH_VALUE_NEEDED").at_field("box4_value"));
+    }
+    None
+}
+
+impl crate::Form1099SaPaper {
+    pub(crate) fn input_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        self.source_issue(HealthDocumentOrigin::Form1099Sa)
+    }
+
+    fn source_issue(
+        &self,
+        origin: HealthDocumentOrigin,
+    ) -> Option<crate::validation::ValidationIssue> {
+        medical_sa_source_issue(
+            origin,
+            self.gross_distribution,
+            self.earnings_on_excess_contributions,
+            self.distribution_code.map(|code| code.printed_code()),
+            self.fmv_on_date_of_death,
+            &self.account,
+        )
+        .map(|issue| {
+            issue
+                .map_field_prefix(&["gross"], &["gross_distribution"])
+                .map_field_prefix(&["box2_earnings"], &["earnings_on_excess_contributions"])
+                .map_field_prefix(&["box3_code"], &["distribution_code"])
+                .map_field_prefix(&["box4_value"], &["fmv_on_date_of_death"])
+        })
+    }
+}
+
+impl HsaTrusteeStatementPaper {
+    pub(crate) fn input_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        self.source_issue(HealthDocumentOrigin::TrusteeStatement)
+    }
+
+    fn source_issue(
+        &self,
+        origin: HealthDocumentOrigin,
+    ) -> Option<crate::validation::ValidationIssue> {
+        medical_sa_source_issue(origin, self.amount, None, None, None, &self.account)
+            .map(|issue| issue.map_field_prefix(&["gross"], &["amount"]))
+    }
+}
+
+impl SaSource {
+    pub(crate) fn calculation_account(&self) -> Option<&MedicalSaAccount> {
+        calculation_account(self.account(), self.medicare_from_spouse)
+    }
+    pub(crate) fn account(&self) -> &MedicalSaAccount {
+        match &self.form {
+            MedicalSaPaper::Form1099Sa(form) => &form.account,
+            MedicalSaPaper::TrusteeStatement(statement) => &statement.account,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn gross_mut(&mut self) -> &mut i64 {
+        match &mut self.form {
+            MedicalSaPaper::Form1099Sa(form) => &mut form.gross_distribution,
+            MedicalSaPaper::TrusteeStatement(statement) => &mut statement.amount,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn account_mut(&mut self) -> &mut MedicalSaAccount {
+        match &mut self.form {
+            MedicalSaPaper::Form1099Sa(form) => &mut form.account,
+            MedicalSaPaper::TrusteeStatement(statement) => &mut statement.account,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn form1099sa(&self) -> Option<&crate::Form1099SaPaper> {
+        match &self.form {
+            MedicalSaPaper::Form1099Sa(form) => Some(form),
+            MedicalSaPaper::TrusteeStatement(_) => None,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn form1099sa_mut(&mut self) -> Option<&mut crate::Form1099SaPaper> {
+        match &mut self.form {
+            MedicalSaPaper::Form1099Sa(form) => Some(form),
+            MedicalSaPaper::TrusteeStatement(_) => None,
+        }
+    }
+    pub(crate) fn trustee_statement_paper(&self) -> Option<&HsaTrusteeStatementPaper> {
+        match &self.form {
+            MedicalSaPaper::TrusteeStatement(statement) => Some(statement),
+            MedicalSaPaper::Form1099Sa(_) => None,
+        }
+    }
+    /// The internal medical-account record derived from the paper.
+    pub(crate) fn internal(&self) -> Sa1099 {
+        Sa1099::from(self)
+    }
+    /// The internal record the calculations read.
+    #[cfg(test)]
     pub(crate) fn record(&self) -> FederalMedicalDistribution {
+        self.into()
+    }
+    /// A newly entered form: no topic answer is given yet.
+    pub(crate) fn printed(form: crate::Form1099SaPaper) -> Self {
+        Self {
+            form: MedicalSaPaper::Form1099Sa(form),
+            origin: HealthDocumentOrigin::Form1099Sa,
+            medicare_prior: None,
+            medicare_from_spouse: None,
+            payment: None,
+        }
+    }
+    /// A trustee statement enters without an answer about its account event.
+    pub(crate) fn trustee_statement(statement: HsaTrusteeStatementPaper) -> Self {
+        Self {
+            form: MedicalSaPaper::TrusteeStatement(statement),
+            origin: HealthDocumentOrigin::TrusteeStatement,
+            medicare_prior: None,
+            medicare_from_spouse: None,
+            payment: None,
+        }
+    }
+    /// The topic answers of an accepted source survive a correction of its paper.
+    pub(crate) fn keep_answers(&mut self, accepted: &Self) {
+        self.medicare_prior = accepted.medicare_prior.clone();
+        self.medicare_from_spouse = accepted.medicare_from_spouse;
+        self.payment = accepted.payment.clone();
+    }
+    pub(crate) fn input_issue(&self, personal: bool) -> Option<crate::validation::ValidationIssue> {
+        match &self.form {
+            MedicalSaPaper::Form1099Sa(form) => form.source_issue(self.origin),
+            MedicalSaPaper::TrusteeStatement(statement) => statement.source_issue(self.origin),
+        }
+        .or_else(|| {
+            personal.then(|| FederalMedicalDistribution::from(self).answer_issue()).flatten()
+        })
+    }
+    pub(crate) fn topic_issue(
+        &self,
+        require_answers: bool,
+    ) -> Option<crate::validation::ValidationIssue> {
+        let record = FederalMedicalDistribution::from(self);
+        record.source_issue().or_else(|| record.answer_issue_with_required(require_answers))
+    }
+}
+// One-way: every printed box either reaches the internal model or is named as
+// not read by any calculation, so a new box cannot be forgotten.
+impl From<&SaSource> for FederalMedicalDistribution {
+    fn from(source: &SaSource) -> Self {
+        let SaSource { form: _, origin: _, medicare_prior, medicare_from_spouse, payment } = source;
+        let form = Sa1099::from(source);
+        let Sa1099 {
+            // The parties name and assign the document; no figure reads them.
+            trustee_payer: _,
+            recipient: _,
+            origin,
+            gross,
+            box2_earnings,
+            box3_code,
+            box4_value,
+            account,
+        } = &form;
         FederalMedicalDistribution {
-            origin: self.origin,
-            gross: self.gross,
-            account: self.account.clone(),
-            payment: self.payment.clone(),
+            origin: *origin,
+            gross: *gross,
+            box2_earnings: *box2_earnings,
+            box4_value: *box4_value,
+            box3_code: *box3_code,
+            account: account.clone(),
+            medicare_prior: medicare_prior.clone(),
+            medicare_from_spouse: *medicare_from_spouse,
+            payment: payment.clone(),
         }
     }
 }
 impl FederalMedicalDistribution {
-    pub(crate) fn page(&self) -> Sa1099 {
-        Sa1099 {
-            origin: self.origin,
-            gross: self.gross,
-            account: self.account.clone(),
-            payment: self.payment.clone(),
-        }
-    }
     pub(crate) fn valid(&self) -> bool {
-        self.gross >= 0
-            && match &self.account {
-                MedicalSaAccount::MedicareAdvantage { prior } => prior.valid(),
-                _ => true,
-            }
+        self.source_issue().is_none()
+            && self.medicare_prior.as_ref().is_none_or(MedicareMsaPrior::valid)
             && match &self.payment {
-                MedicalSaPayment::Own { nonmedical, medical, rollover, disabled_since } => {
+                Some(MedicalSaPayment::Own { nonmedical, medical, rollover, disabled_since }) => {
                     nonmedical.iter().all(|w| {
                         valid_date(w.date)
                             && (crate::TAX_YEAR_START_DATE..=crate::TAX_YEAR_END_DATE)
                                 .contains(&w.date)
-                            && (0..=self.gross).contains(&w.amount)
-                    }) && (0..=self.gross).contains(medical)
+                            && w.amount >= 0
+                    }) && *medical >= 0
                         && rollover.as_ref().is_none_or(MedicalRollover::valid)
                         && disabled_since.is_none_or(valid_birth)
                 }
-                MedicalSaPayment::ExcessReturned { earnings } => {
-                    earnings.is_none_or(|v| (0..=self.gross).contains(&v))
-                }
-                MedicalSaPayment::Prohibited { occurred } => {
+                Some(MedicalSaPayment::ExcessReturned) | None => true,
+                Some(MedicalSaPayment::Prohibited { occurred }) => {
                     valid_date(*occurred) && occurred / 10000 == 2026
                 }
-                MedicalSaPayment::Unreported { event, disabled_since } => {
+                Some(MedicalSaPayment::Unreported { event, disabled_since }) => {
                     event.valid() && disabled_since.is_none_or(valid_birth)
                 }
-                MedicalSaPayment::Inherited { died, value, beneficiary } => {
+                Some(MedicalSaPayment::Inherited { died, beneficiary }) => {
                     valid_date(*died)
                         && (19970101..=20261231).contains(died)
-                        && *value >= 0
                         && match beneficiary {
                             MedicalBeneficiary::Nonspouse { payments } => {
                                 payments.iter().all(|p| p.valid())
@@ -503,23 +800,90 @@ impl FederalMedicalDistribution {
                 }
             }
     }
+    pub(crate) fn effective_payment(&self) -> Option<&MedicalSaPayment> {
+        self.payment.as_ref().or_else(|| {
+            (self.origin == HealthDocumentOrigin::Form1099Sa && self.box3_code == Some(2))
+                .then_some(&MedicalSaPayment::ExcessReturned)
+        })
+    }
+    pub(crate) fn calculation_account(&self) -> Option<&MedicalSaAccount> {
+        calculation_account(&self.account, self.medicare_from_spouse)
+    }
+    pub(crate) fn source_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        medical_sa_source_issue(
+            self.origin,
+            self.gross,
+            self.box2_earnings,
+            self.box3_code,
+            self.box4_value,
+            &self.account,
+        )
+    }
+    pub(crate) fn answer_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        self.answer_issue_with_required(true)
+    }
+    pub(crate) fn answer_issue_with_required(
+        &self,
+        require_answers: bool,
+    ) -> Option<crate::validation::ValidationIssue> {
+        use crate::validation::ValidationIssue;
+        let Some(payment) = self.effective_payment() else {
+            return require_answers.then(|| {
+                ValidationIssue::new("SA1099_PAYMENT_RECORDS_NEEDED").at_field("payment")
+            });
+        };
+        let matches_source = matches!(
+            (self.origin, self.box3_code, payment),
+            (HealthDocumentOrigin::TrusteeStatement, None, MedicalSaPayment::Unreported { .. })
+                | (HealthDocumentOrigin::Form1099Sa, Some(1 | 3), MedicalSaPayment::Own { .. })
+                | (HealthDocumentOrigin::Form1099Sa, Some(2), MedicalSaPayment::ExcessReturned)
+                | (
+                    HealthDocumentOrigin::Form1099Sa,
+                    Some(4 | 6),
+                    MedicalSaPayment::Inherited { .. }
+                )
+                | (HealthDocumentOrigin::Form1099Sa, Some(5), MedicalSaPayment::Prohibited { .. })
+        );
+        if !matches_source {
+            return Some(ValidationIssue::new("SA1099_PAYMENT_NOT_PRINTED").at_field("payment"));
+        }
+        if let Some(issue) = self.personal_issue() {
+            return Some(issue);
+        }
+        if require_answers && self.calculation_account().is_none() {
+            return Some(
+                ValidationIssue::new("SA1099_MEDICARE_SPOUSAL_RECORDS_NEEDED")
+                    .at_field("medicare_from_spouse"),
+            );
+        }
+        if require_answers
+            && matches!(self.calculation_account(), Some(MedicalSaAccount::MedicareAdvantage))
+            && matches!(payment, MedicalSaPayment::Own { .. } | MedicalSaPayment::Prohibited { .. })
+            && self.medicare_prior.is_none()
+        {
+            return Some(
+                ValidationIssue::new("SA1099_MEDICARE_PRIOR_RECORDS_NEEDED")
+                    .at_field("medicare_prior"),
+            );
+        }
+        None
+    }
     // The document's validation rules, checked again on save with the same keys.
     pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
+        self.source_issue().or_else(|| self.answer_issue())
+    }
+    fn personal_issue(&self) -> Option<crate::validation::ValidationIssue> {
         use crate::validation::ValidationIssue;
-        let own = matches!(self.payment, MedicalSaPayment::Own { .. });
-        let archer = matches!(
-            self.account,
-            MedicalSaAccount::Hsa | MedicalSaAccount::Archer | MedicalSaAccount::MedicareFromSpouse
-        );
-        match &self.payment {
+        let payment = self.effective_payment()?;
+        let account = self.calculation_account();
+        let own = matches!(payment, MedicalSaPayment::Own { .. });
+        let archer = matches!(account, Some(MedicalSaAccount::Hsa | MedicalSaAccount::Archer));
+        match payment {
             MedicalSaPayment::Unreported { event, .. } => {
                 if self.origin != HealthDocumentOrigin::TrusteeStatement
-                    || !matches!(
-                        self.account,
-                        MedicalSaAccount::Hsa
-                            | MedicalSaAccount::Archer
-                            | MedicalSaAccount::MedicareFromSpouse
-                    )
+                    || account.is_some_and(|account| {
+                        !matches!(account, MedicalSaAccount::Hsa | MedicalSaAccount::Archer)
+                    })
                 {
                     Some(ValidationIssue::new("SA1099_UNREPORTED_SOURCE_INVALID").at_field(
                         if self.origin != HealthDocumentOrigin::TrusteeStatement {
@@ -563,7 +927,7 @@ impl FederalMedicalDistribution {
                             .in_field("payment"),
                     );
                 }
-                if rollover.is_some() && !archer {
+                if rollover.is_some() && account.is_some() && !archer {
                     return Some(
                         ValidationIssue::new("SA1099_ROLLOVER_NOT_ARCHER")
                             .at_field("rollover")
@@ -596,21 +960,10 @@ impl FederalMedicalDistribution {
                 }
                 None
             }
-            MedicalSaPayment::ExcessReturned { earnings } => {
-                if !matches!(self.account, MedicalSaAccount::Hsa | MedicalSaAccount::Archer) {
-                    Some(ValidationIssue::new("SA1099_EXCESS_NOT_ARCHER").at_field("account"))
-                } else if earnings.is_some_and(|v| v > self.gross) {
-                    Some(
-                        ValidationIssue::new("SA1099_EARNINGS_ABOVE_GROSS")
-                            .at_field("earnings")
-                            .in_field("payment"),
-                    )
-                } else {
-                    None
-                }
-            }
+            MedicalSaPayment::ExcessReturned => None,
             MedicalSaPayment::Inherited { .. }
-                if matches!(self.account, MedicalSaAccount::MedicareFromSpouse) =>
+                if self.medicare_from_spouse == Some(true)
+                    && matches!(self.account, MedicalSaAccount::MedicareAdvantage) =>
             {
                 Some(ValidationIssue::new("SA1099_SPOUSE_ACCOUNT_IS_OWN").at_field("payment"))
             }
@@ -649,10 +1002,11 @@ impl FederalMedicalDistribution {
                 ),
             ));
         }
-        let medicare = matches!(self.account, MedicalSaAccount::MedicareAdvantage { .. });
-        match &self.payment {
+        let account = self.calculation_account().unwrap();
+        let medicare = matches!(account, MedicalSaAccount::MedicareAdvantage);
+        match self.effective_payment().unwrap() {
             MedicalSaPayment::Own { nonmedical, medical, rollover, disabled_since } => {
-                if rollover.as_ref().is_some_and(|v| !v.eligible(&self.account)) {
+                if rollover.as_ref().is_some_and(|v| !v.eligible(account)) {
                     return Err((
                         "ISSUE_ARCHER_MSA_TREATMENT_UNCONFIRMED",
                         crate::fixture_english!(
@@ -706,7 +1060,7 @@ impl FederalMedicalDistribution {
                             disabled_since.is_none_or(|d| w.date < d)
                                 && person.death_date().is_none_or(|d| w.date < d)
                         } else {
-                            !crate::federal_model::after_65th_birthday(person.birth_date, w.date)
+                            !crate::accepted_filers::after_65th_birthday(person.birth_date, w.date)
                                 && disabled_since.is_none_or(|d| w.date <= d)
                         }
                     })
@@ -734,18 +1088,18 @@ impl FederalMedicalDistribution {
                 Ok(SaAmounts {
                     taxable: event.amount(),
                     penalized: event.penalized(|date| {
-                        !crate::federal_model::after_65th_birthday(person.birth_date, date)
+                        !crate::accepted_filers::after_65th_birthday(person.birth_date, date)
                             && disabled_since.is_none_or(|d| date <= d)
                     }),
                     ..SaAmounts::default()
                 })
             }
-            MedicalSaPayment::ExcessReturned { earnings } => Ok(SaAmounts {
+            MedicalSaPayment::ExcessReturned => Ok(SaAmounts {
                 // HSA income comes from the linked actual corrective NIA once.
                 earnings: if matches!(self.account, MedicalSaAccount::Hsa) {
                     whole(0)
                 } else {
-                    whole(earnings.unwrap_or(0))
+                    whole(self.box2_earnings.unwrap_or(0))
                 },
                 ..SaAmounts::default()
             }),
@@ -762,7 +1116,7 @@ impl FederalMedicalDistribution {
                 let penalized = if medicare {
                     person.death_date().is_none_or(|d| 20260101 < d)
                 } else {
-                    !crate::federal_model::after_65th_birthday(person.birth_date, 20260101)
+                    !crate::accepted_filers::after_65th_birthday(person.birth_date, 20260101)
                 };
                 Ok(SaAmounts {
                     taxable: whole(self.gross),
@@ -770,7 +1124,8 @@ impl FederalMedicalDistribution {
                     ..SaAmounts::default()
                 })
             }
-            MedicalSaPayment::Inherited { died, value, beneficiary } => {
+            MedicalSaPayment::Inherited { died, beneficiary } => {
+                let value = &self.box4_value.unwrap();
                 if matches!(beneficiary, MedicalBeneficiary::Estate)
                     && person.death_date() != Some(*died)
                 {
@@ -825,7 +1180,7 @@ impl FederalMedicalDistribution {
         if self.rule().is_some() {
             return None;
         }
-        match &self.payment {
+        match self.effective_payment()? {
             MedicalSaPayment::Own { medical, rollover, .. } => {
                 if rollover.is_some() {
                     // Successful-only annual history belongs to the coordinated estimate.
@@ -836,10 +1191,15 @@ impl FederalMedicalDistribution {
             MedicalSaPayment::Prohibited { .. } | MedicalSaPayment::Unreported { .. } => {
                 Some(self.gross)
             }
-            MedicalSaPayment::ExcessReturned { earnings } => {
-                if matches!(self.account, MedicalSaAccount::Hsa) { None } else { *earnings }
+            MedicalSaPayment::ExcessReturned => {
+                if matches!(self.account, MedicalSaAccount::Hsa) {
+                    None
+                } else {
+                    self.box2_earnings
+                }
             }
-            MedicalSaPayment::Inherited { died, value, beneficiary } => {
+            MedicalSaPayment::Inherited { died, beneficiary } => {
+                let value = &self.box4_value?;
                 let death_year = if died / 10000 == 2026 {
                     phase::floor(
                         exact::dollars_exact(&whole(*value))
@@ -867,94 +1227,23 @@ impl FederalMedicalDistribution {
         context: crate::IssueContext,
         amounts: &SaAmounts,
     ) -> Option<MedicareForm> {
-        let MedicalSaAccount::MedicareAdvantage { prior } = &self.account else {
+        let Some(MedicalSaAccount::MedicareAdvantage) = self.calculation_account() else {
             return None;
         };
-        matches!(self.payment, MedicalSaPayment::Own { .. } | MedicalSaPayment::Prohibited { .. })
-            .then(|| MedicareForm {
-                id,
-                owner,
-                context,
-                taxable: amounts.taxable.clone(),
-                penalized: amounts.penalized.clone(),
-                prior: prior.clone(),
-            })
+        let prior = self.medicare_prior.as_ref()?;
+        matches!(
+            self.effective_payment(),
+            Some(MedicalSaPayment::Own { .. } | MedicalSaPayment::Prohibited { .. })
+        )
+        .then(|| MedicareForm {
+            id,
+            owner,
+            context,
+            taxable: amounts.taxable.clone(),
+            penalized: amounts.penalized.clone(),
+            prior: prior.clone(),
+        })
     }
-}
-
-// Section B per spouse (whole dollars): the taxable distributions, the part
-// without the additional tax, the prior-balance relief and the 50% tax. The
-// relief is the spouse's, taken once from the first form.
-pub(crate) fn medicare_totals(
-    forms: &[MedicareForm],
-    r: &mut FederalResult,
-) -> Result<([i64; 2], [i64; 2]), OutputFailure> {
-    let mut total = [0; 2];
-    let mut tax = [0; 2];
-    for owner in 0..2 {
-        let mine: Vec<&MedicareForm> = forms.iter().filter(|f| f.owner == owner).collect();
-        let Some(first) = mine.first() else {
-            continue;
-        };
-        crate::require_localized!(
-            r,
-            mine.iter().all(|f| f.prior == first.prior),
-            &first.context,
-            "1099-SA",
-            "ISSUE_MEDICARE_MSA_PRIOR_DIFFERS",
-            "Two Medicare Advantage MSA forms for the same person show different December 31, 2025 balances. Use the same account value on each.",
-        );
-        let taxable = exact::dollars_exact(&mine.iter().map(|f| &f.taxable).sum::<Exact>());
-        let penalized = phase::cap(
-            exact::dollars_exact(&mine.iter().map(|f| &f.penalized).sum::<Exact>()),
-            [taxable.clone()],
-        );
-        let relief = first.prior.relief();
-        let owner_tax =
-            exact::rounded_exact(&(phase::floor(&penalized - &relief, whole(0)) / whole(2)));
-        total[owner] = required_output(&taxable, first.context.clone())?;
-        tax[owner] = required_output(&owner_tax, first.context.clone())?;
-        let tax_cents = required_output(&(&owner_tax * whole(100)), first.context.clone())?;
-        let mut explanation_unavailable = false;
-        emit_lines(
-            r,
-            &mut explanation_unavailable,
-            [
-                ("exception", taxable - penalized),
-                ("balance_relief", relief),
-                ("additional_tax", owner_tax),
-            ],
-            |(suffix, amount), unavailable, _| {
-                // These two worksheet explanations are not required form
-                // amounts. Preserve the known income/tax if a displayed
-                // explanation cannot fit; the actual tax row remains required.
-                let cents = if suffix == "additional_tax" {
-                    tax_cents
-                } else if let Some(cents) = exact::rounded(&(amount * whole(100))) {
-                    cents
-                } else {
-                    *unavailable = true;
-                    return None;
-                };
-                Some(calculation_row(
-                    None,
-                    &alloc::format!("medicare_msa_{}_{suffix}", first.id),
-                    LineValue::MoneyCents(cents),
-                    &["income.medical_distribution"],
-                    "https://www.irs.gov/instructions/i8853",
-                    msg!("EXPLAIN_MEDICARE_MSA_N_N"),
-                ))
-            },
-        );
-        if explanation_unavailable {
-            crate::federal_rules::note_once_scoped(
-                r,
-                crate::Message::new("MEDICAL_EXPLANATION_UNAVAILABLE", alloc::vec![]),
-                first.context.clone(),
-            );
-        }
-    }
-    Ok((total, tax))
 }
 
 #[cfg(test)]
@@ -965,8 +1254,13 @@ mod tests {
         FederalMedicalDistribution {
             origin: crate::HealthDocumentOrigin::Form1099Sa,
             gross,
+            box2_earnings: None,
+            box4_value: None,
+            box3_code: Some(1),
             account: MedicalSaAccount::Archer,
-            payment,
+            medicare_prior: None,
+            medicare_from_spouse: None,
+            payment: Some(payment),
         }
     }
 
@@ -985,7 +1279,9 @@ mod tests {
         let mut hsa = own.clone();
         hsa.account = MedicalSaAccount::Hsa;
         assert_eq!(hsa.rule(), None);
-        hsa.payment = MedicalSaPayment::ExcessReturned { earnings: Some(0) };
+        hsa.box3_code = Some(2);
+        hsa.box2_earnings = Some(0);
+        hsa.payment = Some(MedicalSaPayment::ExcessReturned);
         assert_eq!(hsa.rule(), None);
     }
 }

@@ -3,26 +3,42 @@ use super::*;
 fn vehicle_interest_aggregates_loans_and_does_not_reduce_agi() {
     let mut d = complete(FederalStatus::Single);
     d.deductions.as_mut().unwrap().vehicle_loans = vec![
-        FederalVehicleInterest {
-            label: "Synthetic car".into(),
-            interest: 600_000,
+        VehicleLoanSource {
+            id: 0,
+            assigned: crate::DocumentRecipient::Taxpayer,
+            owner_source: Some(crate::OwnerSource::Added),
+            joint_share: None,
             business: 0,
-            original_use: true,
-            assembled_in_us: true,
+            document: vehicle_paper(FederalVehicleInterest {
+                lender: crate::PrintedParty::from_name("Synthetic car".into()),
+                borrower: Default::default(),
+                interest: 600_000,
+                refund: 0,
+                original_use: true,
+                assembled_in_us: true,
+            }),
         },
-        FederalVehicleInterest {
-            label: "Synthetic van".into(),
-            interest: 600_000,
+        VehicleLoanSource {
+            id: 0,
+            assigned: crate::DocumentRecipient::Taxpayer,
+            owner_source: Some(crate::OwnerSource::Added),
+            joint_share: None,
             business: 0,
-            original_use: true,
-            assembled_in_us: true,
+            document: vehicle_paper(FederalVehicleInterest {
+                lender: crate::PrintedParty::from_name("Synthetic van".into()),
+                borrower: Default::default(),
+                interest: 600_000,
+                refund: 0,
+                original_use: true,
+                assembled_in_us: true,
+            }),
         },
     ];
     let r = supported(&d);
     assert_eq!(value(&r, "vehicle_interest_deduction"), 10000);
     assert_eq!(value(&r, "agi"), 60000);
     assert_eq!(r.tax, Some(382_300));
-    d.deductions.as_mut().unwrap().vehicle_loans[0].original_use = false;
+    d.deductions.as_mut().unwrap().vehicle_loans[0].document.box_6 = false;
     assert_eq!(value(&supported(&d), "vehicle_interest_deduction"), 6000);
 }
 
@@ -40,22 +56,22 @@ fn vehicle_charity_fmv_exceptions_require_section_b_appraisal_above_five_thousan
     for treatment in treatments {
         let mut d = complete(FederalStatus::Single);
         let ded = d.deductions.as_mut().unwrap();
-        ded.property_gifts.push(donated_personal_vehicle(treatment));
-        ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+        push_gift(ded, donated_personal_vehicle(treatment));
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
         assert!(noted(&supported(&d), "WARN_GIFT_LEFT_OUT"));
         set_gift_appraisal(d.deductions.as_mut().unwrap(), 0, 2);
         d.next_id = d.next_id.max(3);
-        d.deductions.as_mut().unwrap().property_gifts[0].donee_acknowledged = false;
+        d.deductions.as_mut().unwrap().vehicle_gifts[0].donee_acknowledged = false;
         assert!(noted(&supported(&d), "WARN_GIFT_LEFT_OUT"));
-        d.deductions.as_mut().unwrap().property_gifts[0].donee_acknowledged = true;
+        d.deductions.as_mut().unwrap().vehicle_gifts[0].donee_acknowledged = true;
         let result = supported(&d);
         assert_eq!(value(&result, "charity_property_1_claim"), 20_000);
         assert_eq!(value(&result, "form_8283_section_b_value"), 20_000);
         assert_eq!(value(&result, "charity_property_fifty_current_deduction"), 19_700);
         assert_eq!(estimate(&restart(d.clone()).draft), result);
 
-        d.deductions.as_mut().unwrap().property_gifts[0].value = 500_000;
-        d.deductions.as_mut().unwrap().property_gifts[0].appraisal = None;
+        d.deductions.as_mut().unwrap().vehicle_gifts[0].value = 500_000;
+        d.deductions.as_mut().unwrap().vehicle_gifts[0].appraisal = None;
         let section_a = supported(&d);
         assert_eq!(value(&section_a, "form_8283_section_a_value"), 5_000);
         assert!(!section_a.lines.iter().any(|line| line.id == "form_8283_section_b_value"));

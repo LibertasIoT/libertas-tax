@@ -6,7 +6,10 @@ fn draft(pre1990: bool) -> (FederalDraft, i64) {
     let agi = if pre1990 { 210_000 } else { 120_000 };
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, (agi - 19_500) * 100, 0);
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(19_500, true) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(19_500, true)) }),
+    );
     if pre1990 {
         add(&mut d, income(FederalIncome::Partnership { data: ordinary_partner_source(0, false) }));
     } else {
@@ -18,16 +21,17 @@ fn draft(pre1990: bool) -> (FederalDraft, i64) {
         history(&mut d);
     }
     let source = d.income.last().unwrap().id;
-    (d, source)
+    name_accepted_income_documents(&mut d);
+    (crate::tests::support::builders::known_fact_partnership_draft(d), source)
 }
 
 fn open(session: &mut Interview, pre1990: bool, boundary: bool) -> P {
-    use crate::tests::cross::interview::{navigate, open_topic};
+    use crate::tests::cross::interview::navigate;
     if boundary {
-        return open_topic(session, TaxSection::Wages);
+        return crate::tests::support::client::income_pages::open_document_center(session);
     }
     if pre1990 {
-        return open_topic(session, TaxSection::PassThrough);
+        return crate::tests::support::client::income_pages::open_document_center(session);
     }
     let current = session.draft.clone();
     match send(session, navigate(&current, TaxSection::MoreCredits)) {
@@ -38,23 +42,31 @@ fn open(session: &mut Interview, pre1990: bool, boundary: bool) -> P {
 
 fn answer(request: &mut P, pre1990: bool, boundary: bool, source: i64) {
     if boundary {
-        let P::SaveIncomes { documents, .. } = request else { panic!() };
-        assert_eq!(documents.documents.len(), 1);
-        let IncomeDocument::W2(w2) = &mut documents.documents[0].document else { panic!() };
+        let P::SaveDocuments { documents, .. } = request else { panic!() };
+        assert_eq!(documents.common.wages.documents.len(), 1);
+        let crate::WageDocument::W2(w2) = &mut documents.common.wages.documents[0].document else {
+            panic!()
+        };
         // Same original F6/F7 phase-out boundaries, only printed box1 changes.
-        w2.wages = (if pre1990 { 250_000 - 19_500 } else { 150_000 - 19_500 }) * 100;
+        w2.wages = Some((if pre1990 { 250_000 - 19_500 } else { 150_000 - 19_500 }) * 100);
     } else if pre1990 {
-        let P::SaveIncomes { documents, .. } = request else { panic!() };
-        let row = documents.documents.iter_mut().find(|row| row.id == source).unwrap();
-        let IncomeDocument::K1Partnership(data) = &mut row.document else { panic!() };
-        data.more.credits = vec![crate::K1CreditPage::from(K1Credit {
-            carbon_oxide_origin: None,
-            renewable_facility_origin: None,
-            code: K1CreditCode::LowIncomeHousingOther,
-            line: None,
-            amount: 300_000,
-        })];
-        data.more.housing_confirmed = Some(false);
+        let P::SaveDocuments { documents, .. } = request else { panic!() };
+        let row = documents.common.k1.documents.iter_mut().find(|row| row.id == source).unwrap();
+        let crate::K1Document::K1Partnership(data) = &mut row.document else { panic!() };
+        crate::tests::support::builders::set_partnership_credits(
+            data,
+            &[K1Credit {
+                carbon_oxide_origin: None,
+                renewable_facility_origin: None,
+                code: K1CreditCode::LowIncomeHousingOther,
+                line: None,
+                amount: 300_000,
+            }],
+        );
+        data.personal.as_mut().unwrap().housing_confirmed =
+            Some(crate::K1HousingAcquisition::Before1990);
+        data.personal.as_mut().unwrap().rental_participation =
+            Some(crate::K1RentalParticipation::NotActive);
     } else {
         let P::SaveMoreCredits { value, .. } = request else { panic!() };
         let MoreCredit::BusinessCredits(history) = value
@@ -152,19 +164,29 @@ fn unit16_f6_f7_actual_allowance_source_save_reopen_restart_boundary() {
         let people = d.people.clone();
         let mut expected_sources = d.income[1..].to_vec();
         if pre1990 {
-            let FederalIncome::Partnership { data } =
-                &mut expected_sources.last_mut().unwrap().income
-            else {
-                panic!()
-            };
-            data.housing_confirmed = Some(false);
-            data.credits = vec![K1Credit {
-                carbon_oxide_origin: None,
-                renewable_facility_origin: None,
-                code: K1CreditCode::LowIncomeHousingOther,
-                line: None,
-                amount: 300_000,
-            }];
+            let entry = expected_sources.last_mut().unwrap();
+            let FederalIncome::Partnership { data } = &mut entry.income else { panic!() };
+            let kept = data.source.as_ref().unwrap();
+            let assigned = (kept.assigned, kept.owner_source, kept.joint_share);
+            let mut expected = crate::K1PartnershipDocument::from_record(&entry.label, data)
+                .expect("complete original partnership fixture");
+            expected.personal.as_mut().unwrap().housing_confirmed =
+                Some(crate::K1HousingAcquisition::Before1990);
+            crate::tests::support::builders::set_partnership_credits(
+                &mut expected,
+                &[K1Credit {
+                    carbon_oxide_origin: None,
+                    renewable_facility_origin: None,
+                    code: K1CreditCode::LowIncomeHousingOther,
+                    line: None,
+                    amount: 300_000,
+                }],
+            );
+            expected.personal.as_mut().unwrap().rental_participation =
+                Some(crate::K1RentalParticipation::NotActive);
+            *data = expected.record();
+            let source = data.source.as_mut().unwrap();
+            (source.assigned, source.owner_source, source.joint_share) = assigned;
         }
         let mut session = Interview::new(TEST_USER, d);
         let native = NativeInterviewCase("TAX_UNIT16_ALLOWANCE");
@@ -176,7 +198,14 @@ fn unit16_f6_f7_actual_allowance_source_save_reopen_restart_boundary() {
                 answer(&mut request, pre1990, false, source);
                 request
             };
-            accepted(&send(&mut session, initial));
+            accepted(&if matches!(initial, P::SaveDocuments { .. }) {
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    initial,
+                )
+            } else {
+                send(&mut session, initial)
+            });
             assert_return(&session.draft, pre1990, false);
         }
         if native.calculation(&mut session) {
@@ -192,7 +221,14 @@ fn unit16_f6_f7_actual_allowance_source_save_reopen_restart_boundary() {
         }
         let payload = std::env::var("TAX_UNIT16_ALLOWANCE_PAYLOAD").ok();
         let request = native.input("PAYLOAD").unwrap_or(answers);
-        accepted(&send(&mut session, request));
+        accepted(&if matches!(request, P::SaveDocuments { .. }) {
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        } else {
+            send(&mut session, request)
+        });
         assert_return(&session.draft, pre1990, boundary);
         assert_eq!(session.draft.people, people);
         assert_eq!(session.draft.income[1..], expected_sources);
@@ -208,7 +244,14 @@ fn unit16_f6_f7_actual_allowance_source_save_reopen_restart_boundary() {
         if payload.is_none() && !boundary {
             let mut request = open(&mut session, pre1990, true);
             answer(&mut request, pre1990, true, source);
-            accepted(&send(&mut session, request));
+            accepted(&if matches!(request, P::SaveDocuments { .. }) {
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            } else {
+                send(&mut session, request)
+            });
             assert_return(&session.draft, pre1990, true);
             assert_eq!(session.draft.people, people);
             assert_eq!(session.draft.income[1..], expected_sources);

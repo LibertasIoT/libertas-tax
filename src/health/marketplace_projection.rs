@@ -178,17 +178,24 @@ fn benchmark(
     match source {
         MarketplaceBenchmarkSource::Marketplace { amount } => Some(whole(*amount)),
         MarketplaceBenchmarkSource::Statement { policy } => {
-            let p = facts
-                .forms
-                .iter()
-                .find(|r| r.id == *policy && r.status != MarketplaceStatementStatus::Void)?;
-            crate::marketplace_sources::policy_month(&p.amounts, month)?.1.map(whole)
+            let p = facts.forms.iter().find(|r| {
+                r.id == *policy
+                    && crate::MarketplacePolicyRecordPage::from(&r.form).status
+                        != MarketplaceStatementStatus::Void
+            })?;
+            crate::marketplace_sources::policy_month(
+                &crate::MarketplacePolicyRecordPage::from(&p.form).amounts,
+                month,
+            )?
+            .1
+            .map(whole)
         }
         MarketplaceBenchmarkSource::ReferenceMonth { policy, month: reference } => {
-            let p = facts
-                .forms
-                .iter()
-                .find(|r| r.id == *policy && r.status != MarketplaceStatementStatus::Void)?;
+            let p = facts.forms.iter().find(|r| {
+                r.id == *policy
+                    && crate::MarketplacePolicyRecordPage::from(&r.form).status
+                        != MarketplaceStatementStatus::Void
+            })?;
             let lawful = |m| -> Option<Vec<i64>> {
                 covered(p, m)?
                     .people
@@ -204,7 +211,12 @@ fn benchmark(
             if !same_set(&lawful(month)?, &lawful(*reference)?) {
                 return None;
             }
-            crate::marketplace_sources::policy_month(&p.amounts, *reference)?.1.map(whole)
+            crate::marketplace_sources::policy_month(
+                &crate::MarketplacePolicyRecordPage::from(&p.form).amounts,
+                *reference,
+            )?
+            .1
+            .map(whole)
         }
     }
 }
@@ -275,11 +287,16 @@ fn project_policy(
     benchmarks: &[MarketplaceBenchmarkMonth],
     purpose: PolicyPurpose,
 ) -> Result<Option<PolicyMonthProjection>, SourceIssue> {
-    if policy.status == MarketplaceStatementStatus::Void {
+    if crate::MarketplacePolicyRecordPage::from(&policy.form).status
+        == MarketplaceStatementStatus::Void
+    {
         return Ok(None);
     }
     let Some((source_premium, source_benchmark, source_advance)) =
-        crate::marketplace_sources::policy_month(&policy.amounts, month)
+        crate::marketplace_sources::policy_month(
+            &crate::MarketplacePolicyRecordPage::from(&policy.form).amounts,
+            month,
+        )
     else {
         return Ok(None);
     };
@@ -345,9 +362,12 @@ fn project_policy(
                 if !same_set(&reference_coverage.people, &lawful) {
                     return Err(fail(None, MissingSource::LawfulPremium));
                 }
-                let amount = crate::marketplace_sources::policy_month(&policy.amounts, reference)
-                    .ok_or_else(|| fail(None, MissingSource::LawfulPremium))?
-                    .0;
+                let amount = crate::marketplace_sources::policy_month(
+                    &crate::MarketplacePolicyRecordPage::from(&policy.form).amounts,
+                    reference,
+                )
+                .ok_or_else(|| fail(None, MissingSource::LawfulPremium))?
+                .0;
                 whole(amount)
             }
         };
@@ -579,12 +599,14 @@ pub(crate) fn health_policy_month(
 // Complete source responsibility makes OtherShared defaults/agreements
 // decidable at Save. Reuse the one allocation owner; missing family/attester
 // facts remain accepted sources needing correction rather than invented zeros.
-pub(crate) fn allocation_sources_valid(
+pub(crate) fn allocation_policy_valid(
     facts: &MarketplaceFacts,
     people: &SourcePeople<'_>,
+    policy: &MarketplacePolicyRecord,
 ) -> bool {
-    facts.forms.iter().filter(|policy| policy.status != MarketplaceStatementStatus::Void).all(
-        |policy| {
+    crate::MarketplacePolicyRecordPage::from(&policy.form).status
+        == MarketplaceStatementStatus::Void
+        || {
             policy.coverage.iter().all(|coverage| {
                 let Some(period) = policy
                     .allocation
@@ -611,32 +633,38 @@ pub(crate) fn allocation_sources_valid(
                 }
                 allocate(&period.kind, &policy.enrolling, &counts, |_| None).is_some()
             })
-        },
-    )
+        }
 }
 
 // Conditional source bound: unknown mandatory policy facts remain accepted
 // for normal correction, but a complete projection cannot overstate the
 // actual return's tax-free expense offset. Never infer it from an agreement.
+#[cfg(test)]
 pub(crate) fn expense_sources_valid(facts: &MarketplaceFacts, people: &SourcePeople<'_>) -> bool {
-    facts.forms.iter().all(|policy| {
-        policy.payments.iter().all(|payment| {
-            if payment.tax_free_premiums == 0 {
-                return true;
-            }
-            match project_policy(
-                policy,
-                payment.month,
-                facts,
-                people,
-                &[],
-                &facts.benchmarks,
-                PolicyPurpose::BusinessPremiums,
-            ) {
-                Ok(Some(projected)) => whole(payment.tax_free_premiums) <= projected.gross_medical,
-                _ => true,
-            }
-        })
+    facts.forms.iter().all(|policy| expense_policy_valid(facts, people, policy))
+}
+
+pub(crate) fn expense_policy_valid(
+    facts: &MarketplaceFacts,
+    people: &SourcePeople<'_>,
+    policy: &MarketplacePolicyRecord,
+) -> bool {
+    policy.payments.iter().all(|payment| {
+        if payment.tax_free_premiums == 0 {
+            return true;
+        }
+        match project_policy(
+            policy,
+            payment.month,
+            facts,
+            people,
+            &[],
+            &facts.benchmarks,
+            PolicyPurpose::BusinessPremiums,
+        ) {
+            Ok(Some(projected)) => whole(payment.tax_free_premiums) <= projected.gross_medical,
+            _ => true,
+        }
     })
 }
 
@@ -686,9 +714,14 @@ pub(crate) fn project_selected_with_income(
     let mut shared = false;
     for month in 1..=last_month {
         if !facts.forms.iter().any(|p| {
-            p.status != MarketplaceStatementStatus::Void
+            crate::MarketplacePolicyRecordPage::from(&p.form).status
+                != MarketplaceStatementStatus::Void
                 && selected.is_none_or(|ids| ids.contains(&p.id))
-                && crate::marketplace_sources::policy_month(&p.amounts, month).is_some()
+                && crate::marketplace_sources::policy_month(
+                    &crate::MarketplacePolicyRecordPage::from(&p.form).amounts,
+                    month,
+                )
+                .is_some()
         }) {
             continue;
         }
@@ -865,7 +898,8 @@ pub(crate) fn family_coverage_months(
     (1..=last_month)
         .filter(|month| {
             facts.forms.iter().any(|p| {
-                p.status != MarketplaceStatementStatus::Void
+                crate::MarketplacePolicyRecordPage::from(&p.form).status
+                    != MarketplaceStatementStatus::Void
                     && covered(p, *month).is_some_and(|coverage| {
                         family.iter().any(|id| {
                             coverage.people.contains(id)
@@ -884,20 +918,26 @@ mod tests {
 
     fn policy(people: Vec<i64>) -> MarketplacePolicyRecord {
         MarketplacePolicyRecord {
+            printed: None,
             id: 1,
-            issuer: "Source issuer".into(),
-            policy_number: String::new(),
-            amounts: PolicyAmounts::ByMonth {
-                months: vec![PolicyMonth {
-                    month: 1,
-                    premium: 100_000,
-                    benchmark: Some(120_000),
-                    advance: 60_000,
-                }],
-            },
+            form: crate::MarketplacePolicyRecordPage {
+                recipient: Default::default(),
+                id: 1,
+                issuer: "Source issuer".into(),
+                policy_number: String::new(),
+                amounts: PolicyAmounts::ByMonth {
+                    months: vec![PolicyMonth {
+                        month: 1,
+                        premium: 100_000,
+                        benchmark: Some(120_000),
+                        advance: 60_000,
+                    }],
+                },
+                status: MarketplaceStatementStatus::Original,
+            }
+            .into(),
             lawful_premiums: vec![],
             enrolling: Family::ThisReturn,
-            status: MarketplaceStatementStatus::Original,
             coverage: vec![MarketplacePolicyCoverage { month: 1, people, entry: vec![] }],
             allocation: vec![],
             payments: vec![],
@@ -962,9 +1002,7 @@ mod tests {
                 label: "Other enrollee".into(),
             },
         });
-        if let PolicyAmounts::ByMonth { months } = &mut f.forms[0].amounts {
-            months[0].benchmark = Some(60_000);
-        }
+        f.forms[0].form.month_mut(1).benchmark = Some(60_000);
         let share = |family| MarketplaceFamilyShare {
             family,
             agreement: MarketplaceAgreement::Agreed {
@@ -980,11 +1018,7 @@ mod tests {
         });
         let mut second = policy(vec![-1]);
         second.id = 2;
-        if let PolicyAmounts::ByMonth { months } = &mut second.amounts {
-            months[0].premium = 70_000;
-            months[0].benchmark = Some(60_000);
-            months[0].advance = 0;
-        }
+        second.form.set_month(1, 70_000, Some(60_000), 0);
         f.forms.push(second.clone());
         f.benchmarks.push(area(vec![-1], 60_000));
         let people = SourcePeople { family: &[-1], current: &[-1], births: &[] };
@@ -1036,14 +1070,14 @@ mod tests {
                 },
             },
         ];
-        f.forms[0].amounts = PolicyAmounts::ByMonth {
+        f.forms[0].form.set_amounts(PolicyAmounts::ByMonth {
             months: vec![PolicyMonth {
                 month: 1,
                 premium: 800_000,
                 benchmark: Some(900_000),
                 advance: 450_000,
             }],
-        };
+        });
         let share = |family, numerator| MarketplaceFamilyShare {
             family,
             agreement: MarketplaceAgreement::Agreed {
@@ -1129,8 +1163,8 @@ mod tests {
         // the same actual paid expense; a refund is never subtracted twice.
         assert!(crate::marketplace_sources::valid(&f, &[-1], &[]));
         assert_eq!(project(&f, &people, true, 48_000).unwrap().rows[0].premium, whole(90_000));
-        let PolicyAmounts::ByMonth { months } = &mut f.forms[0].amounts else { unreachable!() };
-        months[0].premium = 90_000;
+        let paper = &mut f.forms[0].form;
+        paper.month_mut(1).premium = Some(90_000);
         assert!(crate::marketplace_sources::valid(&f, &[-1], &[]));
         assert_eq!(project(&f, &people, true, 48_000).unwrap().rows[0].premium, whole(90_000));
     }
@@ -1145,17 +1179,10 @@ mod tests {
             for refund in [false, true] {
                 let mut f = facts(&[-1, -2]);
                 f.eligibility[1].status = MarketplacePersonEligibility::NotLawfullyPresent;
-                let PolicyAmounts::ByMonth { months } = &mut f.forms[0].amounts else {
-                    unreachable!()
-                };
-                months[0].premium = 150_000;
-                months[0].advance = 40_000;
-                months.push(PolicyMonth {
-                    month: 2,
-                    premium: 100_000,
-                    benchmark: Some(90_000),
-                    advance: 0,
-                });
+                let paper = &mut f.forms[0].form;
+                paper.month_mut(1).premium = Some(150_000);
+                paper.month_mut(1).advance = Some(40_000);
+                paper.set_month(2, 100_000, Some(90_000), 0);
                 f.forms[0].coverage.push(MarketplacePolicyCoverage {
                     month: 2,
                     people: vec![-1],
@@ -1215,13 +1242,8 @@ mod tests {
         // actual current medical payments and partial-payment allocation.
         let mut f = facts(&[-1, -2]);
         f.eligibility[1].status = MarketplacePersonEligibility::NotLawfullyPresent;
-        let PolicyAmounts::ByMonth { months } = &mut f.forms[0].amounts else { unreachable!() };
-        months.push(PolicyMonth {
-            month: 2,
-            premium: 200_000,
-            benchmark: Some(220_000),
-            advance: 0,
-        });
+        let paper = &mut f.forms[0].form;
+        paper.set_month(2, 200_000, Some(220_000), 0);
         f.forms[0].coverage.push(MarketplacePolicyCoverage {
             month: 2,
             people: vec![-1],

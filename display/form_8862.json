@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 602000, "rule": {"select": "^<CreditDisallowance>", "flatten": true}},
+    {"order": 603000, "rule": {"select": "^<EicDisallowance>", "flatten": true}}
+  ]
+}

@@ -1,0 +1,67 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 13",
+  "example": "Simplified Method, Example 1 (after 120 months)",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "Annuity started 2016-01-01, so $12,000 was recovered through 2025; payments of $1,500 a month; owner born 1947-06-15",
+   "reason": "the example: payments after 10 years are generally fully taxable"
+  },
+  {
+   "fact": "ordinary code 7 pension, box 2a equal to box 1",
+   "reason": "the example gives no form codes"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19470615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7",
+     "gross": 18000,
+     "taxable": 18000,
+     "method": {
+      "kind": "simplified",
+      "cost": 12000,
+      "months": 12,
+      "ages": [
+       70
+      ],
+      "started": 20160101,
+      "prior": [
+       100,
+       12000
+      ]
+     }
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 18000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 18000,
+   "provenance": "stated"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

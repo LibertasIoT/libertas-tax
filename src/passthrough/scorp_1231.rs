@@ -11,25 +11,31 @@ pub struct K1Section1231 {
     /// Net section 1231 gain or loss of the box 1 trade or business
     /// Form 1065 box 10 or Form 1120-S box 9, after the entity's ordinary depreciation recapture and before the owner's loss limitations. Rental activity parts belong with that activity's amounts. Do not repeat it in box 1 or portfolio capital.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub net: i64,
     /// Business-asset unrecaptured section 1250 gain — Form 1065 box 9c or Form 1120-S box 8c
     /// From this activity's business-property statement, for line 5 of the section 1250 worksheet. This is a rate component, not additional income or basis. It may exceed the net section 1231 amount when other business-property losses offset gains. Fund/trust and partnership-interest portfolio components belong in the separate capital record.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecaptured: i64,
     /// Prior section 1231 loss suspended by owner basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_loss: i64,
     /// Prior section 1231 loss suspended only by at-risk limits
     /// Already passed basis limits. Exclude basis-suspended and passive-suspended amounts.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk_loss: i64,
     /// Prior section 1231 loss suspended only by passive-activity limits
     /// Already passed basis and at-risk limits; not part of either preceding balance or the separate ordinary passive-loss history.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub passive_loss: i64,
 }
 

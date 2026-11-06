@@ -1,6 +1,10 @@
 use super::*;
 use crate::business_rules::{QbiActivity, QbiFiling, QbiOther, QbiResult};
-use crate::tests::support::client::survey::survey_preview_document;
+use crate::tests::support::client::income_pages::{
+    open_document_center, save_documents, save_topic,
+};
+use alloc::string::ToString;
+use libertas::SchemaPath;
 
 // These are isolated IRS QBI examples with the source's original 2020/2021
 // facts and expressly supplied taxable income/QBI. They are not completed
@@ -45,7 +49,7 @@ fn irs_patron(numbers: [i64; 9], safe: bool) -> (QbiResult, Vec<[i64; 2]>) {
         specified_cooperative: true,
         ..Default::default()
     };
-    let mut a = crate::cooperative::automatic(&data, Some(d.income[0].id));
+    let mut a = crate::cooperative::automatic(&data);
     a.notice =
         Some(CoopNoticeStatus::Received { source: "T.D.9947(g) express notice assumption".into() });
     a.patron_allocation = Some(if safe {
@@ -59,7 +63,7 @@ fn irs_patron(numbers: [i64; 9], safe: bool) -> (QbiResult, Vec<[i64; 2]>) {
         }
     });
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     assert_eq!(crate::cooperative::graph_rule(&d), None);
     let mut activities = vec![QbiActivity {
         source_wages_cents: None,
@@ -165,14 +169,14 @@ fn coop_irs_example_f_caps_actual_related_expense_without_rededucting_it() {
     add(&mut d, income(farm));
     let activity = d.income[0].id;
     let mut data = FederalCooperative { patronage: 5000, sstb_items: 5000, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&data, Some(activity));
+    let mut a = crate::cooperative::automatic(&data);
     a.sstb_expenses.push(CoopSstbExpense {
         category: BusinessExpenseCategory::Feed,
         amount: 100000,
         source: "IRS stated related cooperative expense".into(),
     });
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     assert_eq!(crate::cooperative::graph_rule(&d), None);
     let mut activities = vec![QbiActivity {
         source_wages_cents: None,
@@ -295,8 +299,8 @@ fn coop_unknown_service_source_is_phased_exactly_once() {
     let id = d.income[0].id;
     let mut raw =
         FederalCooperative { patronage: 100000, sstb_items: 100000, ..Default::default() };
-    raw.allocations.push(crate::cooperative::automatic(&raw, Some(id)));
-    add(&mut d, income(FederalIncome::Cooperative { data: raw }));
+    raw.allocations.push(crate::cooperative::automatic(&raw));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(raw) }));
     let (floor, range) = crate::business_rules::qbi_phase(0, FederalStatus::Single);
     assert_eq!(floor, 0);
     // Actual current-year threshold owner supplies the phase, not a fixture
@@ -337,12 +341,14 @@ fn coop_unknown_service_source_is_phased_exactly_once() {
     assert_eq!(r.lines.activities[0][0], 5500);
 }
 
-pub(in crate::tests) fn patr_page(amount: i64, personal: i64, activity: Option<i64>) -> Patr1099 {
+pub(in crate::tests) fn patr_page(amount: i64, personal: i64) -> Patr1099 {
     let raw = FederalCooperative { patronage: amount, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&raw, activity);
+    let mut a = crate::cooperative::automatic(&raw);
     a.personal.patronage = personal;
     a.personal_qualification = Some(CoopQualification::default());
     Patr1099 {
+        payer: Default::default(),
+        recipient: Default::default(),
         patronage: amount,
         nonpatronage: 0,
         per_unit_retains: 0,
@@ -360,107 +366,173 @@ fn coop_public_schedule_c_preserves_sources_identity_restart_and_failed_save_pur
     let mut s = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
     let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.push(document(0, IncomeDocument::Business(business(1000000))));
-    accepted(&send(&mut s, page));
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(business(1000000)) },
+        ))
+        .unwrap(),
+    );
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let activity = s.draft.income[0].id;
     let before_preview = s.draft.clone();
-    let source = IncomeDocument::Patr1099(patr_page(200000, 50000, Some(activity)));
-    assert!(matches!(
-        send(&mut s, coop_preview(source, 0)),
-        Reply::Response(P::IncomePreview { preview: Some(150000), .. })
+    let page = save_documents(
+        &mut s,
+        vec![document(0, IncomeSource::Farming(cooperative_document(patr_page(200000, 50000))))],
+    );
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
+        &mut s,
+        page.clone(),
     ));
     assert_eq!(s.draft, before_preview);
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents
-        .documents
-        .push(document(0, IncomeDocument::Patr1099(patr_page(200000, 50000, Some(activity)))));
-    let running = documents.documents.clone();
-    accepted(&send(&mut s, coop_running(running)));
-    assert_eq!(s.draft, before_preview);
-    accepted(&send(&mut s, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let r = supported(&s.draft);
     assert_eq!(form_dollars(&r, TaxForm::ScheduleC, "6"), 1500);
     assert_eq!(form_dollars(&r, TaxForm::ScheduleC, "31"), 11500);
     assert_eq!(r.payments, Some(10000));
     let accepted_draft = s.draft.clone();
     let mut s = restart(accepted_draft.clone());
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-    let original_rows = page_documents(&page).to_vec();
+    let page = open_document_center(&mut s);
+    let original_rows = page_documents(&page);
     let original = original_rows
         .iter()
-        .find(|i| matches!(i.document, IncomeDocument::Patr1099(_)))
+        .find(|i| matches!(i.document, IncomeSource::Farming(_)))
         .unwrap()
         .clone();
-    let IncomeDocument::Patr1099(patr) = &original.document else { panic!() };
+    let source = s.draft.income.iter().find(|entry| entry.id == original.id).unwrap();
+    let FederalIncome::Cooperative { data: patr } = &source.income else { panic!() };
     let child = patr.more.allocations[0].id;
     assert!(child > original.id);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.reverse();
-    if let IncomeDocument::Business(b) = &mut documents.documents[1].document {
-        b.name = "Renamed actual activity".into();
-    }
-    accepted(&send(&mut s, page));
-    let page = open_topic(&mut s, TaxSection::SelfEmployment);
+    let mut records = page_documents(&open_topic(&mut s, TaxSection::SelfEmployment));
+    records.reverse();
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(b) } =
+        &mut records.iter_mut().find(|row| row.id == activity).unwrap().document
+    else {
+        unreachable!()
+    };
+    b.name = "Renamed actual activity".into();
+    let page = save_topic(&mut s, TaxSection::SelfEmployment, records);
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
+    let page = open_document_center(&mut s);
     let new_rows = page_documents(&page);
     assert!(new_rows.iter().any(|i| i.id == original.id && i.document == original.document));
+    assert_eq!(
+        s.draft.income.iter().find(|entry| entry.id == original.id),
+        accepted_draft.income.iter().find(|entry| entry.id == original.id)
+    );
+    assert_eq!(
+        s.draft.income.iter().map(|row| row.id).collect::<Vec<_>>(),
+        accepted_draft.income.iter().map(|row| row.id).collect::<Vec<_>>()
+    );
     let before = s.draft.clone();
-    let mut invalid = page.clone();
-    let P::SaveIncomes { documents, .. } = &mut invalid else { panic!() };
-    let row = documents.documents.iter_mut().find(|i| i.id == original.id).unwrap();
-    let IncomeDocument::Patr1099(p) = &mut row.document else { panic!() };
-    p.more.allocations[0].id = activity; // A parent's accepted ID is not this child's.
+    let mut invalid = open_topic(&mut s, TaxSection::SelfEmployment);
+    let P::SaveIncomes { followups, .. } = &mut invalid else { panic!() };
+    let row = followups
+        .iter_mut()
+        .find(|row| row.key == alloc::format!("income/{}/allocations", original.id))
+        .unwrap();
+    let crate::DocumentAnswer::CooperativeAllocations { value } = &mut row.answer else {
+        unreachable!()
+    };
+    value[0].id = activity; // A parent's accepted ID is not this child's.
+    let path = SchemaPath::root()
+        .field("followups")
+        .key(row.key.as_str())
+        .field("answer")
+        .field("value")
+        .index(0)
+        .to_string();
     assert!(matches!(
         current_income_refusal(
             "income-source-332",
             &mut s,
             invalid,
             "ISSUE_INTERVIEW_A_RECORD_NO_LONGER_BELONGS_TO_51E52C2C",
-            "[documents/documents/0/document/more/allocations/0]"
+            &path
         ),
         Reply::Response(P::Problem { .. })
     ));
     assert_eq!(s.draft, before);
-    let mut removed = page;
-    let P::SaveIncomes { documents, .. } = &mut removed else { panic!() };
-    documents.documents.retain(|i| i.id == original.id);
+    let removed = save_topic(&mut s, TaxSection::SelfEmployment, vec![]);
     assert!(matches!(send(&mut s, removed), Reply::Response(P::Problem { .. })));
     assert_eq!(s.draft, before); // Stale recipient is never rebound.
     assert_eq!(accepted_draft.next_id, before.next_id);
 }
 
 #[test]
-fn coop_public_sole_credit_recipient_defaults_without_inventing_an_activity() {
-    use crate::tests::cross::interview::{accepted, business, document, open_topic};
-    let mut s = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.push(document(0, IncomeDocument::Business(business(1000000))));
-    accepted(&send(&mut s, page));
-    let activity = s.draft.income[0].id;
-    let mut patr = patr_page(100000, 0, None);
-    patr.more.credit_facts.work_opportunity = 20000;
-    patr.more.credit_facts.participation = Some(true);
-    patr.more.credit_facts.notice =
-        Some(CoopNoticeStatus::Received { source: "Actual issuer allocation notice".into() });
-    patr.more.credit_facts.other.push(CoopOtherItemInput {
-        kind: CoopOtherKind::SmallEmployerHealth,
-        amount: 10000,
-        activity: None,
-        income: CoopCreditIncome::None,
-        source: "Actual issuer health credit allocation".into(),
-    });
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.push(document(0, IncomeDocument::Patr1099(patr)));
-    accepted(&send(&mut s, page));
-    let FederalIncome::Cooperative { data } = &s.draft.income[1].income else { panic!() };
-    assert_eq!(data.credit_facts.activity, Some(activity));
-    assert_eq!(data.credit_facts.other[0].activity, Some(activity));
+fn coop_box12_money_save_correction_reopen_restart_keeps_item_and_answer_ownership() {
+    use crate::tests::cross::interview::accepted;
+    let mut session = cooperative_box12_session();
+    let activity = session.draft.income[0].id;
+    let source = &session.draft.income[1];
+    let source_id = source.id;
+    let FederalIncome::Cooperative { data } = &source.income else { unreachable!() };
+    let allocations = data.more.allocations.clone();
+    let credit_facts = data.more.credit_facts.clone();
+    let activity_source = session.draft.income[0].clone();
+    assert_eq!(credit_facts.activity, Some(activity));
+    assert_eq!(credit_facts.other[0].activity, Some(activity));
+    assert_eq!(credit_facts.other[0].amount, 10_023);
+    assert!(
+        credit_facts.other[0].id > source_id,
+        "item {} source {} activity {}",
+        credit_facts.other[0].id,
+        source_id,
+        activity
+    );
+    assert_eq!(allocations[0].personal.patronage, 5_000);
+    assert_eq!(credit_facts.participation, Some(true));
     let mut report = FederalResult::empty(0);
-    let credits = crate::cooperative::credit_entries(&s.draft, &mut report);
+    let credits = crate::cooperative::credit_entries(&session.draft, &mut report);
     assert_eq!(credits.len(), 2);
-    assert_eq!(credits.iter().map(|c| c.amount).sum::<i64>(), 300);
+    assert_eq!(credits.iter().map(|credit| credit.amount).sum::<i64>(), 300);
+    let figures = supported(&session.draft);
+    assert_eq!(form_dollars(&figures, TaxForm::ScheduleC, "6"), 950);
+    assert_eq!(figures.payments, Some(10_000));
+
+    // A clearly blank printed box uses the same zero as a new form's default.
+    for amount in [50_067, 10_024, PatrMore::default().other_credits_and_deductions] {
+        if amount != 50_067 {
+            let mut page = open_document_center(&mut session);
+            let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+            let source = documents
+                .other
+                .farming
+                .documents
+                .iter_mut()
+                .find(|source| source.id == source_id)
+                .unwrap();
+            source.document.other_credits_and_deductions = amount;
+            accepted(&send(&mut session, page));
+        }
+        session = restart(session.draft);
+        let page = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &page else { unreachable!() };
+        let source =
+            documents.other.farming.documents.iter().find(|source| source.id == source_id).unwrap();
+        assert_eq!(source.document.other_credits_and_deductions, amount);
+        let source = session.draft.income.iter().find(|source| source.id == source_id).unwrap();
+        let FederalIncome::Cooperative { data } = &source.income else { unreachable!() };
+        assert_eq!(data.form.other_credits_and_deductions, amount);
+        assert_eq!(data.more.allocations, allocations);
+        assert_eq!(data.more.credit_facts, credit_facts);
+        assert_eq!(session.draft.income[0], activity_source);
+        let mut expected = figures.clone();
+        expected.revision = session.draft.revision;
+        assert_eq!(supported(&session.draft), expected);
+    }
 }
 
 #[test]
@@ -487,6 +559,7 @@ fn coop_credit_components_use_existing_collector_once_and_keep_required_income_s
             },
         ],
         other: vec![CoopOtherItem {
+            id: 0,
             kind: CoopOtherKind::CleanFuel,
             amount: 30000,
             activity: Some(id),
@@ -497,7 +570,7 @@ fn coop_credit_components_use_existing_collector_once_and_keep_required_income_s
         activity: Some(id),
         notice: Some(CoopNoticeStatus::Received { source: "Actual allocation notice".into() }),
     };
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     let mut r = FederalResult::empty(0);
     let credits = crate::cooperative::credit_entries(&d, &mut r);
     assert_eq!(credits.iter().map(|v| v.amount).sum::<i64>(), 1400);
@@ -512,9 +585,9 @@ fn coop_credit_components_use_existing_collector_once_and_keep_required_income_s
     assert!(credits.iter().all(|v| v.passive.is_none()));
     assert_eq!(crate::federal_rules::farm_cooperative(&d, 0, id).unwrap().taxable, 100000);
     let FederalIncome::Cooperative { data } = &mut d.income[1].income else { panic!() };
-    data.credit_facts.investment_shares.clear();
-    data.credit_facts.participation = None;
-    data.credit_facts.other[0].income = CoopCreditIncome::Unresolved;
+    data.more.credit_facts.investment_shares.clear();
+    data.more.credit_facts.participation = None;
+    data.more.credit_facts.other[0].income = CoopCreditIncome::Unresolved;
     let mut r = FederalResult::empty(0);
     let credits = crate::cooperative::credit_entries(&d, &mut r);
     assert_eq!(credits.iter().map(|v| v.amount).sum::<i64>(), 500);
@@ -542,15 +615,30 @@ fn coop_public_box5_requires_complete_history_without_reclassifying_other_boxes(
     let mut s = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
     let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.push(document(0, IncomeDocument::Business(business(1000000))));
-    accepted(&send(&mut s, page));
-    let mut patr = patr_page(0, 0, None);
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(business(1000000)) },
+        ))
+        .unwrap(),
+    );
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
+    let mut patr = patr_page(0, 0);
     patr.redeemed = 100000;
     patr.more.allocations.clear();
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.push(document(0, IncomeDocument::Patr1099(patr)));
-    accepted(&send(&mut s, page));
+    let page = save_documents(
+        &mut s,
+        vec![document(0, IncomeSource::Farming(cooperative_document(patr)))],
+    );
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let r = estimate(&s.draft);
     assert_eq!(r.state, ResultState::Unsupported);
     assert!(r.issues.iter().any(|i| i.display.key == "ISSUE_COOP_NOTICE_HISTORY_NEEDED"));
@@ -565,26 +653,26 @@ fn coop_public_box5_requires_complete_history_without_reclassifying_other_boxes(
     };
     for complete in [false, true] {
         let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-        let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-        let patr = documents
-            .documents
+        let P::SaveIncomes { followups, .. } = &mut page else { panic!() };
+        let row = followups
             .iter_mut()
-            .find_map(|e| match &mut e.document {
-                IncomeDocument::Patr1099(patr) => Some(patr),
-                _ => None,
-            })
+            .find(|row| matches!(row.answer, crate::DocumentAnswer::CooperativeAllocations { .. }))
             .unwrap();
-        patr.more.allocations[0].redemptions =
-            vec![notice(40000, "Actual original-patron notice A")];
+        let crate::DocumentAnswer::CooperativeAllocations { value } = &mut row.answer else {
+            unreachable!()
+        };
+        value[0].redemptions = vec![notice(40000, "Actual original-patron notice A")];
         if complete {
-            patr.more.allocations[0]
-                .redemptions
-                .push(notice(60000, "Actual original-patron notice B"));
+            value[0].redemptions.push(notice(60000, "Actual original-patron notice B"));
         }
-        accepted(&send(&mut s, page));
+        accepted(&if matches!(page, P::SaveDocuments { .. }) {
+            crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+        } else {
+            send(&mut s, page)
+        });
         let FederalIncome::Cooperative { data } = &s.draft.income[1].income else { panic!() };
-        assert_eq!(data.redeemed, 100000);
-        assert_eq!(data.withholding, 10000);
+        assert_eq!(data.form.redeemed, 100000);
+        assert_eq!(data.form.withholding, 10000);
         let r = estimate(&s.draft);
         if complete {
             assert_eq!(r.state, ResultState::EstimatedForSupportedScope);
@@ -598,25 +686,32 @@ fn coop_public_box5_requires_complete_history_without_reclassifying_other_boxes(
     }
     // Raw boxes 1/2 are separate distributions, not evidence of notice
     // redemption. Their ordinary amounts need no fictional notice history.
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
-    let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    let patr = documents
-        .documents
-        .iter_mut()
-        .find_map(|e| match &mut e.document {
-            IncomeDocument::Patr1099(patr) => Some(patr),
-            _ => None,
-        })
-        .unwrap();
+    let mut page = open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+    let patr = &mut documents.other.farming.documents[0].document;
     patr.redeemed = 0;
     patr.patronage = 60000;
     patr.nonpatronage = 40000;
-    let a = &mut patr.more.allocations[0];
+    accepted(&send(&mut s, page));
+    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
+    let P::SaveIncomes { followups, .. } = &mut page else { panic!() };
+    let row = followups
+        .iter_mut()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::CooperativeAllocations { .. }))
+        .unwrap();
+    let crate::DocumentAnswer::CooperativeAllocations { value } = &mut row.answer else {
+        unreachable!()
+    };
+    let a = &mut value[0];
     a.distributions.redeemed = 0;
     a.distributions.patronage = 60000;
     a.distributions.nonpatronage = 40000;
     a.redemptions.clear();
-    accepted(&send(&mut s, page));
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let r = supported(&s.draft);
     assert_eq!(form_dollars(&r, TaxForm::ScheduleC, "6"), 1000);
 }
@@ -627,7 +722,7 @@ fn coop_notice_original_acquired_and_unknown_history_are_distinct() {
     add(&mut d, income(cash_business(10000)));
     let id = d.income[0].id;
     let mut data = FederalCooperative { redeemed: 100000, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&data, Some(id));
+    let mut a = crate::cooperative::automatic(&data);
     a.redemptions.push(CoopRedemption {
         kind: CoopNoticeKind::Patronage,
         distribution: CoopDistributionBox::Redeemed,
@@ -636,29 +731,19 @@ fn coop_notice_original_acquired_and_unknown_history_are_distinct() {
         holding: CoopNoticeHolding::OriginalOrInherited,
         source: "Original patron notice, inherited directly from that patron".into(),
     });
-    let mut wide = a.clone();
-    wide.redemptions[0].amount = i64::MAX;
-    wide.redemptions.push(wide.redemptions[0].clone());
-    assert_eq!(
-        wide.issue(),
-        Some(
-            crate::validation::ValidationIssue::new("COOP_ALLOCATION_INVALID")
-                .at_field("redemptions")
-        )
-    );
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     assert_eq!(crate::federal_rules::farm_cooperative(&d, 0, id).unwrap().taxable, 100000);
     supported(&d);
     let FederalIncome::Cooperative { data } = &mut d.income[1].income else { panic!() };
-    data.allocations[0].redemptions[0].holding = CoopNoticeHolding::Acquired {
+    data.more.allocations[0].redemptions[0].holding = CoopNoticeHolding::Acquired {
         basis: 30000,
         source: "Actual purchased notice basis".into(),
     };
     assert_eq!(crate::federal_rules::farm_cooperative(&d, 0, id).unwrap().taxable, 70000);
     supported(&d);
     let FederalIncome::Cooperative { data } = &mut d.income[1].income else { panic!() };
-    data.allocations[0].redemptions[0].holding = CoopNoticeHolding::Unresolved;
+    data.more.allocations[0].redemptions[0].holding = CoopNoticeHolding::Unresolved;
     let r = estimate(&d);
     assert_eq!(r.state, ResultState::Unsupported);
     assert!(r.issues.iter().any(|i| i.display.key == "ISSUE_COOP_NOTICE_HISTORY_NEEDED"));
@@ -668,9 +753,8 @@ fn coop_notice_original_acquired_and_unknown_history_are_distinct() {
 fn coop_property_dependency_never_turns_an_excluded_refund_into_taxable_income() {
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, income(cash_business(10000)));
-    let id = d.income[0].id;
     let mut data = FederalCooperative { patronage: 100000, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&data, Some(id));
+    let mut a = crate::cooperative::automatic(&data);
     a.properties.push(CoopPropertyRefund {
         distribution: CoopDistributionBox::Patronage,
         property: None,
@@ -682,7 +766,7 @@ fn coop_property_dependency_never_turns_an_excluded_refund_into_taxable_income()
         treatment: CoopPropertyTreatment::Purchase,
     });
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     assert_eq!(crate::cooperative::graph_rule(&d), None);
     let r = estimate(&d);
     assert_eq!(r.state, ResultState::Unsupported);
@@ -690,61 +774,54 @@ fn coop_property_dependency_never_turns_an_excluded_refund_into_taxable_income()
     assert!(r.lines.is_empty());
 }
 
-fn coop_preview(document: IncomeDocument, id: i64) -> P {
-    let mut request = survey_preview_document(document);
-    let P::PreviewDocument { id: request_id, .. } = &mut request else { unreachable!() };
-    *request_id = id;
-    request
-}
-
-fn coop_running(documents: Vec<IncomeDocumentItem>) -> P {
-    let mut request = crate::tests::support::client::income_pages::catalog_estimate_documents(
-        TaxSection::SelfEmployment,
-        (IncomeDocuments {
-            qbi_aggregations: Vec::new(),
-            receipt_context: crate::BusinessReceiptContext::default(),
-            documents,
-        })
-        .into(),
-    );
-    let P::EstimateDocuments {
-        allowed_documents,
-        k1_credit_lines,
-        research_credit_lines,
-        renewable_credit_lines,
-        transferable_credit_lines,
-        foreign_countries,
-        ..
-    } = &mut request
-    else {
-        unreachable!()
-    };
-    *allowed_documents = vec![libertas_macros::variant_index!(IncomeDocument::Patr1099) as i32];
-    *k1_credit_lines = Vec::new();
-    *research_credit_lines = Vec::new();
-    *renewable_credit_lines = Vec::new();
-    *transferable_credit_lines = Vec::new();
-    *foreign_countries = Vec::new();
-    request
-}
-
 #[test]
 fn coop_public_recipient_rejects_cross_owner_links_without_consuming_ids() {
     use crate::tests::cross::interview::{accepted, business, document, open_topic, rejected_with};
-    let mut s = Interview::new(TEST_USER, empty_return(FederalStatus::Joint));
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
+    let mut session = Interview::new(TEST_USER, empty_return(FederalStatus::Joint));
+    let mut page = open_topic(&mut session, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    documents.documents.push(document(0, IncomeDocument::Business(business(1000000))));
-    accepted(&send(&mut s, page));
-    let id = s.draft.income[0].id;
-    let before = s.draft.clone();
-    let mut page = open_topic(&mut s, TaxSection::SelfEmployment);
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(business(1000000)) },
+        ))
+        .unwrap(),
+    );
+    let page = fixture_owner_inputs(&session.draft, page);
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, page)
+    } else {
+        send(&mut session, page)
+    });
+    let mut item = document(0, IncomeSource::Farming(cooperative_document(patr_page(100000, 0))));
+    item.owner = crate::DocumentOwner::Spouses;
+    let page = save_documents(&mut session, vec![item]);
+    let page = fixture_owner_inputs(&session.draft, page);
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, page)
+    } else {
+        send(&mut session, page)
+    });
+    let component = session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::Cooperative { data } => Some(data.more.allocations[0].id),
+            _ => None,
+        })
+        .unwrap();
+    let before = session.draft.clone();
+    let figures = estimate(&before);
+    let mut page = open_topic(&mut session, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-    let mut item = document(0, IncomeDocument::Patr1099(patr_page(100000, 0, Some(id))));
-    item.owner = Owner::Spouse;
-    documents.documents.push(item);
-    rejected_with(send(&mut s, page), "COOP_RECIPIENT_LINK_INVALID");
-    assert_eq!(s.draft, before);
+    let crate::IncomeRecord::Business(business) = &mut documents.documents[0].document else {
+        panic!()
+    };
+    business.related.forms.push(crate::RelatedFormView { key: component, summary: None });
+    rejected_with(send(&mut session, page), "PROBLEM_RELATED_FORM_UNAVAILABLE");
+    assert_eq!(session.draft, before);
+    assert_eq!(estimate(&session.draft), figures);
 }
 
 // Derived community allocation probe, not a published IRS example.
@@ -777,7 +854,7 @@ fn coop_community_qbi_sources_and_dpad_use_the_same_recipient_share() {
         section_199a_g: 100000,
         ..Default::default()
     };
-    let mut a = crate::cooperative::automatic(&data, Some(id));
+    let mut a = crate::cooperative::automatic(&data);
     a.notice = Some(CoopNoticeStatus::Received { source: "Actual DPAD notice".into() });
     a.patron_allocation = Some(CoopPatronAllocation::Books {
         expenses_excluding_wages: 6500000,
@@ -786,7 +863,7 @@ fn coop_community_qbi_sources_and_dpad_use_the_same_recipient_share() {
         source: "Actual source allocation before community division".into(),
     });
     data.allocations.push(a);
-    let mut entry = income(FederalIncome::Cooperative { data });
+    let mut entry = income(FederalIncome::Cooperative { data: cooperative_source(data) });
     entry.community = CommunityShare::Community;
     add(&mut d, entry);
     let mut activities = vec![QbiActivity {
@@ -820,10 +897,10 @@ fn coop_purchase_rebate_preserves_farm_conservation_production_gross() {
     let mut d = conservation_return();
     let activity = d.income[1].id;
     let mut data = FederalCooperative { patronage: 100000, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&data, Some(activity));
+    let mut a = crate::cooperative::automatic(&data);
     a.income_use = CoopIncomeUse::DeductiblePurchases;
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     let original = d.clone();
     let r = supported(&d);
     assert!(!noted(&r, "WARN_FARM_CONSERVATION_GROSS_SOURCE"));
@@ -838,10 +915,10 @@ fn coop_production_gross_increases_one_farm_limit_and_missing_character_omits_on
     let mut d = conservation_return();
     let activity = d.income[1].id;
     let mut data = FederalCooperative { patronage: 100000, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&data, Some(activity));
+    let mut a = crate::cooperative::automatic(&data);
     a.income_use = CoopIncomeUse::ProductionSales;
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     let r = supported(&d);
     assert_eq!(value(&r, &alloc::format!("farm_{activity}_conservation_deduction")), 30250);
     assert_eq!(value(&r, &alloc::format!("farm_{activity}_conservation_carryforward")), 14750);
@@ -850,7 +927,7 @@ fn coop_production_gross_increases_one_farm_limit_and_missing_character_omits_on
     let FederalIncome::Cooperative { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
-    data.allocations[0].income_use = CoopIncomeUse::Unresolved;
+    data.more.allocations[0].income_use = CoopIncomeUse::Unresolved;
     let before = d.clone();
     let r = supported(&d);
     assert!(noted(&r, "WARN_FARM_CONSERVATION_GROSS_SOURCE"));
@@ -879,7 +956,7 @@ fn coop_land_refunds_use_one_actual_regular_and_amt_basis_and_sale_owner() {
         (70000, CoopPropertyTreatment::CurrentSale),
     ] {
         let mut data = FederalCooperative { patronage: amount, ..Default::default() };
-        let mut a = crate::cooperative::automatic(&data, Some(activity));
+        let mut a = crate::cooperative::automatic(&data);
         a.properties.push(CoopPropertyRefund {
             distribution: CoopDistributionBox::Patronage,
             property: Some(parcel),
@@ -891,7 +968,7 @@ fn coop_land_refunds_use_one_actual_regular_and_amt_basis_and_sale_owner() {
             treatment,
         });
         data.allocations.push(a);
-        add(&mut d, income(FederalIncome::Cooperative { data }));
+        add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     }
     let before = d.clone();
     assert_eq!(crate::cooperative::graph_rule(&d), None);
@@ -909,24 +986,21 @@ fn coop_land_refunds_use_one_actual_regular_and_amt_basis_and_sale_owner() {
     assert_eq!(crate::cooperative::land_adjustments(&d, activity, parcel), (50000, 70000));
     assert_eq!(crate::cooperative::graph_rule(&d), None);
     let mut wrong = before.clone();
-    wrong.income.last_mut().unwrap().owner = Owner::Spouse;
-    assert_eq!(crate::cooperative::graph_rule(&wrong), Some("COOP_RECIPIENT_LINK_INVALID"));
-    let FederalIncome::Cooperative { data } = &mut wrong.income.last_mut().unwrap().income else {
-        unreachable!()
-    };
-    data.allocations[0].activity = None;
+    wrong.income.last_mut().unwrap().owner = crate::DocumentOwner::Spouses;
+    // A source owned by the other filer cannot reference this farm's parcel.
+    let accepted = wrong.clone();
     assert_eq!(crate::cooperative::graph_rule(&wrong), Some("COOP_PROPERTY_LINK_UNAVAILABLE"));
+    assert_eq!(wrong, accepted);
 }
 
 #[test]
 fn coop_land_basis_exhaustion_preserves_required_tax_boundary() {
     let mut d = conservation_return();
-    let activity = d.income[1].id;
     let parcel = farmland_basis_mut(&mut d).id;
     farmland_basis_mut(&mut d).regular = 20000;
     farmland_basis_mut(&mut d).amt = 10000;
     let mut data = FederalCooperative { patronage: 30000, ..Default::default() };
-    let mut a = crate::cooperative::automatic(&data, Some(activity));
+    let mut a = crate::cooperative::automatic(&data);
     a.properties.push(CoopPropertyRefund {
         distribution: CoopDistributionBox::Patronage,
         property: Some(parcel),
@@ -938,7 +1012,7 @@ fn coop_land_basis_exhaustion_preserves_required_tax_boundary() {
         treatment: CoopPropertyTreatment::Purchase,
     });
     data.allocations.push(a);
-    add(&mut d, income(FederalIncome::Cooperative { data }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
     assert_eq!(crate::cooperative::graph_rule(&d), None);
     let r = estimate(&d);
     assert_eq!(r.state, ResultState::Unsupported);
@@ -948,19 +1022,17 @@ fn coop_land_basis_exhaustion_preserves_required_tax_boundary() {
 
 #[test]
 fn coop_public_land_catalog_save_reopen_and_forged_link_preserve_actual_ids() {
-    use crate::tests::cross::interview::{accepted, document, open_topic, page_documents};
+    use crate::tests::cross::interview::{accepted, document, page_documents};
     let mut d = conservation_return();
     let activity = d.income[1].id;
     let parcel = farmland_basis_mut(&mut d).id;
     farmland_basis_mut(&mut d).regular = 10000000;
     farmland_basis_mut(&mut d).amt = 9000000;
     let mut s = Interview::new(TEST_USER, d);
-    let mut page = open_topic(&mut s, TaxSection::Farming);
-    let P::SaveIncomes { cooperative_properties, documents, .. } = &mut page else {
-        unreachable!()
-    };
+    let page = open_document_center(&mut s);
+    let P::SaveDocuments { cooperative_properties, .. } = &page else { unreachable!() };
     assert!(cooperative_properties.iter().any(|p| p.id == parcel));
-    let mut patr = patr_page(30000, 0, Some(activity));
+    let mut patr = patr_page(30000, 0);
     patr.more.allocations[0].properties.push(CoopPropertyRefundInput {
         distribution: CoopDistributionBox::Patronage,
         property: Some(parcel),
@@ -971,31 +1043,41 @@ fn coop_public_land_catalog_save_reopen_and_forged_link_preserve_actual_ids() {
         qualified_payments: 0,
         treatment: CoopPropertyTreatment::Purchase,
     });
-    documents.documents.push(document(0, IncomeDocument::Patr1099(patr)));
-    accepted(&send(&mut s, page));
+    let page = save_documents(
+        &mut s,
+        vec![document(0, IncomeSource::Farming(cooperative_document(patr)))],
+    );
+    accepted(&if matches!(page, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, page)
+    } else {
+        send(&mut s, page)
+    });
     let saved = s.draft.clone();
     let mut s = restart(saved.clone());
-    let mut page = open_topic(&mut s, TaxSection::Farming);
-    let row = page_documents(&page)
-        .iter()
-        .find(|p| matches!(p.document, IncomeDocument::Patr1099(_)))
-        .unwrap();
-    let IncomeDocument::Patr1099(patr) = &row.document else { unreachable!() };
-    assert_eq!(patr.more.allocations[0].properties[0].property, Some(parcel));
+    let page = open_document_center(&mut s);
+    let rows = page_documents(&page);
+    let row = rows.iter().find(|p| matches!(p.document, IncomeSource::Farming(_))).unwrap();
     let parent = row.id;
+    let source = s.draft.income.iter().find(|entry| entry.id == parent).unwrap();
+    let FederalIncome::Cooperative { data: patr } = &source.income else { unreachable!() };
+    assert_eq!(patr.more.allocations[0].properties[0].property, Some(parcel));
     let allocation = patr.more.allocations[0].id;
     assert!(allocation > parent);
     let before = s.draft.clone();
-    let P::SaveIncomes { cooperative_properties, documents, .. } = &mut page else {
+    let mut page =
+        crate::tests::support::client::income_pages::open_topic(&mut s, TaxSection::Farming);
+    let P::SaveIncomes { cooperative_properties, followups, .. } = &mut page else {
         unreachable!()
     };
     cooperative_properties.push(RecordChoice { id: 999999, label: vec![] });
-    let IncomeDocument::Patr1099(patr) =
-        &mut documents.documents.iter_mut().find(|p| p.id == parent).unwrap().document
-    else {
+    let row = followups
+        .iter_mut()
+        .find(|row| row.key == alloc::format!("income/{parent}/allocations"))
+        .unwrap();
+    let crate::DocumentAnswer::CooperativeAllocations { value } = &mut row.answer else {
         unreachable!()
     };
-    patr.more.allocations[0].properties[0].property = Some(999999);
+    value[0].properties[0].property = Some(999999);
     assert!(matches!(send(&mut s, page), Reply::Response(P::Problem { .. })));
     assert_eq!(s.draft, before);
     assert_eq!(s.draft.next_id, saved.next_id);

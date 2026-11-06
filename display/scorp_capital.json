@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 359000, "rule": {"select": "^<ScorpCapital>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["short", "long", "collectibles", "unrecaptured_partnership", "unrecaptured_fund"]}, {"ratio": 1, "fields": ["basis_short", "basis_long", "basis_collectibles", "risk_short", "risk_long", "risk_collectibles"]}]}},
+    {"order": 950000, "rule": {"select": "^<ScorpCapital>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SCAP_GAINS", "fields": ["short", "long", "collectibles", "unrecaptured_partnership", "unrecaptured_fund"]}, {"title": "DISPLAY_SCAP_BASIS", "fields": ["basis_short", "basis_long", "basis_collectibles"]}, {"title": "DISPLAY_SCAP_RISK", "fields": ["risk_short", "risk_long", "risk_collectibles"]}]}},
+    {"order": 951000, "rule": {"select": "^<ScorpCapital>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SCAP_GAINS", "fields": ["short", "long", "collectibles", "unrecaptured_partnership", "unrecaptured_fund"]}, {"title": "DISPLAY_SCAP_BASIS", "fields": ["basis_short", "basis_long", "basis_collectibles"]}, {"title": "DISPLAY_SCAP_RISK", "fields": ["risk_short", "risk_long", "risk_collectibles"]}]}}
+  ]
+}

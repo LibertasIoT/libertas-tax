@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::{accepted, open_document_center};
 
 // 2026-10-14 dispatcher42d62e01 corrects the original destination-based
 // hypotheses: pure W-2 amounts retain their source on native8t/8u/8s.
@@ -56,7 +56,16 @@ fn unit13_wage_classification_combined_source_rounding_diagnostic() {
                 let result = supported(&draft);
                 assert_wage_classification_money(&result, WageClassificationCase::MedicaidCombined);
                 let mut session = Interview::new(TEST_USER, draft.clone());
-                let request = open_topic(&mut session, TaxSection::Wages);
+                crate::tests::support::client::admit_native_fixture_facts(&mut session);
+                let source = open_document_center(&mut session);
+                accepted(&send(&mut session, source));
+                let draft = session.draft.clone();
+                let accepted_result = supported(&draft);
+                let mut expected = result;
+                expected.revision = accepted_result.revision;
+                assert_eq!(accepted_result, expected);
+                let result = accepted_result;
+                let request = open_document_center(&mut session);
                 accepted(&send(&mut session, request));
                 assert_eq!(session.draft, draft);
                 assert_eq!(estimate(&session.draft), result);

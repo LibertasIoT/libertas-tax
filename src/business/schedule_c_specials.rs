@@ -32,7 +32,8 @@ pub struct OtherBusinessIncome {
     pub description: String,
     /// Amount
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -43,7 +44,8 @@ pub struct MealExpense {
     pub kind: MealKind,
     /// Cost before the limit
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -72,12 +74,14 @@ pub struct DeMinimisElection {
     /// Purchases deducted under the election
     /// The business share of every 2026 purchase that qualifies, with the delivery and installation charges on the same invoice. Schedule C Part V line 48.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub purchases: i64,
     /// Largest invoice or item
     /// The full cost of the most expensive item, or of the invoice when items are not priced separately, before any personal-use share. Do not split one item across invoices. At most $2,500, or $5,000 with an applicable financial statement.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub largest_item: i64,
     /// Applicable financial statement
     /// Yes means a statement filed with the SEC, a certified audited statement used for credit, shareholders or another substantial non-tax purpose, or one required by a federal or state agency other than the IRS or SEC, and written expensing procedures in place at the start of 2026. Ordinary bookkeeping or an unaudited statement is No. Answer the same for every business and rental on this return.
@@ -134,6 +138,7 @@ impl BusinessDepletion {
             );
         }
         let record = FederalRoyalty {
+            related: alloc::vec![],
             kind: self.kind.clone(),
             depletion: self.depletion.clone(),
             receipts: 0,
@@ -148,6 +153,7 @@ impl BusinessDepletion {
     }
     pub(crate) fn valid(&self) -> bool {
         let record = FederalRoyalty {
+            related: alloc::vec![],
             kind: self.kind.clone(),
             depletion: self.depletion.clone(),
             receipts: 0,

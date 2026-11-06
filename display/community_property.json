@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 465000, "rule": {"select": "^<CommunityProperty>", "flatten": true}},
+    {"order": 465500, "rule": {"select": "^<CommunityAnswer>", "flatten": true}},
+    {"order": 466000, "rule": {"select": "^<CommunityState>", "flatten": true}},
+    {"order": 467000, "rule": {"select": "^<CommunityShare>", "flatten": true}}
+  ]
+}

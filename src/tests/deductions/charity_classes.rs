@@ -1,11 +1,12 @@
-// Approved Unit15 F1-F7; independent whole-return controls, IRC170 and Form8283.
+// Independent whole-return charity controls, IRC170 and Form8283.
 use super::*;
+use crate::tests::support::builders::vehicle_gift_source;
 
 fn itemizer(agi: i64) -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     d.income = vec![wage(1, Owner::Taxpayer, agi * 100, 0)];
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     d
 }
 fn property(kind: GiftKind, basis: i64, value: i64) -> PropertyGift {
@@ -65,8 +66,9 @@ fn unit15_f1_mixed_public_property_direct_cash_and_fund_cash() {
     assert_eq!(value(&r, "charity_cash_sixty_return_year_carryforward"), 5_000);
     assert_eq!(value(&r, "charity_property_fifty_return_year_carryforward"), 0);
     reopens(d.clone(), r);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    assert_eq!(return_line(&supported(&d), "12f"), 100_000);
+    d.deductions.as_mut().unwrap().itemize_override = None;
+    // 2026-11-02: the retained 59,500 itemized deduction remains larger under automatic selection.
+    assert_eq!(return_line(&supported(&d), "12f"), 0);
 }
 #[test]
 fn unit15_f2_private_foundation_stock_and_family_ten_percent() {
@@ -119,17 +121,16 @@ fn unit15_f4_sold_vehicle_proceeds_small_sale_and_return_benefit() {
     let mut g = donated_personal_vehicle(VehicleUse::Sold { sold: 20261001, proceeds: 320_000 });
     g.value = 400_000;
     g.basis = 1_200_000;
-    d.deductions.as_mut().unwrap().property_gifts.push(g);
+    push_gift(d.deductions.as_mut().unwrap(), g);
     let r = supported(&d);
     schedule_a(&r, [0, 2_900, 2_900, 0, 2_900]);
     reopens(d.clone(), r);
-    d.deductions.as_mut().unwrap().property_gifts[0].benefit_received = Some(20_000);
+    let form = &mut d.deductions.as_mut().unwrap().vehicle_gift_documents[0].form;
+    (form.box_6a_yes, form.box_6a_no, form.box_6b) = (true, false, 20_000);
     schedule_a(&supported(&d), [0, 2_700, 2_700, 0, 2_700]);
-    let g = &mut d.deductions.as_mut().unwrap().property_gifts[0];
-    g.benefit_received = None;
-    if let GiftKind::Vehicle { treatment: VehicleUse::Sold { proceeds, .. }, .. } = &mut g.kind {
-        *proceeds = 45_000;
-    }
+    let form = &mut d.deductions.as_mut().unwrap().vehicle_gift_documents[0].form;
+    (form.box_6a_yes, form.box_6a_no, form.box_6b) = (false, true, 0);
+    form.box_4c = 45_000;
     let r = supported(&d);
     assert_eq!(value(&r, "charity_property_1_claim"), 500);
     assert_eq!(value(&r, "form_8283_needed"), 0);
@@ -167,13 +168,13 @@ fn unit15_f5_class_current_first_prior_floor_and_basis_election() {
 fn unit15_f6_basis_allowed_k1_cash_current_limit_before_prior_cash() {
     let mut d = itemizer(50_000);
     let mut source = complete_ordinary_scorp(0, true);
-    source.opening = 1_500_000;
+    source.opening = Some(1_500_000);
     source.loans.clear();
     source.cash_charity = 2_000_000;
     source.amt = Some(amt_records(&source));
     // Only15000 of20000 source cash survives the actual Form7203 basis owner.
     assert_eq!(source.allowed_cash_charity(), 1_500_000);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let ded = d.deductions.as_mut().unwrap();
     ded.cash_charity = 2_000_000;
     ded.charity_carryovers.push(prior_cash_charity(2025, 5_000));
@@ -335,7 +336,7 @@ fn unit15_appraisal_calendar_window_uses_report_effective_and_declaration_separa
 fn unit15_nonitemizer_excludes_fund_other_cash_volunteer_and_prior_balances() {
     let mut d = itemizer(60_000);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.fund_cash_charity = 1_000_000;
     ded.other_cash_charity = 1_000_000;
     ded.volunteer_expenses
@@ -386,4 +387,150 @@ fn unit15_nol_adjustment_conserves_public_and_other_cash_classes() {
         assert_eq!(value(&r, "charity_return_year_carryforward"), public_carry + other_carry);
         reopens(d, r);
     }
+}
+
+#[test]
+fn form1098c_printed_sale_correction_feeds_the_existing_charity_claim() {
+    use crate::tests::support::client::income_pages::open_document_center;
+    let mut native =
+        donated_personal_vehicle(VehicleUse::Sold { sold: 20261001, proceeds: 320_000 });
+    native.value = 400_000;
+    native.basis = 1_200_000;
+    let (mut document, source) = vehicle_gift_source(native);
+    document.id = 0;
+    document.form.donee.name = "Synthetic Care Vehicles".into();
+    document.form.box_2b = Some(2018);
+    document.form.box_2c = "Example".into();
+    document.form.box_2d = "Sedan".into();
+    let gift = PropertyGift::try_from((&source, &document.form)).unwrap();
+    assert_eq!(gift.charity, "Synthetic Care Vehicles");
+    assert_eq!(gift.description, "2018 Example Sedan");
+    assert!(
+        matches!(&gift.kind, GiftKind::Vehicle { vin, treatment: VehicleUse::Sold { sold: 20261001, proceeds: 320_000 } } if vin == &document.form.box_3)
+    );
+    assert_eq!(gift.claim(false).1, 320_000);
+    document.form.treatment = None;
+    let mut session = Interview::new(TEST_USER, itemizer(60_000));
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.vehicle_gifts.documents.push(document);
+    accepted(&send(&mut session, request));
+    let ded = session.draft.deductions.as_ref().unwrap();
+    let id = ded.vehicle_gift_documents[0].id;
+    assert!(id > 0);
+    assert!(ded.vehicle_gift_documents[0].assigned.is_known());
+    assert!(ded.vehicle_gifts.is_empty(), "paper creates no personal facts");
+    assert_eq!(ded.gifts().unwrap_err().key, "VEHICLE_GIFT_FACTS_NEEDED");
+    assert!(session.draft.valid_stored(), "unresolved treatment saves as pending");
+    let mut correction = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    documents.other.vehicle_gifts.documents[0].form.treatment = Some(Form1098CTreatment::Sold);
+    accepted(&send(&mut session, correction));
+    let mut request = crate::tests::cross::interview::open_itemized_topic(
+        &mut session,
+        TaxSection::GiftCarryovers,
+    );
+    let P::SaveGiftCarryovers { value: page, .. } = &mut request else { unreachable!() };
+    assert_eq!(page.vehicles[0].document.id, id);
+    assert!(page.vehicles[0].gift.is_none());
+    page.vehicles[0].gift = Some(source);
+    accepted(&send(&mut session, request));
+    let personal = session.draft.deductions.as_ref().unwrap().vehicle_gifts[0].clone();
+    assert_eq!(personal.id, id);
+    let result = supported(&session.draft);
+    schedule_a(&result, [0, 2_900, 2_900, 0, 2_900]);
+    session = restart(session.draft.clone());
+    assert_eq!(supported(&session.draft), result);
+    let mut correction = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    documents.other.vehicle_gifts.documents[0].form.box_4c = 240_000;
+    accepted(&send(&mut session, correction));
+    assert_eq!(session.draft.deductions.as_ref().unwrap().vehicle_gifts[0], personal);
+    let corrected = supported(&session.draft);
+    assert_eq!(value(&corrected, "charity_property_1_claim"), 2_400);
+    schedule_a(&corrected, [0, 2_100, 2_100, 0, 2_100]);
+    session = restart(session.draft.clone());
+    assert_eq!(supported(&session.draft), corrected);
+    let mut benefit = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut benefit else { unreachable!() };
+    let form = &mut documents.other.vehicle_gifts.documents[0].form;
+    form.box_4c = 320_000;
+    form.box_6a_yes = true;
+    form.box_6a_no = false;
+    form.box_6b = 20_000;
+    accepted(&send(&mut session, benefit));
+    schedule_a(&supported(&session.draft), [0, 2_700, 2_700, 0, 2_700]);
+    let mut small_sale = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut small_sale else { unreachable!() };
+    let form = &mut documents.other.vehicle_gifts.documents[0].form;
+    form.box_4c = 45_000;
+    form.box_6a_yes = false;
+    form.box_6a_no = true;
+    form.box_6b = 0;
+    accepted(&send(&mut session, small_sale));
+    let small_sale = supported(&session.draft);
+    assert_eq!(value(&small_sale, "charity_property_1_claim"), 500);
+    assert_eq!(value(&small_sale, "form_8283_needed"), 0);
+    let mut removal = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut removal else { unreachable!() };
+    documents.other.vehicle_gifts.documents.clear();
+    accepted(&send(&mut session, removal));
+    assert!(session.draft.deductions.as_ref().unwrap().vehicle_gifts.is_empty());
+    assert!(restart(session.draft).draft.deductions.unwrap().vehicle_gift_documents.is_empty());
+}
+
+#[test]
+fn form1098c_box5a_preserves_combined_certification_and_unresolved_facts() {
+    let mut native = donated_personal_vehicle(VehicleUse::SignificantUse {
+        details: "Major repairs followed by daily meal deliveries for one year".into(),
+    });
+    native.value = 400_000;
+    let (mut document, source) = vehicle_gift_source(native);
+    document.form.treatment =
+        Some(crate::charity::Form1098CTreatment::SignificantUseOrMaterialImprovement);
+    let gift = PropertyGift::try_from((&source, &document.form)).unwrap();
+    assert!(matches!(&gift.kind, GiftKind::Vehicle {
+        treatment: VehicleUse::SignificantUse { details }, ..
+    } if details == "Major repairs followed by daily meal deliveries for one year"));
+    assert_eq!(gift.claim(false).1, 400_000);
+    document.form.treatment = Some(crate::charity::Form1098CTreatment::MaterialImprovement);
+    assert_eq!(PropertyGift::try_from((&source, &document.form)).unwrap().claim(false).1, 400_000);
+    document.form.treatment = None;
+    let issue = PropertyGift::try_from((&source, &document.form)).unwrap_err().issue();
+    assert_eq!(issue.key, "VEHICLE_TREATMENT_NEEDED");
+    assert_eq!(issue.field.unwrap().square(), "[form/treatment]");
+    let mut d = itemizer(60_000);
+    d.deductions.as_mut().unwrap().vehicle_gift_documents.push(document);
+    d.deductions.as_mut().unwrap().vehicle_gifts.push(source);
+    let issue = d.deductions.as_ref().unwrap().gifts().unwrap_err();
+    assert_eq!(issue.key, "VEHICLE_TREATMENT_NEEDED");
+    assert_eq!(issue.field.unwrap().square(), "[vehicle_gifts/0/form/treatment]");
+    let result = estimate(&d);
+    let pending =
+        result.issues.iter().find(|issue| issue.display.key == "VEHICLE_TREATMENT_NEEDED").unwrap();
+    assert_eq!(pending.context, IssueContext::Section(TaxSection::Documents));
+}
+
+#[test]
+fn form1098c_absent_vehicle_year_survives_document_save_and_restart() {
+    use crate::tests::support::client::income_pages::open_document_center;
+    let native = donated_personal_vehicle(VehicleUse::Sold { sold: 20261001, proceeds: 320_000 });
+    let (mut document, source) = vehicle_gift_source(native);
+    document.id = 0;
+    document.form.box_2b = None;
+    document.form.box_2c = "Example".into();
+    document.form.box_2d = "Sedan".into();
+    let expected = PropertyGift::try_from((&source, &document.form)).unwrap();
+    assert_eq!(expected.description, "Example Sedan");
+    let mut session = Interview::new(TEST_USER, itemizer(60_000));
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.vehicle_gifts.documents.push(document);
+    accepted(&send(&mut session, request));
+    session = restart(session.draft);
+    let request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &request else { unreachable!() };
+    let form = &documents.other.vehicle_gifts.documents[0].form;
+    assert_eq!(form.box_2b, None);
+    assert_eq!(PropertyGift::try_from((&source, form)).unwrap(), expected);
 }

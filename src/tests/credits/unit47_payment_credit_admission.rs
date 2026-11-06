@@ -1,9 +1,10 @@
-use crate::tests::support::client::survey::survey_native_refusal as refuse;
 use super::*;
 use crate::tests::support::client::source_calculation;
+use crate::tests::support::client::survey::survey_native_refusal as refuse;
 
 fn calculation(request: &P) -> P {
     match request {
+        P::SaveDocuments { .. } => request.clone(),
         P::SavePayments {
             allowed_prior_returns,
             allowed_farmer,
@@ -19,47 +20,9 @@ fn calculation(request: &P) -> P {
             allowed_refund_management: allowed_refund_management.clone(),
             value: value.clone().into(),
         },
-        P::SaveMoreCredits {
-            allowed_owners,
-            foreign_businesses,
-            capital_sales,
-            foreign_situations,
-            mortgage_loans,
-            businesses,
-            farms,
-            clean_vehicle_properties,
-            rentals,
-            research_businesses,
-            entered_credits,
-            carryback_credits,
-            allowed_carry_filers,
-            initial_credit_elections,
-            initial_research_choices,
-            value,
-            initial_carbon_oxide_origins,
-            initial_renewable_facility_origins,
-            ..
-        } => P::EstimateMoreCredits {
-            user: TEST_USER,
-            allowed_owners: allowed_owners.clone(),
-            foreign_businesses: foreign_businesses.clone(),
-            capital_sales: capital_sales.clone(),
-            foreign_situations: foreign_situations.clone(),
-            mortgage_loans: mortgage_loans.clone(),
-            businesses: businesses.clone(),
-            farms: farms.clone(),
-            clean_vehicle_properties: clean_vehicle_properties.clone(),
-            rentals: rentals.clone(),
-            research_businesses: research_businesses.clone(),
-            entered_credits: entered_credits.clone(),
-            carryback_credits: carryback_credits.clone(),
-            allowed_carry_filers: allowed_carry_filers.clone(),
-            initial_credit_elections: initial_credit_elections.clone(),
-            initial_research_choices: initial_research_choices.clone(),
-            value: value.clone(),
-            initial_carbon_oxide_origins: initial_carbon_oxide_origins.clone(),
-            initial_renewable_facility_origins: initial_renewable_facility_origins.clone(),
-        },
+        P::SaveMoreCredits { .. } => {
+            crate::tests::support::client::credit_documents::more_credits_calculation(request)
+        }
         P::SaveGiftCarryovers {
             allowed_owners,
             retained_charity_k1s,
@@ -88,16 +51,17 @@ fn calculation(request: &P) -> P {
             coverdell_corrections: coverdell_corrections.clone(),
             value: value.clone(),
         },
-        P::SaveEmployeeExpenses {
-            allowed_owners,
-            value,
-            ..
-        } => P::EstimateEmployeeExpenses {
+        P::SaveEmployeeExpenses { allowed_owners, value, .. } => P::EstimateEmployeeExpenses {
+            rental_energy_buildings: Vec::new(),
+            initial_asset_amt_carry_choices: Vec::new(),
             user: TEST_USER,
             allowed_owners: allowed_owners.clone(),
             value: value.clone(),
         },
-        _ => panic!("payment, credit, gift, tax, or employee editor required"),
+        P::SaveOftenMissed { value, .. } => {
+            P::EstimateOftenMissed { user: TEST_USER, value: value.clone() }
+        }
+        _ => panic!("payment, credit, gift, tax, situation, or employee editor required"),
     }
 }
 
@@ -118,18 +82,17 @@ pub(super) fn case(
     path: &str,
 ) {
     refuse(case, session, bad.clone(), key, path);
-    refuse(
-        &alloc::format!("{case}-estimate"),
-        session,
-        calculation(&bad),
-        key,
-        path,
-    );
+    refuse(&alloc::format!("{case}-estimate"), session, calculation(&bad), key, path);
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let reply = send(session, calculation(&corrected));
+    let reply = crate::tests::support::client::income_pages::candidate_save_review(
+        session,
+        calculation(&corrected),
+    );
     assert!(if matches!(corrected, P::SavePayments { .. }) {
         matches!(reply, Reply::Response(P::PaymentsEstimate { .. }))
+    } else if matches!(corrected, P::SaveDocuments { .. }) {
+        matches!(reply, Reply::Response(P::Review { .. }))
     } else {
         matches!(reply, Reply::Response(P::RunningEstimate { .. }))
     });
@@ -163,30 +126,20 @@ fn unit47_payment_extension_payer_iff_locates_both_absence_failures() {
     for present in [false, true] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open(&mut session, TaxSection::Payments);
-        let P::SavePayments { value, .. } = &mut corrected else {
-            unreachable!()
+        let P::SavePayments { value, .. } = &mut corrected else { unreachable!() };
+        value.estimated = crate::EstimatedPaymentEntry::Sources {
+            payments: vec![crate::InjuredDatedPayment {
+                date: 20260415,
+                amount: 1_000,
+                payer: PaymentPayer::Taxpayer,
+                refund_property: None,
+            }],
         };
-        value.estimated = vec![crate::InjuredDatedPayment {
-            date: 20260415,
-            amount: 1_000,
-            payer: PaymentPayer::Taxpayer,
-            refund_property: None,
-        }];
         value.extension = if present { 10_000 } else { 0 };
-        value.extension_payer = if present {
-            Some(PaymentPayer::Taxpayer)
-        } else {
-            None
-        };
+        value.more.extension_payer = if present { Some(PaymentPayer::Taxpayer) } else { None };
         let mut bad = corrected.clone();
-        let P::SavePayments { value, .. } = &mut bad else {
-            unreachable!()
-        };
-        value.extension_payer = if present {
-            None
-        } else {
-            Some(PaymentPayer::Taxpayer)
-        };
+        let P::SavePayments { value, .. } = &mut bad else { unreachable!() };
+        value.more.extension_payer = if present { None } else { Some(PaymentPayer::Taxpayer) };
         case(
             &alloc::format!("admission-payment-extension-{present}"),
             &mut session,
@@ -194,7 +147,7 @@ fn unit47_payment_extension_payer_iff_locates_both_absence_failures() {
             corrected,
             TaxSection::Payments,
             "INJURED_SPOUSE_EXTENSION_PAYER_REQUIRED",
-            "[value/extension_payer]",
+            "[value/more/extension_payer]",
         );
     }
 }
@@ -203,36 +156,20 @@ fn unit47_payment_withholding_uses_real_return_total_and_precedes_farmer_guard()
     for mutation in 0..3 {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open(&mut session, TaxSection::Payments);
-        let P::SavePayments { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SavePayments { value, .. } = &mut corrected else { unreachable!() };
         let total = value.withheld.as_ref().unwrap().total;
         assert!(total > 0);
-        value.penalty = penalty(
-            WithholdingTiming::ByPeriod {
-                first: total,
-                second: 0,
-                third: 0,
-                fourth: 0,
-            },
+        value.more.penalty = penalty(
+            WithholdingTiming::ByPeriod { first: total, second: 0, third: 0, fourth: 0 },
             Farmer::No,
             IncomeTiming::Evenly,
         );
         let mut bad = corrected.clone();
-        let P::SavePayments { value, .. } = &mut bad else {
+        let P::SavePayments { value, .. } = &mut bad else { unreachable!() };
+        let PenaltyChoice::Figure { withholding, farmer, .. } = &mut value.more.penalty else {
             unreachable!()
         };
-        let PenaltyChoice::Figure {
-            withholding,
-            farmer,
-            ..
-        } = &mut value.penalty
-        else {
-            unreachable!()
-        };
-        let WithholdingTiming::ByPeriod { first, fourth, .. } = withholding else {
-            unreachable!()
-        };
+        let WithholdingTiming::ByPeriod { first, fourth, .. } = withholding else { unreachable!() };
         if mutation == 0 {
             *first -= 1;
         } else {
@@ -243,9 +180,7 @@ fn unit47_payment_withholding_uses_real_return_total_and_precedes_farmer_guard()
             value.withheld.as_mut().unwrap().total = total + 1;
         }
         if mutation == 2 {
-            *farmer = Farmer::Yes {
-                paid_by_march_1: false,
-            };
+            *farmer = Farmer::Yes { paid_by_march_1: false };
         }
         case(
             &alloc::format!("admission-payment-withholding-{mutation}"),
@@ -254,7 +189,7 @@ fn unit47_payment_withholding_uses_real_return_total_and_precedes_farmer_guard()
             corrected,
             TaxSection::Payments,
             "WITHHOLDING_PERIODS_NOT_TOTAL",
-            "[value/penalty/withholding]",
+            "[value/more/penalty/withholding]",
         );
     }
 }
@@ -263,44 +198,29 @@ fn unit47_payment_farmer_timing_locates_actual_conflicting_choice() {
     for mutation in 0..3 {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open(&mut session, TaxSection::Payments);
-        let P::SavePayments { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SavePayments { value, .. } = &mut corrected else { unreachable!() };
         let total = value.withheld.as_ref().unwrap().total;
-        value.penalty = penalty(
+        value.more.penalty = penalty(
             WithholdingTiming::Evenly,
-            Farmer::Yes {
-                paid_by_march_1: false,
-            },
+            Farmer::Yes { paid_by_march_1: false },
             IncomeTiming::Evenly,
         );
         let mut bad = corrected.clone();
-        let P::SavePayments { value, .. } = &mut bad else {
-            unreachable!()
-        };
-        let PenaltyChoice::Figure {
-            withholding,
-            income,
-            ..
-        } = &mut value.penalty
-        else {
+        let P::SavePayments { value, .. } = &mut bad else { unreachable!() };
+        let PenaltyChoice::Figure { withholding, income, .. } = &mut value.more.penalty else {
             unreachable!()
         };
         if mutation != 1 {
-            *withholding = WithholdingTiming::ByPeriod {
-                first: total,
-                second: 0,
-                third: 0,
-                fourth: 0,
-            };
+            *withholding =
+                WithholdingTiming::ByPeriod { first: total, second: 0, third: 0, fourth: 0 };
         }
         if mutation != 0 {
             *income = IncomeTiming::ByPeriod;
         }
         let field = if mutation == 1 {
-            "[value/penalty/income]"
+            "[value/more/penalty/income]"
         } else {
-            "[value/penalty/withholding]"
+            "[value/more/penalty/withholding]"
         };
         case(
             &alloc::format!("admission-payment-farmer-{mutation}"),
@@ -313,81 +233,152 @@ fn unit47_payment_farmer_timing_locates_actual_conflicting_choice() {
         );
     }
 }
-fn bond(id: &str, source: i64, amount: i64) -> TaxCreditBondInput {
-    let mut record = direct_tax_credit_bond(
-        id,
-        FederalTaxCreditBondKind::QualifiedSchoolConstruction,
-        1_000,
-    );
-    record.origin = TaxCreditOrigin::EntityStatement(TaxCreditEntity {
+fn bond(id: &str, source: i64, amount: i64) -> FederalTaxCreditBond1097 {
+    let mut record =
+        direct_tax_credit_bond(id, FederalTaxCreditBondKind::QualifiedSchoolConstruction, 1_000);
+    record.answers.origin = Some(TaxCreditOrigin::EntityStatement(TaxCreditEntity {
         entity: "Synthetic shareholder report".into(),
         designated_income: 200_000,
         income_already_reported: amount,
         income_kind: TaxCreditIncomeKind::RicDistribution,
         income_source: Some(source),
-    });
-    record.into()
+    }));
+    record
 }
 pub(super) fn bond_editor() -> (Interview, P, i64) {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut page = open_topic(&mut session, TaxSection::InterestDividends);
-    let P::SaveIncomes { documents, .. } = &mut page else {
-        unreachable!()
-    };
-    documents.documents = vec![document(
-        0,
-        IncomeDocument::Div1099(native_div1099("Synthetic accepted RIC".into(), 100_000, 0)),
-    )];
+    let page =
+        crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(
+                        native_div1099("Synthetic accepted RIC".into(), 100_000, 0),
+                    )),
+                },
+            )],
+        );
     accepted(&send(&mut session, page));
-    let mut page = open(&mut session, TaxSection::MoreCredits);
-    let P::SaveMoreCredits { value, .. } = &mut page else {
+    let mut page = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, credit_income_sources, .. } = &mut page else {
         unreachable!()
     };
-    let sources = &value.credit_income_sources;
-    assert_eq!(sources.len(), 1);
-    let source = sources[0].id;
-    assert_eq!(sources[0].amount, 100_000);
-    value.credits = vec![
-        MoreCredit::DeclineEarnedIncomeCredit,
-        MoreCredit::TaxCreditBonds {
-            tax_credit_bonds: vec![
-                bond("FIRST", source, 60_000),
-                bond("SECOND", source, 40_000),
-            ],
-        },
-    ];
+    assert_eq!(credit_income_sources.len(), 1);
+    let source = credit_income_sources[0].id;
+    assert_eq!(credit_income_sources[0].amount, 100_000);
+    // Each form prints your name, so it is yours.
+    let you = fixture_document_names(&session.draft, -1).unwrap().recipient;
+    let mut bonds = vec![bond("FIRST", source, 60_000), bond("SECOND", source, 40_000)];
+    documents.other.credits.documents = bonds
+        .iter_mut()
+        .map(|bond| {
+            bond.form.recipient = you.clone();
+            crate::CreditDocument::CreditBond(alloc::boxed::Box::new(bond.clone().into()))
+        })
+        .collect();
+    accepted(&send(&mut session, page));
+    for bond in &mut bonds {
+        bond.id = session
+            .draft
+            .credits
+            .as_ref()
+            .unwrap()
+            .tax_credit_bonds
+            .iter()
+            .find(|accepted| accepted.form.unique_identifier == bond.form.unique_identifier)
+            .unwrap()
+            .id;
+    }
+    // The second bond's origin is first recorded without its linked source;
+    // the page's corrected origin is the save under test.
+    let mut first = bonds.clone();
+    let Some(TaxCreditOrigin::EntityStatement(entity)) = &mut first[1].answers.origin else {
+        unreachable!()
+    };
+    entity.income_source = None;
+    entity.income_already_reported = 0;
+    let mut page = crate::tests::support::client::credit_documents::credit_document_answers_request(
+        &mut session,
+        &first,
+        None,
+    );
+    let Some(TaxCreditOrigin::EntityStatement(intended)) = bonds[1].answers.origin.clone() else {
+        unreachable!()
+    };
+    *crate::tests::support::client::credit_documents::answered_origin(&mut page, 1).1 =
+        intended.into();
     (session, page, source)
 }
+#[test]
+fn unit47_form8986_paper_admission_precedes_unanswered_personal_records() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let mut paper = bba_interest_reduction().into_parts().0;
+    paper.partner = fixture_document_names(&session.draft, -1).unwrap().recipient;
+    let mut page = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    documents.other.credits.documents =
+        vec![crate::CreditDocument::PartnershipAudit(alloc::boxed::Box::new(
+            crate::PartnershipAuditRow { id: 0, document: paper },
+        ))];
+    accepted(&send(&mut session, page));
+    let mut expected = session.draft.credits.as_ref().unwrap().bba_audit_interest.clone().unwrap();
+    assert_eq!(expected.answers, crate::BbaAuditAnswers::default());
+
+    let mut corrected = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut corrected else { unreachable!() };
+    let crate::CreditDocument::PartnershipAudit(paper) = &mut documents.other.credits.documents[0]
+    else {
+        unreachable!()
+    };
+    crate::tests::support::builders::set_8986_interest(&mut paper.document, 10_000, -5_000);
+    expected.document = paper.document.clone();
+    let mut bad = corrected.clone();
+    let P::SaveDocuments { documents, .. } = &mut bad else { unreachable!() };
+    let crate::CreditDocument::PartnershipAudit(paper) = &mut documents.other.credits.documents[0]
+    else {
+        unreachable!()
+    };
+    // Both printed amounts are valid individually, but corrected interest cannot be negative.
+    crate::tests::support::builders::set_8986_interest(&mut paper.document, 10_000, -20_000);
+    refuse(
+        "admission-form8986-pending-answers",
+        &mut session,
+        bad,
+        "ISSUE_BBA_AUDIT_WHOLE_DOLLAR_VALUES",
+        "[documents/other/credits/documents/0]",
+    );
+    let revision = session.draft.revision;
+    accepted(&send(&mut session, P::from_avro(&corrected.to_avro()).unwrap()));
+    assert_eq!(session.draft.revision, revision + 1);
+    assert_eq!(
+        session.draft.credits.as_ref().unwrap().bba_audit_interest.as_ref(),
+        Some(&expected)
+    );
+}
+
 #[test]
 fn unit47_credit_source_owner_locates_kind_identity_amount_and_aggregate() {
     for mutation in 0..4 {
         let (mut session, corrected, _) = bond_editor();
         let mut bad = corrected.clone();
-        let P::SaveMoreCredits { value, .. } = &mut bad else {
-            unreachable!()
-        };
-        let MoreCredit::TaxCreditBonds { tax_credit_bonds } = &mut value.credits[1] else {
-            unreachable!()
-        };
-        let TaxCreditOriginInput::EntityStatement(entity) = &mut tax_credit_bonds[1].origin else {
-            unreachable!()
-        };
+        let (row, entity) = crate::tests::support::client::credit_documents::answered_origin(&mut bad, 1);
         let path = match mutation {
             0 => {
                 entity.income_kind = TaxCreditIncomeKind::Interest;
-                "[value/credits/1/tax_credit_bonds/1/origin/income_kind]"
+                alloc::format!("[value/answers/{row}/answer/value/income_kind]")
             }
             1 => {
                 entity.income_source = Some(999_999);
-                "[value/credits/1/tax_credit_bonds/1/origin/income_source]"
+                alloc::format!("[value/answers/{row}/answer/value/income_source]")
             }
             2 => {
                 entity.income_already_reported = 100_001;
-                "[value/credits/1/tax_credit_bonds/1/origin/income_already_reported]"
+                alloc::format!("[value/answers/{row}/answer/value/income_already_reported]")
             }
             _ => {
                 entity.income_already_reported += 1;
-                "[value/credits/1/tax_credit_bonds]"
+                "[value/answers]".into()
             }
         };
         case(
@@ -397,32 +388,74 @@ fn unit47_credit_source_owner_locates_kind_identity_amount_and_aggregate() {
             corrected,
             TaxSection::MoreCredits,
             "CREDIT_INCOME_SOURCE_INVALID",
-            path,
+            &path,
         );
     }
 }
 #[test]
-fn unit47_credit_source_projection_uses_last_submitted_bond_section() {
-    let (mut session, mut corrected, source) = bond_editor();
-    let P::SaveMoreCredits { value, .. } = &mut corrected else {
-        unreachable!()
-    };
-    value.credits.insert(
-        1,
-        MoreCredit::TaxCreditBonds {
-            tax_credit_bonds: vec![bond("SUPERSEDED", source, 50_000)],
+fn unit47_credit_source_uses_spouse_assignment_from_the_same_save() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Joint));
+    let dividend = named_document(
+        &session.draft,
+        -2,
+        0,
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(native_div1099(
+                "Synthetic accepted RIC".into(),
+                100_000,
+                0,
+            ))),
         },
     );
+    let page =
+        crate::tests::support::client::income_pages::save_documents(&mut session, vec![dividend]);
+    accepted(&send(&mut session, page));
+    let mut page = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, credit_income_sources, .. } = &mut page else {
+        unreachable!()
+    };
+    assert_eq!(credit_income_sources.len(), 1);
+    assert_eq!(credit_income_sources[0].owner, Owner::Spouse);
+    assert_eq!(credit_income_sources[0].amount, 100_000);
+    let mut bond = bond("SPOUSE", credit_income_sources[0].id, 60_000);
+    // One bond: the share confirmation is never asked.
+    bond.answers.allowed_credit_confirmed = None;
+    documents.other.credits.documents =
+        vec![crate::CreditDocument::CreditBond(alloc::boxed::Box::new(bond.clone().into()))];
+    accepted(&send(&mut session, page));
+    bond.id = session.draft.credits.as_ref().unwrap().tax_credit_bonds[0].id;
+    assert!(unknown_documents(&session.draft).contains(&(bond.id, TaxSection::Documents)));
+    accepted(&add_documents(
+        &mut session,
+        TaxSection::Documents,
+        -2,
+        &[bond.id],
+        crate::AddedOwnership::Yours,
+    ));
+    assert_eq!(session.draft.credits.as_ref().unwrap().tax_credit_bonds[0].owner, Owner::Spouse);
+    let page = crate::tests::support::client::credit_documents::credit_document_answers_request(
+        &mut session,
+        core::slice::from_ref(&bond),
+        None,
+    );
+    accepted(&send(&mut session, page));
+    let saved = session.draft.clone();
+    let accepted_bond = &saved.credits.as_ref().unwrap().tax_credit_bonds[0];
+    assert_eq!(accepted_bond.owner, Owner::Spouse);
+    assert_eq!(accepted_bond.form, bond.form);
+    assert_eq!(accepted_bond.answers, bond.answers);
+    assert!(!unknown_documents(&saved).iter().any(|(id, _)| *id == bond.id));
+    let mut cold = restart(saved.clone());
+    let page = open(&mut cold, TaxSection::MoreCredits);
+    accepted(&send(&mut cold, page));
+    assert_eq!(cold.draft, saved);
+}
+
+#[test]
+fn unit47_credit_source_projection_uses_last_submitted_bond_section() {
+    let (mut session, corrected, _) = bond_editor();
     let mut bad = corrected.clone();
-    let P::SaveMoreCredits { value, .. } = &mut bad else {
-        unreachable!()
-    };
-    let MoreCredit::TaxCreditBonds { tax_credit_bonds } = &mut value.credits[2] else {
-        unreachable!()
-    };
-    let TaxCreditOriginInput::EntityStatement(entity) = &mut tax_credit_bonds[1].origin else {
-        unreachable!()
-    };
+    let (row, entity) = crate::tests::support::client::credit_documents::answered_origin(&mut bad, 1);
     entity.income_source = Some(999_999);
     case(
         "admission-credit-last-section",
@@ -431,7 +464,7 @@ fn unit47_credit_source_projection_uses_last_submitted_bond_section() {
         corrected,
         TaxSection::MoreCredits,
         "CREDIT_INCOME_SOURCE_INVALID",
-        "[value/credits/2/tax_credit_bonds/1/origin/income_source]",
+        &alloc::format!("[value/answers/{row}/answer/value/income_source]"),
     );
 }
 #[test]
@@ -439,12 +472,7 @@ fn unit47_gift_appreciation_owner_locates_real_carryover_and_source() {
     let (draft, source) = crate::tests::credits::form_3800::retained_charity_draft();
     let mut session = Interview::new(TEST_USER, draft);
     let mut corrected = open(&mut session, TaxSection::GiftCarryovers);
-    let P::SaveGiftCarryovers {
-        value,
-        retained_research_choices,
-        ..
-    } = &mut corrected
-    else {
+    let P::SaveGiftCarryovers { value, retained_research_choices, .. } = &mut corrected else {
         unreachable!()
     };
     assert_eq!(retained_research_choices, &vec![0]);
@@ -480,9 +508,7 @@ fn unit47_gift_appreciation_owner_locates_real_carryover_and_source() {
         }),
     });
     let mut bad = corrected.clone();
-    let P::SaveGiftCarryovers { value, .. } = &mut bad else {
-        unreachable!()
-    };
+    let P::SaveGiftCarryovers { value, .. } = &mut bad else { unreachable!() };
     let Some(ResearchCharityPartsPage::Parts { sources }) = &mut value.carryovers[1].research_parts
     else {
         unreachable!()
@@ -504,9 +530,7 @@ fn unit47_employee_standard_interest_and_property_tax_locate_actual_more_fields(
     for property_tax in [false, true] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open(&mut session, TaxSection::EmployeeExpenses);
-        let P::SaveEmployeeExpenses { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveEmployeeExpenses { value, .. } = &mut corrected else { unreachable!() };
         let vehicle = Vehicle {
             method: VehicleMethod::StandardMileage {
                 id: 0,
@@ -517,6 +541,8 @@ fn unit47_employee_standard_interest_and_property_tax_locate_actual_more_fields(
             },
         };
         value.forms = vec![EmployeeExpenseForm {
+            improvement_buildings: Vec::new(),
+            equipment_assets: vec![],
             dot_hours_of_service: false,
             owner: Owner::Taxpayer,
             occupation: "Synthetic fee-basis official".into(),
@@ -530,9 +556,7 @@ fn unit47_employee_standard_interest_and_property_tax_locate_actual_more_fields(
             vehicles: vec![vehicle.clone(), vehicle],
         }];
         let mut bad = corrected.clone();
-        let P::SaveEmployeeExpenses { value, .. } = &mut bad else {
-            unreachable!()
-        };
+        let P::SaveEmployeeExpenses { value, .. } = &mut bad else { unreachable!() };
         let VehicleMethod::StandardMileage { more, .. } = &mut value.forms[0].vehicles[1].method
         else {
             unreachable!()
@@ -560,7 +584,10 @@ fn unit47_employee_standard_interest_and_property_tax_locate_actual_more_fields(
         let before = session.draft.clone();
         let dirty = session.dirty;
         assert!(matches!(
-            send(&mut session, source_calculation(&corrected)),
+            crate::tests::support::client::income_pages::candidate_save_review(
+                &mut session,
+                source_calculation(&corrected)
+            ),
             Reply::Response(P::RunningEstimate { .. })
         ));
         assert_eq!(session.draft, before);
@@ -579,10 +606,10 @@ fn unit47_employee_standard_interest_and_property_tax_locate_actual_more_fields(
 fn unit47_employee_reservist_lease_reuses_claim_policy_owner_and_old_message() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut corrected = open(&mut session, TaxSection::EmployeeExpenses);
-    let P::SaveEmployeeExpenses { value, .. } = &mut corrected else {
-        unreachable!()
-    };
+    let P::SaveEmployeeExpenses { value, .. } = &mut corrected else { unreachable!() };
     value.forms = vec![EmployeeExpenseForm {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         owner: Owner::Taxpayer,
         occupation: "Synthetic fee-basis official".into(),
@@ -614,9 +641,7 @@ fn unit47_employee_reservist_lease_reuses_claim_policy_owner_and_old_message() {
         }],
     }];
     let mut bad = corrected.clone();
-    let P::SaveEmployeeExpenses { value, .. } = &mut bad else {
-        unreachable!()
-    };
+    let P::SaveEmployeeExpenses { value, .. } = &mut bad else { unreachable!() };
     value.forms[0].capacity = EmployeeCapacity::Reservist;
     case(
         "admission-employee-reservist-lease",
@@ -630,241 +655,47 @@ fn unit47_employee_reservist_lease_reuses_claim_policy_owner_and_old_message() {
 }
 
 #[test]
-fn unit47_other_tax_duplicate_refusal_keeps_actual_submitted_record() {
+fn unit47_unprepared_duplicate_keeps_actual_submitted_record() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut corrected = open(&mut session, TaxSection::OtherTaxes);
-    let P::SaveOtherTaxes { value, .. } = &mut corrected else {
-        unreachable!()
-    };
-    value.taxes = vec![
-        OtherTax::AlternativeMinimumTax,
-        OtherTax::HousingCreditRecapture,
-    ];
+    let mut corrected = open(&mut session, TaxSection::OftenMissed);
+    let P::SaveOftenMissed { value, .. } = &mut corrected else { unreachable!() };
+    value.unprepared =
+        Some(vec![Unprepared::AlternativeMinimumTax, Unprepared::HousingCreditRecapture]);
     let mut bad = corrected.clone();
-    let P::SaveOtherTaxes { value, .. } = &mut bad else {
-        unreachable!()
-    };
-    value.taxes.push(OtherTax::AlternativeMinimumTax);
+    let P::SaveOftenMissed { value, .. } = &mut bad else { unreachable!() };
+    value.unprepared.as_mut().unwrap().push(Unprepared::AlternativeMinimumTax);
     case(
-        "admission-other-tax-refusal-duplicate",
+        "admission-unprepared-duplicate",
         &mut session,
         bad,
         corrected,
-        TaxSection::OtherTaxes,
+        TaxSection::OftenMissed,
         "MESSAGE_CHOOSE_EACH_SITUATION_ONLY_ONCE",
-        "[value/taxes/2]",
+        "[value/unprepared/2]",
     );
 }
 
 #[test]
-fn unit47_payment_source_amounts_have_no_prototype_ceiling_and_keep_atomic_minimum() {
+fn unit47_payment_sources_preserve_independent_amounts() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let baseline = supported(&session.draft);
     let mut corrected = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut corrected else {
-        unreachable!()
+    let P::SavePayments { value, .. } = &mut corrected else { unreachable!() };
+    value.estimated = crate::EstimatedPaymentEntry::Sources {
+        payments: vec![page_paid(20260415, 100_001), page_paid(20260915, 99_999)],
     };
-    value.estimated = vec![
-        page_paid(20260415, 100_000_000_001),
-        page_paid(20260915, 99_999_999_999),
-    ];
-    value.extension = 200_000_000_000;
-    value.extension_payer = Some(PaymentPayer::Taxpayer);
-    let mut bad = corrected.clone();
-    let P::SavePayments { value, .. } = &mut bad else {
-        unreachable!()
-    };
-    value.estimated[0].amount = 0;
-    case(
-        "payment-positive-source",
-        &mut session,
-        bad,
-        corrected,
-        TaxSection::Payments,
-        "PAYMENT_AMOUNT_INVALID",
-        "[value/estimated/0/amount]",
-    );
+    value.extension = 200_000;
+    value.more.extension_payer = Some(PaymentPayer::Taxpayer);
+    accepted(&send(&mut session, corrected));
     let result = supported(&session.draft);
     assert_eq!(result.tax, baseline.tax);
+    assert_eq!(result.payments, baseline.payments.map(|paid| paid + 400_000));
     assert_eq!(
-        result.payments,
-        baseline.payments.map(|paid| paid + 400_000_000_000)
-    );
-    assert_eq!(
-        session.draft.payments.as_ref().unwrap().estimated,
-        Some(200_000_000_000)
-    );
-}
-
-#[test]
-fn unit47_payment_wide_known_sources_round_once_and_retain_joint_fund_capacity() {
-    // 2026-10-16, Money precision / Derived carrier: MAX ends in07 cents.
-    // MAX-7 plus8 cents is known, exceeds a duplicate i64 source total, and
-    // reports MAX-7 cents. Neither None projection discards those source facts.
-    for community in [false, true] {
-        let mut draft = empty_return(FederalStatus::Joint);
-        let mut claim = InjuredSpouseAllocation::defaults();
-        claim.estimated = EstimatedSplit::Agreed { injured: i64::MAX };
-        if community {
-            claim.community = InjuredCommunityFacts::Yes {
-                states: vec![5],
-                debt_facts: InjuredDebtFacts::NotApplicable,
-            };
-        }
-        draft.injured_spouse = Some(claim);
-        draft.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
-        let mut session = Interview::new(TEST_USER, draft);
-        let mut page = open(&mut session, TaxSection::Payments);
-        let P::SavePayments { value, .. } = &mut page else {
-            unreachable!()
-        };
-        value.estimated = [i64::MAX - 7, 8]
-            .map(|amount| crate::InjuredDatedPayment {
-                date: 20260415,
-                amount,
-                payer: PaymentPayer::Joint,
-                refund_property: Some(crate::RefundSourceProperty::Separate {
-                    owner: Owner::Taxpayer,
-                }),
-            })
-            .to_vec();
-        let before = session.draft.clone();
-        let dirty = session.dirty;
-        assert!(matches!(
-            send(&mut session, calculation(&page)),
-            Reply::Response(P::PaymentsEstimate { .. })
-        ));
-        assert_eq!(session.draft, before);
-        assert_eq!(session.dirty, dirty);
-        accepted(&send(&mut session, page));
-        let result = supported(&session.draft);
-        assert_eq!(result.payments, Some(i64::MAX - 7));
-        assert_eq!(result.refund, Some(i64::MAX - 7));
-        assert_eq!(return_line(&result, "26"), i64::MAX - 7);
-        assert_eq!(
-            result
-                .lines
-                .iter()
-                .find(|line| line.id == crate::injured_spouse::ESTIMATE_LINE)
-                .unwrap()
-                .amount,
-            i64::MAX - 7
-        );
-        assert_eq!(session.draft.payments.as_ref().unwrap().estimated, None);
-        let value = session
-            .draft
-            .injured_spouse
-            .as_ref()
-            .unwrap()
-            .page(&session.draft, &result);
-        assert_eq!(value.joint_estimated, None);
-        assert!(
-            crate::injured_spouse::issue(
-                &value,
-                &crate::injured_spouse::joint_estimated(&session.draft)
-            )
-            .is_none()
-        );
-        let saved = session.draft.clone();
-        let page = open(&mut session, TaxSection::Payments);
-        accepted(&send(&mut session, page));
-        assert_eq!(session.draft, saved);
-        let mut cold = restart(saved.clone());
-        let page = open(&mut cold, TaxSection::Payments);
-        accepted(&send(&mut cold, page));
-        assert_eq!(cold.draft, saved);
-        assert_eq!(supported(&cold.draft), result);
-    }
-}
-
-#[test]
-fn unit47_payment_real_output_failure_retains_sources_and_corrects_without_zero() {
-    let mut session = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
-    let mut page = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut page else {
-        unreachable!()
-    };
-    value.estimated = vec![page_paid(20260415, i64::MAX), page_paid(20260915, i64::MAX)];
-    let before = session.draft.clone();
-    let dirty = session.dirty;
-    assert!(matches!(
-        send(&mut session, calculation(&page)),
-        Reply::Response(P::PaymentsEstimate { .. })
-    ));
-    assert_eq!(session.draft, before);
-    assert_eq!(session.dirty, dirty);
-    accepted(&send(&mut session, page));
-    let result = estimate(&session.draft);
-    assert_eq!(result.state, ResultState::Unsupported);
-    assert!(
-        result
-            .issues
-            .iter()
-            .any(|issue| issue.display.key == "PAYMENT_AMOUNT_UNREPRESENTABLE")
-    );
-    assert_eq!(
-        (result.tax, result.payments, result.refund, result.balance),
-        (None, None, None, None)
-    );
-    assert_eq!(session.draft.payments.as_ref().unwrap().estimated, None);
-    let mut page = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut page else {
-        unreachable!()
-    };
-    assert_eq!(
-        value
-            .estimated
-            .iter()
-            .map(|payment| payment.amount)
-            .collect::<Vec<_>>(),
-        vec![i64::MAX; 2]
-    );
-    value.estimated = vec![page_paid(20260415, 100)];
-    accepted(&send(&mut session, page));
-    assert_eq!(supported(&session.draft).refund, Some(100));
-    let saved = session.draft.clone();
-    let mut cold = restart(saved.clone());
-    let page = open(&mut cold, TaxSection::Payments);
-    accepted(&send(&mut cold, page));
-    assert_eq!(cold.draft, saved);
-
-    // The actual line33 encoding can fail after native tax/refund fields were
-    // assigned: payment MAX-7 fits, and tax502300 exceeds credit110000, so the
-    // refund also fits. The printed total of payments plus credits does not.
-    let mut session = Interview::new(
-        TEST_USER,
-        repayment_comparison_draft(RepaymentMethod::Automatic),
-    );
-    let baseline = supported(&session.draft);
-    assert_eq!(baseline.tax, Some(502_300));
-    assert_eq!(baseline.refundable_credits, Some(110_000));
-    assert_eq!(baseline.payments, Some(650_000));
-    let mut page = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut page else {
-        unreachable!()
-    };
-    value.estimated = vec![page_paid(20260415, i64::MAX - 650_007)];
-    accepted(&send(&mut session, page));
-    let result = estimate(&session.draft);
-    assert_eq!(result.state, ResultState::Unsupported);
-    assert!(
-        result
-            .issues
-            .iter()
-            .any(|issue| issue.display.key == "PAYMENT_AMOUNT_UNREPRESENTABLE")
-    );
-    assert_eq!(
-        (
-            result.tax,
-            result.refundable_credits,
-            result.payments,
-            result.refund,
-            result.balance
+        crate::kernel::ratio::exact::rounded(
+            &session.draft.payments.as_ref().unwrap().estimated_source()
         ),
-        (None, None, None, None, None)
+        Some(200_000)
     );
-    assert!(result.return_lines.is_empty());
-    assert_eq!(result.payment_withholding.unwrap().total, 650_000);
 }
 
 #[test]
@@ -874,30 +705,20 @@ fn unit47_payment_unavailable_withholding_keeps_first_composition_open() {
     // stops first_incomplete before the native cash collector; known filers
     // still permit opening Payments through the ordinary navigation owner.
     let mut draft = complete(FederalStatus::Single);
-    draft
-        .finished_sections
-        .retain(|section| *section != TaxSection::Income);
+    draft.finished_sections.retain(|section| *section != TaxSection::Income);
     draft.deductions = None;
     let mut session = Interview::new(TEST_USER, draft);
     let mut corrected = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut corrected else {
-        unreachable!()
-    };
+    let P::SavePayments { value, .. } = &mut corrected else { unreachable!() };
     assert_eq!(value.withheld, None);
     // The correction commits a real source edit; submitting the unchanged
     // default IrsFigures answer is correctly a no-op with no new revision.
-    value.estimated = vec![page_paid(20260415, 100)];
+    value.estimated =
+        crate::EstimatedPaymentEntry::Sources { payments: vec![page_paid(20260415, 100)] };
     let mut bad = corrected.clone();
-    let P::SavePayments { value, .. } = &mut bad else {
-        unreachable!()
-    };
-    value.penalty = penalty(
-        WithholdingTiming::ByPeriod {
-            first: 0,
-            second: 0,
-            third: 0,
-            fourth: 0,
-        },
+    let P::SavePayments { value, .. } = &mut bad else { unreachable!() };
+    value.more.penalty = penalty(
+        WithholdingTiming::ByPeriod { first: 0, second: 0, third: 0, fourth: 0 },
         Farmer::No,
         IncomeTiming::Evenly,
     );
@@ -908,7 +729,7 @@ fn unit47_payment_unavailable_withholding_keeps_first_composition_open() {
         corrected,
         TaxSection::Payments,
         "PAYMENT_WITHHOLDING_UNAVAILABLE",
-        "[value/penalty/withholding]",
+        "[value/more/penalty/withholding]",
     );
     // An unrelated unsupported credit does not erase collected cash amounts.
     let mut draft = complete(FederalStatus::Single);
@@ -920,46 +741,67 @@ fn unit47_payment_unavailable_withholding_keeps_first_composition_open() {
     assert_eq!(value.withheld.unwrap().total, 650_000);
 }
 
+
+// The second bond's origin left open: the questions page's Save answering it.
+pub(super) fn bond_question_editor() -> (Interview, P, i64) {
+    let (mut session, page, source) = bond_editor();
+    accepted(&send(&mut session, page));
+    let bonds = session.draft.credits.as_ref().unwrap().tax_credit_bonds.clone();
+    let mut open = session.draft.clone();
+    open.credits.as_mut().unwrap().tax_credit_bonds[1].answers.origin = None;
+    session = restart(open);
+    let page = crate::tests::support::client::credit_documents::origin_question(&mut session, &bonds, 1);
+    (session, page, source)
+}
+
 #[test]
-fn unit47_payment_form2210_checks_its_actual_column_carrier() {
-    let mut draft = estate_trust_code_c_draft(0, 0);
-    draft.income[0] = wage(1, Owner::Taxpayer, 8_110_000, 0);
-    let estate = estate_trust_code_d_data(&mut draft);
-    estate.allocated_estimated_tax = 8;
-    estate.form_1041t_timely = true;
-    let mut session = Interview::new(TEST_USER, draft);
-    let mut page = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut page else {
-        unreachable!()
-    };
-    value.estimated = vec![page_paid(20270115, i64::MAX - 7)];
-    accepted(&send(&mut session, page));
-    let ordinary = supported(&session.draft);
-    assert_eq!(return_line(&ordinary, "26"), i64::MAX - 7);
-    assert_eq!(ordinary.tax, Some(901_800));
-    let mut page = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut page else {
-        unreachable!()
-    };
-    value.penalty = penalty(WithholdingTiming::Evenly, Farmer::No, IncomeTiming::Evenly);
-    accepted(&send(&mut session, page));
-    let result = estimate(&session.draft);
-    assert_eq!(result.state, ResultState::Unsupported);
-    assert!(
-        result
-            .issues
-            .iter()
-            .any(|issue| issue.display.key == "PAYMENT_AMOUNT_UNREPRESENTABLE")
+fn unit47_credit_source_first_answer_locates_kind_identity_amount_and_aggregate() {
+    for mutation in 0..4 {
+        let (mut session, corrected, _) = bond_question_editor();
+        let mut bad = corrected.clone();
+        let entity = crate::tests::support::client::credit_documents::origin_entity(&mut bad);
+        let path = match mutation {
+            0 => {
+                entity.income_kind = TaxCreditIncomeKind::Interest;
+                "[questions/0/answer/value/income_kind]"
+            }
+            1 => {
+                entity.income_source = Some(999_999);
+                "[questions/0/answer/value/income_source]"
+            }
+            2 => {
+                entity.income_already_reported = 100_001;
+                "[questions/0/answer/value/income_already_reported]"
+            }
+            _ => {
+                entity.income_already_reported += 1;
+                "[questions]"
+            }
+        };
+        crate::tests::support::client::credit_documents::origin_case(
+            &alloc::format!("admission-credit-first-answer-{mutation}"),
+            &mut session,
+            bad,
+            corrected,
+            "CREDIT_INCOME_SOURCE_INVALID",
+            path,
+        );
+    }
+}
+
+#[test]
+fn unit47_credit_source_first_answer_names_its_bond() {
+    // The refusal names the bond whose origin answer broke the source rule.
+    let (mut session, corrected, _) = bond_question_editor();
+    let mut bad = corrected.clone();
+    crate::tests::support::client::credit_documents::origin_entity(&mut bad).income_source =
+        Some(999_999);
+    crate::tests::support::client::credit_documents::origin_case(
+        "admission-credit-first-answer-section",
+        &mut session,
+        bad,
+        corrected,
+        "CREDIT_INCOME_SOURCE_INVALID",
+        "[questions/0/answer/value/income_source]",
     );
-    assert_eq!(
-        (result.tax, result.payments, result.refund, result.balance),
-        (None, None, None, None)
-    );
-    let mut page = open(&mut session, TaxSection::Payments);
-    let P::SavePayments { value, .. } = &mut page else {
-        unreachable!()
-    };
-    value.penalty = PenaltyChoice::IrsFigures;
-    accepted(&send(&mut session, page));
-    assert_eq!(supported(&session.draft).payments, ordinary.payments);
 }

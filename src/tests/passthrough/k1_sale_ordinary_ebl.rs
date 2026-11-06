@@ -9,13 +9,16 @@ fn sources(ordinary: i64, qualified: i64) -> [FederalIncome; 2] {
         k1_qbi_statement(row, 0, false);
         match row {
             FederalIncome::Partnership { data: p } => {
-                p.regular.basis.opening = 100_000_000;
+                p.regular.basis.opening = Some(100_000_000);
                 p.regular.risk.start = capacity(100_000_000);
                 p.qbi.as_mut().unwrap().income = -qualified * 100;
                 p.alternative = Some(p.regular.clone());
             }
             FederalIncome::Scorp { data: s } => {
-                s.opening = 100_000_000;
+                let mut source_edit = edit_scorp(s);
+                let s = &mut *source_edit;
+
+                s.opening = Some(100_000_000);
                 s.risk.start = capacity(100_000_000);
                 s.loss_qbi = ScorpLossQbi { current: qualified * 100, ..Default::default() };
                 s.amt = Some(amt_records(s));
@@ -42,6 +45,9 @@ fn history(row: &mut FederalIncome, loss: i64, qualified: i64) {
             p.alternative = Some(p.regular.clone());
         }
         FederalIncome::Scorp { data: s } => {
+            let mut source_edit = edit_scorp(s);
+            let s = &mut *source_edit;
+
             s.prior_loss = loss * 100;
             s.loss_qbi.history = vec![vintage];
             s.amt = Some(amt_records(s));
@@ -89,7 +95,11 @@ fn k1_sale_ordinary_ebl_no_statement_preserves_only_historical_qualification() {
         history(&mut row, 100_000, 50_000);
         match &mut row {
             FederalIncome::Partnership { data } => data.qbi = None,
-            FederalIncome::Scorp { data } => data.qbi_statement = None,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.qbi_statement = None
+            }
             _ => unreachable!(),
         }
         // No current statement qualifies either current loss or sale gain.
@@ -114,6 +124,9 @@ fn k1_sale_ordinary_ebl_multiple_gain_rows_do_not_change_loss_fraction() {
                 p.alternative = Some(p.regular.clone());
             }
             FederalIncome::Scorp { data: s } => {
+                let mut source_edit = edit_scorp(s);
+                let s = &mut *source_edit;
+
                 let second = s.section179_sales[0].clone();
                 s.section179_sales.push(second);
                 s.amt = Some(amt_records(s));
@@ -141,6 +154,9 @@ fn k1_sale_ordinary_ebl_short_sale_loss_joins_gross_losses_without_netting_gain(
                 p.alternative = Some(p.regular.clone());
             }
             FederalIncome::Scorp { data: s } => {
+                let mut source_edit = edit_scorp(s);
+                let s = &mut *source_edit;
+
                 let mut second = s.section179_sales[0].clone();
                 second.acquired = 20260301;
                 second.regular.as_mut().unwrap().price = 2_000_000;
@@ -163,11 +179,14 @@ fn k1_sale_ordinary_ebl_basis_stage_fixes_the_qualified_fraction_first() {
     for mut row in sources(-400_000, 200_000) {
         match &mut row {
             FederalIncome::Partnership { data: p } => {
-                p.regular.basis.opening = 30_000_000;
+                p.regular.basis.opening = Some(30_000_000);
                 p.alternative = Some(p.regular.clone());
             }
             FederalIncome::Scorp { data: s } => {
-                s.opening = 30_000_000;
+                let mut source_edit = edit_scorp(s);
+                let s = &mut *source_edit;
+
+                s.opening = Some(30_000_000);
                 s.amt = Some(amt_records(s));
                 for sale in &mut s.section179_sales {
                     sale.alternative =
@@ -189,6 +208,9 @@ fn k1_sale_ordinary_ebl_amt_uses_its_own_allowed_sale_amount() {
                     2_800_000;
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales[0].alternative.reported_amounts_mut().unwrap().price =
                     2_800_000;
             }
@@ -210,7 +232,11 @@ fn k1_sale_ordinary_ebl_current_sstb_phase_does_not_rephase_original_history() {
         history(&mut row, 100_000, 50_000);
         match &mut row {
             FederalIncome::Partnership { data } => data.qbi.as_mut().unwrap().service = true,
-            FederalIncome::Scorp { data } => data.qbi_statement.as_mut().unwrap().service = true,
+            FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+                data.qbi_statement.as_mut().unwrap().service = true
+            }
             _ => unreachable!(),
         }
         let d = draft(row, 900_000);

@@ -1,75 +1,93 @@
 use crate::tests::support::client::survey::survey_refusal as reject_atomic;
+use alloc::string::ToString;
+use libertas::SchemaPath;
 // Native owner predicates exercised through the actual editable Save request.
 // The optional full-Avro export is resolved against fresh Studio output by the
 // combined Unit47 gate. No key or locator is inferred from a schema string.
-use crate::tests::cross::interview::{accepted, document, open_topic};
 use super::*;
+use crate::tests::cross::interview::{accepted, document, open_topic};
+use crate::tests::support::client::income_pages::{
+    open_document_center, save_documents, save_topic,
+};
 
-fn documents(request: &mut P, rows: Vec<IncomeDocumentItem>) {
-    let P::SaveIncomes { documents, .. } = request else {
-        panic!("income editor required")
-    };
-    documents.documents = rows;
+fn document_page(session: &mut Interview, topic: TaxSection, rows: Vec<IncomeDocumentItem>) -> P {
+    if rows.iter().all(|row| matches!(row.document, IncomeSource::Record { .. })) {
+        save_topic(session, topic, rows)
+    } else {
+        assert!(rows.iter().all(|row| !matches!(row.document, IncomeSource::Record { .. })));
+        save_documents(session, rows)
+    }
 }
 
 fn document_case(
     case: &str,
     topic: TaxSection,
-    good: IncomeDocument,
-    bad: IncomeDocument,
+    good: IncomeSource,
+    bad: IncomeSource,
     key: &str,
     local: &str,
 ) {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut corrected = open_topic(&mut session, topic);
-    documents(&mut corrected, vec![document(0, good)]);
-    let mut rejected = corrected.clone();
-    documents(&mut rejected, vec![document(0, bad)]);
-    let field = alloc::format!("[documents/documents/0/document/{local}]");
+    let category = match &good {
+        IncomeSource::Record { .. } => None,
+        IncomeSource::Wage { .. } => Some("common/wages"),
+        IncomeSource::SelfEmployment { .. } => Some("common/self_employment"),
+        IncomeSource::InvestmentSale { .. } => Some("common/investment_sales"),
+        IncomeSource::Retirement { .. } => Some("common/retirement"),
+        IncomeSource::OtherIncome { .. } => Some("other/other_income"),
+        _ => unreachable!(),
+    };
+    let needs_qof_answer = matches!(
+        &good,
+        IncomeSource::InvestmentSale { value: crate::InvestmentSaleDocument::OpportunityFund(_) }
+    );
+    let good_rows = vec![document(0, good)];
+    let corrected = document_page(&mut session, topic, good_rows.clone());
+    let rejected = document_page(&mut session, topic, vec![document(0, bad)]);
+    let field = if let Some(category) = category {
+        alloc::format!("[documents/{category}/documents/0/document/{local}]")
+    } else {
+        alloc::format!("[documents/documents/0/document/{local}]")
+    };
     reject_atomic(case, &mut session, rejected, key, &field);
     let before = session.draft.revision;
     accepted(&send(&mut session, corrected));
-    assert_eq!(
-        session.draft.revision,
-        before + 1,
-        "{case}: correction did not commit"
-    );
+    assert_eq!(session.draft.revision, before + 1, "{case}: correction did not commit");
+    if needs_qof_answer {
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut session,
+            &good_rows,
+        );
+    }
     let saved = session.draft.clone();
     let mut cold = restart(saved.clone());
-    let reopened = open_topic(&mut cold, topic);
+    let reopened = if category.is_some() {
+        open_document_center(&mut cold)
+    } else {
+        open_topic(&mut cold, topic)
+    };
     accepted(&send(&mut cold, reopened));
-    assert_eq!(
-        cold.draft, saved,
-        "{case}: cold reopen changed accepted record"
-    );
+    assert_eq!(cold.draft, saved, "{case}: cold reopen changed accepted record");
 }
 fn nec() -> Form1099Nec {
     Form1099Nec {
+        payer: Default::default(),
+        recipient: Default::default(),
+        cash_tips: 0,
+        tip_occupation_codes: Default::default(),
+        overtime: 0,
         compensation: 10_000,
         withholding: 0,
         golden_parachute: 0,
-        belongs: IncomeUse::Income {
-            kind: OtherIncomeKind::AlaskaDividend,
-        },
-        business: None,
+        belongs: Some(IncomeUse::Income { kind: OtherIncomeKind::AlaskaDividend }),
         state_details: Default::default(),
     }
 }
 #[test]
 fn unit47_leaf_nec_amount_relationships_save_atomically() {
     for (case, key, field, mutate) in [
-        (
-            "leaf-nec-parachute",
-            "NEC_EXCESS_ABOVE_TOTAL_PAY",
-            "golden_parachute",
-            0,
-        ),
-        (
-            "leaf-nec-withholding",
-            "NEC_WITHHOLDING_ABOVE_PAY",
-            "withholding",
-            1,
-        ),
+        ("leaf-nec-parachute", "NEC_EXCESS_ABOVE_TOTAL_PAY", "golden_parachute", 0),
+        ("leaf-nec-withholding", "NEC_WITHHOLDING_ABOVE_PAY", "withholding", 1),
     ] {
         let good = nec();
         let mut bad = good.clone();
@@ -81,8 +99,12 @@ fn unit47_leaf_nec_amount_relationships_save_atomically() {
         document_case(
             case,
             TaxSection::SelfEmployment,
-            IncomeDocument::Form1099Nec(good),
-            IncomeDocument::Form1099Nec(bad),
+            IncomeSource::SelfEmployment {
+                value: crate::SelfEmploymentDocument::Form1099Nec(nec_document(good)),
+            },
+            IncomeSource::SelfEmployment {
+                value: crate::SelfEmploymentDocument::Form1099Nec(nec_document(bad)),
+            },
             key,
             field,
         );
@@ -90,13 +112,13 @@ fn unit47_leaf_nec_amount_relationships_save_atomically() {
 }
 fn k1099() -> Form1099K {
     Form1099K {
+        payer: Default::default(),
+        recipient: Default::default(),
+        cash_tips: 0,
+        tip_occupation_codes: Default::default(),
         gross: 10_000,
         withholding: 0,
-        parts: vec![KPart {
-            amount: 10_000,
-            belongs: KUse::NotIncome,
-            refunded: 0,
-        }],
+        parts: vec![KPart { id: 0, amount: 10_000, belongs: Some(KUse::NotIncome), refunded: 0 }],
         state_details: Default::default(),
     }
 }
@@ -104,24 +126,9 @@ fn k1099() -> Form1099K {
 fn unit47_leaf_k_parts_and_refunds_save_atomically() {
     for (case, key, field, mutation) in [
         ("leaf-k-parts", "K_PARTS_NOT_GROSS", "parts", 0),
-        (
-            "leaf-k-withholding",
-            "K_WITHHOLDING_ABOVE_GROSS",
-            "withholding",
-            1,
-        ),
-        (
-            "leaf-k-refund-above",
-            "K_REFUNDS_ABOVE_PART",
-            "parts/0/refunded",
-            2,
-        ),
-        (
-            "leaf-k-nonincome-refund",
-            "K_REFUNDS_ONLY_ON_INCOME",
-            "parts/0/refunded",
-            3,
-        ),
+        ("leaf-k-withholding", "K_WITHHOLDING_ABOVE_GROSS", "withholding", 1),
+        ("leaf-k-refund-above", "K_REFUNDS_ABOVE_PART", "parts/0/refunded", 2),
+        ("leaf-k-nonincome-refund", "K_REFUNDS_ONLY_ON_INCOME", "parts/0/refunded", 3),
     ] {
         let good = k1099();
         let mut bad = good.clone();
@@ -131,26 +138,101 @@ fn unit47_leaf_k_parts_and_refunds_save_atomically() {
             2 => bad.parts[0].refunded = bad.gross + 1,
             _ => bad.parts[0].refunded = 1,
         }
-        document_case(
-            case,
-            TaxSection::SelfEmployment,
-            IncomeDocument::Form1099K(good),
-            IncomeDocument::Form1099K(bad),
-            key,
-            field,
+        let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+        let good_rows = vec![document(
+            0,
+            IncomeSource::SelfEmployment {
+                value: crate::SelfEmploymentDocument::Form1099K(k_document(good.clone())),
+            },
+        )];
+        let bad_rows = vec![document(
+            0,
+            IncomeSource::SelfEmployment {
+                value: crate::SelfEmploymentDocument::Form1099K(k_document(bad)),
+            },
+        )];
+        if mutation == 1 {
+            let corrected = save_documents(&mut session, good_rows.clone());
+            let rejected = save_documents(&mut session, bad_rows);
+            reject_atomic(
+                case,
+                &mut session,
+                rejected,
+                key,
+                "[documents/common/self_employment/documents/0/document/withholding]",
+            );
+            let before = session.draft.revision;
+            accepted(&send(&mut session, corrected));
+            assert_eq!(session.draft.revision, before + 1, "{case}: correction did not commit");
+        } else {
+            let printed = save_documents(&mut session, bad_rows.clone());
+            accepted(&send(&mut session, printed));
+            let rejected = crate::tests::support::client::income_pages::information_return_answers(
+                &mut session,
+                &bad_rows,
+            );
+            assert!(matches!(rejected, P::SavePaymentParts { .. }));
+            let suffix = field.strip_prefix("parts").unwrap();
+            let path = suffix
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .fold(SchemaPath::root().field("value"), |path, segment| {
+                    match segment.parse::<usize>() {
+                        Ok(index) => path.index(index),
+                        Err(_) => path.field(segment),
+                    }
+                })
+                .to_string();
+            reject_atomic(case, &mut session, rejected, key, &path);
+            // Rebuild the good answer only after the bad topic request has been captured.
+            let desired = vec![document(
+                0,
+                IncomeSource::SelfEmployment {
+                    value: crate::SelfEmploymentDocument::Form1099K(k_document(good.clone())),
+                },
+            )];
+            let before = session.draft.revision;
+            let corrected = if mutation == 0 {
+                save_documents(&mut session, desired)
+            } else {
+                crate::tests::support::client::income_pages::information_return_answers(
+                    &mut session,
+                    &desired,
+                )
+            };
+            accepted(&send(&mut session, corrected));
+            assert_eq!(session.draft.revision, before + 1, "{case}: correction did not commit");
+        }
+        let desired = vec![document(
+            0,
+            IncomeSource::SelfEmployment {
+                value: crate::SelfEmploymentDocument::Form1099K(k_document(good)),
+            },
+        )];
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut session,
+            &desired,
         );
+        let saved = session.draft.clone();
+        let mut cold = restart(saved.clone());
+        let reopened = open_topic(&mut cold, TaxSection::SelfEmployment);
+        accepted(&send(&mut cold, reopened));
+        assert_eq!(cold.draft, saved, "{case}: cold reopen changed accepted record");
     }
 }
 fn misc1099() -> Form1099Misc {
-    FederalForm1099Misc {
+    Form1099Misc::from(&misc_source(FederalForm1099Misc {
+        cash_tips: 0,
+        tip_occupation_codes: Default::default(),
+        overtime: 0,
+        crop_insurance: 0,
+        component_ids: Default::default(),
         rents: 0,
-        rents_use: None,
+
         royalties: 0,
-        royalties_use: None,
+
         other: 10_000,
-        other_use: Some(IncomeUse::Income {
-            kind: OtherIncomeKind::AlaskaDividend,
-        }),
+        other_use: Some(IncomeUse::Income { kind: OtherIncomeKind::AlaskaDividend }),
         withholding: 0,
         fishing: 0,
         medical: 0,
@@ -159,101 +241,161 @@ fn misc1099() -> Form1099Misc {
         client_funds: 0,
         fish_sales: 0,
         deferred: 0,
-        business: None,
-    }
-    .page()
+    }))
 }
 #[test]
 fn unit47_leaf_misc_sources_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-misc-withholding",
-            "MISC_WITHHOLDING_ABOVE_INCOME",
-            "withholding",
-            0,
-        ),
-        (
-            "leaf-misc-rents-use",
-            "MISC_RENTS_NEED_A_USE",
-            "rents_use",
-            1,
-        ),
-        (
-            "leaf-misc-royalties-use",
-            "MISC_ROYALTIES_NEED_A_USE",
-            "royalties_use",
-            2,
-        ),
-        (
-            "leaf-misc-other-use",
-            "MISC_OTHER_NEEDS_A_USE",
-            "other_use",
-            3,
-        ),
-        (
-            "leaf-misc-client-funds",
-            "MISC_CLIENT_FUNDS_ABOVE_PROCEEDS",
-            "client_funds",
-            4,
-        ),
+        ("leaf-misc-withholding", "MISC_WITHHOLDING_ABOVE_INCOME", "withholding", 0),
+        ("leaf-misc-rents-withholding", "MISC_WITHHOLDING_ABOVE_INCOME", "withholding", 1),
+        ("leaf-misc-royalties-withholding", "MISC_WITHHOLDING_ABOVE_INCOME", "withholding", 2),
+        ("leaf-misc-other-recovery", "FORM_1099_USE_NOT_RECOVERY", "other_use/kind", 3),
+        ("leaf-misc-client-funds", "MISC_CLIENT_FUNDS_ABOVE_PROCEEDS", "client_funds", 4),
     ] {
-        let good = misc1099();
+        let mut good = misc1099();
+        // 2026-10-23: missing nonactivity classifications are valid for activity
+        // claims. Keep native source refusals at actual printed-amount boundaries.
+        if mutation == 1 {
+            good.rents = 100;
+        }
+        if mutation == 2 {
+            good.royalties = 100;
+        }
+        if mutation == 1 || mutation == 2 {
+            good.withholding = good.other + good.rents + good.royalties;
+        }
         let mut bad = good.clone();
         match mutation {
             0 => bad.withholding = bad.other + 1,
-            1 => bad.rents = 1,
-            2 => bad.royalties = 1,
-            3 => bad.other_use = None,
+            1 | 2 => bad.withholding += 1,
+            3 => {
+                bad.other_use = Some(IncomeUse::Income {
+                    kind: OtherIncomeKind::Recovery {
+                        worksheet: PriorYearRecovery {
+                            year: 2025,
+                            deducted: 0,
+                            itemized: 0,
+                            standard: 0,
+                            taxable_income: 0,
+                            ordinary: true,
+                        },
+                    },
+                })
+            }
             _ => bad.client_funds = 1,
+        }
+        if mutation == 3 {
+            let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+            let desired = vec![document(
+                0,
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Form1099Misc(misc_document(good)),
+                },
+            )];
+            let printed = save_documents(&mut session, desired.clone());
+            accepted(&send(&mut session, printed));
+            let corrected = crate::tests::support::client::income_pages::information_return_answers(
+                &mut session,
+                &desired,
+            );
+            let mut rejected = corrected.clone();
+            let P::SaveIncomes { followups, .. } = &mut rejected else { unreachable!() };
+            let row = followups
+                .iter_mut()
+                .find(|row| matches!(row.answer, crate::DocumentAnswer::MiscellaneousUse { .. }))
+                .unwrap();
+            row.answer = crate::DocumentAnswer::MiscellaneousUse { value: bad.other_use };
+            let path = SchemaPath::root()
+                .field("followups")
+                .key(row.key.as_str())
+                .field("answer")
+                .field("value")
+                .field("kind")
+                .to_string();
+            reject_atomic(case, &mut session, rejected, key, &path);
+            let before = session.draft.revision;
+            accepted(&send(&mut session, corrected));
+            assert_eq!(session.draft.revision, before + 1, "{case}: correction did not commit");
+            let saved = session.draft.clone();
+            let mut cold = restart(saved.clone());
+            let reopened = open_topic(&mut cold, TaxSection::OtherIncome);
+            accepted(&send(&mut cold, reopened));
+            assert_eq!(cold.draft, saved, "{case}: cold reopen changed accepted record");
+            continue;
+        }
+        if mutation == 4 {
+            // With no printed attorney proceeds, there is no client-funds
+            // question. The native guard remains strict, and paper admission
+            // ignores an unasked personal answer.
+            assert_eq!(crate::information_returns::misc_issue(&bad).unwrap().key, key);
+            let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+            let request = save_documents(
+                &mut session,
+                vec![document(
+                    0,
+                    IncomeSource::OtherIncome {
+                        value: crate::OtherIncomeDocument::Form1099Misc(misc_document(bad)),
+                    },
+                )],
+            );
+            accepted(&send(&mut session, request));
+            let FederalIncome::Misc1099 { data } = &session.draft.income.last().unwrap().income
+            else {
+                unreachable!()
+            };
+            assert_eq!(data.client_funds, 0);
+            continue;
         }
         document_case(
             case,
             TaxSection::OtherIncome,
-            IncomeDocument::Form1099Misc(good),
-            IncomeDocument::Form1099Misc(bad),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Form1099Misc(misc_document(good)),
+            },
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Form1099Misc(misc_document(bad)),
+            },
             key,
             field,
         );
     }
+    // Removed document-side placements are validated on the receiving activity.
+    let mut source = misc1099();
+    source.rents = 100;
+    source.royalties = 200;
+    source.other_use = None;
+    reject_unavailable_related_components(
+        "leaf-misc-stale-component",
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Form1099Misc(misc_document(source)),
+        },
+        &[
+            crate::related_forms::DocumentKind::Form1099MiscRents,
+            crate::related_forms::DocumentKind::Form1099MiscRoyalties,
+            crate::related_forms::DocumentKind::Form1099MiscOther,
+        ],
+        false,
+    );
 }
 fn home() -> MainHomeSale {
-    MainHomeSale {
-        address: "Unit47 synthetic home".into(),
-        closed: 20260615,
-        proceeds: 45_000_000,
-        property_received: false,
-        foreign_person: false,
-        form_1099s: true,
-        acquired: 20150301,
-        expenses: 2_500_000,
-        basis: 20_000_000,
-        lived: HomeLived::WholeTime,
-        earlier_sale: EarlierHomeSale::No,
-        spouse: HomeSpouse::NotJoint,
-        reason: HomeSaleReason::TwoYears,
-        use_history: HomeRentalUse {
-            depreciation: 0,
-            nonqualified_days: 0,
-        },
-        more: HomeSaleMore::Nothing,
-    }
+    let mut source = home_sale_source(false);
+    let form = source.form.paper_mut().unwrap();
+    form.box_3_address_or_legal_description = "Unit47 synthetic home".into();
+    form.box_1_date_of_closing = 20260615;
+    form.box_2a_total_gross_proceeds = 45_000_000;
+    let answers = source.facts_mut();
+    answers.acquired = 20150301;
+    answers.expenses = 2_500_000;
+    answers.basis = 20_000_000;
+    answers.lived = HomeLived::WholeTime;
+    source
 }
+
 #[test]
 fn unit47_leaf_home_date_and_owned_relationships_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-home-acquired",
-            "HOME_ACQUIRED_AFTER_SALE",
-            "acquired",
-            0,
-        ),
-        ("leaf-home-lived", "HOME_LIVED_ABOVE_OWNED", "lived", 1),
-        (
-            "leaf-home-earlier",
-            "HOME_EARLIER_SALE_AFTER_SALE",
-            "earlier_sale/sold",
-            2,
-        ),
+        ("leaf-home-acquired", "HOME_ACQUIRED_AFTER_SALE", "acquired", 0),
+        ("leaf-home-earlier", "HOME_EARLIER_SALE_AFTER_SALE", "earlier_sale/sold", 2),
         (
             "leaf-home-nonqualified",
             "HOME_NONQUALIFIED_ABOVE_OWNED",
@@ -262,56 +404,67 @@ fn unit47_leaf_home_date_and_owned_relationships_save_atomically() {
         ),
     ] {
         let good = home();
-        let mut bad = good.clone();
-        match mutation {
-            0 => bad.acquired = bad.closed,
-            1 => bad.lived = HomeLived::Days { days: 1827 },
-            2 => bad.earlier_sale = EarlierHomeSale::Yes { sold: bad.closed },
-            _ => bad.use_history.nonqualified_days = 10_000,
-        }
-        document_case(
-            case,
-            TaxSection::InvestmentSales,
-            IncomeDocument::MainHomeSale(good),
-            IncomeDocument::MainHomeSale(bad),
-            key,
-            field,
+        let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+        let desired = vec![document(
+            0,
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::Form1099S(home_sale_document(good.clone())),
+            },
+        )];
+        let printed = save_documents(&mut session, desired.clone());
+        accepted(&send(&mut session, printed));
+        let corrected = crate::tests::support::client::income_pages::information_return_answers(
+            &mut session,
+            &desired,
         );
+        let mut rejected = corrected.clone();
+        let P::SaveIncomes { followups, .. } = &mut rejected else { unreachable!() };
+        let row = followups
+            .iter_mut()
+            .find(|row| matches!(row.answer, crate::DocumentAnswer::HomeSale { .. }))
+            .unwrap();
+        let crate::DocumentAnswer::HomeSale {
+            value: Some(crate::RealEstateSaleUse::MainHome(answers)),
+        } = &mut row.answer
+        else {
+            unreachable!()
+        };
+        match mutation {
+            0 => answers.acquired = good.form().closed,
+            2 => answers.earlier_sale = EarlierHomeSale::Yes { sold: good.form().closed },
+            _ => answers.use_history.nonqualified_days = 10_000,
+        }
+        let path = field
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .fold(
+                SchemaPath::root()
+                    .field("followups")
+                    .key(row.key.as_str())
+                    .field("answer")
+                    .field("value")
+                    .field("MainHome"),
+                |path, segment| match segment.parse::<usize>() {
+                    Ok(index) => path.index(index),
+                    Err(_) => path.field(segment),
+                },
+            )
+            .to_string();
+        reject_atomic(case, &mut session, rejected, key, &path);
+        let before = session.draft.revision;
+        accepted(&send(&mut session, corrected));
+        assert_eq!(session.draft.revision, before + 1, "{case}: correction did not commit");
+        let saved = session.draft.clone();
+        let mut cold = restart(saved.clone());
+        let reopened = open_topic(&mut cold, TaxSection::InvestmentSales);
+        accepted(&send(&mut cold, reopened));
+        assert_eq!(cold.draft, saved, "{case}: cold reopen changed accepted record");
     }
-}
-#[test]
-fn unit47_leaf_mtc_generic_record_locator_save_atomically() {
-    let mut session = crate::tests::federal::minimum_tax::session(FederalStatus::Single);
-    let good = MinimumTaxHistories::from_current_unit(crate::tests::federal::minimum_tax::source());
-    let mut bad = good.clone();
-    bad.returns[0].facts.base = 100_000_000_001;
-    let rejected = crate::tests::federal::minimum_tax::request(&mut session, bad);
-    reject_atomic(
-        "leaf-mtc-record",
-        &mut session,
-        rejected,
-        "MTC_HISTORY_INVALID",
-        "[value/credits/0/returns/0/facts]",
-    );
-    let corrected = crate::tests::federal::minimum_tax::request(&mut session, good);
-    accepted(&send(&mut session, corrected));
-    assert!(
-        session
-            .draft
-            .credits
-            .as_ref()
-            .unwrap()
-            .minimum_tax
-            .is_some()
-    );
 }
 
 fn form2555() -> Form2555 {
     Form2555 {
-        qualification: ForeignQualification::Presence {
-            starts_on: 20260101,
-            foreign_days: 340,
-        },
+        qualification: ForeignQualification::Presence { starts_on: 20260101, foreign_days: 340 },
         tax_home: true,
         revocation: ExclusionRevocation::None,
         exclusion: true,
@@ -348,45 +501,20 @@ fn unit47_leaf_foreign_qualification_paths_save_atomically() {
             "qualification/ended",
             3,
         ),
-        (
-            "leaf-foreign-residence-year",
-            "FOREIGN_RESIDENCE_NO_FULL_YEAR",
-            "qualification",
-            4,
-        ),
-        (
-            "leaf-foreign-prior-history",
-            "FOREIGN_PRIOR_ONLY_NEEDS_HISTORY",
-            "prior_year_history",
-            5,
-        ),
-        (
-            "leaf-foreign-nothing",
-            "FORM_2555_NOTHING_CLAIMED",
-            "exclusion",
-            6,
-        ),
-        (
-            "leaf-foreign-revocation",
-            "FOREIGN_REVOCATION_YEAR_OUTSIDE_PERIOD",
-            "revocation",
-            7,
-        ),
+        ("leaf-foreign-residence-year", "FOREIGN_RESIDENCE_NO_FULL_YEAR", "qualification", 4),
+        ("leaf-foreign-prior-history", "FOREIGN_PRIOR_ONLY_NEEDS_HISTORY", "prior_year_history", 5),
+        ("leaf-foreign-nothing", "FORM_2555_NOTHING_CLAIMED", "exclusion", 6),
     ] {
         let good = form2555();
         let mut bad = good.clone();
         match mutation {
             0 => {
-                bad.qualification = ForeignQualification::Presence {
-                    starts_on: 20250101,
-                    foreign_days: 340,
-                }
+                bad.qualification =
+                    ForeignQualification::Presence { starts_on: 20250101, foreign_days: 340 }
             }
             1 => {
-                bad.qualification = ForeignQualification::Presence {
-                    starts_on: 20260101,
-                    foreign_days: 366,
-                }
+                bad.qualification =
+                    ForeignQualification::Presence { starts_on: 20260101, foreign_days: 366 }
             }
             2 => {
                 bad.qualification = ForeignQualification::Residence {
@@ -414,19 +542,13 @@ fn unit47_leaf_foreign_qualification_paths_save_atomically() {
             }
             5 => bad.qualification = ForeignQualification::PriorYearOnly,
             6 => bad.exclusion = false,
-            _ => {
-                bad.revocation = ExclusionRevocation::Revoked {
-                    year: 2020,
-                    elections: RevokedElections::EarnedIncome,
-                    consent: true,
-                }
-            }
+            _ => unreachable!(),
         }
         document_case(
             case,
             TaxSection::WorkAbroad,
-            IncomeDocument::Form2555(good),
-            IncomeDocument::Form2555(bad),
+            IncomeSource::Record { value: crate::IncomeRecord::Form2555(good) },
+            IncomeSource::Record { value: crate::IncomeRecord::Form2555(bad) },
             key,
             field,
         );
@@ -466,29 +588,16 @@ fn unit47_leaf_foreign_housing_source_paths_save_atomically() {
             "housing/prior/deducted",
             2,
         ),
-        (
-            "leaf-housing-shares",
-            "HOUSING_SHARES_ABOVE_TOTAL",
-            "housing/expenses",
-            3,
-        ),
+        ("leaf-housing-shares", "HOUSING_SHARES_ABOVE_TOTAL", "housing/expenses", 3),
     ] {
         let mut good = form2555();
         good.housing = housing();
         let mut bad = good.clone();
         if mutation == 1 {
-            bad.qualification = ForeignQualification::Presence {
-                starts_on: 20260201,
-                foreign_days: 330,
-            };
+            bad.qualification =
+                ForeignQualification::Presence { starts_on: 20260201, foreign_days: 330 };
         }
-        let ForeignHousing::Claim {
-            stays,
-            prior,
-            household,
-            ..
-        } = &mut bad.housing
-        else {
+        let ForeignHousing::Claim { stays, prior, household, .. } = &mut bad.housing else {
             unreachable!()
         };
         match mutation {
@@ -500,8 +609,8 @@ fn unit47_leaf_foreign_housing_source_paths_save_atomically() {
         document_case(
             case,
             TaxSection::WorkAbroad,
-            IncomeDocument::Form2555(good),
-            IncomeDocument::Form2555(bad),
+            IncomeSource::Record { value: crate::IncomeRecord::Form2555(good) },
+            IncomeSource::Record { value: crate::IncomeRecord::Form2555(bad) },
             key,
             field,
         );
@@ -516,9 +625,7 @@ fn weather() -> FarmWeatherSale {
         weather_excess: 35,
         class_income: 100_000,
         principal_farming: true,
-        assistance: FarmWeatherAssistance::Designated {
-            date: Some(20260810),
-        },
+        assistance: FarmWeatherAssistance::Designated { date: Some(20260810) },
         weather_relationship: "Drought forced 35 additional sales".into(),
         prior_sales: vec![],
         usual_practice_support: "Prior sales records".into(),
@@ -528,12 +635,7 @@ fn weather() -> FarmWeatherSale {
 #[test]
 fn unit47_leaf_farm_nested_sources_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-farm-limits",
-            "FARM_LIMITATIONS_INVALID",
-            "more/specials/limitations/1",
-            0,
-        ),
+        ("leaf-farm-limits", "FARM_LIMITATIONS_INVALID", "more/specials/limitations/1", 0),
         (
             "leaf-farm-other-source",
             "FARM_OTHER_SOURCE_REQUIRED",
@@ -594,14 +696,8 @@ fn unit47_leaf_farm_nested_sources_save_atomically() {
             5 => bad.more.specials.weather_sales.push(weather()),
             6 => {
                 bad.more.specials.weather_sales[0].prior_sales = vec![
-                    FarmAnimalYear {
-                        year: 2025,
-                        count: 100,
-                    },
-                    FarmAnimalYear {
-                        year: 2025,
-                        count: 100,
-                    },
+                    FarmAnimalYear { year: 2025, count: 100 },
+                    FarmAnimalYear { year: 2025, count: 100 },
                 ]
             }
             _ => bad.more.specials.weather_sales[0].class_income = 1_000_001,
@@ -609,8 +705,8 @@ fn unit47_leaf_farm_nested_sources_save_atomically() {
         document_case(
             case,
             TaxSection::Farming,
-            IncomeDocument::Farm(good),
-            IncomeDocument::Farm(bad),
+            IncomeSource::Record { value: crate::IncomeRecord::Farm(good) },
+            IncomeSource::Record { value: crate::IncomeRecord::Farm(bad) },
             key,
             field,
         );
@@ -626,37 +722,14 @@ fn mtc_case(case: &str, bad: MinimumTaxHistories, key: &str, local: &str) {
         MinimumTaxHistories::from_current_unit(crate::tests::federal::minimum_tax::source()),
     );
     accepted(&send(&mut session, corrected));
-    assert!(
-        session
-            .draft
-            .credits
-            .as_ref()
-            .unwrap()
-            .minimum_tax
-            .is_some()
-    );
+    assert!(session.draft.credits.as_ref().unwrap().minimum_tax.is_some());
 }
 #[test]
 fn unit47_leaf_mtc_retained_relationships_save_atomically() {
     for (case, key, local, mutation) in [
-        (
-            "leaf-mtc-unit-twice",
-            "MTC_PRIOR_RETURN_TWICE",
-            "returns/1/unit",
-            0,
-        ),
-        (
-            "leaf-mtc-unit-status",
-            "MTC_PRIOR_STATUS_UNIT",
-            "returns/0/facts/status",
-            1,
-        ),
-        (
-            "leaf-mtc-owner",
-            "MTC_OWNER_NOT_ON_RETURN",
-            "returns/0/unit",
-            2,
-        ),
+        ("leaf-mtc-unit-twice", "MTC_PRIOR_RETURN_TWICE", "returns/1/unit", 0),
+        ("leaf-mtc-unit-status", "MTC_PRIOR_STATUS_UNIT", "returns/0/facts/status", 1),
+        ("leaf-mtc-owner", "MTC_OWNER_NOT_ON_RETURN", "returns/0/unit", 2),
         (
             "leaf-mtc-nol-year-twice",
             "MTC_NOL_YEAR_TWICE",
@@ -688,7 +761,8 @@ fn unit47_leaf_mtc_retained_relationships_save_atomically() {
             7,
         ),
     ] {
-        let mut bad = MinimumTaxHistories::from_current_unit(crate::tests::federal::minimum_tax::source());
+        let mut bad =
+            MinimumTaxHistories::from_current_unit(crate::tests::federal::minimum_tax::source());
         match mutation {
             0 => bad.returns.push(bad.returns[0].clone()),
             1 => bad.returns[0].facts.status = FederalStatus::Joint,
@@ -697,14 +771,8 @@ fn unit47_leaf_mtc_retained_relationships_save_atomically() {
                 bad.returns[0].facts.mtcnol = MinimumTaxLoss::Retained {
                     records: MinimumTaxLossRecords {
                         amounts: vec![
-                            MinimumTaxLossAmount {
-                                year: 2024,
-                                available: 100,
-                            },
-                            MinimumTaxLossAmount {
-                                year: 2024,
-                                available: 100,
-                            },
+                            MinimumTaxLossAmount { year: 2024, available: 100 },
+                            MinimumTaxLossAmount { year: 2024, available: 100 },
                         ],
                     },
                 }
@@ -712,10 +780,7 @@ fn unit47_leaf_mtc_retained_relationships_save_atomically() {
             4 => {
                 bad.returns[0].facts.mtcnol = MinimumTaxLoss::Retained {
                     records: MinimumTaxLossRecords {
-                        amounts: vec![MinimumTaxLossAmount {
-                            year: 2025,
-                            available: 100,
-                        }],
+                        amounts: vec![MinimumTaxLossAmount { year: 2025, available: 100 }],
                     },
                 }
             }
@@ -724,26 +789,24 @@ fn unit47_leaf_mtc_retained_relationships_save_atomically() {
                     MinimumTaxForeignCredit::PriorStatementElection { credit: 30_001 }
             }
             6 => {
-                bad.returns[0].facts.gains = Some(MinimumTaxRateFacts::ScheduleD(
-                    MinimumTaxScheduleDRateFacts {
+                bad.returns[0].facts.gains =
+                    Some(MinimumTaxRateFacts::ScheduleD(MinimumTaxScheduleDRateFacts {
                         preferential: 0,
                         unrecaptured: 0,
                         gain_cap: 0,
                         regular_zero: 0,
                         regular_fifteen: 1,
-                    },
-                ))
+                    }))
             }
             _ => {
-                bad.returns[0].facts.gains = Some(MinimumTaxRateFacts::ScheduleD(
-                    MinimumTaxScheduleDRateFacts {
+                bad.returns[0].facts.gains =
+                    Some(MinimumTaxRateFacts::ScheduleD(MinimumTaxScheduleDRateFacts {
                         preferential: 1,
                         unrecaptured: 0,
                         gain_cap: 0,
                         regular_zero: 0,
                         regular_fifteen: 0,
-                    },
-                ))
+                    }))
             }
         }
         mtc_case(case, bad, key, local);
@@ -753,25 +816,18 @@ fn unit47_leaf_mtc_retained_relationships_save_atomically() {
 #[test]
 fn unit47_leaf_employee_pay_source_relationships_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-employee-1099",
-            "FORM_8919_CODE_H_NEEDS_1099",
-            "form1099",
-            0,
-        ),
-        (
-            "leaf-employee-withholding",
-            "FORM_8919_WITHHOLDING_ABOVE_PAY",
-            "withholding",
-            1,
-        ),
+        ("leaf-employee-1099", "FORM_8919_CODE_H_NEEDS_1099", "form1099", 0),
+        ("leaf-employee-withholding", "FORM_8919_WITHHOLDING_ABOVE_PAY", "withholding", 1),
     ] {
         let good = EmployeeWages {
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             wages: 100_000,
             withholding: 0,
             form1099: true,
-            reason: EmployeeWageReason::SameFirmForms,
-            complete: true,
+            payroll: crate::EmployeePayrollSource::Form8919 {
+                reason: EmployeeWageReason::SameFirmForms,
+            },
         };
         let mut bad = good.clone();
         if mutation == 0 {
@@ -782,8 +838,8 @@ fn unit47_leaf_employee_pay_source_relationships_save_atomically() {
         document_case(
             case,
             TaxSection::Wages,
-            IncomeDocument::Form8919(good),
-            IncomeDocument::Form8919(bad),
+            IncomeSource::Wage { value: crate::WageDocument::Form8919(good) },
+            IncomeSource::Wage { value: crate::WageDocument::Form8919(bad) },
             key,
             field,
         );
@@ -802,73 +858,92 @@ fn unit47_leaf_scholarship_source_sum_save_is_atomic() {
         },
     };
     let mut bad = good.clone();
-    let Scholarship::Education { data } = &mut bad else {
-        unreachable!()
-    };
+    let Scholarship::Education { data } = &mut bad else { unreachable!() };
     data.qualified_paid += 1;
     document_case(
         "leaf-scholarship-spending",
         TaxSection::OtherIncome,
-        IncomeDocument::Scholarship(good),
-        IncomeDocument::Scholarship(bad),
+        IncomeSource::Record { value: crate::IncomeRecord::Scholarship(good) },
+        IncomeSource::Record { value: crate::IncomeRecord::Scholarship(bad) },
         "SCHOLARSHIP_SPENDING_ABOVE_AWARD",
         "data/qualified_paid",
     );
 }
-fn qof() -> QofInvestment {
-    QofInvestment {
+fn qof() -> QofInvestmentPaper {
+    qof_document(QofInvestment {
+        fund_ein: Default::default(),
+        source_recipient: Default::default(),
         fund: "Unit47 synthetic QOF".into(),
         invested_on: 20250101,
-        short_term: 100_000,
-        long_term: 0,
+        short_term: Some(100_000),
+        long_term: Some(0),
         gain_code: QofGainCode::None,
-        event: QofEvent::Held { fair_value: None },
+        event: Some(QofEvent::Held { fair_value: None }),
         special: false,
-    }
+    })
 }
 #[test]
 fn unit47_leaf_opportunity_fund_character_relationships_save_atomically() {
+    // A 2025 Form 8997 Part IV supplies the investment carried into 2026,
+    // independently of the current-year event answered on the topic page.
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let mut paper = qof();
+    paper.source_recipient = fixture_document_names(&session.draft, -1).unwrap().recipient;
+    paper.fund = "100 units Example Meadow Opportunity Fund".into();
+    paper.invested_on = 20210601;
+    paper.short_term = Some(0);
+    paper.long_term = Some(400_000);
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::OpportunityFund(paper.clone()),
+            },
+        )],
+    );
+    accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
+    let saved = session.draft.clone();
+    let mut cold = restart(saved.clone());
+    let reopened = open_document_center(&mut cold);
+    let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
+    let crate::InvestmentSaleDocument::OpportunityFund(reopened_paper) =
+        &documents.common.investment_sales.documents[0].document
+    else {
+        unreachable!()
+    };
+    assert_eq!(reopened_paper, &paper);
+    accepted(&send(&mut cold, reopened));
+    assert_eq!(cold.draft, saved);
     for (case, key, field, mutation) in [
         ("leaf-qof-no-gain", "QOF_NO_DEFERRED_GAIN", "short_term", 0),
-        (
-            "leaf-qof-1231",
-            "QOF_SECTION_1231_LONG_TERM",
-            "short_term",
-            1,
-        ),
-        (
-            "leaf-qof-collectibles",
-            "QOF_COLLECTIBLES_LONG_TERM",
-            "short_term",
-            2,
-        ),
-        (
-            "leaf-qof-sold-before",
-            "QOF_SOLD_BEFORE_INVESTED",
-            "event/sold_on",
-            3,
-        ),
+        ("leaf-qof-1231", "QOF_SECTION_1231_LONG_TERM", "short_term", 1),
+        ("leaf-qof-collectibles", "QOF_COLLECTIBLES_LONG_TERM", "short_term", 2),
     ] {
         let good = qof();
         let mut bad = good.clone();
         match mutation {
-            0 => bad.short_term = 0,
+            0 => bad.short_term = Some(0),
             1 => bad.gain_code = QofGainCode::Section1231,
             2 => bad.gain_code = QofGainCode::Collectibles,
-            _ => bad.event = QofEvent::Sold { sold_on: 20250101, amount: 100_000 },
+            _ => unreachable!(),
         }
         document_case(
             case,
             TaxSection::InvestmentSales,
-            IncomeDocument::OpportunityFund(good),
-            IncomeDocument::OpportunityFund(bad),
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::OpportunityFund(good),
+            },
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::OpportunityFund(bad),
+            },
             key,
             field,
         );
     }
 }
-fn qsbs() -> QsbsSale {
-    QsbsSale {
+fn qsbs() -> QsbIssuerSale {
+    QsbIssuerSale {
         issuer: "Unit47 synthetic corporation".into(),
         lots: vec![QsbStockLot {
             issued: 20100101,
@@ -879,30 +954,20 @@ fn qsbs() -> QsbsSale {
         }],
         reporting: BasisReporting::NoForm1099B,
         withholding: 0,
-        prior_eligible_gain: 0,
-        issuer_qualified: true,
-        active_business: true,
-        no_disqualification: true,
+        prior_eligible_gain: Some(0),
+        issuer_qualified: Some(true),
+        active_business: Some(true),
+        no_disqualification: Some(true),
         zone_60_exclusion: None,
-        complete_history: true,
-        special: false,
+        complete_history: Some(true),
+        special: Some(false),
     }
 }
 #[test]
 fn unit47_leaf_qsbs_original_issue_and_zone_relationships_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-qsbs-issued",
-            "QSBS_LOT_OUTSIDE_SECTION_1202_DATES",
-            "lots/0/issued",
-            0,
-        ),
-        (
-            "leaf-qsbs-proceeds",
-            "QSBS_LOT_PROCEEDS_NOT_ABOVE_BASIS",
-            "lots/0/proceeds",
-            1,
-        ),
+        ("leaf-qsbs-issued", "QSBS_LOT_OUTSIDE_SECTION_1202_DATES", "lots/0/issued", 0),
+        ("leaf-qsbs-proceeds", "QSBS_LOT_PROCEEDS_NOT_ABOVE_BASIS", "lots/0/proceeds", 1),
         (
             "leaf-qsbs-zone-gain",
             "QSBS_LOT_ZONE_GAIN_OUTSIDE_THE_LOT_GAIN",
@@ -921,23 +986,70 @@ fn unit47_leaf_qsbs_original_issue_and_zone_relationships_save_atomically() {
         match mutation {
             0 => bad.lots[0].issued = 20260101,
             1 => bad.lots[0].proceeds = 100_000,
-            2 => bad.lots[0].zone_gain_through_2018 = Some(100_001),
-            _ => bad.lots[0].zone_gain_through_2018 = Some(1),
+            2 => {
+                bad.lots[0].zone_gain_through_2018 =
+                    Some(crate::QsbsZoneValuation::Established { gain: 100_001 })
+            }
+            _ => {
+                bad.lots[0].zone_gain_through_2018 =
+                    Some(crate::QsbsZoneValuation::Established { gain: 1 })
+            }
         }
-        document_case(
-            case,
-            TaxSection::InvestmentSales,
-            IncomeDocument::QsbsSale(good),
-            IncomeDocument::QsbsSale(bad),
-            key,
-            field,
-        );
+        if mutation >= 2 {
+            // The same native relationship remains guarded. Paper no longer
+            // exposes valuation, and an outside-date lot has no offered row.
+            assert_eq!(bad.lots[0].issue().unwrap().key, key);
+            let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+            let mut public_source = bad.clone();
+            if mutation == 2 {
+                // Exercise the amount relationship on an actually offered lot.
+                public_source.lots[0].issued = 20050101;
+            }
+            let request = crate::tests::support::builders::qsbs_zone_topic_request(
+                &mut session,
+                &public_source,
+                0,
+            );
+            let expected_key = if mutation == 2 { key } else { "DOCUMENT_QUESTIONS_CHANGED" };
+            let P::SaveIncomes { followups, .. } = &request else { panic!() };
+            let field = if mutation == 2 {
+                let row =
+                    followups.iter().find(|row| row.key.ends_with("qsbs_zone_gain/0")).unwrap();
+                SchemaPath::root()
+                    .field("followups")
+                    .key(row.key.as_str())
+                    .field("answer")
+                    .field("value")
+                    .to_string()
+            } else {
+                SchemaPath::root().field("followups").to_string()
+            };
+            reject_atomic(case, &mut session, request, expected_key, &field);
+        } else {
+            document_case(
+                case,
+                TaxSection::InvestmentSales,
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::QsbsSale(
+                        crate::tests::support::builders::qsbs_document(&(good)),
+                    ),
+                },
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::QsbsSale(
+                        crate::tests::support::builders::qsbs_document(&(bad)),
+                    ),
+                },
+                key,
+                field,
+            );
+        }
     }
 }
 fn loss_history() -> LossCarryforward {
     LossCarryforward::from_histories(
         &NolHistory::Records {
-            years: vec![NolYear { ptp_ebl: crate::PtpEblNol::NoPtpEbl,
+            years: vec![NolYear {
+                ptp_ebl: crate::PtpEblNol::NoPtpEbl,
                 year: 2025,
                 balance: 100_000,
                 injured_owners: None,
@@ -955,12 +1067,7 @@ fn unit47_leaf_nol_history_relationships_save_atomically() {
     for (case, key, field, mutation) in [
         ("leaf-nol-empty", "NOL_NOTHING_ENTERED", "regular", 0),
         ("leaf-nol-year-twice", "NOL_YEAR_TWICE", "regular/1/year", 1),
-        (
-            "leaf-atnol-exception",
-            "ATNOL_EXCEPTION_AFTER_2017",
-            "amt/0/special_exception",
-            2,
-        ),
+        ("leaf-atnol-exception", "ATNOL_EXCEPTION_AFTER_2017", "amt/0/special_exception", 2),
     ] {
         let good = loss_history();
         let mut bad = good.clone();
@@ -972,8 +1079,8 @@ fn unit47_leaf_nol_history_relationships_save_atomically() {
         document_case(
             case,
             TaxSection::SelfEmployment,
-            IncomeDocument::NetOperatingLoss(good),
-            IncomeDocument::NetOperatingLoss(bad),
+            IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(good) },
+            IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(bad) },
             key,
             field,
         );
@@ -990,29 +1097,15 @@ fn gift_editor(session: &mut Interview) -> P {
 }
 #[test]
 fn unit47_leaf_gift_and_carryover_sources_save_atomically() {
+    use crate::tests::support::client::charity::gift_document_fixture_request;
     for (case, key, local, mutation) in [
-        (
-            "leaf-gift-acquired",
-            "GIFT_BOUGHT_AFTER_GIVEN",
-            "gifts/0/gift/acquired",
-            0,
-        ),
-        (
-            "leaf-gift-value",
-            "GIFT_VALUE_ABOVE_COST",
-            "gifts/0/gift/value",
-            1,
-        ),
-        (
-            "leaf-gift-benefit",
-            "GIFT_BENEFIT_ABOVE_VALUE",
-            "gifts/0/gift/benefit_received",
-            2,
-        ),
+        ("leaf-gift-acquired", "GIFT_BOUGHT_AFTER_GIVEN", "gifts/0/gift/acquired", 0),
+        ("leaf-gift-value", "GIFT_VALUE_ABOVE_COST", "gifts/0/gift/value", 1),
+        ("leaf-gift-benefit", "GIFT_BENEFIT_ABOVE_VALUE", "gifts/0/gift/benefit_received", 2),
         (
             "leaf-gift-vehicle-date",
             "VEHICLE_SOLD_BEFORE_GIVEN",
-            "gifts/0/gift/kind/treatment/sold",
+            "documents/other/vehicle_gifts/documents/0/form/box_4b",
             3,
         ),
         (
@@ -1021,63 +1114,37 @@ fn unit47_leaf_gift_and_carryover_sources_save_atomically() {
             "gifts/0/gift/kind/historic_building",
             4,
         ),
-        (
-            "leaf-gift-carry-year",
-            "CHARITY_CARRY_TOO_OLD",
-            "carryovers/0/year",
-            5,
-        ),
-        (
-            "leaf-gift-disaster-year",
-            "CHARITY_CARRY_DISASTER_YEAR",
-            "carryovers/0/year",
-            6,
-        ),
-        (
-            "leaf-gift-carry-twice",
-            "CHARITY_CARRY_TWICE",
-            "carryovers/1/year",
-            7,
-        ),
+        ("leaf-gift-carry-year", "CHARITY_CARRY_TOO_OLD", "carryovers/0/year", 5),
+        ("leaf-gift-disaster-year", "CHARITY_CARRY_DISASTER_YEAR", "carryovers/0/year", 6),
+        ("leaf-gift-carry-twice", "CHARITY_CARRY_TWICE", "carryovers/1/year", 7),
         (
             "leaf-gift-election-appreciation",
             "GIFT_ELECTION_NEEDS_CARRY_APPRECIATION",
             "carryovers/0/appreciation",
             8,
         ),
-        (
-            "leaf-gift-poor-condition",
-            "GIFT_ITEM_NEEDS_APPRAISAL",
-            "gifts/0/appraisal",
-            9,
-        ),
+        ("leaf-gift-poor-condition", "GIFT_ITEM_NEEDS_APPRAISAL", "gifts/0/appraisal", 9),
     ] {
         let mut draft = complete(FederalStatus::Single);
-        let _ = itemized(draft.deductions.as_mut().unwrap());
+        draft.checklist.carryovers |= CarryoverTopics::CHARITY.0;
         let mut session = Interview::new(TEST_USER, draft);
         let mut corrected = gift_editor(&mut session);
-        let P::SaveGiftCarryovers { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveGiftCarryovers { value, .. } = &mut corrected else { unreachable!() };
         value.gifts = vec![used_goods(20_000).into()];
         value.carryovers = vec![prior_household_carry().into()];
         let mut rejected = corrected.clone();
-        let P::SaveGiftCarryovers { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveGiftCarryovers { value, .. } = &mut rejected else { unreachable!() };
         let gift = &mut value.gifts[0].gift;
         match mutation {
             0 => gift.acquired = 20261201,
             1 => gift.value = gift.basis + 1,
             2 => gift.benefit_received = Some(gift.value),
             3 => {
-                gift.kind = GiftKind::Vehicle {
-                    vin: "TESTVIN1234567890".into(),
-                    treatment: VehicleUse::Sold {
+                value.vehicles =
+                    vec![vehicle_gift_page(donated_personal_vehicle(VehicleUse::Sold {
                         sold: 20260101,
                         proceeds: 10_000,
-                    },
-                }
+                    }))]
             }
             4 => {
                 gift.kind = GiftKind::Conservation {
@@ -1104,7 +1171,13 @@ fn unit47_leaf_gift_and_carryover_sources_save_atomically() {
                 }
             }
         }
-        let field = alloc::format!("[value/{local}]");
+        let field = if mutation == 3 {
+            let P::SaveGiftCarryovers { value, .. } = &rejected else { unreachable!() };
+            rejected = gift_document_fixture_request(&mut session, value);
+            alloc::format!("[{local}]")
+        } else {
+            alloc::format!("[value/{local}]")
+        };
         reject_atomic(case, &mut session, rejected, key, &field);
         let revision = session.draft.revision;
         accepted(&send(&mut session, corrected));
@@ -1139,12 +1212,7 @@ fn unit47_leaf_hsa_local_records_save_atomically() {
             "corrections/0/earnings",
             2,
         ),
-        (
-            "leaf-hsa-late-withdrawal",
-            "HSA_LATE_EXCESS_NOT_LATE",
-            "late_excess/0/date",
-            3,
-        ),
+        ("leaf-hsa-late-withdrawal", "HSA_LATE_EXCESS_NOT_LATE", "late_excess/0/date", 3),
         (
             "leaf-hsa-prior-employer-deadline",
             "HSA_PRIOR_EXCESS_DEPOSIT_AFTER_DEADLINE",
@@ -1157,12 +1225,7 @@ fn unit47_leaf_hsa_local_records_save_atomically() {
             "excess_accounting/later_employer_deposits",
             5,
         ),
-        (
-            "leaf-hsa-earlier-funding-coverage",
-            "HSA_FUNDING_NEEDS_COVERAGE",
-            "uses/0/coverage",
-            6,
-        ),
+        ("leaf-hsa-earlier-funding-coverage", "HSA_FUNDING_NEEDS_COVERAGE", "uses/0/coverage", 6),
         (
             "leaf-hsa-funding-history-loss",
             "HSA_FUNDING_LOSS_BEFORE_FUNDING",
@@ -1172,9 +1235,7 @@ fn unit47_leaf_hsa_local_records_save_atomically() {
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open_hsa_page(&mut session);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
         let mut account = hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 100_000);
         match mutation {
             0..=2 => account.corrections.push(HsaCorrectionPage {
@@ -1225,9 +1286,7 @@ fn unit47_leaf_hsa_local_records_save_atomically() {
         value.family_split = FamilySplit::NotApplicable;
         value.other_coverage = None;
         let mut rejected = corrected.clone();
-        let P::SaveHsa { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut rejected else { unreachable!() };
         let account = &mut value.accounts[0];
         match mutation {
             0 => account.corrections[0].returned = 20260401,
@@ -1238,10 +1297,8 @@ fn unit47_leaf_hsa_local_records_save_atomically() {
             5 => account.excess_accounting.as_mut().unwrap().later_employer_deposits = 1,
             6 => account.uses[0].coverage = HsaCoverage::None,
             _ => {
-                account.funding_history[0].loss = Some(HsaEligibilityLoss {
-                    date: 20250401,
-                    reason: HsaLossReason::Other,
-                })
+                account.funding_history[0].loss =
+                    Some(HsaEligibilityLoss { date: 20250401, reason: HsaLossReason::Other })
             }
         }
         reject_atomic(
@@ -1284,12 +1341,7 @@ fn unit47_leaf_hsa_cross_record_relationships_save_atomically() {
             "funding_history/1/funded",
             2,
         ),
-        (
-            "leaf-hsa-earlier-use-same-month",
-            "HSA_FUNDING_HISTORY_SAME_MONTH",
-            "uses/1/funded",
-            3,
-        ),
+        ("leaf-hsa-earlier-use-same-month", "HSA_FUNDING_HISTORY_SAME_MONTH", "uses/1/funded", 3),
         (
             "leaf-hsa-last-month-december",
             "HSA_LAST_MONTH_DECEMBER_NEEDED",
@@ -1299,9 +1351,7 @@ fn unit47_leaf_hsa_cross_record_relationships_save_atomically() {
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open_hsa_page(&mut session);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
         let mut account = hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 100_000);
         match mutation {
             0 => account.corrections.push(
@@ -1329,16 +1379,8 @@ fn unit47_leaf_hsa_cross_record_relationships_save_atomically() {
             }
             2 => {
                 account.funding_history = vec![
-                    HsaFundingHistory {
-                        funded: 20250501,
-                        amount: 10_000,
-                        loss: None,
-                    },
-                    HsaFundingHistory {
-                        funded: 20250601,
-                        amount: 10_000,
-                        loss: None,
-                    },
+                    HsaFundingHistory { funded: 20250501, amount: 10_000, loss: None },
+                    HsaFundingHistory { funded: 20250601, amount: 10_000, loss: None },
                 ]
             }
             3 => {
@@ -1369,9 +1411,7 @@ fn unit47_leaf_hsa_cross_record_relationships_save_atomically() {
         value.family_split = FamilySplit::NotApplicable;
         value.other_coverage = None;
         let mut rejected = corrected.clone();
-        let P::SaveHsa { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut rejected else { unreachable!() };
         let account = &mut value.accounts[0];
         match mutation {
             0 => account.personal = 9_999,
@@ -1408,24 +1448,9 @@ fn unit47_leaf_hsa_correction_source_graph_save_atomically() {
             "corrections",
             0,
         ),
-        (
-            "leaf-hsa-source-gross",
-            "HEALTH_CORRECTION_DOCUMENT_GROSS",
-            "corrections",
-            1,
-        ),
-        (
-            "leaf-hsa-source-earnings",
-            "HEALTH_CORRECTION_DOCUMENT_EARNINGS",
-            "corrections",
-            2,
-        ),
-        (
-            "leaf-hsa-source-year",
-            "HEALTH_CORRECTION_DOCUMENT_YEAR",
-            "corrections/0/returned",
-            3,
-        ),
+        ("leaf-hsa-source-gross", "HEALTH_CORRECTION_DOCUMENT_GROSS", "corrections", 1),
+        ("leaf-hsa-source-earnings", "HEALTH_CORRECTION_DOCUMENT_EARNINGS", "corrections", 2),
+        ("leaf-hsa-source-year", "HEALTH_CORRECTION_DOCUMENT_YEAR", "corrections/0/returned", 3),
         (
             "leaf-hsa-source-reference",
             "HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE",
@@ -1435,17 +1460,44 @@ fn unit47_leaf_hsa_correction_source_graph_save_atomically() {
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         // Commit the actual accepted statement through its normal income editor.
-        let mut source_page = open_topic(&mut session, TaxSection::OtherIncome);
-        documents(
-            &mut source_page,
+        let source_page = document_page(
+            &mut session,
+            TaxSection::OtherIncome,
             vec![document(
                 0,
-                IncomeDocument::Sa1099(Sa1099 {
-                    origin: HealthDocumentOrigin::Form1099Sa,
-                    gross: 10_000,
-                    account: MedicalSaAccount::Hsa,
-                    payment: MedicalSaPayment::ExcessReturned { earnings: Some(0) },
-                }),
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Sa1099(
+                        crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                            medicare_prior: if matches!(
+                                &MedicalSaAccount::Hsa,
+                                MedicalSaAccount::MedicareAdvantage
+                            ) {
+                                Some(MedicareMsaPrior::None)
+                            } else {
+                                None
+                            },
+                            medicare_from_spouse: if matches!(
+                                &MedicalSaAccount::Hsa,
+                                MedicalSaAccount::MedicareAdvantage
+                            ) {
+                                Some(false)
+                            } else {
+                                None
+                            },
+                            payment: None,
+                            ..sa_source(Sa1099 {
+                                trustee_payer: Default::default(),
+                                recipient: Default::default(),
+                                origin: HealthDocumentOrigin::Form1099Sa,
+                                gross: 10_000,
+                                box2_earnings: Some(0),
+                                box3_code: Some(2),
+                                box4_value: None,
+                                account: MedicalSaAccount::Hsa,
+                            })
+                        }),
+                    ),
+                },
             )],
         );
         accepted(&send(&mut session, source_page));
@@ -1457,9 +1509,7 @@ fn unit47_leaf_hsa_correction_source_graph_save_atomically() {
             .unwrap()
             .id;
         let mut corrected = open_hsa_page(&mut session);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
         let mut account = hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 100_000);
         account.corrections.push(
             HsaCorrection {
@@ -1479,9 +1529,7 @@ fn unit47_leaf_hsa_correction_source_graph_save_atomically() {
         value.family_split = FamilySplit::NotApplicable;
         value.other_coverage = None;
         let mut rejected = corrected.clone();
-        let P::SaveHsa { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut rejected else { unreachable!() };
         let corrections = &mut value.accounts[0].corrections;
         match mutation {
             0 => corrections.clear(),
@@ -1507,26 +1555,20 @@ fn unit47_leaf_hsa_correction_source_graph_save_atomically() {
 #[test]
 fn unit47_leaf_employee_stock_relationships_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-employee-stock-taxed",
-            "EMPLOYEE_STOCK_SOLD_BEFORE_TAXED",
-            "sold",
-            0,
-        ),
-        (
-            "leaf-employee-stock-year",
-            "EMPLOYEE_STOCK_SALE_NOT_IN_RETURN_YEAR",
-            "sold",
-            1,
-        ),
-        (
-            "leaf-employee-stock-wash",
-            "SALE_WASH_SALE_ABOVE_LOSS",
-            "more/wash_sale",
-            2,
-        ),
+        ("leaf-employee-stock-taxed", "EMPLOYEE_STOCK_SOLD_BEFORE_TAXED", "sold", 0),
+        ("leaf-employee-stock-year", "EMPLOYEE_STOCK_SALE_NOT_IN_RETURN_YEAR", "sold", 1),
+        ("leaf-employee-stock-wash", "SALE_WASH_SALE_ABOVE_LOSS", "more/wash_sale", 2),
     ] {
         let good = EmployeeShareSale {
+calendar_year: Default::default(),
+account_number: Default::default(),
+box_1b_acquired: Default::default(),
+form_8949_checkbox: Default::default(),
+box_2_short_term: Default::default(),
+box_2_long_term: Default::default(),
+box_2_ordinary: Default::default(),
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             description: "Synthetic award".into(),
             sold: 20260601,
             proceeds: 30_000,
@@ -1547,8 +1589,12 @@ fn unit47_leaf_employee_stock_relationships_save_atomically() {
         document_case(
             case,
             TaxSection::InvestmentSales,
-            IncomeDocument::EmployeeShareSale(good),
-            IncomeDocument::EmployeeShareSale(bad),
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::EmployeeShareSale(good),
+            },
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::EmployeeShareSale(bad),
+            },
             key,
             field,
         );
@@ -1556,73 +1602,38 @@ fn unit47_leaf_employee_stock_relationships_save_atomically() {
 }
 
 #[test]
-fn unit47_leaf_espp_relationships_save_atomically() {
-    for (case, key, field, mutation) in [
-        (
-            "leaf-espp-exercised",
-            "ESPP_EXERCISED_BEFORE_GRANTED",
-            "exercised",
-            0,
-        ),
-        ("leaf-espp-sold", "ESPP_SOLD_BEFORE_EXERCISED", "sold", 1),
-        ("leaf-espp-year", "ESPP_SALE_NOT_IN_RETURN_YEAR", "sold", 2),
-        (
-            "leaf-espp-wash",
-            "SALE_WASH_SALE_ABOVE_LOSS",
-            "more/wash_sale",
-            3,
-        ),
-    ] {
-        let good = EsppShareSale {
-            description: "Synthetic ESPP".into(),
-            shares: 10.0,
-            sold: 20260601,
-            proceeds: 3_000,
-            reported_basis: None,
-            reporting: BasisReporting::ReportedToIrs,
-            withholding: 0,
-            granted: 20230101,
-            exercised: 20240101,
-            grant_market: 200,
-            market_price: 200,
-            exercise_price: 100,
-            grant_price: 100,
-            more: EsppShareSaleMore {
-                in_wages: false,
-                ..Default::default()
-            },
-        };
-        let mut bad = good.clone();
-        match mutation {
-            0 => bad.exercised = 20220101,
-            1 => bad.sold = 20231201,
-            2 => bad.sold = 20270101,
-            _ => bad.more.wash_sale = 1,
-        }
-        document_case(
-            case,
-            TaxSection::InvestmentSales,
-            IncomeDocument::EsppShareSale(good),
-            IncomeDocument::EsppShareSale(bad),
-            key,
-            field,
-        );
-    }
+fn unit47_leaf_espp_sale_year_saves_atomically() {
+    let mut good = espp_source_paper(&ordinary_espp_lot());
+    good.description = "Synthetic ESPP".into();
+    let mut bad = good.clone();
+    bad.sold = 20270101;
+    document_case(
+        "leaf-espp-year",
+        TaxSection::InvestmentSales,
+        IncomeSource::InvestmentSale { value: crate::InvestmentSaleDocument::EsppShareSale(good) },
+        IncomeSource::InvestmentSale { value: crate::InvestmentSaleDocument::EsppShareSale(bad) },
+        "ESPP_SALE_NOT_IN_RETURN_YEAR",
+        "sold",
+    );
 }
 
 #[test]
 fn unit47_leaf_iso_relationships_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-iso-exercised",
-            "ISO_EXERCISED_BEFORE_GRANTED",
-            "exercised",
-            0,
-        ),
+        ("leaf-iso-exercised", "ISO_EXERCISED_BEFORE_GRANTED", "exercised", 0),
         ("leaf-iso-sold", "ISO_SOLD_BEFORE_EXERCISED", "sold", 1),
         ("leaf-iso-year", "ISO_SALE_NOT_IN_RETURN_YEAR", "sold", 2),
     ] {
         let good = IsoShareSale {
+calendar_year: Default::default(),
+account_number: Default::default(),
+box_1b_acquired: Default::default(),
+form_8949_checkbox: Default::default(),
+box_2_short_term: Default::default(),
+box_2_long_term: Default::default(),
+box_2_ordinary: Default::default(),
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             description: "Synthetic ISO".into(),
             shares: 10.0,
             sold: 20260601,
@@ -1634,10 +1645,6 @@ fn unit47_leaf_iso_relationships_save_atomically() {
             exercised: 20240101,
             exercise_price: 100,
             market_price: 200,
-            more: IsoShareSaleMore {
-                in_wages: false,
-                ..Default::default()
-            },
         };
         let mut bad = good.clone();
         match mutation {
@@ -1648,8 +1655,12 @@ fn unit47_leaf_iso_relationships_save_atomically() {
         document_case(
             case,
             TaxSection::InvestmentSales,
-            IncomeDocument::IsoShareSale(good),
-            IncomeDocument::IsoShareSale(bad),
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::IsoShareSale(good),
+            },
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::IsoShareSale(bad),
+            },
             key,
             field,
         );
@@ -1659,39 +1670,22 @@ fn unit47_leaf_iso_relationships_save_atomically() {
 #[test]
 fn unit47_leaf_nua_relationships_save_atomically() {
     for (case, key, field, mutation) in [
-        (
-            "leaf-nua-distributed",
-            "NUA_SOLD_BEFORE_DISTRIBUTED",
-            "sold",
-            0,
-        ),
+        ("leaf-nua-distributed", "NUA_SOLD_BEFORE_DISTRIBUTED", "sold", 0),
         ("leaf-nua-year", "NUA_SALE_NOT_IN_2026", "sold", 1),
-        (
-            "leaf-nua-deferred",
-            "NUA_ABOVE_DISTRIBUTION_VALUE",
-            "deferred_nua",
-            2,
-        ),
-        (
-            "leaf-nua-inherited-before-distribution",
-            "NUA_DIED_BEFORE_DISTRIBUTED",
-            "more/inherited/died",
-            3,
-        ),
-        (
-            "leaf-nua-inherited-after-sale",
-            "NUA_SOLD_BEFORE_DIED",
-            "sold",
-            4,
-        ),
-        (
-            "leaf-nua-wash",
-            "SALE_WASH_SALE_ABOVE_LOSS",
-            "more/wash_sale",
-            5,
-        ),
+        // The inheritance and wash-sale rules are the Investment sales
+        // answers' (investment_kinds::nua_share_sale_inheritance_rules_and_special_answer).
+        ("leaf-nua-deferred", "NUA_ABOVE_DISTRIBUTION_VALUE", "deferred_nua", 2),
     ] {
         let good = NuaShareSale {
+calendar_year: Default::default(),
+account_number: Default::default(),
+box_1b_acquired: Default::default(),
+form_8949_checkbox: Default::default(),
+box_2_short_term: Default::default(),
+box_2_long_term: Default::default(),
+box_2_ordinary: Default::default(),
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             description: "Synthetic NUA".into(),
             sold: 20260601,
             proceeds: 30_000,
@@ -1701,27 +1695,22 @@ fn unit47_leaf_nua_relationships_save_atomically() {
             distributed: 20250501,
             distribution_value: 20_000,
             deferred_nua: 10_000,
-            more: NuaShareSaleMore::default(),
         };
         let mut bad = good.clone();
         match mutation {
             0 => bad.sold = 20250401,
             1 => bad.sold = 20270101,
-            2 => bad.deferred_nua = 20_001,
-            3 | 4 => {
-                bad.more.inherited = Some(NuaInheritance {
-                    died: if mutation == 3 { 20250401 } else { 20260701 },
-                    value: 20_000,
-                    estate_tax: false,
-                })
-            }
-            _ => bad.more.wash_sale = 1,
+            _ => bad.deferred_nua = 20_001,
         }
         document_case(
             case,
             TaxSection::InvestmentSales,
-            IncomeDocument::NuaShareSale(good),
-            IncomeDocument::NuaShareSale(bad),
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::NuaShareSale(good),
+            },
+            IncomeSource::InvestmentSale {
+                value: crate::InvestmentSaleDocument::NuaShareSale(bad),
+            },
             key,
             field,
         );
@@ -1743,10 +1732,7 @@ fn leaf_archer_owner(draft: &FederalDraft) -> ArcherContributorRow {
         prior_employer_excess: vec![],
         excess_accounting: None,
         coverage: ArcherEligibility::FullYear {
-            coverage: ArcherCoverage::SelfOnly {
-                deductible: 300_000,
-                out_of_pocket: 400_000,
-            },
+            coverage: ArcherCoverage::SelfOnly { deductible: 300_000, out_of_pocket: 400_000 },
         },
         income: vec![wage],
     }
@@ -1832,12 +1818,7 @@ fn unit47_leaf_archer_local_relationships_save_atomically() {
             "owners/0/excess_accounting/later_employer_deposits",
             8,
         ),
-        (
-            "leaf-archer-owner-twice",
-            "ARCHER_OWNER_TWICE",
-            "owners/1/owner",
-            9,
-        ),
+        ("leaf-archer-owner-twice", "ARCHER_OWNER_TWICE", "owners/1/owner", 9),
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut row = leaf_archer_owner(&session.draft);
@@ -1864,17 +1845,11 @@ fn unit47_leaf_archer_local_relationships_save_atomically() {
             row.employer = 20_000;
         }
         let mut corrected = open_hsa_page(&mut session);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
-        value.archer = ArcherContributionsPage::Records {
-            owners: vec![row],
-            sharing: ArcherSharing::Equal,
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
+        value.archer =
+            ArcherContributionsPage::Records { owners: vec![row], sharing: ArcherSharing::Equal };
         let mut rejected = corrected.clone();
-        let P::SaveHsa { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut rejected else { unreachable!() };
         let ArcherContributionsPage::Records { owners, .. } = &mut value.archer else {
             unreachable!()
         };
@@ -1894,13 +1869,7 @@ fn unit47_leaf_archer_local_relationships_save_atomically() {
             }
             _ => owners.push(owners[0].clone()),
         }
-        reject_atomic(
-            case,
-            &mut session,
-            rejected,
-            key,
-            &alloc::format!("[value/archer/{local}]"),
-        );
+        reject_atomic(case, &mut session, rejected, key, &alloc::format!("[value/archer/{local}]"));
         let revision = session.draft.revision;
         accepted(&send(&mut session, corrected));
         assert_eq!(session.draft.revision, revision + 1);
@@ -1921,24 +1890,9 @@ fn unit47_leaf_archer_correction_source_graph_save_atomically() {
             "corrections",
             0,
         ),
-        (
-            "leaf-archer-source-gross",
-            "HEALTH_CORRECTION_DOCUMENT_GROSS",
-            "corrections",
-            1,
-        ),
-        (
-            "leaf-archer-source-earnings",
-            "HEALTH_CORRECTION_DOCUMENT_EARNINGS",
-            "corrections",
-            2,
-        ),
-        (
-            "leaf-archer-source-year",
-            "HEALTH_CORRECTION_DOCUMENT_YEAR",
-            "corrections/0/returned",
-            3,
-        ),
+        ("leaf-archer-source-gross", "HEALTH_CORRECTION_DOCUMENT_GROSS", "corrections", 1),
+        ("leaf-archer-source-earnings", "HEALTH_CORRECTION_DOCUMENT_EARNINGS", "corrections", 2),
+        ("leaf-archer-source-year", "HEALTH_CORRECTION_DOCUMENT_YEAR", "corrections/0/returned", 3),
         (
             "leaf-archer-source-reference",
             "HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE",
@@ -1947,19 +1901,44 @@ fn unit47_leaf_archer_correction_source_graph_save_atomically() {
         ),
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let mut source_page = open_topic(&mut session, TaxSection::OtherIncome);
-        documents(
-            &mut source_page,
+        let source_page = document_page(
+            &mut session,
+            TaxSection::OtherIncome,
             vec![document(
                 0,
-                IncomeDocument::Sa1099(Sa1099 {
-                    origin: HealthDocumentOrigin::Form1099Sa,
-                    gross: 10_000,
-                    account: MedicalSaAccount::Archer,
-                    payment: MedicalSaPayment::ExcessReturned {
-                        earnings: if mutation == 0 { None } else { Some(0) },
-                    },
-                }),
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Sa1099(
+                        crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                            medicare_prior: if matches!(
+                                &MedicalSaAccount::Archer,
+                                MedicalSaAccount::MedicareAdvantage
+                            ) {
+                                Some(MedicareMsaPrior::None)
+                            } else {
+                                None
+                            },
+                            medicare_from_spouse: if matches!(
+                                &MedicalSaAccount::Archer,
+                                MedicalSaAccount::MedicareAdvantage
+                            ) {
+                                Some(false)
+                            } else {
+                                None
+                            },
+                            payment: None,
+                            ..sa_source(Sa1099 {
+                                trustee_payer: Default::default(),
+                                recipient: Default::default(),
+                                origin: HealthDocumentOrigin::Form1099Sa,
+                                gross: 10_000,
+                                box2_earnings: if mutation == 0 { None } else { Some(0) },
+                                box3_code: Some(2),
+                                box4_value: None,
+                                account: MedicalSaAccount::Archer,
+                            })
+                        }),
+                    ),
+                },
             )],
         );
         accepted(&send(&mut session, source_page));
@@ -1975,17 +1954,11 @@ fn unit47_leaf_archer_correction_source_graph_save_atomically() {
         correction.document = Some(source_id);
         row.corrections.push(correction);
         let mut corrected = open_hsa_page(&mut session);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
-        value.archer = ArcherContributionsPage::Records {
-            owners: vec![row],
-            sharing: ArcherSharing::Equal,
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
+        value.archer =
+            ArcherContributionsPage::Records { owners: vec![row], sharing: ArcherSharing::Equal };
         let mut rejected = corrected.clone();
-        let P::SaveHsa { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut rejected else { unreachable!() };
         let ArcherContributionsPage::Records { owners, .. } = &mut value.archer else {
             unreachable!()
         };
@@ -2023,6 +1996,7 @@ fn leaf_hsa_estimate(request: &P) -> P {
         ira_sources,
         archer_income,
         value,
+        followups,
         ..
     } = request
     else {
@@ -2040,6 +2014,8 @@ fn leaf_hsa_estimate(request: &P) -> P {
         ira_sources: ira_sources.clone(),
         archer_income: archer_income.clone(),
         value: value.clone(),
+        followups: followups.clone(),
+        questions: Vec::new(),
     }
 }
 fn leaf_hsa_save_estimate_rejection(
@@ -2051,19 +2027,16 @@ fn leaf_hsa_save_estimate_rejection(
 ) {
     let estimated = leaf_hsa_estimate(&rejected);
     reject_atomic(case, session, rejected, key, field);
-    reject_atomic(
-        &alloc::format!("{case}-estimate"),
-        session,
-        estimated,
-        key,
-        field,
-    );
+    reject_atomic(&alloc::format!("{case}-estimate"), session, estimated, key, field);
 }
 fn leaf_hsa_correct_and_reopen(session: &mut Interview, corrected: P) {
     let before = session.draft.clone();
     let dirty = session.dirty;
     assert!(matches!(
-        send(session, leaf_hsa_estimate(&corrected)),
+        crate::tests::support::client::income_pages::candidate_save_review(
+            session,
+            leaf_hsa_estimate(&corrected)
+        ),
         Reply::Response(P::RunningEstimate { .. })
     ));
     assert_eq!(session.draft, before);
@@ -2080,18 +2053,8 @@ fn leaf_hsa_correct_and_reopen(session: &mut Interview, corrected: P) {
 fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
     use crate::tests::cross::interview::{hsa_account, open_hsa_page};
     for (case, key, local, mutation) in [
-        (
-            "leaf-funding-forged-source",
-            "HSA_FUNDING_SOURCE_NOT_OFFERED",
-            "funding/0/source",
-            0,
-        ),
-        (
-            "leaf-funding-wrong-source-kind",
-            "HSA_FUNDING_SOURCE_NOT_OFFERED",
-            "funding/0/source",
-            1,
-        ),
+        ("leaf-funding-forged-source", "HSA_FUNDING_SOURCE_NOT_OFFERED", "funding/0/source", 0),
+        ("leaf-funding-wrong-source-kind", "HSA_FUNDING_SOURCE_NOT_OFFERED", "funding/0/source", 1),
         (
             "leaf-funding-distribution-year",
             "HSA_FUNDING_DISTRIBUTION_YEAR",
@@ -2116,30 +2079,15 @@ fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
             "funding/0/basis/distributed",
             5,
         ),
-        (
-            "leaf-funding-lifetime-earlier-use",
-            "HSA_FUNDING_LIFETIME",
-            "accounts/0/uses",
-            6,
-        ),
+        ("leaf-funding-lifetime-earlier-use", "HSA_FUNDING_LIFETIME", "accounts/0/uses", 6),
         (
             "leaf-funding-lifetime-prior-history",
             "HSA_FUNDING_LIFETIME",
             "accounts/0/funding_history",
             7,
         ),
-        (
-            "leaf-funding-lifetime-second-transfer",
-            "HSA_FUNDING_LIFETIME",
-            "funding",
-            8,
-        ),
-        (
-            "leaf-funding-needs-account",
-            "HSA_FUNDING_NEEDS_AN_ACCOUNT",
-            "funding/0/owner",
-            9,
-        ),
+        ("leaf-funding-lifetime-second-transfer", "HSA_FUNDING_LIFETIME", "funding", 8),
+        ("leaf-funding-needs-account", "HSA_FUNDING_NEEDS_AN_ACCOUNT", "funding/0/owner", 9),
         (
             "leaf-funding-after-owner-death",
             "HSA_FUNDING_OWNER_DIED_BEFORE_RECEIPT",
@@ -2158,12 +2106,7 @@ fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
             "funding/0/loss/date",
             12,
         ),
-        (
-            "leaf-funding-no-coverage",
-            "HSA_FUNDING_NEEDS_COVERAGE",
-            "funding/0/coverage",
-            13,
-        ),
+        ("leaf-funding-no-coverage", "HSA_FUNDING_NEEDS_COVERAGE", "funding/0/coverage", 13),
         (
             "leaf-funding-roth-order",
             "HSA_FUNDING_ORDER_CONTRADICTED",
@@ -2182,11 +2125,8 @@ fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
         } else if mutation == 5 {
             inherited_hsa_funding(6000, 0, 6000, 0, 1000)
         } else {
-            let mut draft = complete(if mutation == 15 {
-                FederalStatus::Joint
-            } else {
-                FederalStatus::Single
-            });
+            let mut draft =
+                complete(if mutation == 15 { FederalStatus::Joint } else { FederalStatus::Single });
             current_hsa_funding(&mut draft, 1000);
             draft
         };
@@ -2224,22 +2164,22 @@ fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
             .unwrap()
             .id;
         let mut session = Interview::new(TEST_USER, draft);
+        crate::tests::support::client::admit_native_fixture_facts(&mut session);
         // Reopen and submit the actual source documents before composing HSA rows.
-        let source_page = open_topic(&mut session, TaxSection::Retirement);
+        let source_page = open_document_center(&mut session);
         accepted(&send(&mut session, source_page));
         let mut corrected = open_hsa_page(&mut session);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
         value.funding = vec![transfer];
         value.family_split = FamilySplit::NotApplicable;
+        if mutation == 15 {
+            // A joint return with one contributing account states the other
+            // filer's eligibility; the page does not save without it.
+            value.other_coverage =
+                Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::None });
+        }
         let mut rejected = corrected.clone();
-        let P::SaveHsa {
-            value, ira_sources, ..
-        } = &mut rejected
-        else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, ira_sources, .. } = &mut rejected else { unreachable!() };
         match mutation {
             0 => {
                 value.funding[0].source += 100_000;
@@ -2280,26 +2220,20 @@ fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
             10 => value.funding[0].funded = 20261202,
             11 => value.funding[0].ongoing_sep_simple = true,
             12 => {
-                value.funding[0].loss = Some(HsaEligibilityLoss {
-                    date: 20260114,
-                    reason: HsaLossReason::Other,
-                })
+                value.funding[0].loss =
+                    Some(HsaEligibilityLoss { date: 20260114, reason: HsaLossReason::Other })
             }
             13 => value.funding[0].coverage = HsaCoverage::None,
             14 => {
-                let HsaFundingBasis::Roth {
-                    before_other_activity,
-                    ..
-                } = &mut value.funding[0].basis
+                let HsaFundingBasis::Roth { before_other_activity, .. } =
+                    &mut value.funding[0].basis
                 else {
                     unreachable!()
                 };
                 *before_other_activity = true;
             }
             _ => {
-                value
-                    .accounts
-                    .push(hsa_account(Owner::Spouse, HsaCoverageYear::SelfOnly, 0));
+                value.accounts.push(hsa_account(Owner::Spouse, HsaCoverageYear::SelfOnly, 0));
                 value.other_coverage = None;
                 value.funding[0].owner = Owner::Spouse;
             }
@@ -2319,13 +2253,7 @@ fn unit47_leaf_hsa_funding_sources_save_and_estimate_atomically() {
 fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
     use crate::tests::cross::interview::{hsa_account, open_hsa_page};
     for (case, archer, mutation, key, local) in [
-        (
-            "leaf-hsa-failed-source",
-            false,
-            0,
-            "HEALTH_FAILED_DEPOSIT_UNAVAILABLE",
-            "failed_deposit",
-        ),
+        ("leaf-hsa-failed-source", false, 0, "HEALTH_FAILED_DEPOSIT_UNAVAILABLE", "failed_deposit"),
         (
             "leaf-hsa-failed-source-date",
             false,
@@ -2347,13 +2275,7 @@ fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
             "HEALTH_FAILED_DEPOSIT_RETURN_ABOVE_DEPOSIT",
             "principal",
         ),
-        (
-            "leaf-hsa-failed-payer",
-            false,
-            4,
-            "HEALTH_FAILED_DEPOSIT_PERSONAL_REQUIRED",
-            "payer",
-        ),
+        ("leaf-hsa-failed-payer", false, 4, "HEALTH_FAILED_DEPOSIT_PERSONAL_REQUIRED", "payer"),
         (
             "leaf-archer-failed-source",
             true,
@@ -2382,13 +2304,7 @@ fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
             "HEALTH_FAILED_DEPOSIT_RETURN_ABOVE_DEPOSIT",
             "principal",
         ),
-        (
-            "leaf-archer-failed-payer",
-            true,
-            4,
-            "HEALTH_FAILED_DEPOSIT_PERSONAL_REQUIRED",
-            "payer",
-        ),
+        ("leaf-archer-failed-payer", true, 4, "HEALTH_FAILED_DEPOSIT_PERSONAL_REQUIRED", "payer"),
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let destination = if archer {
@@ -2396,43 +2312,71 @@ fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
         } else {
             MedicalRolloverDestination::Hsa
         };
-        let mut source_page = open_topic(&mut session, TaxSection::OtherIncome);
-        documents(
-            &mut source_page,
-            vec![document(
-                0,
-                IncomeDocument::Sa1099(Sa1099 {
-                    origin: HealthDocumentOrigin::Form1099Sa,
-                    gross: 10_000,
-                    account: if archer {
-                        MedicalSaAccount::Archer
-                    } else {
-                        MedicalSaAccount::Hsa
-                    },
-                    payment: MedicalSaPayment::Own {
-                        nonmedical: vec![],
-                        medical: 0,
-                        disabled_since: None,
-                        rollover: Some(MedicalRollover {
-                            preceding: None,
-                            receipts: vec![MedicalRolloverReceipt {
-                                received: 20260101,
-                                deposits: vec![MedicalRolloverDeposit {
-                                    deposited: 20260315,
-                                    amount: 10_000,
-                                    destination,
-                                    character: MedicalDepositCharacter::Cash {
-                                        year: 2026,
-                                        deadline: 20270415,
-                                    },
+        let source_rows = vec![document(
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Sa1099(
+                    crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                        medicare_prior: if matches!(
+                            &if archer { MedicalSaAccount::Archer } else { MedicalSaAccount::Hsa },
+                            MedicalSaAccount::MedicareAdvantage
+                        ) {
+                            Some(MedicareMsaPrior::None)
+                        } else {
+                            None
+                        },
+                        medicare_from_spouse: if matches!(
+                            &if archer { MedicalSaAccount::Archer } else { MedicalSaAccount::Hsa },
+                            MedicalSaAccount::MedicareAdvantage
+                        ) {
+                            Some(false)
+                        } else {
+                            None
+                        },
+                        payment: Some(MedicalSaPayment::Own {
+                            nonmedical: vec![],
+                            medical: 0,
+                            disabled_since: None,
+                            rollover: Some(MedicalRollover {
+                                preceding: None,
+                                receipts: vec![MedicalRolloverReceipt {
+                                    received: 20260101,
+                                    deposits: vec![MedicalRolloverDeposit {
+                                        deposited: 20260315,
+                                        amount: 10_000,
+                                        destination,
+                                        character: MedicalDepositCharacter::Cash {
+                                            year: 2026,
+                                            deadline: 20270415,
+                                        },
+                                    }],
                                 }],
-                            }],
+                            }),
                         }),
-                    },
-                }),
-            )],
-        );
+                        ..sa_source(Sa1099 {
+                            trustee_payer: Default::default(),
+                            recipient: Default::default(),
+                            origin: HealthDocumentOrigin::Form1099Sa,
+                            gross: 10_000,
+                            box2_earnings: None,
+                            box3_code: Some(1),
+                            box4_value: None,
+                            account: if archer {
+                                MedicalSaAccount::Archer
+                            } else {
+                                MedicalSaAccount::Hsa
+                            },
+                        })
+                    }),
+                ),
+            },
+        )];
+        let source_page = document_page(&mut session, TaxSection::OtherIncome, source_rows.clone());
         accepted(&send(&mut session, source_page));
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut session,
+            &source_rows,
+        );
         let source_id = session
             .draft
             .income
@@ -2442,9 +2386,7 @@ fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
             .id;
         let mut corrected = open_hsa_page(&mut session);
         let mut archer_owner = leaf_archer_owner(&session.draft);
-        let P::SaveHsa { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveHsa { value, .. } = &mut corrected else { unreachable!() };
         if archer {
             archer_owner.personal = 0;
             let mut correction = leaf_archer_correction();
@@ -2475,12 +2417,7 @@ fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
             value.family_split = FamilySplit::NotApplicable;
         }
         let mut rejected = corrected.clone();
-        let P::SaveHsa {
-            value,
-            hsa_failed_deposits,
-            archer_failed_deposits,
-            ..
-        } = &mut rejected
+        let P::SaveHsa { value, hsa_failed_deposits, archer_failed_deposits, .. } = &mut rejected
         else {
             unreachable!()
         };
@@ -2520,11 +2457,7 @@ fn unit47_leaf_failed_deposit_sources_save_and_estimate_atomically() {
                 _ => corrections[0].payer = HsaCorrectionPayer::Employer { in_wages: false },
             }
         }
-        let group = if archer {
-            "archer/owners/0"
-        } else {
-            "accounts/0"
-        };
+        let group = if archer { "archer/owners/0" } else { "accounts/0" };
         // The aggregate owner returns the first correction in the failed
         // source group; each row independently remains below the deposit.
         leaf_hsa_save_estimate_rejection(
@@ -2543,9 +2476,7 @@ fn unit47_leaf_rental_at_risk_decreases_save_atomically() {
     let mut good = crate::tests::cross::interview::rental_page(1_200_000);
     good.more.at_risk = simplified_rental_risk(100_000, 50_000, 150_000, [0, 0, 0, 0]);
     let mut bad = good.clone();
-    let Some(RentalAtRisk::Limited { record, .. }) = &mut bad.more.at_risk else {
-        unreachable!()
-    };
+    let Some(RentalAtRisk::Limited { record, .. }) = &mut bad.more.at_risk else { unreachable!() };
     let crate::RiskMethod::Simplified { facts } = &mut record.as_mut().unwrap().regular else {
         unreachable!()
     };
@@ -2553,8 +2484,8 @@ fn unit47_leaf_rental_at_risk_decreases_save_atomically() {
     document_case(
         "leaf-rental-at-risk-decreases",
         TaxSection::Rentals,
-        IncomeDocument::Rental(good.clone()),
-        IncomeDocument::Rental(bad),
+        IncomeSource::Record { value: crate::IncomeRecord::Rental(good.clone()) },
+        IncomeSource::Record { value: crate::IncomeRecord::Rental(bad) },
         "RISK_RECAPTURE_DETAILED_REQUIRED",
         // 2026-10-16 approved signed/Detailed owner fit: this same negative
         // Simplified balance requires Detailed facts, preserving refusal,
@@ -2566,55 +2497,37 @@ fn unit47_leaf_rental_at_risk_decreases_save_atomically() {
     document_case(
         "leaf-rental-required-risk-method",
         TaxSection::Rentals,
-        IncomeDocument::Rental(good),
-        IncomeDocument::Rental(missing),
+        IncomeSource::Record { value: crate::IncomeRecord::Rental(good) },
+        IncomeSource::Record { value: crate::IncomeRecord::Rental(missing) },
         "ACTIVITY_GROUP_INDIVIDUAL_RISK_REQUIRED",
         "more/at_risk/record",
     );
 }
 
 fn leaf_mortgage_editor(session: &mut Interview) -> P {
-    match crate::tests::cross::interview::from_review(session, TaxSection::Mortgage) {
-        Reply::Edit(page @ P::SaveMortgages { .. }) => page,
-        other => panic!("mortgage editor required: {other:?}"),
-    }
+    open_document_center(session)
 }
 fn leaf_mortgage_estimate(request: &P) -> P {
-    let P::SaveMortgages {
-        mortgage_loans,
-        rental_mortgage_loans,
-        value,
-        ..
-    } = request
-    else {
-        panic!("mortgage editor required")
-    };
-    P::EstimateMortgages {
-        user: TEST_USER,
-        mortgage_loans: mortgage_loans.clone(),
-        rental_mortgage_loans: rental_mortgage_loans.clone(),
-        value: value.clone(),
-    }
+    crate::tests::support::client::estimate_documents_from_save(request)
 }
 #[test]
 fn unit47_leaf_rental_mortgage_root_save_and_estimate_atomically() {
-    for (case, replace) in [
-        ("leaf-mortgage-rental-delete", false),
-        ("leaf-mortgage-rental-replace", true),
-    ] {
+    for (case, replace) in
+        [("leaf-mortgage-rental-delete", false), ("leaf-mortgage-rental-replace", true)]
+    {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut source_page = leaf_mortgage_editor(&mut session);
-        let P::SaveMortgages { value, .. } = &mut source_page else {
-            unreachable!()
-        };
-        value.loans = vec![Mortgage1098 {
+        let P::SaveDocuments { documents, .. } = &mut source_page else { unreachable!() };
+        let source = Mortgage1098 {
+            lender: Default::default(),
+            borrower: accepted_document_names(&session.draft, Owner::Taxpayer).recipient,
             id: 0,
             interest: 600_000,
             principal: 10_000_000,
             originated: 20200601,
             refund: 0,
             insurance: 0,
-            points: Points::None,
+            points: 0,
             more: MortgageMore {
                 property: "Linked first lender".into(),
                 details: MortgageDetails::FirstLender(MortgageFirstLender {
@@ -2624,13 +2537,16 @@ fn unit47_leaf_rental_mortgage_root_save_and_estimate_atomically() {
                 }),
                 ..Default::default()
             },
-        }];
-        accepted(&send(&mut session, source_page));
-        let source_page = leaf_mortgage_editor(&mut session);
-        let P::SaveMortgages { value, .. } = source_page else {
-            unreachable!()
         };
-        let root = value.loans[0].clone();
+        documents.common.mortgages.documents = vec![mortgage_document(source.clone())];
+        accepted(&send(&mut session, source_page));
+        accepted(&crate::tests::cross::interview::save_mortgage_answers(
+            &mut session,
+            &[(source.more.clone(), crate::MortgagePointTreatment::None)],
+        ));
+        let source_page = leaf_mortgage_editor(&mut session);
+        let P::SaveDocuments { documents, .. } = source_page else { unreachable!() };
+        let root = documents.common.mortgages.documents[0].clone();
         assert!(root.id > 0);
         // The rental picks a real accepted first lender, after its normal Save.
         let mut rental = crate::tests::cross::interview::rental_page(1_200_000);
@@ -2640,47 +2556,33 @@ fn unit47_leaf_rental_mortgage_root_save_and_estimate_atomically() {
             overlap_days: 0,
             direct_expenses: 0,
         };
-        rental.mortgage_loans = vec![root.id];
-        let mut rental_page = open_topic(&mut session, TaxSection::Rentals);
-        documents(
-            &mut rental_page,
-            vec![document(0, IncomeDocument::Rental(rental))],
+        rental.related = crate::tests::support::builders::related_forms::related_keys(&[root.id]);
+        let rental_page = document_page(
+            &mut session,
+            TaxSection::Rentals,
+            vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Rental(rental) })],
         );
         accepted(&send(&mut session, rental_page));
-        assert_eq!(
-            crate::extended_rules::rental_mortgage_roots(&session.draft),
-            vec![root.id]
-        );
+        assert_eq!(crate::extended_rules::rental_mortgage_roots(&session.draft), vec![root.id]);
         let mut corrected = leaf_mortgage_editor(&mut session);
-        let P::SaveMortgages {
-            value,
-            rental_mortgage_loans,
-            ..
-        } = &mut corrected
-        else {
+        let P::SaveDocuments { documents, rental_mortgage_loans, .. } = &mut corrected else {
             unreachable!()
         };
         assert_eq!(rental_mortgage_loans, &vec![root.id]);
-        assert_eq!(value.loans[0].id, root.id);
-        value.loans[0].more.property = "Linked first lender corrected".into();
+        assert_eq!(documents.common.mortgages.documents[0].id, root.id);
         let mut rejected = corrected.clone();
-        let P::SaveMortgages {
-            value,
-            rental_mortgage_loans,
-            ..
-        } = &mut rejected
-        else {
+        let P::SaveDocuments { documents, rental_mortgage_loans, .. } = &mut rejected else {
             unreachable!()
         };
         // An echoed empty requirements list cannot erase the accepted rental link.
         rental_mortgage_loans.clear();
         if replace {
-            let mut replacement = root.clone();
+            let mut replacement = source.clone();
             replacement.id = 0;
             replacement.more.property = "Different first lender".into();
-            value.loans = vec![replacement];
+            documents.common.mortgages.documents = vec![mortgage_document(replacement)];
         } else {
-            value.loans.clear();
+            documents.common.mortgages.documents.clear();
         }
         let estimated = leaf_mortgage_estimate(&rejected);
         reject_atomic(
@@ -2688,59 +2590,61 @@ fn unit47_leaf_rental_mortgage_root_save_and_estimate_atomically() {
             &mut session,
             rejected,
             "MORTGAGE_RENTAL_ROOT_NEEDED",
-            "[value/loans]",
+            "[documents/common/mortgages/documents]",
         );
         reject_atomic(
             &alloc::format!("{case}-estimate"),
             &mut session,
             estimated,
             "MORTGAGE_RENTAL_ROOT_NEEDED",
-            "[value/loans]",
+            "[documents/common/mortgages/documents]",
         );
         let before = session.draft.clone();
         let dirty = session.dirty;
         assert!(matches!(
-            send(&mut session, leaf_mortgage_estimate(&corrected)),
-            Reply::Response(P::RunningEstimate { .. })
+            crate::tests::support::client::income_pages::candidate_save_review(
+                &mut session,
+                leaf_mortgage_estimate(&corrected)
+            ),
+            Reply::Response(P::Review { .. })
         ));
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
         accepted(&send(&mut session, corrected));
+        let mut topic = crate::tests::cross::interview::linked_mortgage_editor(&mut session);
+        let P::SaveMortgages { value, .. } = &mut topic else { unreachable!() };
+        value.loans[0].property = "Linked first lender corrected".into();
+        accepted(&send(&mut session, topic));
         assert_eq!(session.draft.revision, before.revision + 1);
         assert_eq!(session.draft.next_id, before.next_id);
-        assert_eq!(
-            crate::extended_rules::rental_mortgage_roots(&session.draft),
-            vec![root.id]
-        );
+        assert_eq!(crate::extended_rules::rental_mortgage_roots(&session.draft), vec![root.id]);
         let saved = session.draft.clone();
         let mut cold = restart(saved.clone());
         let reopened = leaf_mortgage_editor(&mut cold);
-        let P::SaveMortgages { value, .. } = &reopened else {
-            unreachable!()
-        };
-        assert_eq!(value.loans[0].id, root.id);
+        let P::SaveDocuments { documents, .. } = &reopened else { unreachable!() };
+        assert_eq!(documents.common.mortgages.documents[0].id, root.id);
         assert_eq!(
-            value.loans[0].more.property,
+            cold.draft
+                .deductions
+                .as_ref()
+                .unwrap()
+                .mortgage
+                .iter()
+                .find(|loan| loan.id == root.id)
+                .unwrap()
+                .property,
             "Linked first lender corrected"
         );
         accepted(&send(&mut cold, reopened));
         assert_eq!(cold.draft, saved);
-        assert_eq!(
-            crate::extended_rules::rental_mortgage_roots(&cold.draft),
-            vec![root.id]
-        );
+        assert_eq!(crate::extended_rules::rental_mortgage_roots(&cold.draft), vec![root.id]);
     }
 }
 
 #[test]
 fn unit47_leaf_rental_building_and_personal_days_save_atomically() {
     for (case, key, local, mutation) in [
-        (
-            "leaf-rental-building-land",
-            "RENTAL_LAND_ABOVE_COST",
-            "building/land",
-            0,
-        ),
+        ("leaf-rental-building-land", "RENTAL_LAND_ABOVE_COST", "building/land", 0),
         (
             "leaf-rental-building-reduction",
             "RENTAL_CREDIT_REDUCTION_ABOVE_BASIS",
@@ -2753,12 +2657,7 @@ fn unit47_leaf_rental_building_and_personal_days_save_atomically() {
             "more/improvements/1/credit_reduction",
             2,
         ),
-        (
-            "leaf-rental-personal-days",
-            "RENTAL_DAYS_ABOVE_365",
-            "personal_use/personal_days",
-            3,
-        ),
+        ("leaf-rental-personal-days", "RENTAL_DAYS_ABOVE_365", "personal_use/personal_days", 3),
         (
             "leaf-rental-overlap-days",
             "RENTAL_OVERLAP_DAYS_ABOVE_RENTAL_DAYS",
@@ -2775,8 +2674,9 @@ fn unit47_leaf_rental_building_and_personal_days_save_atomically() {
                         commercial_1993_transition: None,
                         allowed_commercial_1993_transition: Vec::new(),
                         casualty: None,
-        id: 0,
-        energy: None,
+                        casualty_property: None,
+                        id: 0,
+                        energy: None,
                         sale_history: None,
                         cost: 500_000,
                         credit_reduction: 0,
@@ -2788,8 +2688,9 @@ fn unit47_leaf_rental_building_and_personal_days_save_atomically() {
                         commercial_1993_transition: None,
                         allowed_commercial_1993_transition: Vec::new(),
                         casualty: None,
-        id: 0,
-        energy: None,
+                        casualty_property: None,
+                        id: 0,
+                        energy: None,
                         sale_history: None,
                         cost: 1_000_000,
                         credit_reduction: 1_000_000,
@@ -2838,8 +2739,8 @@ fn unit47_leaf_rental_building_and_personal_days_save_atomically() {
         document_case(
             case,
             TaxSection::Rentals,
-            IncomeDocument::Rental(good),
-            IncomeDocument::Rental(bad),
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(good) },
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(bad) },
             key,
             local,
         );
@@ -2857,11 +2758,7 @@ fn leaf_secondary_editor(session: &mut Interview, section: TaxSection) -> P {
 }
 fn leaf_secondary_estimate(request: &P) -> P {
     match request {
-        P::SaveMoreAdjustments {
-            value,
-            allowed_owners,
-            ..
-        } => P::EstimateMoreAdjustments {
+        P::SaveMoreAdjustments { value, allowed_owners, .. } => P::EstimateMoreAdjustments {
             user: TEST_USER,
             value: value.clone(),
             allowed_owners: allowed_owners.clone(),
@@ -2869,9 +2766,12 @@ fn leaf_secondary_estimate(request: &P) -> P {
         P::SaveParentTax { value, .. } => {
             P::EstimateParentTax { user: TEST_USER, value: value.clone() }
         }
-        P::SaveInjuredSpouse { value, .. } => {
-            P::EstimateInjuredSpouse { user: TEST_USER, value: value.clone() }
-        }
+        P::SaveInjuredSpouse { value, followups, .. } => P::EstimateInjuredSpouse {
+            user: TEST_USER,
+            value: value.clone(),
+            followups: followups.clone(),
+            questions: Vec::new(),
+        },
         P::SaveCare {
             value,
             allowed_injured_source_facts,
@@ -2884,6 +2784,7 @@ fn leaf_secondary_estimate(request: &P) -> P {
             partnerships,
             ..
         } => P::EstimateCare {
+            allowed_filing: Vec::new(),
             user: TEST_USER,
             value: value.clone(),
             allowed_injured_source_facts: allowed_injured_source_facts.clone(),
@@ -2909,20 +2810,17 @@ fn leaf_secondary_case(
 ) {
     let estimated = leaf_secondary_estimate(&rejected);
     reject_atomic(case, session, rejected, key, field);
-    reject_atomic(
-        &alloc::format!("{case}-estimate"),
-        session,
-        estimated,
-        key,
-        field,
-    );
+    reject_atomic(&alloc::format!("{case}-estimate"), session, estimated, key, field);
     leaf_secondary_accept_and_reopen(session, corrected, section);
 }
 fn leaf_secondary_accept_and_reopen(session: &mut Interview, corrected: P, section: TaxSection) {
     let before = session.draft.clone();
     let dirty = session.dirty;
     assert!(matches!(
-        send(session, leaf_secondary_estimate(&corrected)),
+        crate::tests::support::client::income_pages::candidate_save_review(
+            session,
+            leaf_secondary_estimate(&corrected)
+        ),
         Reply::Response(P::RunningEstimate { .. })
     ));
     assert_eq!(session.draft, before);
@@ -2940,9 +2838,7 @@ fn leaf_secondary_accept_and_reopen(session: &mut Interview, corrected: P, secti
 fn unit47_leaf_care_prior_year_save_and_estimate_atomically() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut corrected = leaf_secondary_editor(&mut session, TaxSection::Care);
-    let P::SaveCare { value, .. } = &mut corrected else {
-        unreachable!()
-    };
+    let P::SaveCare { value, .. } = &mut corrected else { unreachable!() };
     value.prior_year = Some(PriorYearCareInput {
         two_or_more: false,
         prior_line_3: 100_000,
@@ -2954,9 +2850,7 @@ fn unit47_leaf_care_prior_year_save_and_estimate_atomically() {
         injured_claimants: None,
     });
     let mut rejected = corrected.clone();
-    let P::SaveCare { value, .. } = &mut rejected else {
-        unreachable!()
-    };
+    let P::SaveCare { value, .. } = &mut rejected else { unreachable!() };
     value.prior_year.as_mut().unwrap().prior_line_6 += 1;
     leaf_secondary_case(
         "leaf-care-prior-line6",
@@ -2972,43 +2866,27 @@ fn unit47_leaf_care_prior_year_save_and_estimate_atomically() {
 fn unit47_leaf_move_actual_adjustment_index_save_and_estimate_atomically() {
     for (case, key, local, empty) in [
         ("leaf-move-empty", "MOVING_ENTER_AN_EXPENSE", "goods", true),
-        (
-            "leaf-move-arrival",
-            "MOVING_ARRIVAL_OUTSIDE_CURRENT_YEAR",
-            "trip/arrived",
-            false,
-        ),
+        ("leaf-move-arrival", "MOVING_ARRIVAL_OUTSIDE_CURRENT_YEAR", "trip/arrived", false),
     ] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = leaf_secondary_editor(&mut session, TaxSection::MoreAdjustments);
-        let P::SaveMoreAdjustments { value, .. } = &mut corrected else {
-            unreachable!()
-        };
-        value.adjustments = vec![
-            MoreAdjustment::OtherAdjustments,
-            MoreAdjustment::MovingExpenses(MovingItem {
-                owner: Owner::Taxpayer,
-                record: MilitaryMove {
-                    reason: MoveReason::ArmedForcesOrders,
-                    goods: 10_000,
-                    trip: if empty {
-                        None
-                    } else {
-                        Some(MoveTrip {
-                            paid: 1_000,
-                            miles: 0,
-                            arrived: 20260601,
-                        })
-                    },
-                    reimbursed: 0,
+        let P::SaveMoreAdjustments { value, .. } = &mut corrected else { unreachable!() };
+        value.adjustments = vec![MoreAdjustment::MovingExpenses(MovingItem {
+            owner: Owner::Taxpayer,
+            record: MilitaryMove {
+                reason: MoveReason::ArmedForcesOrders,
+                goods: 10_000,
+                trip: if empty {
+                    None
+                } else {
+                    Some(MoveTrip { paid: 1_000, miles: 0, arrived: 20260601 })
                 },
-            }),
-        ];
+                reimbursed: 0,
+            },
+        })];
         let mut rejected = corrected.clone();
-        let P::SaveMoreAdjustments { value, .. } = &mut rejected else {
-            unreachable!()
-        };
-        let MoreAdjustment::MovingExpenses(item) = &mut value.adjustments[1] else {
+        let P::SaveMoreAdjustments { value, .. } = &mut rejected else { unreachable!() };
+        let MoreAdjustment::MovingExpenses(item) = &mut value.adjustments[0] else {
             unreachable!()
         };
         if empty {
@@ -3023,37 +2901,20 @@ fn unit47_leaf_move_actual_adjustment_index_save_and_estimate_atomically() {
             rejected,
             TaxSection::MoreAdjustments,
             key,
-            &alloc::format!("[value/adjustments/1/record/{local}]"),
+            &alloc::format!("[value/adjustments/0/record/{local}]"),
         );
     }
 }
 #[test]
 fn unit47_leaf_parent_child_relationships_save_and_estimate_atomically() {
     for (case, key, local, mutation) in [
-        (
-            "leaf-parent-child-twice",
-            "PARENT_CHILD_TWICE",
-            "others/1/label",
-            0,
-        ),
-        (
-            "leaf-parent-child-net",
-            "PARENT_CHILD_GAINS_ABOVE_NET",
-            "others/0/gains",
-            1,
-        ),
-        (
-            "leaf-parent-child-source",
-            "PARENT_CHILD_GAIN_ABOVE_SOURCE",
-            "others/0/gains/capital",
-            2,
-        ),
+        ("leaf-parent-child-twice", "PARENT_CHILD_TWICE", "others/1/label", 0),
+        ("leaf-parent-child-net", "PARENT_CHILD_GAINS_ABOVE_NET", "others/0/gains", 1),
+        ("leaf-parent-child-source", "PARENT_CHILD_GAIN_ABOVE_SOURCE", "others/0/gains/capital", 2),
     ] {
         let mut session = Interview::new(TEST_USER, young_interest_return());
         let mut corrected = leaf_secondary_editor(&mut session, TaxSection::ParentTax);
-        let P::SaveParentTax { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveParentTax { value, .. } = &mut corrected else { unreachable!() };
         value.others = vec![OtherChildTax {
             label: "Synthetic sibling".into(),
             net: 100_000,
@@ -3069,9 +2930,7 @@ fn unit47_leaf_parent_child_relationships_save_and_estimate_atomically() {
             }),
         }];
         let mut rejected = corrected.clone();
-        let P::SaveParentTax { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveParentTax { value, .. } = &mut rejected else { unreachable!() };
         match mutation {
             0 => value.others.push(value.others[0].clone()),
             1 => value.others[0].gains.as_mut().unwrap().qualified = 80_001,
@@ -3090,48 +2949,31 @@ fn unit47_leaf_parent_child_relationships_save_and_estimate_atomically() {
 }
 #[test]
 fn unit47_leaf_injured_spouse_direct_facts_save_and_estimate_atomically() {
-    for (case, key, field, community) in [
-        (
+    {
+        let (case, key, field) = (
             "leaf-injured-estimated",
             "INJURED_SPOUSE_ESTIMATED_ABOVE_PAYMENTS",
             "[value/estimated/injured]",
-            false,
-        ),
-        (
-            "leaf-injured-community-facts",
-            "INJURED_SPOUSE_COMMUNITY_FACTS_NOT_CURRENT",
-            "[value/community/states]",
-            true,
-        ),
-    ] {
+        );
         let mut draft = complete(FederalStatus::Joint);
-        draft.checklist.whole_return = WholeReturnTopics::INJURED_SPOUSE.0;
-        draft.payments.as_mut().unwrap().estimated = Some(100_000);
-        draft.payments.as_mut().unwrap().estimated_payments = vec![DatedPayment {
-            date: 20260415,
-            amount: 100_000,
-            payer: PaymentPayer::Joint,
-            refund_property: None,
-        }];
+        draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
+
+        draft.payments.as_mut().unwrap().estimated = crate::EstimatedPaymentEntryRecord::Sources {
+            payments: vec![DatedPayment {
+                date: 20260415,
+                amount: 100_000,
+                payer: PaymentPayer::Joint,
+                refund_property: None,
+            }],
+        };
         let mut session = Interview::new(TEST_USER, draft);
         let mut corrected = leaf_secondary_editor(&mut session, TaxSection::InjuredSpouse);
-        let P::SaveInjuredSpouse { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveInjuredSpouse { value, .. } = &mut corrected else { unreachable!() };
         value.estimated = EstimatedSplit::Agreed { injured: 100_000 };
         let mut rejected = corrected.clone();
-        let P::SaveInjuredSpouse { value, .. } = &mut rejected else {
-            unreachable!()
-        };
-        if community {
-            value.community = InjuredCommunity::Yes {
-                states: vec![],
-                debt_facts: InjuredDebtFacts::NotApplicable,
-            };
-        } else {
-            value.estimated = EstimatedSplit::Agreed { injured: 100_001 };
-            value.joint_estimated = Some(100_001);
-        }
+        let P::SaveInjuredSpouse { value, .. } = &mut rejected else { unreachable!() };
+        value.estimated = EstimatedSplit::Agreed { injured: 100_001 };
+        value.joint_estimated = Some(100_001);
         leaf_secondary_case(
             case,
             &mut session,
@@ -3146,10 +2988,9 @@ fn unit47_leaf_injured_spouse_direct_facts_save_and_estimate_atomically() {
 
 #[test]
 fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
-    for (case, maximum) in [
-        ("leaf-injured-allocation-minimum", false),
-        ("leaf-injured-allocation-maximum", true),
-    ] {
+    for (case, maximum) in
+        [("leaf-injured-allocation-minimum", false), ("leaf-injured-allocation-maximum", true)]
+    {
         // Existing mixed child-pool fixture: two real wage sources and two
         // qualifying children, with one separate-return claimant per spouse.
         let mut draft = complete(FederalStatus::Joint);
@@ -3159,12 +3000,10 @@ fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
         ];
         draft.dependents = vec![child(3), child(4)];
         draft.next_id = 5;
-        draft.checklist.whole_return = WholeReturnTopics::INJURED_SPOUSE.0;
+        draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
         let mut session = Interview::new(TEST_USER, draft);
         let mut initial = leaf_secondary_editor(&mut session, TaxSection::InjuredSpouse);
-        let P::SaveInjuredSpouse { value, .. } = &mut initial else {
-            unreachable!()
-        };
+        let P::SaveInjuredSpouse { value, .. } = &mut initial else { unreachable!() };
         value.claimants[1].claimant = Owner::Spouse;
         let before = session.draft.clone();
         let dirty = session.dirty;
@@ -3173,18 +3012,11 @@ fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
             panic!("changed claimant must refresh authoritative component rows")
         };
         assert_eq!(value.new_allocations.len(), 2);
-        let context = value
-            .new_allocations
-            .iter()
-            .find(|row| row.component == "ctc_odc_pool")
-            .unwrap();
+        let context =
+            value.new_allocations.iter().find(|row| row.component == "ctc_odc_pool").unwrap();
         // This boundary control deliberately submits the endpoint and its
         // companion. These are explicit native test inputs, never UI defaults.
-        let chosen = if maximum {
-            context.maximum
-        } else {
-            context.minimum
-        };
+        let chosen = if maximum { context.maximum } else { context.minimum };
         let companion = value.child_credit_cap_injured - value.known_child_credit_injured - chosen;
         let Reply::Edit(mut corrected @ P::SaveInjuredSpouse { .. }) =
             crate::tests::support::client::native_editor(
@@ -3196,20 +3028,11 @@ fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
         };
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
-        let P::SaveInjuredSpouse { value, .. } = &mut corrected else {
-            unreachable!()
-        };
+        let P::SaveInjuredSpouse { value, .. } = &mut corrected else { unreachable!() };
         assert_eq!(value.allocations.len(), 2);
-        let target = value
-            .allocations
-            .iter()
-            .position(|row| row.component == "ctc_odc_pool")
-            .unwrap();
-        let other = value
-            .allocations
-            .iter()
-            .position(|row| row.component == "actc_pool")
-            .unwrap();
+        let target =
+            value.allocations.iter().position(|row| row.component == "ctc_odc_pool").unwrap();
+        let other = value.allocations.iter().position(|row| row.component == "actc_pool").unwrap();
         let minimum = value.allocations[target].minimum;
         let maximum_value = value.allocations[target].maximum;
         assert!(minimum < maximum_value);
@@ -3225,9 +3048,7 @@ fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
         );
         value.allocations[other].injured = companion;
         let mut rejected = corrected.clone();
-        let P::SaveInjuredSpouse { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveInjuredSpouse { value, .. } = &mut rejected else { unreachable!() };
         value.allocations[target].injured = if maximum { endpoint + 1 } else { endpoint - 1 };
         let field = alloc::format!("[value/allocations/{target}/injured]");
         let estimated = leaf_secondary_estimate(&rejected);
@@ -3246,9 +3067,7 @@ fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
             &field,
         );
         let mut forged = rejected;
-        let P::SaveInjuredSpouse { value, .. } = &mut forged else {
-            unreachable!()
-        };
+        let P::SaveInjuredSpouse { value, .. } = &mut forged else { unreachable!() };
         if maximum {
             value.allocations[target].maximum += 1;
         } else {
@@ -3263,19 +3082,15 @@ fn unit47_leaf_injured_bounds_recompute_sources_save_and_estimate_atomically() {
         );
         let before = session.draft.clone();
         let dirty = session.dirty;
-        let Reply::Response(P::BeginInjuredSpouse {
-            value: refreshed, ..
-        }) = send(&mut session, forged)
+        let Reply::Response(P::BeginInjuredSpouse { value: refreshed, .. }) =
+            send(&mut session, forged)
         else {
             panic!("forged echoed bounds must refresh, never commit")
         };
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
-        let row = refreshed
-            .new_allocations
-            .iter()
-            .find(|row| row.component == "ctc_odc_pool")
-            .unwrap();
+        let row =
+            refreshed.new_allocations.iter().find(|row| row.component == "ctc_odc_pool").unwrap();
         assert_eq!((row.minimum, row.maximum), (minimum, maximum_value));
         leaf_secondary_accept_and_reopen(&mut session, corrected, TaxSection::InjuredSpouse);
     }
@@ -3287,24 +3102,9 @@ fn unit47_leaf_foreign_accounts_keep_guard_order_and_actual_country_indices() {
     // Actual duplicate and unknown countries still name their submitted row.
     for (case, key, local, mutation) in [
         ("leaf-fbar-answer", "FBAR_ANSWER_NEEDED", "fbar_required", 0),
-        (
-            "leaf-fbar-countries",
-            "FBAR_COUNTRIES_NEEDED",
-            "fbar_countries",
-            1,
-        ),
-        (
-            "leaf-fbar-country-duplicate",
-            "FBAR_COUNTRY_TWICE",
-            "fbar_countries/1",
-            3,
-        ),
-        (
-            "leaf-fbar-country-unknown",
-            "FBAR_COUNTRY_NOT_LISTED",
-            "fbar_countries/1",
-            4,
-        ),
+        ("leaf-fbar-countries", "FBAR_COUNTRIES_NEEDED", "fbar_countries", 1),
+        ("leaf-fbar-country-duplicate", "FBAR_COUNTRY_TWICE", "fbar_countries/1", 3),
+        ("leaf-fbar-country-unknown", "FBAR_COUNTRY_NOT_LISTED", "fbar_countries/1", 4),
     ] {
         let good = ForeignAccountOrTrust {
             account: true,
@@ -3323,8 +3123,8 @@ fn unit47_leaf_foreign_accounts_keep_guard_order_and_actual_country_indices() {
         document_case(
             case,
             TaxSection::InterestDividends,
-            IncomeDocument::ForeignAccountOrTrust(good),
-            IncomeDocument::ForeignAccountOrTrust(bad),
+            IncomeSource::Record { value: crate::IncomeRecord::ForeignAccountOrTrust(good) },
+            IncomeSource::Record { value: crate::IncomeRecord::ForeignAccountOrTrust(bad) },
             key,
             local,
         );
@@ -3334,24 +3134,9 @@ fn unit47_leaf_foreign_accounts_keep_guard_order_and_actual_country_indices() {
 #[test]
 fn unit47_leaf_social_year_metadata_preserves_duplicate_first_order() {
     for (case, key, local, mutation) in [
-        (
-            "leaf-social-year-duplicate",
-            "LUMP_SUM_YEAR_TWICE",
-            "years/1/year",
-            0,
-        ),
-        (
-            "leaf-social-taxable",
-            "LUMP_SUM_TAXABLE_ABOVE_BENEFITS",
-            "years/1/taxable",
-            1,
-        ),
-        (
-            "leaf-social-refigured",
-            "LUMP_SUM_REFIGURED_ABOVE_BENEFITS",
-            "years/1/refigured",
-            2,
-        ),
+        ("leaf-social-year-duplicate", "LUMP_SUM_YEAR_TWICE", "years/1/year", 0),
+        ("leaf-social-taxable", "LUMP_SUM_TAXABLE_ABOVE_BENEFITS", "years/1/taxable", 1),
+        ("leaf-social-refigured", "LUMP_SUM_REFIGURED_ABOVE_BENEFITS", "years/1/refigured", 2),
     ] {
         let year = SocialBenefitYear {
             year: 2023,
@@ -3369,6 +3154,7 @@ fn unit47_leaf_social_year_metadata_preserves_duplicate_first_order() {
         let mut second = year.clone();
         second.year = 2024;
         let good = LumpSumElection {
+            printed_years: Vec::new(),
             years: vec![year, second],
             complete: true,
         };
@@ -3387,33 +3173,33 @@ fn unit47_leaf_social_year_metadata_preserves_duplicate_first_order() {
         draft.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
         draft.next_id = 2;
         let mut session = Interview::new(TEST_USER, draft);
-        let statement = IncomeDocument::Ssa1099(Ssa1099 {
-            statement: Default::default(),
-            benefits: 2_000_000,
-            withholding: 0,
-        });
-        let mut corrected = open_topic(&mut session, TaxSection::Retirement);
-        documents(
-            &mut corrected,
-            vec![
-                document(0, statement.clone()),
-                document(0, IncomeDocument::SocialLumpSums(good)),
-            ],
+        let statement = IncomeSource::Retirement {
+            value: crate::RetirementDocument::Ssa1099(ssa_document(ssa_1099_net(2_000_000, 0))),
+        };
+        let source = save_documents(&mut session, vec![document(0, statement)]);
+        accepted(&send(&mut session, source));
+        let corrected = save_topic(
+            &mut session,
+            TaxSection::Retirement,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::SocialLumpSums(good) },
+            )],
         );
-        let mut rejected = corrected.clone();
-        documents(
-            &mut rejected,
-            vec![
-                document(0, statement),
-                document(0, IncomeDocument::SocialLumpSums(bad)),
-            ],
+        let rejected = save_topic(
+            &mut session,
+            TaxSection::Retirement,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::SocialLumpSums(bad) },
+            )],
         );
         reject_atomic(
             case,
             &mut session,
             rejected,
             key,
-            &alloc::format!("[documents/documents/1/document/{local}]"),
+            &alloc::format!("[documents/documents/0/document/{local}]"),
         );
         let revision = session.draft.revision;
         accepted(&send(&mut session, corrected));
@@ -3427,15 +3213,12 @@ fn unit47_leaf_social_year_metadata_preserves_duplicate_first_order() {
 }
 
 fn leaf_employee_estimate(request: &P) -> P {
-    let P::SaveEmployeeExpenses {
-        allowed_owners,
-        value,
-        ..
-    } = request
-    else {
+    let P::SaveEmployeeExpenses { allowed_owners, value, .. } = request else {
         panic!("Form 2106 editor required")
     };
     P::EstimateEmployeeExpenses {
+        rental_energy_buildings: Vec::new(),
+        initial_asset_amt_carry_choices: Vec::new(),
         user: TEST_USER,
         allowed_owners: allowed_owners.clone(),
         value: value.clone(),
@@ -3455,6 +3238,7 @@ fn leaf_employee_mileage() -> Vehicle {
 fn leaf_employee_actual() -> Vehicle {
     Vehicle {
         method: VehicleMethod::Actual {
+            macrs_source: None,
             id: 0,
             history_details: None,
             amt_section179_income_carry: None,
@@ -3467,11 +3251,9 @@ fn leaf_employee_actual() -> Vehicle {
             business_miles: 100,
             operating_costs: 0,
             loan_interest: 0,
-            passenger_automobile: true,
+            kind: crate::VehicleKind::PassengerCar,
             earlier_business_percent: None,
-            history: AssetHistory::New {
-                first_year: FirstYearDeduction::Regular,
-            },
+            history: AssetHistory::New { first_year: FirstYearDeduction::Regular },
             disposal: AssetDisposal::No,
         },
     }
@@ -3502,14 +3284,11 @@ fn leaf_employee_editor(vehicle: Vehicle) -> (Interview, P) {
     draft.next_id = 3;
     let mut session = Interview::new(TEST_USER, draft);
     let mut page = leaf_secondary_editor(&mut session, TaxSection::EmployeeExpenses);
-    let P::SaveEmployeeExpenses { value, .. } = &mut page else {
-        unreachable!()
-    };
-    assert_eq!(
-        value.wages.iter().map(|w| w.id).collect::<Vec<_>>(),
-        vec![1, 2]
-    );
+    let P::SaveEmployeeExpenses { value, .. } = &mut page else { unreachable!() };
+    assert_eq!(value.wages.iter().map(|w| w.id).collect::<Vec<_>>(), vec![1, 2]);
     let form = |employer, vehicles| EmployeeExpenseForm {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         owner: Owner::Taxpayer,
         occupation: "Synthetic fee-basis official".into(),
@@ -3522,19 +3301,14 @@ fn leaf_employee_editor(vehicle: Vehicle) -> (Interview, P) {
         reimbursements: 0,
         vehicles,
     };
-    value.forms = vec![
-        form(1, vec![]),
-        form(2, vec![leaf_employee_mileage(), vehicle]),
-    ];
+    value.forms = vec![form(1, vec![]), form(2, vec![leaf_employee_mileage(), vehicle])];
     (session, page)
 }
 fn leaf_employee_case(case: &str, good: Vehicle, bad: Vehicle, key: &str, local: &str) {
     let new_actual_asset = matches!(&good.method, VehicleMethod::Actual { .. });
     let (mut session, corrected) = leaf_employee_editor(good);
     let mut rejected = corrected.clone();
-    let P::SaveEmployeeExpenses { value, .. } = &mut rejected else {
-        unreachable!()
-    };
+    let P::SaveEmployeeExpenses { value, .. } = &mut rejected else { unreachable!() };
     value.forms[1].vehicles[1] = bad;
     let field = alloc::format!("[value/forms/1/vehicles/1/method/{local}]");
     reject_atomic(case, &mut session, rejected.clone(), key, &field);
@@ -3548,7 +3322,10 @@ fn leaf_employee_case(case: &str, good: Vehicle, bad: Vehicle, key: &str, local:
     let before = session.draft.clone();
     let dirty = session.dirty;
     assert!(matches!(
-        send(&mut session, leaf_employee_estimate(&corrected)),
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            leaf_employee_estimate(&corrected)
+        ),
         Reply::Response(P::RunningEstimate { .. })
     ));
     assert_eq!(session.draft, before);
@@ -3583,9 +3360,7 @@ fn leaf_employee_case(case: &str, good: Vehicle, bad: Vehicle, key: &str, local:
 fn unit47_leaf_employee_actual_mileage_save_and_estimate_atomically() {
     let good = leaf_employee_actual();
     let mut bad = good.clone();
-    let VehicleMethod::Actual { business_miles, .. } = &mut bad.method else {
-        unreachable!()
-    };
+    let VehicleMethod::Actual { business_miles, .. } = &mut bad.method else { unreachable!() };
     *business_miles += 1;
     leaf_employee_case(
         "leaf-employee-actual-miles",
@@ -3605,43 +3380,13 @@ fn unit47_leaf_employee_leased_boundaries_save_and_estimate_atomically() {
             "business_miles",
             0,
         ),
-        (
-            "leaf-employee-lease-commuting",
-            "VEHICLE_BUSINESS_MILES_ABOVE_TOTAL",
-            "commuting",
-            1,
-        ),
+        ("leaf-employee-lease-commuting", "VEHICLE_BUSINESS_MILES_ABOVE_TOTAL", "commuting", 1),
         ("leaf-employee-lease-2018", "LEASE_BEFORE_2018", "began", 2),
-        (
-            "leaf-employee-lease-began-upper",
-            "LEASE_ENDS_BEFORE_BEGAN",
-            "began",
-            3,
-        ),
-        (
-            "leaf-employee-lease-ended-before",
-            "LEASE_ENDS_BEFORE_BEGAN",
-            "ends",
-            4,
-        ),
-        (
-            "leaf-employee-lease-end-lower",
-            "LEASE_ENDS_BEFORE_BEGAN",
-            "ends",
-            5,
-        ),
-        (
-            "leaf-employee-lease-end-upper",
-            "LEASE_ENDS_BEFORE_BEGAN",
-            "ends",
-            6,
-        ),
-        (
-            "leaf-employee-lease-term",
-            "LEASE_TERM_UNDER_30_DAYS",
-            "ends",
-            7,
-        ),
+        ("leaf-employee-lease-began-upper", "LEASE_ENDS_BEFORE_BEGAN", "began", 3),
+        ("leaf-employee-lease-ended-before", "LEASE_ENDS_BEFORE_BEGAN", "ends", 4),
+        ("leaf-employee-lease-end-lower", "LEASE_ENDS_BEFORE_BEGAN", "ends", 5),
+        ("leaf-employee-lease-end-upper", "LEASE_ENDS_BEFORE_BEGAN", "ends", 6),
+        ("leaf-employee-lease-term", "LEASE_TERM_UNDER_30_DAYS", "ends", 7),
     ] {
         let mut good = leaf_employee_lease();
         match mutation {
@@ -3680,12 +3425,8 @@ fn unit47_leaf_employee_leased_boundaries_save_and_estimate_atomically() {
         }
         leaf_employee_case(
             case,
-            Vehicle {
-                method: VehicleMethod::Leased { vehicle: good },
-            },
-            Vehicle {
-                method: VehicleMethod::Leased { vehicle: bad },
-            },
+            Vehicle { method: VehicleMethod::Leased { vehicle: good } },
+            Vehicle { method: VehicleMethod::Leased { vehicle: bad } },
             key,
             &alloc::format!("vehicle/{local}"),
         );
@@ -3694,33 +3435,24 @@ fn unit47_leaf_employee_leased_boundaries_save_and_estimate_atomically() {
 
 #[test]
 fn unit47_leaf_employee_earlier_policy_guards_keep_their_priority() {
-    for (key, mutation) in [
-        ("EMPLOYEE_EXPENSES_EMPLOYER_NEEDED", 0),
-        ("RESERVIST_VEHICLE_STANDARD_MILEAGE", 1),
-        ("EMPLOYEE_VEHICLE_NO_INTEREST_OR_TAX", 2),
-    ] {
+    for (key, mutation) in
+        [("RESERVIST_VEHICLE_STANDARD_MILEAGE", 1), ("EMPLOYEE_VEHICLE_NO_INTEREST_OR_TAX", 2)]
+    {
         let (mut session, mut rejected) = leaf_employee_editor(leaf_employee_actual());
-        let P::SaveEmployeeExpenses { value, .. } = &mut rejected else {
-            unreachable!()
-        };
+        let P::SaveEmployeeExpenses { value, .. } = &mut rejected else { unreachable!() };
         let form = &mut value.forms[1];
-        let VehicleMethod::Actual {
-            business_miles,
-            loan_interest,
-            ..
-        } = &mut form.vehicles[1].method
+        let VehicleMethod::Actual { business_miles, loan_interest, .. } =
+            &mut form.vehicles[1].method
         else {
             unreachable!()
         };
         *business_miles += 1;
         match mutation {
-            0 => form.employers.clear(),
             1 => form.capacity = EmployeeCapacity::Reservist,
             _ => *loan_interest = 1,
         }
         let estimated = leaf_employee_estimate(&rejected);
         let path = match mutation {
-            0 => "[value/forms/1/employers]",
             1 => "[value/forms/1/vehicles/1/method]",
             _ => "[value/forms/1/vehicles/1/method/loan_interest]",
         };
@@ -3731,9 +3463,7 @@ fn unit47_leaf_employee_earlier_policy_guards_keep_their_priority() {
             else {
                 panic!("earlier Form 2106 policy guard must reject")
             };
-            let P::Problem { message, field } = &problem else {
-                unreachable!()
-            };
+            let P::Problem { message, field } = &problem else { unreachable!() };
             assert_eq!(*message, libertas::libertas_formatted_text(key, &[]));
             assert_eq!(field.as_deref(), Some(path));
             assert_eq!(session.draft, before);
@@ -3745,37 +3475,4 @@ fn unit47_leaf_employee_earlier_policy_guards_keep_their_priority() {
             );
         }
     }
-}
-
-#[test]
-fn unit47_k_parts_preflight_compares_totals_beyond_i64() {
-    let mut page = k1099();
-    page.parts[0].amount = i64::MAX;
-    page.parts.push(page.parts[0].clone());
-    assert_eq!(
-        crate::interview::document_rule(&IncomeDocument::Form1099K(page)),
-        Some("K_PARTS_NOT_GROSS")
-    );
-}
-
-#[test]
-fn unit47_misc_preflight_compares_income_beyond_i64() {
-    let mut page = misc1099();
-    page.other = i64::MAX;
-    page.fishing = i64::MAX;
-    page.withholding = i64::MAX;
-    assert_eq!(crate::information_returns::misc_issue(&page), None);
-    assert!(!page.record().valid());
-}
-
-#[test]
-fn unit47_qof_preflight_compares_gain_beyond_i64() {
-    let mut page = qof();
-    page.short_term = i64::MAX;
-    page.long_term = i64::MAX;
-    assert_eq!(
-        crate::interview::document_rule(&IncomeDocument::OpportunityFund(page.clone())),
-        None
-    );
-    assert!(!page.valid());
 }

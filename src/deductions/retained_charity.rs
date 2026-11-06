@@ -1,47 +1,14 @@
+pub(crate) use crate::charity_sources::parts_issue;
+pub use crate::charity_sources::{
+    OtherCharityEntity, ResearchCharityOrigin, ResearchCharityPart, ResearchCharityParts,
+};
 use crate::validation::ValidationIssue;
 // The existing charitable carryover owner keeps every deduction, class,
-// vintage, floor and closing amount. Approved origin parts attribute only the
+// vintage, floor and closing amount. Activity origin parts attribute only the
 // amount that owner actually allows; they do not create another deduction.
-use alloc::{collections::BTreeMap, string::String, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 use libertas_macros::*;
 
-/// An entity absent from this return that made the retained charitable gift
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct OtherCharityEntity {
-    /// Entity's actual name
-    #[libertas_size(min = 1)]
-    pub name: String,
-    /// Entity's actual employer identification number
-    // Legal identifier: an EIN is nine digits displayed as NN-NNNNNNN.
-    #[libertas_size(min = 10, max = 10)]
-    #[libertas_pattern(r"[0-9]{2}-[0-9]{7}")]
-    pub ein: String,
-}
-/// Source of a retained activity charitable gift
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ResearchCharityOrigin {
-    CurrentK1 { source: i64 },
-    OtherEntity(OtherCharityEntity),
-}
-/// An activity's portion of the existing charitable carryover
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ResearchCharityPart {
-    pub origin: ResearchCharityOrigin,
-    #[libertas_money("USD", 2)]
-    pub amount: i64,
-    /// Actual original appreciation, separate from the unused balance.
-    /// [NullText]
-    /// No original-appreciation allocation applies to this retained gift
-    /// [SetText]
-    /// This activity's original appreciation was
-    #[libertas_money("USD", 2)]
-    pub original_appreciation: Option<i64>,
-}
-/// Retained charitable gifts belonging to actual activities
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ResearchCharityParts {
-    Parts { sources: Vec<ResearchCharityPart> },
-}
 /// Activity that made this retained charitable gift
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum ResearchCharityOriginPage {
@@ -63,7 +30,8 @@ pub enum CharitySourceAppreciation {
         /// Original appreciation, including an explicit zero
         /// From this activity's original gift records, before earlier deductions. It can exceed the unused balance.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }
@@ -72,8 +40,12 @@ pub enum CharitySourceAppreciation {
 pub struct CharityAppreciationFacts {
     pub class: crate::CharityClass,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub balance: i64,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     /// [NullText]
     /// No original appreciation is supplied for a basis election
     /// [SetText]
@@ -93,7 +65,8 @@ pub struct ResearchCharityPartPage {
     pub origin: ResearchCharityOriginPage,
     /// Portion of this year's and class's unused balance
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 100, max = 100000000000)]
     pub amount: i64,
     /// Original appreciation attributable to this activity's gift
     /// Keep the original gift's appreciation separate from its remaining unused balance. Enter zero when the original gift had no appreciation.
@@ -110,16 +83,16 @@ pub enum ResearchCharityPartsPage {
     /// Identified activity portions
     Parts {
         /// Activity portions of this balance; the remainder is personal
+        #[libertas_size(min = 1)]
         /// ----
         /// Activity portion
-        #[libertas_size(min = 1)]
         sources: Vec<ResearchCharityPartPage>,
     },
 }
 /// Charitable contribution carryover
 /// One line of your last return's charitable contribution carryover worksheet.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
+#[libertas_calculation_root("RetainedLossSourceOptions")]
 pub struct CharityCarryoverPage {
     /// Year contributed
     // Tax structure: this retained source belongs to a year before the 2026 return year.
@@ -130,7 +103,8 @@ pub struct CharityCarryoverPage {
     /// Unused balance entering 2026
     /// The reconciled whole-dollar amount from the carryover worksheet, not the original gift.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 100, max = 100000000000)]
     #[libertas_calculation_request("RetainedLossSourceOptions")]
     pub balance: i64,
     /// Appreciation in the original gift
@@ -140,7 +114,8 @@ pub struct CharityCarryoverPage {
     /// [SetText]
     /// Appreciation in the original gift was
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub appreciation: Option<i64>,
     /// Same filers as the return that made the gift
@@ -259,117 +234,6 @@ pub(crate) fn origin_choices(d: &crate::FederalDraft) -> Vec<i32> {
     } else {
         alloc::vec![0, 1]
     }
-}
-pub(crate) fn parts_issue(
-    record: &crate::CharityCarryover,
-    catalog: Option<&[crate::RecordChoice]>,
-) -> Option<ValidationIssue> {
-    let Some(ResearchCharityParts::Parts { sources }) = &record.research_parts else {
-        return None;
-    };
-    // Temporary arithmetic exclusion: parts_issue and deductions sum source
-    // amounts/appreciation into i64 before comparing with the retained balance.
-    if sources.is_empty() || sources.len() > 100 {
-        return Some(
-            ValidationIssue::new("RETAINED_RESEARCH_PARTS_ABOVE_BALANCE")
-                .at_field("sources")
-                .in_field("research_parts"),
-        );
-    }
-    if let Some((i, _)) =
-        sources.iter().enumerate().find(|(_, p)| !(100..=100000000000).contains(&p.amount))
-    {
-        return Some(
-            ValidationIssue::new("RETAINED_RESEARCH_PARTS_ABOVE_BALANCE")
-                .at_field("amount")
-                .in_list("sources", i)
-                .in_field("research_parts"),
-        );
-    }
-    if sources.iter().map(|p| p.amount).sum::<i64>() > record.balance {
-        return Some(
-            ValidationIssue::new("RETAINED_RESEARCH_PARTS_ABOVE_BALANCE")
-                .at_field("sources")
-                .in_field("research_parts"),
-        );
-    }
-    if let Some((i, _)) = sources
-        .iter()
-        .enumerate()
-        .find(|(_, p)| p.original_appreciation.is_some_and(|v| !(0..=100000000000).contains(&v)))
-    {
-        return Some(
-            ValidationIssue::new("RETAINED_CHARITY_SOURCE_APPRECIATION_ABOVE_TOTAL")
-                .at_field("original_appreciation")
-                .in_list("sources", i)
-                .in_field("research_parts"),
-        );
-    }
-    if sources.iter().filter_map(|p| p.original_appreciation).sum::<i64>()
-        > record.appreciation.unwrap_or(0)
-    {
-        return Some(
-            ValidationIssue::new("RETAINED_CHARITY_SOURCE_APPRECIATION_ABOVE_TOTAL")
-                .at_field("sources")
-                .in_field("research_parts"),
-        );
-    }
-    let mut ids = alloc::collections::BTreeSet::new();
-    for (i, part) in sources.iter().enumerate() {
-        match &part.origin {
-            ResearchCharityOrigin::CurrentK1 { source } => {
-                if !ids.insert(*source) {
-                    return Some(
-                        ValidationIssue::new("RETAINED_RESEARCH_SOURCE_TWICE")
-                            .at_field("source")
-                            .in_field("origin")
-                            .in_list("sources", i)
-                            .in_field("research_parts"),
-                    );
-                }
-                if catalog.is_some_and(|c| !c.iter().any(|r| r.id == *source)) {
-                    return Some(
-                        ValidationIssue::new("RETAINED_RESEARCH_SOURCE_UNAVAILABLE")
-                            .at_field("source")
-                            .in_field("origin")
-                            .in_list("sources", i)
-                            .in_field("research_parts"),
-                    );
-                }
-            }
-            ResearchCharityOrigin::OtherEntity(entity) => {
-                let field = if entity.name.trim().is_empty() {
-                    Some("name")
-                } else if entity.ein.len() != 10
-                    || !entity
-                        .ein
-                        .bytes()
-                        .enumerate()
-                        .all(|(i, b)| if i == 2 { b == b'-' } else { b.is_ascii_digit() })
-                {
-                    Some("ein")
-                } else {
-                    None
-                };
-                if let Some(field) = field {
-                    return Some(
-                        ValidationIssue::new("RETAINED_CHARITY_ENTITY_RECORDS")
-                            .at_field(field)
-                            .in_field("origin")
-                            .in_list("sources", i)
-                            .in_field("research_parts"),
-                    );
-                }
-            }
-        }
-    }
-    None
-}
-pub(crate) fn parts_rule(
-    record: &crate::CharityCarryover,
-    catalog: Option<&[crate::RecordChoice]>,
-) -> Option<&'static str> {
-    parts_issue(record, catalog).map(|issue| issue.key)
 }
 pub(crate) fn rule(d: &crate::FederalDraft) -> Option<&'static str> {
     issue(d).map(|(_, issue)| issue.key)

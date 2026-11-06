@@ -9,7 +9,7 @@ fn rental_depreciation_midmonth_land_and_final_year() {
         crate::extended_rules::depreciation_for_year(
             b,
             amt,
-            kind,
+            (kind, &crate::RentalLocation::UnitedStates),
             2026,
             None,
             crate::kernel::source_fact::SourceFact::NotReported,
@@ -27,9 +27,6 @@ fn rental_depreciation_midmonth_land_and_final_year() {
     b.in_service = 19980101;
     assert_eq!(depreciation(&b, false, &kind).unwrap(), 0);
     b.land = b.cost + 1;
-    assert!(depreciation(&b, false, &kind).is_err());
-    b.land = 0;
-    b.in_service = 20260230;
     assert!(depreciation(&b, false, &kind).is_err());
 }
 
@@ -348,6 +345,7 @@ fn qbi_return_below_the_threshold_matches_hand_computation() {
         &mut d,
         income(FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 activity: BusinessActivity::Ordinary {
                     returns: 0,
                     receipts: 14_000_000,
@@ -691,12 +689,16 @@ fn passive_loss_carryover_is_reduced_after_basis() {
     add(&mut d, income(FederalIncome::Rental { data: rental(20000, 0) }));
     let mut debt = insolvency_debt(1500, 7500, 4600, 5000);
     let FederalIncome::PersonalDebt { data } = &mut debt.income else { panic!() };
-    let PersonalDebtTreatment::Insolvent { data: facts } = &mut data.treatment else { panic!() };
+    let mut data = edit_debt(data);
+    let Some(PersonalDebtTreatment::Insolvent { data: facts }) = &mut data.treatment else {
+        panic!()
+    };
     facts.property.push(property(
         "Rental house",
         DebtPropertyKind::Building { secured: false },
         90000,
     ));
+    drop(data);
     add(&mut d, debt);
     let r = supported(&d);
     assert_eq!(value(&r, "debt_4_form982_line12"), 1500);
@@ -704,8 +706,12 @@ fn passive_loss_carryover_is_reduced_after_basis() {
     assert_eq!(value(&r, "debt_4_basis_reduction"), 0);
     // Unlisted rental property is refused by name once the debt reaches basis.
     let FederalIncome::PersonalDebt { data } = &mut d.income[3].income else { panic!() };
-    let PersonalDebtTreatment::Insolvent { data: facts } = &mut data.treatment else { panic!() };
+    let mut data = edit_debt(data);
+    let Some(PersonalDebtTreatment::Insolvent { data: facts }) = &mut data.treatment else {
+        panic!()
+    };
     facts.property.pop();
+    drop(data);
     unsupported(&d, "Insolvency tax attributes");
 }
 

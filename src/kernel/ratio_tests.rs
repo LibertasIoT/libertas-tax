@@ -5,6 +5,28 @@ use alloc::string::String;
 use std::panic::catch_unwind;
 
 #[test]
+fn whole_pair_rounds_the_selected_owner_once_and_conserves_signed_units() {
+    use super::exact::{project_whole_pair, ratio, whole};
+    for (joint, sources, first, expected) in [
+        (1, [1, 1], 0, [1, 0]),
+        (1, [1, 1], 1, [0, 1]),
+        (3, [3, 3], 0, [2, 1]),
+        (-1, [-1, -1], 0, [-1, 0]),
+        (0, [1, -1], 0, [1, -1]),
+    ] {
+        assert_eq!(
+            project_whole_pair(&whole(joint), sources.map(|n| ratio(n, 2).unwrap()), first),
+            Some(expected)
+        );
+    }
+    for source in [i64::MIN, i64::MAX] {
+        let sources = [whole(source), whole(source)];
+        assert_eq!(project_whole_pair(&(&sources[0] + &sources[1]), sources, 0), Some([source; 2]));
+    }
+    assert_eq!(project_whole_pair(&whole(2), [whole(0), whole(1)], 0), None);
+}
+
+#[test]
 fn native_projection_keeps_selected_rounding_and_unfooted_target() {
     for (joint, cents, first, expected) in [
         (101, [6000, 6000], 0, [60, 41]),

@@ -1,44 +1,20 @@
-// Coverage: Schedule K-1 (1065) and (1120-S) boxes 2 and 3 — Supported (unit k1-rentals,
-//   2026-10-09; i1065sk1 2025 final (no 2026 revision), i1120ssk 2026 draft of 9/18/26, f8582 2026
-//   draft of 9/18/26, i8582 2025, Pub 925 2025, i1040se 2026 draft, IRC 469(c)(2), (c)(7), (f),
-//   (i)(1)–(3), (i)(6)(A), (i)(6)(C)).
-//   Lines: box 2 net rental real estate income (loss) and box 3 other net rental income (loss), each
-//   one passive activity with its own 2025 Form 8582 carryover, per tax system (K1RentalAmounts on
-//   PartnerActivityRecord, ScorpK1 and ScorpAmt). Income raises outside basis (partner worksheet
-//   line 4; Form 7203 lines 3b/3c) and Form 6198 activity income; a loss is its own basis class
-//   (Form 7203 lines 36/37) and Form 6198 loss of the K-1's one at-risk activity. Form 8582: box 2
-//   with active participation in Part IV with the special allowance (MAGI phase-out), box 2
-//   without it and box 3 in Part V (extended_rules.rs rentals_for, PassiveEntry.pass_through).
-//   A limited partner never actively participates (section 469(i)(6)(C)): PARTNER_LIMITED_NOT_ACTIVE
-//   on both sides and PartnerK1::valid. A real estate professional who materially participated
-//   (K1RentalParticipation::Professional, with the return's recorded status) makes box 2
-//   nonpassive; its carryover is released against the activity's own income first (section
-//   469(f)), MAGI excludes its allowed loss (i8582 line 6), the recorded NIIT safe harbor reverses
-//   it as for a Schedule E rental. Schedule E line 28: {kind}_N_rental_real_estate_net/_suspended
-//   and {kind}_N_other_rental_net/_suspended (amt_ twins). QBI when the section 199A statement
-//   lists the activity: the allowed net with its wages and UBIA (PassiveEntry.uniform_qbi).
-//   Unit B8 (2026-10-10): a rental loss held back by the basis or at-risk limits carries by activity
-//   (K1LossClass::RentalRealEstate and OtherRental; K1LossCarryforwards.real_estate/other_rental) and the
-//   activity's 2026 loss is what both limits allowed, a released carry included (activities reads the
-//   LossLedger). Refused by name: the professional answer without the recorded status (ISSUE_K1_RENTAL_PROFESSIONAL_STATUS), rentals
-//   of a publicly traded partnership (ISSUE_K1_RENTAL_PTP), an installment/exchange/casualty/theft
-//   or related-buyer rental disposition (PartnerK1Item::RentalDisposition,
-//   ScorpK1Item::RentalDisposition), box 22/18 and a box 23/19
-//   statement with two activities of one kind (MultipleActivities). The carryover follows the
-//   current participation answer (i8582 Part IV column (c) asks for both years; improvement log).
-//   Evidence: k1_rental.rs, partnership.rs (result_with, calculate_with), scorp_capital.rs
-//   (class_input), scorp_risk.rs, extended_rules.rs, k1_page.rs (K1RentalBoxes); tests/passthrough/k1_rental.rs.
-//   B9-7 R6: entity rental-property sections join the shared Section1231 class at basis/risk,
-//   with ISSUE_K1_RENTAL_PROPERTY_LIMITED if either holds back a current rental-property loss.
-//   Separate ordinary/property PALs enter each rental activity's existing character allocator.
-//   A fully taxable unrelated full sale releases its losses; overall gain offsets other PALs,
-//   while a professional's former-passive activity stays nonpassive. Allowed property parts
-//   aggregate once per K-1 in Form 4797; QBI uses return-wide character in the same rental QBI
-//   activity, and NIIT retains passive origin unless the professional safe harbor applies.
-//   A professional full sale keeps section469(g) prior losses as NIIT deductions, separate
-//   from the own-income section469(f) release (i8960 2025, entire-interest dispositions).
-//   Evidence: tests/passthrough/k1_rental.rs and tests/passthrough/interview.rs k1_rental_property_*; Pub925/i8582 2025.
-//   Full B9-7/Unit4 acceptance and mixed property EBL allocation remain open.
+// Coverage: Schedule K-1 (1065)/(1120-S) boxes 2 and 3. Actual source cents
+//   enter existing basis and at-risk classes before passive limits, separately
+//   for regular tax and AMT. Current and prior ordinary/property loss characters
+//   stay distinct. Schedule E Part II retains each rental's allowed net/carry.
+//   Non-PTP rentals use the common Form 8582 pool and any eligible allowance;
+//   real estate professional/former-passive and full-sale rules retain their
+//   existing character owner. K-1 rental QBI follows its post-limit owner.
+//   Kept passive PTP ordinary rentals instead combine only with passive items
+//   of the same PTP, with no rental allowance. Rental property, professional,
+//   disposition and rental-QBI source combinations remain located boundaries.
+//   Basis/risk-limited rental property, unavailable professional status,
+//   unsupported disposition methods and multiple activities of one box kind
+//   retain their separate boundaries. No participation or qualified-source fact
+//   is inferred from the current rental amount.
+//   Sources: IRS i1065sk1, i1120ssk, i8582 Special Instructions for PTPs,
+//   Pub925, i1040se line28; IRC469(c)(2)/(7),(f),(i),(k); i8960 entire dispositions.
+//   Tests: tests/passthrough/k1_rental.rs and k1_ptp_rental.rs.
 use crate::kernel::phase;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
@@ -51,18 +27,22 @@ pub struct K1RentalProperty {
     /// Net section 1231 gain (loss) of this activity
     /// The part of Form 1065 box 10 (Form 1120-S box 9) from this activity. Enter a loss as a negative amount.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub net: i64,
     /// Unrecaptured section 1250 gain of this activity
     /// The part of the business-property amount in Form 1065 box 9c (Form 1120-S box 8c) from this activity.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub unrecaptured: i64,
     /// Section 1231 loss of this activity carried from 2025 because of the passive activity rules
     /// The part of the activity's 2025 Form 8582 unallowed loss that was a Form 4797 loss. It is not part of the ordinary rental carryover. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub passive_loss: i64,
 }
@@ -87,24 +67,30 @@ pub enum K1RentalActivity {
 pub struct K1RentalAmounts {
     /// Net rental real estate income (loss) — box 2
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub real_estate: i64,
     /// Rental real estate loss carried from 2025 because of the passive activity rules
     /// From your 2025 Form 8582 for this activity. It already passed the basis and at-risk limits. Leave out a section 1231 part; it is entered with the activity's property. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub real_estate_carryover: i64,
     /// Property of the rental real estate activity sold
     pub real_estate_property: K1RentalProperty,
     /// Other net rental income (loss) — box 3
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub other: i64,
     /// Other rental loss carried from 2025 because of the passive activity rules
     /// From your 2025 Form 8582 for this activity. It already passed the basis and at-risk limits. Leave out a section 1231 part; it is entered with the activity's property. Zero when none was carried.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub other_carryover: i64,
     /// Property of the other rental activity sold
@@ -157,13 +143,15 @@ pub struct K1RentalQbi {
     /// W-2 wages
     #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub wages: i64,
     /// Unadjusted basis of qualified property (UBIA)
     #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub property: i64,
 }
@@ -173,8 +161,12 @@ pub struct K1RentalQbi {
 
 pub struct K1RentalFacts {
     /// How you took part in the rental real estate — box 2
-    #[libertas_default(NotActive)]
-    pub participation: K1RentalParticipation,
+    #[libertas_default($null)]
+    /// [NullText]
+    /// Participation is not established yet
+    /// [SetText]
+    /// Participation is
+    pub participation: Option<K1RentalParticipation>,
     /// Section 199A amounts of the rental real estate activity
     /// Absent when the statement does not list the box 2 activity as a trade or business.
     pub real_estate_qbi: Option<K1RentalQbi>,
@@ -187,18 +179,18 @@ pub struct K1RentalFacts {
     pub carryover_active: bool,
     /// Rental activities whose property the entity sold in full in 2026
     /// All of the activity's property, sold or exchanged for cash or other property in a fully taxable sale to a buyer not related to you or to the entity (not an installment sale, a like-kind exchange or a casualty). The activity's suspended passive losses are then allowed. Leave empty when none.
-    /// ----
-    /// Activity
     #[libertas_unordered]
     // Tax structure: only box 2 real estate and box 3 other rental activities.
     #[libertas_size(max = 2)]
+    /// ----
+    /// Activity
     pub disposed: alloc::vec::Vec<K1RentalActivity>,
 }
 
 impl Default for K1RentalFacts {
     fn default() -> Self {
         Self {
-            participation: K1RentalParticipation::NotActive,
+            participation: None,
             real_estate_qbi: None,
             other_qbi: None,
             carryover_active: true,
@@ -206,6 +198,9 @@ impl Default for K1RentalFacts {
         }
     }
 }
+
+pub(crate) const PARTICIPATION_NEEDED: (&str, &str) =
+    ("DOCUMENT_K1_RENTAL_RECORDS", crate::fixture_english!("Your rental activity records"));
 
 // Arithmetic safety: income, losses and grouped_former_passive retain native i64
 // additions/subtractions before owner loss limits and cents transfers.
@@ -231,6 +226,16 @@ impl K1RentalAmounts {
         self.real_estate != 0
             || self.real_estate_carryover != 0
             || self.real_estate_property.has_items()
+    }
+
+    pub(crate) fn participation_needed(
+        &self,
+        credits: &[crate::K1Credit],
+        properties: &[crate::K1InvestmentProperty],
+    ) -> bool {
+        self.real_estate_present()
+            || credits.iter().any(|credit| credit.code.rental())
+            || properties.iter().any(crate::K1InvestmentProperty::rental_real_estate)
     }
 
     // Partner basis worksheet line 4 and Form 7203 lines 3b/3c; also the
@@ -404,13 +409,37 @@ pub(crate) const PROPERTY_LIMITED: (&str, &str) = (
 pub(crate) const PROFESSIONAL_STATUS: (&str, &str) = (
     "ISSUE_K1_RENTAL_PROFESSIONAL_STATUS",
     crate::fixture_english!(
-        "A Schedule K-1 box 2 rental real estate activity in which a real estate professional materially participated needs that status recorded for its owner on the People page (Real estate professional)."
+        "A Schedule K-1 box 2 rental real estate activity in which a real estate professional materially participated needs that owner's Real estate professional answer on About you or About your spouse."
     ),
 );
-pub(crate) const PTP: (&str, &str) = (
-    "ISSUE_K1_RENTAL_PTP",
+pub(crate) const PTP_PROPERTY: (&str, &str) = (
+    "ISSUE_K1_RENTAL_PTP_PROPERTY",
     crate::fixture_english!(
-        "Schedule K-1 (1065) boxes 2 and 3 of a publicly traded partnership are limited by the passive activity rules separately from your other activities, which this App does not calculate."
+        "Rental property gains, losses and property passive-loss carryovers of a publicly traded partnership need its separate property-character worksheet."
+    ),
+);
+pub(crate) const PTP_PARTICIPATION: (&str, &str) = (
+    "ISSUE_K1_RENTAL_PTP_PARTICIPATION",
+    crate::fixture_english!(
+        "A real estate professional rental of a publicly traded partnership needs its separate former-passive and participation worksheet."
+    ),
+);
+pub(crate) const PTP_DISPOSITION: (&str, &str) = (
+    "ISSUE_K1_RENTAL_PTP_DISPOSITION",
+    crate::fixture_english!(
+        "A disposition involving rental activities of a publicly traded partnership needs its separate entire-interest and suspended-loss worksheet."
+    ),
+);
+pub(crate) const PTP_QBI: (&str, &str) = (
+    "ISSUE_K1_RENTAL_PTP_QBI",
+    crate::fixture_english!(
+        "A rental section 199A statement of a publicly traded partnership needs its actual qualified-source and specified-service classification before the qualified PTP deduction can be calculated."
+    ),
+);
+pub(crate) const PTP_SOURCE: (&str, &str) = (
+    "ISSUE_K1_RENTAL_PTP_SOURCE",
+    crate::fixture_english!(
+        "The rental activities of this publicly traded partnership need the same selected regular or AMT passive-loss source, including its checked section 179 allocation."
     ),
 );
 
@@ -458,8 +487,11 @@ pub(crate) fn activities(
         }
         let current = [phase::floor(current, 0) - allowed, property.net];
         let prior = [carryover, property.passive_loss];
-        let participation =
-            if real_estate { facts.participation } else { K1RentalParticipation::NotActive };
+        let participation = if real_estate {
+            facts.participation.ok_or(PARTICIPATION_NEEDED)?
+        } else {
+            K1RentalParticipation::NotActive
+        };
         let material = participation.professional();
         if material && !professional_status {
             return Err(PROFESSIONAL_STATUS);

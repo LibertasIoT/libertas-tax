@@ -1,0 +1,18 @@
+{
+  "rules": [
+    {"order": 51000, "rule": {"select": "^<Form1099C>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "creditor", "debtor"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["account_number", "date", "amount", "interest", "debt_description", "liable", "event_code", "property_value"]}]}},
+    {"order": 52000, "rule": {"select": "^<Form1099C>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "creditor", "debtor"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["account_number", "date", "amount", "interest", "debt_description", "liable", "event_code", "property_value"]}]}},
+    {"order": 53000, "rule": {"select": "^<Form1099A>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "lender", "borrower"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["account_number", "date", "balance", "box3", "value", "liable", "description"]}]}},
+    {"order": 54000, "rule": {"select": "^<Form1099A>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "lender", "borrower"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["account_number", "date", "balance", "box3", "value", "liable", "description"]}]}},
+    {"order": 412000, "rule": {"select": "^<TransferredProperty>", "flatten": true}},
+    {"order": 413000, "rule": {"select": "^<DebtProperty>", "flatten": {"name_row": false}}},
+    {"order": 414000, "rule": {"select": "^<DebtPropertyKind>", "flatten": true}},
+    {"order": 415000, "rule": {"select": "^<CanceledDebtChoice>", "flatten": true}},
+    {"order": 416000, "rule": {"select": "^<DebtSolvency>", "flatten": true}},
+    {"order": 673000, "rule": {"select": "^<CanceledDebtChoice>.Insolvent.property", "promote": true}},
+    {"order": 674000, "rule": {"select": "^<DebtProperty>.label", "promote": true}},
+    {"order": 675000, "rule": {"select": "^<CanceledDebtChoice>.Bankruptcy.property", "promote": true}},
+    {"order": 676000, "rule": {"select": "^<CanceledDebtChoice>.FarmDebt.property", "promote": true}},
+    {"order": 677000, "rule": {"select": "^<CanceledDebtChoice>.RealPropertyBusiness.property", "promote": true}}
+  ]
+}

@@ -22,28 +22,99 @@ fn months<T>(rows: &[T], month: impl Fn(&T) -> u32) -> bool {
     rows.iter().all(|r| (1..=12).contains(&month(r))) && unique(rows, month)
 }
 
-pub(crate) fn amounts_issue(value: &PolicyAmounts) -> Option<crate::validation::ValidationIssue> {
+pub(crate) fn coverage_pending(policy: &MarketplacePolicyRecord) -> bool {
+    crate::MarketplacePolicyRecordPage::from(&policy.form).status
+        != MarketplaceStatementStatus::Void
+        && (policy.coverage.is_empty()
+            || (1..=12).any(|month| {
+                policy_month(&crate::MarketplacePolicyRecordPage::from(&policy.form).amounts, month)
+                    .is_some()
+                    && !policy.coverage.iter().any(|coverage| coverage.month == month)
+            })
+            || policy.coverage.iter().any(|coverage| {
+                policy_month(
+                    &crate::MarketplacePolicyRecordPage::from(&policy.form).amounts,
+                    coverage.month,
+                )
+                .is_none()
+            }))
+}
+
+pub(crate) fn policy_answer_issue(
+    policy: &MarketplacePolicyRecord,
+) -> Option<crate::validation::ValidationIssue> {
+    if coverage_pending(policy) {
+        return Some(marketplace_issue("coverage"));
+    }
+    for (index, allocation) in policy.allocation.iter().enumerate() {
+        if matches!(allocation.kind, MarketplaceAllocationKind::NoAdvance { .. })
+            && (allocation.from..=allocation.to).any(|month| {
+                policy_month(&crate::MarketplacePolicyRecordPage::from(&policy.form).amounts, month)
+                    .is_some_and(|row| row.2 != 0)
+            })
+        {
+            return Some(marketplace_issue("kind").in_list("allocation", index));
+        }
+    }
+    for (index, lawful) in policy.lawful_premiums.iter().enumerate() {
+        if let MarketplaceLawfulPremiumSource::ReferenceMonth { month } = lawful.source
+            && policy_month(&crate::MarketplacePolicyRecordPage::from(&policy.form).amounts, month)
+                .is_none()
+        {
+            return Some(marketplace_issue("source").in_list("lawful_premiums", index));
+        }
+    }
+    for (index, payment) in policy.payments.iter().enumerate() {
+        let invalid = policy_month(
+            &crate::MarketplacePolicyRecordPage::from(&policy.form).amounts,
+            payment.month,
+        )
+        .is_none_or(|(premium, _, advance)| {
+            (premium != payment.paid + payment.unpaid
+                && premium != payment.paid + payment.unpaid - payment.refunded)
+                || matches!(payment.coverage,
+                    MarketplacePaymentCoverage::NoQualifyingCoverage { issuer_returned_advance }
+                    if issuer_returned_advance > advance)
+        });
+        if invalid {
+            return Some(marketplace_issue("paid").in_list("payments", index));
+        }
+    }
+    None
+}
+
+fn row_issue(
+    premium: i64,
+    benchmark: Option<i64>,
+    advance: i64,
+) -> Option<crate::validation::ValidationIssue> {
     let invalid = |field| {
         crate::validation::ValidationIssue::new(
             "MESSAGE_CHECK_THE_MONTHS_AND_AMOUNTS_OF_EACH_FORM_1095_A",
         )
         .at_field(field)
     };
-    let row_issue = |premium: i64, benchmark: Option<i64>, advance: i64| {
-        if !money(premium) {
-            Some(invalid("premium"))
-        } else if !benchmark.is_none_or(money) {
-            Some(invalid("benchmark"))
-        } else if !money(advance) {
-            Some(invalid("advance"))
-        } else if advance > premium {
-            Some(
-                crate::validation::ValidationIssue::new("MARKETPLACE_ADVANCE_ABOVE_PREMIUM")
-                    .at_field("advance"),
-            )
-        } else {
-            None
-        }
+    if !money(premium) {
+        Some(invalid("premium"))
+    } else if !benchmark.is_none_or(money) {
+        Some(invalid("benchmark"))
+    } else if !money(advance) {
+        Some(invalid("advance"))
+    } else if advance > premium {
+        Some(
+            crate::validation::ValidationIssue::new("MARKETPLACE_ADVANCE_ABOVE_PREMIUM")
+                .at_field("advance"),
+        )
+    } else {
+        None
+    }
+}
+pub(crate) fn amounts_issue(value: &PolicyAmounts) -> Option<crate::validation::ValidationIssue> {
+    let invalid = |field| {
+        crate::validation::ValidationIssue::new(
+            "MESSAGE_CHECK_THE_MONTHS_AND_AMOUNTS_OF_EACH_FORM_1095_A",
+        )
+        .at_field(field)
     };
     match value {
         PolicyAmounts::AllYear { premium, benchmark, advance } => {
@@ -66,6 +137,29 @@ pub(crate) fn amounts_issue(value: &PolicyAmounts) -> Option<crate::validation::
         }
     }
 }
+fn paper_months(paper: &Form1095APaper) -> [(&'static str, &Option<Form1095ACoverageAmounts>); 12] {
+    [
+        ("january", &paper.january),
+        ("february", &paper.february),
+        ("march", &paper.march),
+        ("april", &paper.april),
+        ("may", &paper.may),
+        ("june", &paper.june),
+        ("july", &paper.july),
+        ("august", &paper.august),
+        ("september", &paper.september),
+        ("october", &paper.october),
+        ("november", &paper.november),
+        ("december", &paper.december),
+    ]
+}
+pub(crate) fn paper_issue(paper: &Form1095APaper) -> Option<crate::validation::ValidationIssue> {
+    paper_months(paper).into_iter().find_map(|(field, row)| {
+        let row = row.as_ref()?;
+        row_issue(row.premium.unwrap_or(0), row.benchmark, row.advance.unwrap_or(0))
+            .map(|issue| issue.in_field(field))
+    })
+}
 pub(crate) fn dependent_income_issue(
     value: &MarketplaceDependent,
 ) -> Option<crate::validation::ValidationIssue> {
@@ -84,8 +178,13 @@ pub(crate) fn entered_amounts_issue(
         .iter()
         .enumerate()
         .find_map(|(index, form)| {
-            amounts_issue(&form.amounts)
-                .map(|issue| issue.in_field("amounts").in_list("forms", index))
+            let issue = if paper_months(&form.form).into_iter().all(|(_, row)| row.is_none()) {
+                amounts_issue(&PolicyAmounts::ByMonth { months: alloc::vec![] })
+                    .map(|issue| issue.at_record())
+            } else {
+                paper_issue(&form.form)
+            };
+            issue.map(|issue| issue.in_field("value").in_list("forms", index))
         })
         .or_else(|| {
             facts.dependents.iter().enumerate().find_map(|(index, person)| {
@@ -130,10 +229,16 @@ pub(crate) fn benchmark(value: &MarketplaceBenchmarkSource, facts: &MarketplaceF
         MarketplaceBenchmarkSource::Statement { policy } => {
             facts.forms.iter().any(|r| r.id == *policy)
         }
-        MarketplaceBenchmarkSource::ReferenceMonth { policy, month } => facts
-            .forms
-            .iter()
-            .any(|r| r.id == *policy && policy_month(&r.amounts, *month).is_some()),
+        MarketplaceBenchmarkSource::ReferenceMonth { policy, month } => {
+            facts.forms.iter().any(|r| {
+                r.id == *policy
+                    && policy_month(
+                        &crate::MarketplacePolicyRecordPage::from(&r.form).amounts,
+                        *month,
+                    )
+                    .is_some()
+            })
+        }
     }
 }
 fn agreement(value: &MarketplaceAgreement) -> bool {
@@ -260,13 +365,11 @@ fn catalog_valid(
         return false;
     }
     if facts.forms.iter().any(|p| {
-        !text(&p.issuer)
+        !text(&p.form.issuer)
             || !family(&p.enrolling, catalog)
-            || p.coverage.is_empty()
             || !months(&p.coverage, |r| r.month)
             || p.coverage.iter().any(|r| {
-                policy_month(&p.amounts, r.month).is_none()
-                    || !people_valid(&r.people, catalog, people, true)
+                !people_valid(&r.people, catalog, people, true)
                     || !unique(&r.entry, |e| e.person)
                     || r.entry.iter().any(|e| {
                         !r.people.contains(&e.person)
@@ -290,9 +393,6 @@ fn catalog_valid(
                             }
                     })
             })
-            || (1..=12).any(|m| {
-                policy_month(&p.amounts, m).is_some() && !p.coverage.iter().any(|r| r.month == m)
-            })
             || p.allocation.iter().enumerate().any(|(i, a)| {
                 !(1..=12).contains(&a.from)
                     || !(1..=12).contains(&a.to)
@@ -300,9 +400,6 @@ fn catalog_valid(
                     || p.allocation[..i]
                         .iter()
                         .any(|prior| a.from <= prior.to && prior.from <= a.to)
-                    || matches!(a.kind, MarketplaceAllocationKind::NoAdvance { .. })
-                        && (a.from..=a.to)
-                            .any(|m| policy_month(&p.amounts, m).is_some_and(|r| r.2 != 0))
             })
             || !months(&p.lawful_premiums, |r| r.month)
             || p.lawful_premiums.iter().any(|r| {
@@ -313,9 +410,7 @@ fn catalog_valid(
                     })
                     || match r.source {
                         MarketplaceLawfulPremiumSource::Marketplace { amount } => !money(amount),
-                        MarketplaceLawfulPremiumSource::ReferenceMonth { month } => {
-                            policy_month(&p.amounts, month).is_none()
-                        }
+                        MarketplaceLawfulPremiumSource::ReferenceMonth { .. } => false,
                     }
             })
             || !months(&p.payments, |r| r.month)
@@ -326,23 +421,19 @@ fn catalog_valid(
                     || r.tax_free_child.is_some_and(|v| !money(v))
             })
             || p.payments.iter().any(|r| {
-                let Some((premium, _, advance)) = policy_month(&p.amounts, r.month) else {
-                    return true;
-                };
                 !money(r.paid)
                     || !money(r.refunded)
                     || !money(r.unpaid)
                     || !money(r.tax_free_premiums)
                     || r.tax_free_coverage.is_some_and(|amount| !money(amount))
                     || r.refunded > r.paid
-                    || premium != r.paid + r.unpaid && premium != r.paid + r.unpaid - r.refunded
                     || match &r.coverage {
                         MarketplacePaymentCoverage::EmergencyOrder { order_date, .. } => {
                             !crate::federal_rules::valid_date(*order_date)
                         }
                         MarketplacePaymentCoverage::NoQualifyingCoverage {
                             issuer_returned_advance,
-                        } => !money(*issuer_returned_advance) || *issuer_returned_advance > advance,
+                        } => !money(*issuer_returned_advance),
                         _ => false,
                     }
                     || r.appeal.as_ref().is_some_and(|a| {
@@ -635,20 +726,26 @@ mod tests {
 
     fn policy(id: i64) -> MarketplacePolicyRecord {
         MarketplacePolicyRecord {
+            printed: None,
             id,
-            issuer: "Issuer".into(),
-            policy_number: String::new(),
-            amounts: PolicyAmounts::ByMonth {
-                months: vec![PolicyMonth {
-                    month: 1,
-                    premium: 100_000,
-                    benchmark: None,
-                    advance: 60_000,
-                }],
-            },
+            form: crate::MarketplacePolicyRecordPage {
+                recipient: Default::default(),
+                id,
+                issuer: "Issuer".into(),
+                policy_number: String::new(),
+                amounts: PolicyAmounts::ByMonth {
+                    months: vec![PolicyMonth {
+                        month: 1,
+                        premium: 100_000,
+                        benchmark: None,
+                        advance: 60_000,
+                    }],
+                },
+                status: MarketplaceStatementStatus::Original,
+            }
+            .into(),
             lawful_premiums: vec![],
             enrolling: MarketplaceFamilyRef::ThisReturn,
-            status: MarketplaceStatementStatus::Original,
             coverage: vec![MarketplacePolicyCoverage { month: 1, people: vec![-1], entry: vec![] }],
             allocation: vec![],
             payments: vec![],
@@ -674,7 +771,7 @@ mod tests {
         assert!(valid(&accepted, &[-1], &[]));
         let mut candidate = accepted.clone();
         candidate.forms.reverse();
-        candidate.forms.iter_mut().find(|p| p.id == 1).unwrap().issuer = "Renamed".into();
+        candidate.forms.iter_mut().find(|p| p.id == 1).unwrap().form.issuer = "Renamed".into();
         assert!(authorized(&candidate, &accepted, &[-1], &[]));
         // An added source can be saved, but a guessed new ID cannot authorize
         // a linked selector in that same request.
@@ -713,13 +810,19 @@ mod tests {
         assert_eq!(page.forms[0].payments[0].appeal.as_ref().unwrap().required_deadline, 20270430);
         let reopened: MarketplaceFacts = page.clone().into();
         assert_eq!(reopened, facts);
-        assert_eq!(policy_month(&reopened.forms[0].amounts, 1), Some((100_000, None, 60_000)));
+        assert_eq!(
+            policy_month(&reopened.forms[0].form.amounts(), 1),
+            Some((100_000, None, 60_000))
+        );
         let mut forged = page;
         forged.forms[0].payments[0].appeal.as_mut().unwrap().required_deadline = 20270501;
         assert!(!page_readonly_valid(&forged));
-        let PolicyAmounts::ByMonth { months } = &mut facts.forms[0].amounts else { unreachable!() };
-        months[0].benchmark = Some(0);
-        assert_eq!(policy_month(&facts.forms[0].amounts, 1), Some((100_000, Some(0), 60_000)));
+        let paper = &mut facts.forms[0].form;
+        paper.month_mut(1).benchmark = Some(0);
+        assert_eq!(
+            policy_month(&facts.forms[0].form.amounts(), 1),
+            Some((100_000, Some(0), 60_000))
+        );
     }
 
     #[test]

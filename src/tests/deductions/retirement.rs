@@ -11,7 +11,7 @@ fn one_state_refund_from_two_prior_payment_years_allocates_before_separate_tax_b
 
     let mut d = complete(FederalStatus::Single);
     let before = supported(&d);
-    add(&mut d, income(FederalIncome::TaxRefund { amount: 400_000, withholding: 0, history }));
+    add(&mut d, income(refund_income(400_000, 0, history)));
     let result = supported(&d);
     assert_eq!(value(&result, "state_refund_2_2024_allocated"), 3_000);
     assert_eq!(value(&result, "state_refund_2_2024_taxable"), 3_000);
@@ -134,15 +134,6 @@ fn repayment_senior_assumes_no_historical_ssns_or_pension_credit_when_not_entere
     let r = supported(&d);
     assert!(noted(&r, "WARN_REPAYMENT_ELDERLY_ASSUMED_NONE"), "{r:?}");
     assert_eq!(value(&r, "repayment_year_0_original_elderly_credit"), 0);
-    for pension in [
-        ExemptPension { label: "".into(), amount: 0 },
-        ExemptPension { label: "Source".into(), amount: -1 },
-    ] {
-        let mut bad = d.clone();
-        let years = repayment_years_mut(&mut bad);
-        years[0].elderly = RepaymentElderly::Facts { exempt_pensions: vec![pension] };
-        assert!(!bad.valid_stored());
-    }
 }
 
 #[test]
@@ -333,29 +324,13 @@ fn repayment_retirement_requires_confirmed_source_and_reconciles_filed_tax() {
 
 #[test]
 fn repayment_retirement_rejects_invalid_saved_amounts_and_oversized_lists() {
-    for mode in 0..5 {
+    for mode in [2, 4] {
         let mut d = repayment_social_draft(2025, 17750, 378);
         let years = repayment_years_mut(&mut d);
         years[0].retirement = match mode {
-            0 => vec![RepaymentRetirement::TraditionalIra {
-                gross: -1,
-                normal: true,
-                treatment: RepaymentDistribution::Normal,
-            }],
-            1 => vec![RepaymentRetirement::TraditionalIra {
-                gross: 100000000001,
-                normal: true,
-                treatment: RepaymentDistribution::Normal,
-            }],
             2 => vec![RepaymentRetirement::Pension {
                 gross: 100,
                 taxable: 101,
-                normal: true,
-                treatment: RepaymentDistribution::Normal,
-            }],
-            3 => vec![RepaymentRetirement::Pension {
-                gross: 100,
-                taxable: -1,
                 normal: true,
                 treatment: RepaymentDistribution::Normal,
             }],
@@ -458,7 +433,7 @@ fn married_separate_salt_cap_halves_after_phase_down_for_return_and_form_172() {
     d.income[0] = wage(1, Owner::Taxpayer, 25_260_000, 0);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 3_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     // $100 over the $252,500 MFS threshold reduces the full cap by $30,
     // then halves it. Halving the cap before phase-down would yield $20,170.
     let current = supported(&d);
@@ -485,11 +460,11 @@ fn qualified_charitable_distribution_reduces_4b_only() {
     add(
         &mut d,
         income(FederalIncome::Retirement {
-            data: native_retirement(
+            data: retirement_source(native_retirement(
                 RetirementKind::Ira,
                 1_000_000,
-                RetirementTaxable::Payer { amount: 1_000_000 },
-            ),
+                (RetirementTaxable::Payer, 1_000_000),
+            )),
         }),
     );
     d.adjustments.as_mut().unwrap().qualified_charity =

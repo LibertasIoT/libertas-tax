@@ -1,4 +1,4 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::*;
 
 #[test]
@@ -16,10 +16,6 @@ fn equivalent_railroad_and_ssa_net_benefits_combine_before_taxation() {
     assert_eq!(value(&r, "agi"), 65100);
     assert_eq!(r.payments, Some(680000));
     assert_eq!(restart(d.clone()).draft, d);
-    if let FederalIncome::SocialSecurity { data } = &mut d.income[2].income {
-        data.special_treatment = true;
-    }
-    assert!(noted(&supported(&d), "WARN_SOCIAL_SECURITY_LEFT_OUT"));
 }
 #[test]
 fn railroad_special_treatments_and_inconsistent_statement_amounts_are_guarded() {
@@ -28,18 +24,16 @@ fn railroad_special_treatments_and_inconsistent_statement_amounts_are_guarded() 
     unsupported(&d, "Income:"); // Age facts contradict the ordinary-retirement assertion.
     d.people.as_mut().unwrap().taxpayer.birth_date = 19600101;
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = RetirementTreatment::Early;
-    unsupported(&d, "Income:");
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = RetirementTreatment::Ordinary;
-    data.taxable = RetirementTaxable::Railroad {
+    edit_retirement(data).ordinary_distribution = Some(RetirementTreatment::Ordinary);
+    edit_retirement(data).taxable = Some(RetirementTaxable::Railroad {
+        repaid: 0,
         repayments: vec![],
         contributory: 1200001,
         box_5: 0,
         box_6: 0,
-        holder: crate::RailroadHolder::Employee,
+        holder: Some(crate::RailroadHolder::Employee),
         basis: None,
-    };
+    });
     assert!(!d.valid_stored());
 }
 

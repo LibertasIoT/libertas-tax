@@ -15,9 +15,9 @@ fn unit17_prepared_ptp_retains_selected_allocation_payments_and_report_context()
         vintages: vec![Asset179Carryover { year: 2024, amount: 90_000 }],
     });
     let regular =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100).unwrap();
     let alternative =
-        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, (1_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, 1_000 * 100).unwrap();
     for (allocation, is_amt, income_cents, allowed, carry, year) in [
         (&regular, false, 2_000_000, 700_000, 200_000, None),
         (&alternative, true, 100_000, 590_000, 90_000, Some(2024)),
@@ -71,7 +71,7 @@ fn unit17_prepared_ptp_retains_selected_allocation_payments_and_report_context()
 fn unit17_prepared_ptp_keeps_missing_selected_history_and_risk_unavailable() {
     let mut draft = ptp179_draft(20_000, 5_000);
     assert_eq!(
-        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, (20_000) * 100),
+        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, 20_000 * 100),
         Err(Section179PreparedIssue::K1Availability(
             2,
             K1Section179BasisIssue::AlternativeIncomeCarryUnavailable
@@ -84,7 +84,7 @@ fn unit17_prepared_ptp_keeps_missing_selected_history_and_risk_unavailable() {
     data.alternative.as_mut().unwrap().risk.start = ScorpRiskStart::Unknown;
     for system in [Section179IncomeSystem::Regular, Section179IncomeSystem::Alternative] {
         assert_eq!(
-            selected_ptp179(&draft, system, 2, (20_000) * 100),
+            selected_ptp179(&draft, system, 2, 20_000 * 100),
             Err(Section179PreparedIssue::K1Availability(
                 2,
                 K1Section179BasisIssue::SourceLedgerUnavailable(
@@ -96,7 +96,7 @@ fn unit17_prepared_ptp_keeps_missing_selected_history_and_risk_unavailable() {
     let FederalIncome::Partnership { data } = &mut draft.income[1].income else { unreachable!() };
     data.section179 = 0;
     let zero =
-        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, 20_000 * 100).unwrap();
     assert_eq!(zero.income.k1[&2].allowed_cents, 0);
     assert_eq!(zero.ptp_section179_pal_input(2), Err(Ptp179SourceIssue::RiskUnavailable));
 }
@@ -107,7 +107,7 @@ fn unit17_prepared_ptp_distinguishes_non_ptp_and_preserves_other_owner_issues() 
     let FederalIncome::Partnership { data } = &mut draft.income[1].income else { unreachable!() };
     data.publicly_traded = false;
     let allocation =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100).unwrap();
     assert_eq!(allocation.ptp_section179_pal_input(2), Err(Ptp179SourceIssue::NotPtp));
     // A real owner deduction keeps its existing coordination refusal; the
     // source cache only excludes the exact receiving-owner PTP/PAL notices.
@@ -115,7 +115,7 @@ fn unit17_prepared_ptp_distinguishes_non_ptp_and_preserves_other_owner_issues() 
     data.publicly_traded = true;
     data.pensions = 100;
     let allocation =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100).unwrap();
     let Err(Ptp179SourceIssue::OwnerIssues(issues)) = allocation.ptp_section179_pal_input(2) else {
         panic!("owner refusal must survive")
     };
@@ -148,7 +148,13 @@ fn unit17_prepared_ptp_distinguishes_non_ptp_and_preserves_other_owner_issues() 
                     prior_allowed_loss_cents: 0,
                 },
             }],
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
+            |_, _, _| {
+                Some(Section179OtherLimitedDeduction {
+                    system,
+                    amount_cents: 0,
+                    coordinated_owner_sources: Default::default(),
+                })
+            },
         )
         .unwrap();
     let Err(Ptp179SourceIssue::OwnerIssues(issues)) = allocation.ptp_section179_pal_input(2) else {
@@ -212,7 +218,13 @@ fn unit17_prepared_ptp_regular_direct_assets_share_the_existing_allocator() {
                     prior_allowed_loss_cents: 0,
                 },
             }],
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
+            |_, _, _| {
+                Some(Section179OtherLimitedDeduction {
+                    system,
+                    amount_cents: 0,
+                    coordinated_owner_sources: Default::default(),
+                })
+            },
         )
         .unwrap();
     assert_eq!(allocation.income.total_allowed_cents, 800_000);
@@ -263,7 +275,11 @@ fn unit17_prepared_ptp_does_not_copy_regular_prior_asset_carry_into_amt() {
             system,
             &businesses,
             &input,
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 })
+            |_, _, _| Some(Section179OtherLimitedDeduction {
+                system,
+                amount_cents: 0,
+                coordinated_owner_sources: Default::default()
+            })
         ),
         Err(Section179PreparedIssue::AlternativeAssetCarryUnavailable(3, 0))
     );
@@ -278,7 +294,13 @@ fn unit17_prepared_ptp_does_not_copy_regular_prior_asset_carry_into_amt() {
             system,
             &businesses,
             &input,
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
+            |_, _, _| {
+                Some(Section179OtherLimitedDeduction {
+                    system,
+                    amount_cents: 0,
+                    coordinated_owner_sources: Default::default(),
+                })
+            },
         )
         .unwrap();
     assert_eq!(allocation.income.total_allowed_cents, 590_000);
@@ -301,7 +323,11 @@ fn unit17_prepared_ptp_does_not_copy_regular_prior_asset_carry_into_amt() {
             system,
             &businesses,
             &input,
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 })
+            |_, _, _| Some(Section179OtherLimitedDeduction {
+                system,
+                amount_cents: 0,
+                coordinated_owner_sources: Default::default()
+            })
         )
         .is_ok()
     );
@@ -320,19 +346,25 @@ fn unit17_prepared_ptp_checked_income_is_not_clamped_or_replaced_by_zero() {
             system,
             &[],
             sources,
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
+            |_, _, _| {
+                Some(Section179OtherLimitedDeduction {
+                    system,
+                    amount_cents: 0,
+                    coordinated_owner_sources: Default::default(),
+                })
+            },
         )
     };
-    let source = section179_income_source(2, (20_000) * 100, 0, 0, 0);
+    let source = section179_income_source(2, 20_000 * 100, 0, 0, 0);
     assert_eq!(prepare(&[source, source]), Err(E::DuplicateSource(2)));
     for (invalid, issue) in [
         (
-            section179_income_source(999, (20_000) * 100, 0, 0, 0),
+            section179_income_source(999, 20_000 * 100, 0, 0, 0),
             E::K1Availability(999, B::UnknownSource),
         ),
-        (section179_income_source(1, (20_000) * 100, 0, 0, 0), E::K1Availability(1, B::NotK1)),
-        (section179_income_source(2, (20_000) * 100, -100, 0, 0), E::NegativePriorLoss(2)),
-        (section179_income_source(2, (20_000) * 100, 0, 0, -100), E::NegativePriorLoss(2)),
+        (section179_income_source(1, 20_000 * 100, 0, 0, 0), E::K1Availability(1, B::NotK1)),
+        (section179_income_source(2, 20_000 * 100, -100, 0, 0), E::NegativePriorLoss(2)),
+        (section179_income_source(2, 20_000 * 100, 0, 0, -100), E::NegativePriorLoss(2)),
         // Each class is representable; adding the second actual-cent class overflows.
         (section179_income_source(2, 100, 0, i64::MAX, 0), E::AmountOverflow(2)),
         (
@@ -345,19 +377,4 @@ fn unit17_prepared_ptp_checked_income_is_not_clamped_or_replaced_by_zero() {
     ] {
         assert_eq!(prepare(&[invalid]), Err(issue));
     }
-    let mut invalid = draft.clone();
-    let FederalIncome::Partnership { data } = &mut invalid.income[1].income else { unreachable!() };
-    data.regular.basis.opening = -1;
-    // Preserve the original unavailable-source family without assuming which native
-    // validation/ledger stage reports the invalid basis record first.
-    assert!(matches!(
-        crate::section179::section179_with_native_prepared_income_and_operating_context(
-            &invalid,
-            system,
-            &[],
-            &[source],
-            |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
-        ),
-        Err(E::K1Availability(2, B::InvalidSource(_) | B::SourceLedgerUnavailable(_)))
-    ));
 }

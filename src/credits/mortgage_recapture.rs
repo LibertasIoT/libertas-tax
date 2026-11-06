@@ -17,10 +17,11 @@
 //   form_8828_gift_through_the_other_taxes_page, form_8828_nine_year_period_boundary,
 //   form_8828_income_percentage_boundaries, form_8828_half_the_gain_limits_the_tax,
 //   form_8828_homes_are_named_once.
-use crate::kernel::lines::line;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line;
 use crate::{
     FederalDraft, FederalIncome, FederalResult, HomeExclusion, MortgageSubsidyDisposition,
     MortgageSubsidyEntry, MortgageSubsidyPayoff, MortgageSubsidySpouseRecipient,
@@ -70,7 +71,7 @@ pub(crate) fn calculate_all(
                             source.id == *home_sale_income_id
                                 && matches!(source.income, FederalIncome::HomeSale { .. })
                         })
-                        .map(|source| source.owner)
+                        .map(|source| source.owner.owned())
                         .map(|owner| match owner {
                             crate::Owner::Taxpayer => crate::MortgageSubsidyGiftOwners::Taxpayer,
                             crate::Owner::Spouse => crate::MortgageSubsidyGiftOwners::Spouse,
@@ -177,8 +178,8 @@ pub(crate) fn gift_owner_save_rule(
         crate::OtherTax::MortgageSubsidyRecapture { homes } => homes.iter().any(|home| {
             matches!(
                 &home.disposition,
-                MortgageSubsidyDisposition::Ordinary {
-                    transfer: MortgageSubsidyTransfer::GiftToOther { owners: None, .. },
+                crate::MortgageSubsidyDispositionView::Ordinary {
+                    transfer: crate::MortgageSubsidyTransferView::GiftToOther { owners: None, .. },
                     ..
                 }
             )
@@ -191,8 +192,8 @@ pub(crate) fn gift_owner_save_rule(
             continue;
         };
         for (home_index, home) in homes.iter().enumerate() {
-            let MortgageSubsidyDisposition::Ordinary {
-                transfer: MortgageSubsidyTransfer::GiftToOther { owners, .. },
+            let crate::MortgageSubsidyDispositionView::Ordinary {
+                transfer: crate::MortgageSubsidyTransferView::GiftToOther { owners, .. },
                 ..
             } = &home.disposition
             else {
@@ -200,11 +201,12 @@ pub(crate) fn gift_owner_save_rule(
             };
             // apply_other_taxes supplies the accepted whole list. Locate the
             // exact submitted gift in that list, not by label or amount.
+            let submitted_home = crate::MortgageSubsidyEntry::from(home.clone());
             let positive = draft
                 .credits
                 .as_ref()
                 .and_then(|credits| {
-                    credits.mortgage_subsidies.iter().position(|saved| saved == home)
+                    credits.mortgage_subsidies.iter().position(|saved| saved == &submitted_home)
                 })
                 .is_some_and(|index| {
                     native.as_ref().is_some_and(|result| {
@@ -393,7 +395,9 @@ fn calculate_one(
             let Some((entry, home)) = draft.income.iter().find_map(|entry| {
                 if entry.id == *home_sale_income_id {
                     match &entry.income {
-                        FederalIncome::HomeSale { data } => Some((entry, data)),
+                        FederalIncome::HomeSale { data } => {
+                            Some((entry, crate::HomeSale::from(data)))
+                        }
                         _ => None,
                     }
                 } else {

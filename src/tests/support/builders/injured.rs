@@ -1,5 +1,6 @@
 use crate::tests::cross::interview::document;
 use crate::tests::*;
+use alloc::string::String;
 
 pub(in crate::tests) fn append_injured_two_period_ltc_sources(draft: &mut FederalDraft) {
     let periods =
@@ -25,44 +26,61 @@ pub(in crate::tests) fn append_injured_two_period_ltc_sources(draft: &mut Federa
     );
     add(draft, income(ltc_form(15_000, Some(3))));
     let mut spouse = income(ltc_form(15_000, Some(3)));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(draft, spouse);
 }
 
 pub(crate) const INJURED_INSURED_COUNT: usize = 12;
-pub(crate) const INJURED_CONTRACT_DAYS: usize = 365;
+// Two distinct daily periods exercise period identity without a capacity stress fixture.
+pub(crate) const INJURED_CONTRACT_DAYS: usize = 2;
+pub(crate) const INJURED_ALLOCATION_COUNT: usize = INJURED_INSURED_COUNT * INJURED_CONTRACT_DAYS;
+// Each period receives $1,000 against the 2026 $430 daily exclusion.
+pub(crate) const INJURED_TAXABLE_PER_PERIOD: i64 = 570;
 pub(crate) const INJURED_DAILY_SOURCE: i64 = 50_000;
-pub(crate) const INJURED_ANNUAL_SOURCE: i64 = 18_250_000;
+pub(crate) const INJURED_ANNUAL_SOURCE: i64 = INJURED_DAILY_SOURCE * INJURED_CONTRACT_DAYS as i64;
 
-pub(crate) fn injured_insured_documents() -> Vec<IncomeDocumentItem> {
-    (0..INJURED_INSURED_COUNT)
+pub(crate) fn injured_insured_documents(insured_count: usize) -> Vec<IncomeDocumentItem> {
+    (0..insured_count)
         .map(|i| {
             document(
                 0,
-                IncomeDocument::LtcInsured(LtcInsured {
-                    insured: LtcInsuredPerson::Other {
-                        name: alloc::format!("Synthetic daily-contract insured {i}"),
-                    },
-                    periods: LtcPeriodsInput::One {
-                        starts: 20260101,
-                        ends: 20261231,
-                        services: 0,
-                        reimbursements: 0,
-                        recipient: CareBenefitRecipient::Other {
-                            insured_received: 0,
-                            others_received: 0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                        insured: LtcInsuredPerson::Other {
+                            name: alloc::format!("Synthetic daily-contract insured {i}"),
                         },
-                    },
-                }),
+                        periods: LtcPeriodsInput::One {
+                            starts: 20260101,
+                            ends: crate::dates::add_days(
+                                20260101,
+                                INJURED_CONTRACT_DAYS as i32 - 1,
+                            ),
+                            services: 0,
+                            reimbursements: 0,
+                            recipient: CareBenefitRecipient::Other {
+                                insured_received: 0,
+                                others_received: 0,
+                            },
+                        },
+                    }),
+                },
             )
         })
         .collect()
 }
 
-pub(crate) fn injured_daily_forms(rows: &mut Vec<IncomeDocumentItem>, ids: &[i64]) {
-    for row in rows.iter_mut() {
-        let IncomeDocument::LtcInsured(insured) = &mut row.document else {
-            panic!("only actual insured rows before the forms")
+pub(crate) fn injured_daily_forms(
+    draft: &FederalDraft,
+    rows: &mut Vec<IncomeDocumentItem>,
+    ids: &[i64],
+) {
+    // Update only the explicit insured identities allocated in the first stage.
+    for id in ids {
+        let row = rows.iter_mut().find(|row| row.id == *id).expect("accepted insured source");
+        let IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(insured) } =
+            &mut row.document
+        else {
+            panic!("the accepted insured identity must still name an insured source")
         };
         insured.periods = LtcPeriodsInput::Several {
             method: CarePeriodMethod::Contract,
@@ -89,21 +107,41 @@ pub(crate) fn injured_daily_forms(rows: &mut Vec<IncomeDocumentItem>, ids: &[i64
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut source = document(
                 0,
-                IncomeDocument::Ltc1099(Ltc1099 {
-                    benefits: INJURED_ANNUAL_SOURCE,
-                    accelerated: 0,
-                    interest: 0,
-                    benefit_origin: Some(LtcPaymentOrigin::Insurance),
-                    accelerated_origin: None,
-                    paid: LtcPaidBasis::PerDiem,
-                    contract: LtcContractPage::Qualified {
-                        qualification: CareContractQualification::Qualified,
-                    },
-                    illness: LtcIllness::Chronic,
-                    insured: Some(*id),
-                }),
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Ltc1099(ltc_document(LtcSource {
+                        interest: None,
+                        form: Ltc1099Paper {
+                            payer: Default::default(),
+                            recipient: Default::default(),
+                            insured_party: Default::default(),
+                            date_certified: None,
+                            benefits: Some(INJURED_ANNUAL_SOURCE),
+                            accelerated: Some(0),
+                            paid: LtcPaidBasis::PerDiem,
+                            box4_qualified: false,
+                            illness: Some(LtcIllness::Chronic),
+                            calendar_year: 2026,
+                            corrected: false,
+                            payer_phone: String::new(),
+                            account_number: alloc::format!("INSURED-{id}-{owner:?}"),
+                        },
+                        benefit_origin: Some(LtcPaymentOrigin::Insurance),
+                        accelerated_origin: None,
+                        contract: LtcContract::Qualified {
+                            qualification: CareContractQualification::Qualified,
+                        },
+                        insured: Some(*id),
+                    })),
+                },
             );
-            source.owner = owner;
+            source.owner = crate::DocumentOwner::from(owner);
+            source.document = named_document(
+                draft,
+                if owner == Owner::Spouse { -2 } else { -1 },
+                0,
+                source.document,
+            )
+            .document;
             rows.push(source);
         }
     }
@@ -111,10 +149,12 @@ pub(crate) fn injured_daily_forms(rows: &mut Vec<IncomeDocumentItem>, ids: &[i64
 
 pub(crate) fn injured_period_payees(draft: &FederalDraft, rows: &mut [IncomeDocumentItem]) {
     for row in rows.iter_mut() {
-        let IncomeDocument::LtcInsured(insured) = &mut row.document else {
+        let IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(insured) } =
+            &mut row.document
+        else {
             continue;
         };
-        let forms = crate::care_benefits::payments(draft, row.id);
+        let forms = crate::care_benefit_return::payments(draft, row.id);
         assert_eq!(forms.len(), 2);
         assert_eq!(forms[0].1, INJURED_ANNUAL_SOURCE);
         assert_eq!(forms[1].1, INJURED_ANNUAL_SOURCE);
@@ -170,6 +210,7 @@ pub(in crate::tests) fn liability_specialized_wage_facts<'a>(
     let mut companion = d.clone();
     for entry in &mut companion.income {
         if let FederalIncome::Wage { data } = &mut entry.income {
+            let mut data = edit_wage(data);
             match specialization {
                 SpecializedWageFixture::Inmate => data.inmate_pay = 0,
                 SpecializedWageFixture::Care => data.care_benefits = 0,
@@ -178,6 +219,7 @@ pub(in crate::tests) fn liability_specialized_wage_facts<'a>(
                 }
                 SpecializedWageFixture::Statutory => data.statutory_employee = false,
             }
+            drop(data);
         }
     }
     let mut facts = liability_portfolio_native_facts(&companion, capital, None);
@@ -192,10 +234,15 @@ fn liability_wage_source_cents(d: &FederalDraft) -> [i64; 2] {
     [Owner::Taxpayer, Owner::Spouse].map(|owner| {
         d.income
             .iter()
-            .filter(|entry| entry.owner == owner)
+            .filter(|entry| entry.owner == crate::DocumentOwner::from(owner))
             .map(|entry| match &entry.income {
-                FederalIncome::Wage { data } if !data.statutory_employee => {
-                    data.wages - data.deferred_pension - data.inmate_pay
+                FederalIncome::Wage { data } => {
+                    let data = FederalWage::from(data);
+                    if data.statutory_employee {
+                        0
+                    } else {
+                        data.wages - data.deferred_pension - data.inmate_pay
+                    }
                 }
                 _ => 0,
             })
@@ -220,9 +267,10 @@ pub(in crate::tests) fn liability_portfolio_native_facts(
     assert!(d.dependents.is_empty());
     assert!(d.screening.as_ref().is_none_or(|s| s.clergy.is_empty()));
     for entry in &d.income {
-        let owner = usize::from(entry.owner == Owner::Spouse);
+        let owner = usize::from(entry.owner == crate::DocumentOwner::Spouses);
         match &entry.income {
             FederalIncome::Wage { data } => {
+                let data = FederalWage::from(data);
                 // This synthetic packet has no separately settled W-2
                 // category outputs. Specialized wages need their native owner.
                 assert!(
@@ -245,14 +293,16 @@ pub(in crate::tests) fn liability_portfolio_native_facts(
                 withholding[0][owner] += data.withholding;
             }
             FederalIncome::Interest { data } => {
+                let data = FederalInterest::from(data);
                 withholding[1][owner] += data.withholding;
                 investment_sources[0][owner] += data.net_taxable();
             }
             FederalIncome::Dividend { data } => {
+                let data = FederalDividend::from(data);
                 withholding[1][owner] += data.withholding;
                 investment_sources[1][owner] += data.ordinary;
             }
-            FederalIncome::Sale { data } => withholding[1][owner] += data.withholding,
+            FederalIncome::Sale { data } => withholding[1][owner] += data.form.withholding,
             FederalIncome::QualifiedSmallBusinessSale { data } => {
                 withholding[1][owner] += data.withholding
             }
@@ -526,17 +576,20 @@ pub(in crate::tests) fn injured_return(
         wage(2, Owner::Spouse, spouse.0 * 100, spouse.1 * 100),
     ];
     d.next_id = 3;
-    d.payments.as_mut().unwrap().estimated = Some(estimated * 100);
+
     if estimated > 0 {
-        d.payments.as_mut().unwrap().estimated_payments.push(crate::DatedPayment {
-            date: 20260415,
-            amount: estimated * 100,
-            payer: PaymentPayer::Joint,
-            refund_property: None,
-        });
+        crate::tests::support::builders::dated_payments_mut(d.payments.as_mut().unwrap()).push(
+            crate::DatedPayment {
+                date: 20260415,
+                amount: estimated * 100,
+                payer: PaymentPayer::Joint,
+                refund_property: None,
+            },
+        );
     }
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(a);
+    name_accepted_income_documents(&mut d);
     d
 }
 
@@ -555,22 +608,24 @@ pub(in crate::tests) fn rest_rounding_source(
 ) -> FederalIncomeEntry {
     let mut entry = match kind {
         RestRoundingSource::Interest => {
-            income(FederalIncome::Interest { data: native_interest(cents, 0) })
+            income(FederalIncome::Interest { data: interest_source(native_interest(cents, 0)) })
         }
         RestRoundingSource::Dividend => {
-            income(FederalIncome::Dividend { data: native_dividend(cents, 0, 0) })
+            income(FederalIncome::Dividend { data: dividend_source(native_dividend(cents, 0, 0)) })
         }
         RestRoundingSource::Jury => {
             income(FederalIncome::JuryDuty { data: JuryPay { received: cents, remitted: 0 } })
         }
         RestRoundingSource::Unemployment => {
             let mut entry = government_unemployment(0, &[], 0);
-            let FederalIncome::Unemployment { data } = &mut entry.income else { unreachable!() };
-            data.amount = cents;
+            let FederalIncome::GovernmentPayment { data } = &mut entry.income else {
+                unreachable!()
+            };
+            data.form.unemployment_compensation = cents;
             entry
         }
     };
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry
 }
 
@@ -593,11 +648,17 @@ pub(in crate::tests) fn changed_filer_carry(draft: &mut FederalDraft, filer: Car
 pub(in crate::tests) fn texas_interest_admission(withholding: i64) -> FederalDraft {
     let mut draft = complete(FederalStatus::Joint);
     let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.withholding = withholding;
+    drop(data);
+    // The whole-center fixture explicitly answers the unrelated accepted W-2
+    // so the interest row remains the only missing management answer.
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[0].refund_management = Some(RefundManagement::Taxpayer);
     let mut allocation = InjuredSpouseAllocation::defaults();
     allocation.community =
         InjuredCommunityFacts::Yes { states: vec![7], debt_facts: InjuredDebtFacts::NotApplicable };
-    draft.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     draft.injured_spouse = Some(allocation);
     draft
 }

@@ -84,7 +84,7 @@ fn unit17_d2_creative_end_preserves_schedule_and_current_proceeds_without_retaxi
             selling_expenses: 0,
             payment: crate::SalePayment::InFull,
             buyer: crate::Buyer::Unrelated,
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
         },
     });
     let sold = cost.recovery(2026, &[]).unwrap();
@@ -152,9 +152,14 @@ fn unit17_k_research_saves_reopens_and_reduces_business_profit_once() {
     let mut again = restart(session.draft.clone());
     let reopened = reopened_businesses(again.draft.clone());
     let request = save_topic(
-        &again.draft,
+        &mut again,
         TaxSection::SelfEmployment,
-        reopened.into_iter().map(|page| document(id, IncomeDocument::Business(page))).collect(),
+        reopened
+            .into_iter()
+            .map(|page| {
+                document(id, IncomeSource::Record { value: crate::IncomeRecord::Business(page) })
+            })
+            .collect(),
     );
     accepted(&send(&mut again, request));
     assert_eq!(again.draft, session.draft);
@@ -162,12 +167,26 @@ fn unit17_k_research_saves_reopens_and_reduces_business_profit_once() {
 
 #[test]
 fn unit17_d2_creative_sale_is_property_ordinary_income_and_not_se_receipts() {
+    use crate::tests::cross::interview::{assert_round_trip, catalog_preview_document};
+
     let mut session = restart(empty_return(FederalStatus::Single));
     let mut page = business(10_000_000);
     let mut item = creative(1_800_000, 20240701);
     item.prior_allowed = SourceCents::Reported { amount: 180_000 };
     item.ended = Some(AmortizationEnd { date: 20260701, how: DisposalKind::Scrapped });
     page.more.other_amortization.push(item.into());
+    let before = session.draft.clone();
+    let preview = catalog_preview_document(IncomeSource::Record {
+        value: crate::IncomeRecord::Business(page.clone()),
+    });
+    // Business previews deliberately have no standalone amount: profit depends
+    // on the whole return. Save below establishes the actual deduction and gain.
+    assert!(matches!(
+        send(&mut session, preview),
+        Reply::Response(P::IncomePreview { preview: None, investment_caps: None })
+    ));
+    assert_eq!(session.draft, before);
+    assert!(!session.dirty);
     accepted(&save_businesses(&mut session, vec![page.clone()]));
     let (id, _) = stored_business(&session);
     let abandoned = supported(&session.draft);
@@ -176,12 +195,15 @@ fn unit17_d2_creative_sale_is_property_ordinary_income_and_not_se_receipts() {
         selling_expenses: 0,
         payment: SalePayment::InFull,
         buyer: Buyer::Unrelated,
-        livestock: Livestock::No,
+        livestock: crate::SoldLivestock::No,
     };
     let request = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::SelfEmployment,
-        vec![document(id, IncomeDocument::Business(page.clone()))],
+        vec![document(
+            id,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page.clone()) },
+        )],
     );
     accepted(&send(&mut session, request));
     let sold = supported(&session.draft);
@@ -196,7 +218,7 @@ fn unit17_d2_creative_sale_is_property_ordinary_income_and_not_se_receipts() {
             .sum::<i64>(),
         500_000
     );
-    assert_eq!(reopened_businesses(session.draft), vec![page]);
+    assert_round_trip(&mut session, &[page]);
 }
 
 #[test]
@@ -292,7 +314,10 @@ fn noncreative_disposals_reuse_actual_property_recapture_and_preserve_se_profit(
         assert!(sale.part_two);
         assert_eq!(sale.value.section1231, 0);
         assert_eq!(sale.value.ordinary, sale.realized - sale.cost + sale.recovery);
-        let result = if data.other_amortization[0].needs_amt_source(data.material_participation) {
+        let result = if data.other_amortization[0].needs_amt_source(
+            data.material_participation.individual(2026, false)
+                == crate::participation::Participation::Yes,
+        ) {
             unsupported(&draft, "Income:");
             let mut result = FederalResult::empty(0);
             crate::asset_sale::report_amortized_sale(
@@ -523,27 +548,6 @@ fn long_preference_and_timber_sales_keep_real_recapture_classes() {
 }
 
 #[test]
-fn unrepresentable_other_costs_reject_save_at_the_actual_source_list() {
-    let mut session = restart(empty_return(FederalStatus::Single));
-    let mut page = business(10_000_000);
-    let source = cohort(
-        i64::MAX,
-        20260101,
-        20260101,
-        OtherAmortizationKind::Preference { election: PreferenceWriteoff::Drilling60 },
-    );
-    page.more.other_amortization = vec![source.into(); 6];
-    // Six valid source amounts have no arbitrary count or amount cap. Their
-    // native deduction sum does not fit Cents and must be rejected atomically.
-    let original = session.draft.clone();
-    let reply = save_businesses(&mut session, vec![page]);
-    let Reply::Response(P::Problem { field, .. }) = &reply else { panic!("{reply:?}") };
-    assert_eq!(field.as_deref(), Some("[documents/documents/0/document/more/other_amortization]"));
-    crate::tests::support::assert::rejected_with(reply, "AMORTIZATION_TOTAL_UNREPRESENTABLE");
-    assert_eq!(session.draft, original);
-}
-
-#[test]
 fn research_ten_year_election_applies_actual_credit_adjustment_without_period_filler() {
     let source = cohort(
         1_200_000,
@@ -578,13 +582,21 @@ fn separate_amt_sources_remain_unavailable_without_replacing_regular_recovery() 
     supported(&draft);
     for entry in &mut draft.income {
         if let FederalIncome::Business { data } = &mut entry.income {
-            data.material_participation = false;
+            data.material_participation =
+                crate::ParticipationFacts { hours: 0, test: crate::ParticipationTest::None };
         }
     }
-    // The existing supported-scope owner excludes nonparticipating businesses
-    // before federal recovery/AMT reporting; it does not assign zero AMT cost.
-    let excluded = supported(&draft);
-    assert!(noted(&excluded, "WARN_BUSINESS_LEFT_OUT"));
+    // 2026-10-24: current passive C is admitted, exposing the actual
+    // missing AMT source. The separate recovery is still never zeroed.
+    let excluded = estimate(&draft);
+    assert_eq!(excluded.state, ResultState::Unsupported);
+    assert!(
+        excluded
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_AMORTIZATION_AMT_SOURCE_NEEDED")
+    );
+    assert!(excluded.tax.is_none());
     let (id, data) = cohort_business(&draft);
     assert!(data.other_amortization[0].needs_amt_source(false));
     assert!(

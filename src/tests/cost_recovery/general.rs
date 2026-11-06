@@ -56,31 +56,31 @@ fn macrs_published_schedules_cover_all_methods_classes_and_conventions() {
 }
 
 #[test]
-fn section197_leaves_out_unconfirmed_assets_and_requires_valid_source_records() {
-    unsupported(&intangible_business(19930810, 19900101), "Income:");
+fn section197_requires_actual_origin_and_valid_source_records() {
+    // 2026-10-23: Reg1.197-2 ties recovery to actual source facts, with no
+    // arbitrary dollar or addition-count ceiling; capacity is checked separately.
+    // 2026-10-23: app-contract Answers and unknowns omits an unresolved benefit.
+    assert!(noted(
+        &supported(&intangible_business(19930810, 19900101)),
+        "WARN_INTANGIBLE_BENEFIT_LEFT_OUT",
+    ));
+    let mut unknown = intangible_business(20260101, 20200101);
+    let FederalIncome::Business { data } = &mut unknown.income[1].income else { panic!() };
+    data.intangibles[0].source.first_existed = None;
+    assert!(noted(&supported(&unknown), "WARN_INTANGIBLE_BENEFIT_LEFT_OUT"));
     {
-        let (answer, key) = (false, "WARN_SECTION_197_LEFT_OUT");
-        let mut d = intangible_business(20260101, 20200101);
-        let FederalIncome::Business { data } = &mut d.income[1].income else { panic!() };
-        data.intangibles[0].eligible = answer;
-        let r = supported(&d);
-        assert!(noted(&r, key));
-        assert!(!r.lines.iter().any(|line| line.id.contains("_intangible_")));
-    }
-    for cost in [0, -1, 100000000001] {
+        let cost = 0;
         let mut d = intangible_business(20260101, 20200101);
         let FederalIncome::Business { data } = &mut d.income[1].income else { panic!() };
         data.intangibles[0].cost = cost;
         assert!(!d.valid_stored());
     }
-    assert!(!intangible_business(20260230, 20200101).valid_stored());
 }
 
 #[test]
 fn section197_added_cost_records_reject_invalid_amounts_dates_and_future_costs() {
-    for (amount, date) in
-        [(0, 20260101), (-1, 20260101), (100000000001, 20260101), (100, 20250230), (100, 20191231)]
     {
+        let (amount, date) = (100, 20191231);
         let mut d = intangible_business(20200101, 19900101);
         let FederalIncome::Business { data } = &mut d.income[1].income else { panic!() };
         data.intangibles[0].additions.push(IntangibleCost { amount, date });

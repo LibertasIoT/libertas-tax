@@ -48,19 +48,23 @@ pub struct ScorpLossYear {
     pub year: u32,
     /// Original suspended loss
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub original: i64,
     /// Original suspended QBI portion
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub qualified: i64,
     /// Total loss remaining at the end of 2025
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub remaining: i64,
     /// QBI portion remaining at the end of 2025
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub remaining_qualified: i64,
 }
 
@@ -73,7 +77,8 @@ pub struct ScorpLossQbi {
     /// QBI portion of this year's loss in this tax character
     /// From the corporation's section 199A statement, as a positive amount, before this year's shareholder SSTB income limit. The App applies that limit. Zero when this character has no current loss. Do not include prior suspended losses or employee wages.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub current: i64,
     /// Retained basis-loss history
@@ -624,17 +629,20 @@ pub struct ScorpQbiStatement {
     /// Qualified ordinary business income before shareholder loss carryforwards
     /// Positive ordinary income from the section 199A statement. Current ordinary losses use the separate loss-character records.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub income: i64,
     /// Allocated W-2 wages for the QBI wage limit
     /// Use the entity's section 199A allocation, not wages paid to you on your employee W-2.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub wages: i64,
     /// Allocated unadjusted basis of qualified property
     /// UBIA from the section 199A statement, not stock basis or depreciated asset value.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub property: i64,
     /// Specified service trade or business
     /// Check the Section 199A statement and the actual trade or business activities; ask the issuer if its SSTB classification is missing.
@@ -642,12 +650,15 @@ pub struct ScorpQbiStatement {
     /// Section 199A dividends
     /// From the statement; already part of the ordinary dividends box.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub reit_dividends: i64,
     /// Qualified PTP items
     /// The statement's qualified publicly traded partnership income or loss.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub ptp_income: i64,
     /// One ordinary business with no additional QBI adjustments
@@ -1553,7 +1564,8 @@ pub struct ScorpPropertyQbi {
     /// Potential QBI portion of current net section 1231 gain
     /// From the section 199A statement, before current-year SSTB limits and taxpayer-level capital/ordinary characterization. Zero for a current net loss or no section 1231 item. Do not add this amount to ordinary business QBI income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub gain: i64,
     /// Qualified portion of the section 1250 gain component
@@ -1563,7 +1575,8 @@ pub struct ScorpPropertyQbi {
     /// [SetText]
     /// The documented qualified section 1250 portion is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub qualified_1250: Option<i64>,
     /// Section 1231 loss character and separate suspension histories
     /// Reconcile to section 1231 balances, never ordinary or portfolio losses. The current QBI loss portion comes from the section 199A statement and precedes the current-year SSTB restriction; historical portions come from the QBI loss-tracking records kept with your 2025 return and already reflect original-year eligibility.

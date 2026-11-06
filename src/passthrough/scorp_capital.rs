@@ -23,57 +23,71 @@ fn capital_note(key: &str, id: i64, cents: &[i64]) -> crate::federal_model::Revi
 pub struct ScorpCapital {
     /// Box 7 net short-term capital gain or loss
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub short: i64,
     /// Box 8a net long-term capital gain or loss
     /// Total including the separately identified collectible and portfolio section 1250 components.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub long: i64,
     /// Box 8b collectibles gain or loss included in box 8a
     /// Enter the signed component, not additional income. It may exceed the net box 8a gain when other long-term assets lost money.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub collectibles: i64,
     /// Box 8c portfolio gain from partnership-interest sales
     /// From the attached source statement: unrecaptured section 1250 gain included in box 8a, reported on line 10 of its worksheet. Exclude the corporation's business-asset gains; a bare box 8c amount is not enough to identify this category.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub unrecaptured_partnership: i64,
     /// Box 8c portfolio gain from estates, trusts, mutual funds or REITs
     /// From the attached source statement: unrecaptured section 1250 gain included in box 8a, reported on line 11 of its worksheet. Not additional income. Do not repeat either component as another income document.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub unrecaptured_fund: i64,
     /// Prior short-term loss suspended by shareholder basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_short: i64,
     /// Prior total long-term loss suspended by shareholder basis
     /// Include the separately identified collectible portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_long: i64,
     /// Collectible portion of prior basis-suspended long-term loss
     /// Included in the preceding total, not an additional loss.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub basis_collectibles: i64,
     /// Prior short-term loss suspended only by at-risk limits
     /// Already passed basis; do not include it in basis-suspended losses.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk_short: i64,
     /// Prior total long-term loss suspended only by at-risk limits
     /// Include the separately identified collectible portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub risk_long: i64,
     /// Collectible portion of prior at-risk-suspended long-term loss
     /// Included in the preceding total and already passed basis limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub risk_collectibles: i64,
 }
@@ -170,6 +184,7 @@ impl ScorpK1 {
     }
     // A deceased shareholder's suspended losses are not carried onto the final
     // return (Pub. 559 "Passive activity rules" and S corporation losses).
+    #[cfg(test)]
     pub(crate) fn drop_suspended_history(&mut self) {
         self.prior_loss = 0;
         self.risk.prior_loss = 0;
@@ -191,6 +206,12 @@ impl ScorpK1 {
             v.risk_loss = 0;
             v.passive_loss = 0;
         }
+    }
+    pub(crate) fn capital_gains_by_term(&self) -> [i64; 2] {
+        self.capital.as_ref().map_or([0; 2], |capital| {
+            let gains = capital.gains();
+            [gains[0], gains[1] + gains[2]]
+        })
     }
     pub(crate) fn capital_gains(&self) -> i64 {
         self.capital.as_ref().map_or(0, |v| v.gains().iter().sum())

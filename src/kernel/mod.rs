@@ -1,5 +1,6 @@
 pub(crate) mod associations;
 pub(crate) mod attribution;
+pub(crate) mod calendar;
 pub(crate) mod carry;
 pub(crate) mod cost_recovery;
 pub(crate) mod explanation_rows;
@@ -13,6 +14,7 @@ pub(crate) mod lines;
 pub(crate) mod loss_limits;
 #[cfg(test)]
 mod loss_limits_tests;
+pub(crate) mod natural;
 pub(crate) mod phase;
 pub(crate) mod ratio;
 pub(crate) mod recapture;

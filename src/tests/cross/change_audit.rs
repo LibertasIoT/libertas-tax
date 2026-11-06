@@ -1,18 +1,23 @@
-// Change audit (agent/change-audit, 2026-09-28): what a changed first page
-// (SaveSetup), filer/spouse page, people page or checklist does to later
-// saved answers, and where Next goes afterwards. The audit's defects are
-// fixed by walk-owned data (agent/walk-owned, interview/walk.rs): every
-// save prunes what its walk no longer asks, with the running estimate's
-// warning first, and reopens a finished page its own save now refuses.
-// The two generated properties close the file.
+// Accepted changes prune answers their walk no longer owns, reopen newly
+// required pages, and retain document-center source facts.
 use super::*;
 use crate::interview::{filer, return_setup};
 use crate::tests::cross::interview::{
     PAGE_PEOPLE, PAGE_REVIEW, PAGE_SETUP, adult, back, dependent_record, from_review, go_to,
-    income_ticks, opened, reopened_people, reviewing, row, save_checklist, save_children,
-    save_setup, save_spouse, save_you,
+    opened, reopened_people, reviewing, row, save_checklist, save_children, save_setup,
+    save_spouse, save_you,
 };
 use alloc::string::String;
+
+// Establish the accepted source inventory and its ordinary visit before
+// changing an already answered return. Native record facts are admitted first.
+fn source_baseline(d: FederalDraft) -> FederalDraft {
+    let mut session = Interview::new(TEST_USER, d);
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let request = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    accepted(&send(&mut session, request));
+    session.draft
+}
 
 fn setup_value(filing: Filing) -> ReturnSetup {
     ReturnSetup { filing }
@@ -52,6 +57,8 @@ fn name_of(reply: &Reply) -> String {
 fn walk_to_review(s: &mut Interview, mut reply: Reply) -> Vec<String> {
     let mut walked = Vec::new();
     for _ in 0..64 {
+        // Complete the method selector as a client, preserving supplied sources.
+        reply = crate::tests::support::client::answer_no_estimates(reply);
         if matches!(reply, Reply::Response(P::Review { .. })) {
             return walked;
         }
@@ -61,30 +68,10 @@ fn walk_to_review(s: &mut Interview, mut reply: Reply) -> Vec<String> {
             Reply::Response(hub @ P::Hub { .. }) => crate::tests::cross::interview::go_on(&hub),
             // Every return asks the people page once (gate fixes batch A).
             Reply::Response(P::BeginChildren { .. }) => save_children(&s.draft, vec![]),
-            Reply::Response(P::BeginSituations {
-                topic,
-                allowed_situations,
-                cookie,
-                revision,
-                page,
-                previous,
-                review,
-                estimate,
-                progress,
-            }) => P::SaveSituations {
-                user: TEST_USER,
-                topic,
-                allowed_situations,
-                cookie,
-                revision,
-                page,
-                previous,
-                review,
-                estimate,
-                warnings: vec![],
-                progress,
-                value: Situations { situations: vec![] },
-            },
+            // The unsaved income without a form page, answered No twice.
+            begin @ Reply::Response(P::BeginIncomeWithoutForm { .. }) => {
+                crate::tests::cross::interview::without_form_editor(begin)
+            }
             other => panic!("the walk stopped at {other:?}"),
         };
         reply = send(s, request);
@@ -114,10 +101,7 @@ fn joint_with_spouse_answers() -> FederalDraft {
     d
 }
 fn separate_setup() -> ReturnSetup {
-    setup_value(Filing::MarriedSeparately {
-        spouse_boxes: SeparateSpouseBoxes::NoneOfThese,
-        community_property: CommunityProperty::No,
-    })
+    setup_value(Filing::MarriedSeparately)
 }
 fn head_setup() -> ReturnSetup {
     setup_value(Filing::HeadOfHousehold {
@@ -150,11 +134,12 @@ fn joint_with_every_spouse_answer() -> FederalDraft {
     add(
         &mut d,
         FederalIncomeEntry {
+            printed: None,
             refund_management: None,
             state_source: Default::default(),
             id,
             label: "Spouse Bank".into(),
-            owner: Owner::Spouse,
+            owner: crate::DocumentOwner::Spouses,
             income: savings_income(400, 0),
             community: CommunityShare::NotNeeded,
         },
@@ -185,6 +170,7 @@ fn joint_with_every_spouse_answer() -> FederalDraft {
         agi: Some(6_000_000),
         spouse_tax: 300_000,
     });
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(InjuredSpouseAllocation {
         injured: Owner::Taxpayer,
         debt: OffsetDebt::ChildSupport,
@@ -214,8 +200,8 @@ fn assert_warning(warnings: &[Message], key: &str, args: Vec<MessageArg>) {
 #[test]
 fn joint_to_single_erases_every_spouse_answer_named_first() {
     // Joint -> Single on the first pass (review=false): the running estimate
-    // names everything the save removes; the save is accepted, your page
-    // opens next, and every spouse answer is gone.
+    // names the record and fact answers the save removes; the save is
+    // accepted and your page opens next. Source documents remain unchanged.
     let d = joint_with_every_spouse_answer();
     let mut s = Interview::new(TEST_USER, d.clone());
     let warnings = setup_warnings(&mut s, setup_value(Filing::Single));
@@ -230,23 +216,32 @@ fn joint_to_single_erases_every_spouse_answer_named_first() {
     ] {
         assert_warning(&warnings, key, vec![]);
     }
-    for (kind, name) in [
-        ("SAVING_KIND_W2_ONE", MessageArg::Text("Employer 2".into())),
-        ("SAVING_KIND_1099_INT_ONE", MessageArg::Text("Spouse Bank".into())),
-        ("SAVING_KIND_HSA_ONE", MessageArg::Resource("SAVING_OWNER_SPOUSE".into())),
-    ] {
-        assert_warning(
-            &warnings,
+    assert_warning(
+        &warnings,
+        "SAVING_REMOVES_ONE_NAMED",
+        vec![
+            MessageArg::Count(1),
+            MessageArg::Resource("SAVING_KIND_HSA_ONE".into()),
+            MessageArg::Resource("SAVING_OWNER_SPOUSE".into()),
+        ],
+    );
+    for (kind, name) in
+        [("SAVING_KIND_W2_ONE", "Employer 2"), ("SAVING_KIND_1099_INT_ONE", "Spouse Bank")]
+    {
+        assert!(!warnings.contains(&Message::new(
             "SAVING_REMOVES_ONE_NAMED",
-            vec![MessageArg::Count(1), MessageArg::Resource(kind.into()), name],
-        );
+            vec![
+                MessageArg::Count(1),
+                MessageArg::Resource(kind.into()),
+                MessageArg::Text(name.into())
+            ],
+        )));
     }
     let reply = send(&mut s, save_setup(&d, setup_value(Filing::Single)));
     assert_eq!(opened(&reply).0, "you");
     let kept = &s.draft;
     assert!(kept.people.as_ref().unwrap().spouse.is_none());
-    assert!(kept.income.iter().all(|e| e.owner != Owner::Spouse));
-    assert_eq!(kept.income.len(), 1);
+    assert_eq!(kept.income, d.income);
     let a = kept.adjustments.as_ref().unwrap();
     assert!(a.hsa.iter().all(|h| h.owner == Owner::Taxpayer) && a.hsa.len() == 1);
     assert_eq!(
@@ -264,12 +259,12 @@ fn joint_to_single_erases_every_spouse_answer_named_first() {
     assert_eq!(saver.spouse_contributions, 0);
     let pay = kept.payments.as_ref().unwrap();
     assert!(pay.prior_year.is_none() && pay.nothing_entered());
-    assert!(kept.situations.is_empty() && kept.injured_spouse.is_none());
-    // Nothing the single return does not ask is stored.
+    assert!(kept.often_missed.unprepared.is_empty() && kept.injured_spouse.is_none());
+    // Pruning is stable, including retained source documents.
     let mut again = kept.clone();
     assert_eq!(crate::interview::prune(&mut again), Default::default());
     assert_eq!(again, *kept);
-    assert!(!issues(kept).iter().any(|i| i.contains("spouse")), "{:?}", issues(kept));
+    assert!(has_issue(kept, "Spouse-owned income requires a joint return"), "{:?}", issues(kept));
 }
 
 #[test]
@@ -308,35 +303,94 @@ fn removing_every_person_from_a_head_of_household_return_is_an_end_of_walk_item(
 // ---------------------------------------------------------------------------
 // Concern 2: later answers that depend on the earlier one.
 
-// Erased correctly: deleting a person on the people page drops the
-// education rows of that student and the care claim with no care left.
+// Household removal retains the physical education source for correction;
+// deleting it explicitly must leave independent care facts unchanged.
 #[test]
 fn deleting_a_person_erases_their_education_rows_and_retains_independent_care_facts() {
     let mut d = head_with_child();
     let child = d.dependents[0].id;
     let c = d.credits.as_mut().unwrap();
     let student = child;
-    c.education = vec![FederalEducation {
-        student,
-        method: EducationChoice::LifetimeLearning,
-        expenses: education_expenses(300_000),
-    }];
+    set_education(
+        c,
+        vec![{
+            let mut pair = native_education(
+                student,
+                education_expenses(300_000),
+                EducationChoice::LifetimeLearning,
+            );
+
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = true;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
+        }],
+    );
     c.care = FederalCare {
         prior_year: Some(prior_care_facts()),
         unpaid_return_year_care: Some(25_000),
         ..FederalCare::default()
     };
-    d.dependents[0].care = DependentCare::Yes { care_expenses: 300_000 };
+    d.dependents[0].care = Some(DependentCare::Yes { care_expenses: 300_000 });
     document_care(&mut d);
     let care = d.credits.as_ref().unwrap().care.clone();
     let mut s = Interview::new(TEST_USER, d.clone());
     let mut shown = reopened_people(&mut s);
     assert_eq!(shown.len(), 1);
     shown[0] = row("Ben", "Sample", 20190101);
-    accepted(&send(&mut s, save_children(&d, shown)));
+    let before = s.draft.clone();
+    let reply = send(&mut s, save_children(&before, shown));
+    accepted(&reply);
+    assert!(s.draft.dependents().iter().all(|person| person.id != child));
+    assert!(s.draft.valid_stored());
+    let incomplete = estimate(&s.draft);
+    assert_eq!(incomplete.state, ResultState::Incomplete);
+    assert_eq!(incomplete.tax, None);
+    assert!(remaining(&mut s).iter().any(|item| item.starts_with("Document center")));
+    let c = s.draft.credits.as_ref().unwrap();
+    assert_eq!(c.education, d.credits.as_ref().unwrap().education);
+    assert_eq!(c.students, d.credits.as_ref().unwrap().students);
+    assert_eq!(c.care, care);
+    let request = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    // Unresolved source ownership is accepted and reviewed in the Document center.
+    let reply = send(&mut s, request);
+    let Reply::Response(P::Review { remaining_items, .. }) = reply else {
+        panic!("expected the pending-owner review, got {reply:?}")
+    };
+    assert!(remaining_items.iter().any(|item| item.section == TaxSection::Documents));
+    assert!(s.draft.valid_stored());
+    let c = s.draft.credits.as_ref().unwrap();
+    assert_eq!(c.education.len(), 1);
+    assert_ne!(c.education[0].id, 0);
+    assert_eq!(c.education[0].form, d.credits.as_ref().unwrap().education[0].form);
+    assert_eq!(c.education[0].student, 0);
+    assert_eq!(c.education[0].assigned, crate::DocumentRecipient::Unknown);
+    assert_eq!(c.education[0].owner_source, None);
+    assert!(c.students.is_empty());
+    assert_eq!(c.care, care);
+    let pending = estimate(&s.draft);
+    assert_eq!(pending.state, ResultState::Incomplete);
+    assert_eq!(pending.tax, None);
+    let issue = pending
+        .issues
+        .iter()
+        .find(|issue| issue.display.key == "ISSUE_WHOSE_DOCUMENT_IS_THIS")
+        .expect("the retained tuition statement needs a student");
+    assert_eq!(
+        crate::interview::issue_pages(&s.draft, &issue.context, Some(&issue.display.key)),
+        vec![TaxSection::Documents]
+    );
+    let mut request = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else {
+        panic!("expected the document center, got {request:?}")
+    };
+    documents.common.education.students.clear();
+    accepted(&send(&mut s, request));
     assert!(s.draft.dependents().iter().all(|p| p.id != child));
     let c = s.draft.credits.as_ref().unwrap();
     assert!(c.education.is_empty());
+    assert!(c.students.is_empty());
     assert_eq!(c.care, care);
     assert_eq!(value(&supported(&s.draft), "prior_year_care_credit"), 132);
 }
@@ -358,8 +412,8 @@ fn household_status_without_a_person_is_kept_and_refused_by_the_estimate() {
         supported(&d);
         let mut s = Interview::new(TEST_USER, d.clone());
         let reply = send(&mut s, save_children(&d, vec![]));
-        // Next follows the page order (review=false): the checklist.
-        assert_eq!(opened(&reply).0, "checklist");
+        // Next follows the page order (review=false): the document center.
+        assert_eq!(opened(&reply).0, "documents");
         assert_eq!(s.draft.setup.as_ref().unwrap().status, status);
         assert!(s.draft.dependents().is_empty());
         assert_eq!(estimate(&s.draft).state, ResultState::Unsupported);
@@ -409,16 +463,13 @@ fn spouse_amounts_are_erased_leaving_joint() {
     assert!(!has_issue(&s.draft, "Spouse educator expenses require a joint return."));
 }
 
-// Leaving married filing separately with "my spouse itemizes": the route
-// stays stored but the deductions page's own save now refuses it (the route
-// is outside allowed_routes), so the change reopens the page with its
-// answers (walk-owned data, level 2) and the walk asks it next. Choosing
-// the standard deduction there takes the single return's $16,100.
+// A separately filing spouse's itemizing answer requires itemization without
+// creating a voluntary election. Filing-status corrections retain other facts.
 fn spouse_itemizes_return() -> FederalDraft {
     let mut d = complete(FederalStatus::Separate);
-    d.deductions.as_mut().unwrap().spouse_itemizes = true;
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized {
-        facts: ItemizedExpenses {
+    d.deductions.as_mut().unwrap().spouse_itemizes = Some(true);
+    {
+        d.deductions.as_mut().unwrap().itemized = ItemizedExpenses {
             income_tax_owners: None,
             investment_property_tax_owners: None,
             investment_income_tax: crate::InvestmentIncomeTax::Unresolved,
@@ -429,78 +480,30 @@ fn spouse_itemizes_return() -> FederalDraft {
             personal_property_taxes: 0,
             personal_tax: PersonalTaxElection::None,
             investment_property_taxes: 0,
-        },
+        };
+        d.deductions.as_mut().unwrap().itemize_override = None;
     };
     d.finished_sections.push(TaxSection::Itemized);
+    d.credits.as_mut().unwrap().care.filing =
+        crate::CareFilingStatus::Separate { spouse_earned_income: None };
     crate::interview::with_ticks(d)
 }
+// 2026-11-02: leaving separate filing removes only its spouse fact.
 #[test]
-fn leaving_separate_reopens_the_spouse_itemizes_route() {
-    let d = spouse_itemizes_return();
-    supported(&d);
+fn leaving_separate_clears_spouse_itemizing_and_preserves_deduction_facts() {
+    let d = source_baseline(spouse_itemizes_return());
     let mut s = Interview::new(TEST_USER, d.clone());
-    let reply = from_review(&mut s, TaxSection::Setup);
-    let (_, request) = resend_setup(reply, setup_value(Filing::Single));
-    let warnings = setup_warnings(&mut s, setup_value(Filing::Single));
-    assert_eq!(
-        warnings,
-        vec![Message::new(
-            "SAVING_REOPENS",
-            vec![MessageArg::Number(TaxSection::Deductions as i64)],
-        )]
-    );
-    // Next resumes at the reopened page, its answers kept.
-    let reply = send(&mut s, request);
-    let Reply::Edit(P::SaveDeductions { value: shown_value, allowed_routes, review, .. }) = &reply
-    else {
-        panic!("expected the deductions page, got {reply:?}")
-    };
-    assert_eq!(shown_value.route, DeductionRoute::SpouseItemizes);
-    assert!(!allowed_routes.contains(&(DeductionRoute::SpouseItemizes as i32)));
-    assert!(!review);
-    assert!(s.draft.deductions.as_ref().unwrap().spouse_itemizes);
-    // The page's own rules ask for a route; Standard stores it.
-    let Reply::Edit(P::SaveDeductions {
-        user,
-        cookie,
-        revision,
-        page,
-        previous,
-        review,
-        estimate,
-        warnings: _,
-        progress,
-        allowed_routes,
-        allowed_repayment,
-        document_facts,
-        home_sites,
-        value: page_value,
-    }) = reply
-    else {
-        unreachable!()
-    };
-    let reply = send(
-        &mut s,
-        P::SaveDeductions {
-            user,
-            cookie,
-            revision,
-            page,
-            previous,
-            review,
-            estimate,
-            warnings: vec![],
-            progress,
-            allowed_routes,
-            allowed_repayment,
-            document_facts,
-            home_sites,
-            value: Deductions { route: DeductionRoute::Standard, ..page_value },
-        },
-    );
+    let reply = send(&mut s, reviewing(save_setup(&d, setup_value(Filing::Single))));
     assert_eq!(opened(&reply).0, "review");
+    assert_eq!(s.draft.deductions.as_ref().unwrap().spouse_itemizes, None);
+    assert_eq!(s.draft.deductions.as_ref().unwrap().itemize_override, None);
+    assert_eq!(
+        s.draft.deductions.as_ref().unwrap().itemized,
+        d.deductions.as_ref().unwrap().itemized
+    );
+    assert_eq!(s.draft.income, d.income);
     assert_eq!(value(&supported(&s.draft), "deduction"), 16_100);
-    assert!(!s.draft.deductions.as_ref().unwrap().spouse_itemizes);
+    assert_eq!(s.draft.credits.as_ref().unwrap().care.filing, crate::CareFilingStatus::Other);
 }
 
 // A union change that leaves a later page valid does not reopen it:
@@ -509,17 +512,26 @@ fn leaving_separate_reopens_the_spouse_itemizes_route() {
 #[test]
 fn a_union_change_that_keeps_a_later_page_valid_does_not_reopen_it() {
     let mut d = spouse_itemizes_return();
-    d.deductions.as_mut().unwrap().spouse_itemizes = false;
+    d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    d.deductions.as_mut().unwrap().spouse_itemizes = Some(false);
+    let d = source_baseline(d);
     let mut s = Interview::new(TEST_USER, d.clone());
     let warnings = setup_warnings(&mut s, setup_value(Filing::Single));
-    assert!(warnings.is_empty(), "{warnings:?}");
+    // The accepted separate-return care context is reset; deductions remain valid.
+    assert_eq!(
+        d.credits.as_ref().unwrap().care.filing,
+        crate::CareFilingStatus::Separate { spouse_earned_income: None },
+    );
+    assert_eq!(warnings, vec![Message::new("SAVING_REMOVES_CARE_SOURCE_ANSWERS", vec![])]);
     let reply = send(&mut s, reviewing(save_setup(&d, setup_value(Filing::Single))));
     assert_eq!(opened(&reply).0, "review");
+    assert_eq!(s.draft.credits.as_ref().unwrap().care.filing, crate::CareFilingStatus::Other);
+    assert_eq!(s.draft.income, d.income);
     assert!(s.draft.finished_sections.contains(&TaxSection::Deductions));
-    assert!(matches!(
-        s.draft.deductions.as_ref().unwrap().choice,
-        DeductionSelection::Itemized { .. }
-    ));
+    assert_eq!(
+        s.draft.deductions.as_ref().unwrap().itemize_override,
+        Some(ItemizeOverride::Itemize)
+    );
 }
 
 // Kept but harmless: the Form 3800 "spouse has no business credit" answer
@@ -544,12 +556,11 @@ fn separate_only_business_credit_answer_is_kept_but_ignored() {
     assert!(source.contains("status == FederalStatus::Separate && !spouse_without_credits"));
 }
 
-// Community property (married filing separately only). SaveSetup can never
-// store a community-property scope (it refuses any but No), so only a
-// return stored another way carries one. An unchanged Next on page 1 is
+// Community property (married filing separately only). It is asked on the
+// people page, not by SaveSetup. An unchanged Next on page 1 is
 // navigation: page 1 as it opened is accepted whatever it holds. Leaving
-// separate resets the scope to No and erases the spouse-owned W-2s, which
-// only the joint return's owner list allows.
+// separate resets the scope to unanswered. Source documents retain their owners
+// and facts, and an incompatible owner becomes a review issue.
 #[test]
 fn stored_community_property_return_passes_page_one_unchanged() {
     let d = community_w2_draft(4_000_000, 6_000_000, 400_000, 600_000);
@@ -562,9 +573,9 @@ fn stored_community_property_return_passes_page_one_unchanged() {
     assert!(!s.dirty);
     let reply = send(&mut s, save_setup(&d, setup_value(Filing::Single)));
     assert_eq!(opened(&reply).0, "you");
-    assert_eq!(s.draft.setup.as_ref().unwrap().community_property, CommunityProperty::No);
-    assert!(s.draft.income.iter().all(|e| e.owner != Owner::Spouse));
-    assert!(!has_issue(&s.draft, "Spouse-owned income requires a joint return"));
+    assert_eq!(s.draft.setup.as_ref().unwrap().community_property, CommunityProperty::NotAnswered);
+    assert_eq!(s.draft.income, d.income);
+    assert!(has_issue(&s.draft, "Spouse-owned income requires a joint return"));
 }
 
 // Estimated payments entered while filing jointly are the couple's
@@ -574,36 +585,43 @@ fn stored_community_property_return_passes_page_one_unchanged() {
 fn joint_estimated_payments() -> FederalDraft {
     let mut d = complete(FederalStatus::Joint);
     let pay = d.payments.as_mut().unwrap();
-    pay.estimated_payments = vec![
-        DatedPayment {
-            payer: crate::PaymentPayer::Joint,
-            refund_property: None,
-            date: 20260415,
-            amount: 400_000,
-        },
-        DatedPayment {
-            payer: crate::PaymentPayer::Joint,
-            refund_property: None,
-            date: 20260615,
-            amount: 400_000,
-        },
-    ];
-    pay.estimated = Some(800_000);
+    pay.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: vec![
+            DatedPayment {
+                payer: crate::PaymentPayer::Joint,
+                refund_property: None,
+                date: 20260415,
+                amount: 400_000,
+            },
+            DatedPayment {
+                payer: crate::PaymentPayer::Joint,
+                refund_property: None,
+                date: 20260615,
+                amount: 400_000,
+            },
+        ],
+    };
+
     crate::interview::with_ticks(d)
 }
 #[test]
 fn joint_estimated_payments_are_asked_again_on_a_separate_return() {
     let d = joint_estimated_payments();
     assert_eq!(return_line(&supported(&d), "26"), 800_000);
+    let d = source_baseline(d);
     let mut s = Interview::new(TEST_USER, d.clone());
     let warnings = setup_warnings(&mut s, separate_setup());
     assert_warning(&warnings, "SAVING_REMOVES_YOUR_SPOUSE", vec![]);
     assert_warning(&warnings, "SAVING_REMOVES_YOUR_FEDERAL_PAYMENTS", vec![]);
     let reply = send(&mut s, reviewing(save_setup(&d, separate_setup())));
-    assert_eq!(opened(&reply).0, "payments");
+    // 2026-10-30: the separate return's community-property step, unanswered,
+    // is the first open step, so the walk asks it first.
+    assert_eq!(opened(&reply).0, "community property");
     let pay = s.draft.payments.as_ref().unwrap();
-    assert!(pay.estimated_payments.is_empty() && pay.estimated == Some(0));
+    assert_eq!(pay.estimated, crate::EstimatedPaymentEntryRecord::None);
     assert!(!s.draft.finished_sections.contains(&TaxSection::Payments));
+    // The separate return's own pages ask the community and spouse facts.
+    answer_separate_pages(&mut s.draft);
     assert_eq!(return_line(&supported(&s.draft), "26"), 0);
 }
 
@@ -613,14 +631,17 @@ fn joint_estimated_payments_are_asked_again_on_a_separate_return() {
 #[test]
 fn single_to_joint_opens_the_spouse_page_then_reasks_in_walk_order() {
     let mut d = complete(FederalStatus::Single);
-    d.payments.as_mut().unwrap().estimated_payments = vec![DatedPayment {
-        payer: crate::PaymentPayer::Joint,
-        refund_property: None,
-        date: 20260415,
-        amount: 300_000,
-    }];
-    d.payments.as_mut().unwrap().estimated = Some(300_000);
+    d.payments.as_mut().unwrap().estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: vec![DatedPayment {
+            payer: crate::PaymentPayer::Joint,
+            refund_property: None,
+            date: 20260415,
+            amount: 300_000,
+        }],
+    };
+
     let d = crate::interview::with_ticks(d);
+    let d = source_baseline(d);
     let mut s = Interview::new(TEST_USER, d.clone());
     let joint = setup_value(Filing::MarriedJointly);
     let warnings = setup_warnings(&mut s, joint.clone());
@@ -631,13 +652,20 @@ fn single_to_joint_opens_the_spouse_page_then_reasks_in_walk_order() {
     );
     let reply = send(&mut s, reviewing(save_setup(&d, joint)));
     assert_eq!(opened(&reply).0, "spouse");
-    assert_eq!(s.draft.payments.as_ref().unwrap().estimated, Some(300_000));
+    assert_eq!(
+        crate::kernel::ratio::exact::rounded(
+            &s.draft.payments.as_ref().unwrap().estimated_source()
+        ),
+        Some(300_000)
+    );
     let request = save_spouse(&s.draft, adult("Robin", "Sample", 19820202));
     let reply = send(&mut s, request);
     let walked = walk_to_review(&mut s, reply);
-    // Next follows the page order: the people page, then the checklist.
+    // Next follows the page order: people, documents, direct income, then checklist.
     assert_eq!(walked.first().map(String::as_str), Some("BeginChildren"));
-    assert_eq!(walked.get(1).map(String::as_str), Some("SaveChecklist"));
+    assert_eq!(walked.get(1).map(String::as_str), Some("SaveDocuments"));
+    assert_eq!(walked.get(2).map(String::as_str), Some("SaveIncomeWithoutForm"));
+    assert_eq!(walked.get(3).map(String::as_str), Some("SaveChecklist"));
     let payments = walked.iter().position(|p| p == "SavePayments").unwrap();
     assert_eq!(payments, walked.len() - 1, "{walked:?}");
     // The payments page saved again records the joint household.
@@ -653,7 +681,7 @@ fn person_fact_changes_are_accepted_and_refused_by_the_estimate() {
     let d = complete(FederalStatus::Joint);
     let mut s = Interview::new(TEST_USER, d.clone());
     let mut spouse = filer(d.people.as_ref().unwrap().spouse.as_ref().unwrap());
-    spouse.more = died_more(20260615);
+    spouse.details.more = died_more(20260615);
     let reply = send(&mut s, save_spouse(&d, spouse));
     assert_eq!(opened(&reply).0, "people");
     assert!(!has_issue(&s.draft, "About your spouse"));
@@ -662,7 +690,7 @@ fn person_fact_changes_are_accepted_and_refused_by_the_estimate() {
     let d = head_with_child();
     let mut s = Interview::new(TEST_USER, d.clone());
     let mut you = filer(&d.people.as_ref().unwrap().taxpayer);
-    you.claimable = Claimable::Possibly {
+    you.details.claimable = Claimable::Possibly {
         another_eitc_child: false,
         dependency: FilerDependency::CanBeClaimed { claimed: true },
         us_home_over_half_year: true,
@@ -753,6 +781,7 @@ fn open_section(d: &FederalDraft, from: i32, section: TaxSection) -> P {
         revision: d.revision,
         from,
         section,
+        reveal_path: None,
     }
 }
 fn single() -> ReturnSetup {
@@ -817,7 +846,7 @@ fn page_one_opened_from_the_review_returns_to_the_review() {
     // a change returns to the review too unless it opened a page (the
     // spouse page for joint). Your page, the people page (asked once on
     // every return) and the checklist are not shown again.
-    let d = complete(FederalStatus::Single);
+    let d = source_baseline(complete(FederalStatus::Single));
     let requests =
         [from_review as fn(&mut Interview, TaxSection) -> Reply, |s: &mut Interview, section| {
             let request = open_section(&s.draft, PAGE_REVIEW, section);
@@ -826,7 +855,8 @@ fn page_one_opened_from_the_review_returns_to_the_review() {
     for open in requests {
         for (value, next) in [
             (single(), "review"),
-            (separate_setup(), "review"),
+            // 2026-10-30: a separate return first asks its community-property step.
+            (separate_setup(), "community property"),
             (head_setup(), "review"),
             (setup_value(Filing::MarriedJointly), "spouse"),
         ] {
@@ -842,78 +872,66 @@ fn page_one_opened_from_the_review_returns_to_the_review() {
 #[test]
 fn page_one_changed_from_the_review_mid_interview_resumes_at_the_first_open_section() {
     // Mid-interview (income not yet continued), page 1 opened from the
-    // review and changed: Next resumes at the first unfinished section (the
-    // Wages walk here), not at your page or the checklist.
+    // review and changed: Next resumes at the first unfinished step, not at
+    // your page or Beyond your documents. 2026-10-30: becoming a separate
+    // return opens its community-property step first; once it is answered,
+    // the return resumes at the self-employment walk.
     let mut s = Interview::new(TEST_USER, FederalDraft::empty("audit-mid".into()));
     let request = save_setup(&s.draft, single());
     send(&mut s, request);
     let request = save_you(&s.draft.clone(), adult("Casey", "Sample", 19900101));
     send(&mut s, request);
     let request = save_children(&s.draft.clone(), vec![]);
-    accepted(&send(&mut s, request));
-    let request = save_checklist(
-        &s.draft,
-        crate::tests::cross::interview::PAGE_CHILDREN,
-        income_ticks(IncomeTopics::WAGES.0),
-    );
+    let reply = send(&mut s, request);
+    let Reply::Edit(request @ P::SaveDocuments { .. }) = reply else {
+        panic!("expected the document center, got {reply:?}")
+    };
+    let reply = send(&mut s, request);
+    let Reply::Response(P::BeginIncomeWithoutForm { .. }) = reply else {
+        panic!("expected income without a form, unanswered")
+    };
+    let mut request = crate::tests::cross::interview::without_form_editor(reply);
+    let P::SaveIncomeWithoutForm { value, .. } = &mut request else { unreachable!() };
+    value.self_work = true;
+    let reply = send(&mut s, request);
+    let request = crate::tests::cross::interview::tick(reply, Checklist::NONE);
     accepted(&send(&mut s, request));
     let reply = from_review(&mut s, TaxSection::Setup);
     let (review, request) = resend_setup(reply, separate_setup());
     assert!(review);
     let next = send(&mut s, request);
-    let name = opened(&next).0;
-    assert_eq!(name, "wages");
+    assert_eq!(opened(&next).0, "community property");
+    let request = crate::tests::cross::interview::answer(next, Filing::MarriedSeparately);
+    accepted(&send(&mut s, request));
+    assert_eq!(opened(&send(&mut s, P::OpenInterview { user: TEST_USER })).0, "self-employment");
 }
 
 // ---------------------------------------------------------------------------
-// Additional scope: unticking a checklist topic that has entries.
+// Additional scope: unchecking a box that has entries.
 
 #[test]
-fn unticking_a_topic_with_entries_removes_them_with_a_warning() {
-    // The W-2s belong to the W-2 tick. Unticking it on the checklist shows
-    // what saving removes in the running estimate; the save is accepted,
-    // the W-2s go and no Problem is sent.
+fn checklist_preserves_business_entries_and_their_canonical_tick() {
     let mut d = complete(FederalStatus::Single);
-    let id = d.next_id;
-    add(&mut d, wage(id, Owner::Taxpayer, 1_000_000, 100_000));
-    let d = crate::interview::with_ticks(d);
+    for name in ["Bakery", "Studio"] {
+        add(&mut d, FederalIncomeEntry { label: name.into(), ..income(cash_business(1_000_000)) });
+    }
+    let d = source_baseline(crate::interview::with_ticks(d));
     let mut s = Interview::new(TEST_USER, d.clone());
     let reply = from_review(&mut s, TaxSection::Checklist);
     let Reply::Edit(P::SaveChecklist { value, .. }) = &reply else {
         panic!("expected the checklist, got {reply:?}")
     };
-    assert_ne!(value.income & IncomeTopics::WAGES.0, 0);
-    let unticked = Checklist { income: value.income & !IncomeTopics::WAGES.0, ..*value };
-    let calculation = send(&mut s, P::EstimateChecklist { user: TEST_USER, value: unticked });
+    assert_eq!(value.activities & ActivityTopics::BUSINESS.0, 0);
+    let calculation = send(&mut s, P::EstimateChecklist { user: TEST_USER, value: *value });
     let Reply::Response(P::RunningEstimate { warnings, .. }) = calculation else {
         panic!("expected a running estimate, got {calculation:?}")
     };
-    let warnings: Vec<_> =
-        warnings.iter().map(|warning| super::status_message(&warning.message)).collect();
-    assert_warning(
-        &warnings,
-        "SAVING_REMOVES_COUNT",
-        vec![
-            MessageArg::Count(2),
-            MessageArg::Resource("SAVING_KIND_W2_ONE".into()),
-            MessageArg::Resource("SAVING_KIND_W2_MANY".into()),
-        ],
-    );
-    for name in ["Employer 1", "Employer 2"] {
-        assert_warning(
-            &warnings,
-            "SAVING_REMOVES_NAMED",
-            vec![MessageArg::Resource("SAVING_KIND_W2_ONE".into()), MessageArg::Text(name.into())],
-        );
-    }
-    let request = crate::tests::cross::interview::tick(reply, unticked);
-    let reply = send(&mut s, request);
-    accepted(&reply);
-    assert!(s.draft.income.is_empty());
-    assert_eq!(s.draft.checklist.income & IncomeTopics::WAGES.0, 0);
-    assert_eq!(s.draft.revision, d.revision + 1);
-    // Nothing on the checklist or anywhere names the entries any longer.
-    assert!(!include_str!("../../lib.rs").contains("CHECKLIST_TOPIC_HAS_ENTRIES"));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let request = crate::tests::cross::interview::tick(reply, Checklist::NONE);
+    accepted(&send(&mut s, request));
+    assert_eq!(s.draft.income, d.income);
+    assert_ne!(s.draft.checklist.activities & ActivityTopics::BUSINESS.0, 0);
+    assert_eq!(s.draft.revision, d.revision);
 }
 
 // ---------------------------------------------------------------------------
@@ -924,7 +942,14 @@ fn unticking_a_topic_with_entries_removes_them_with_a_warning() {
 #[test]
 fn unchanged_next_on_any_page_keeps_the_revision() {
     // Every page answered (a planned topic's first save records it visited).
-    let d = rich(FederalStatus::Joint, true, SpouseFacts::Plain, false);
+    let mut d = rich(FederalStatus::Joint, true, SpouseFacts::Plain, false);
+    // A topic the return's facts make apply is recorded visited by its first
+    // save (G-47), so an answered return has every page finished.
+    for section in SEQUENCE_UNDER_TEST {
+        if !d.finished_sections.contains(&section) {
+            d.finished_sections.push(section);
+        }
+    }
     let mut s = Interview::new(TEST_USER, d.clone());
     let warnings = setup_warnings(&mut s, return_setup(d.setup.as_ref().unwrap()));
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -960,7 +985,6 @@ const SEQUENCE_UNDER_TEST: [TaxSection; 30] = [
     TaxSection::SelfEmployment,
     TaxSection::HomeOffices,
     TaxSection::Retirement,
-    TaxSection::MoreIncome,
     TaxSection::Hsa,
     TaxSection::SelfEmployedBenefits,
     TaxSection::IraContributions,
@@ -980,6 +1004,7 @@ const SEQUENCE_UNDER_TEST: [TaxSection; 30] = [
     TaxSection::Payments,
     TaxSection::IncomeByPeriod,
     TaxSection::InjuredSpouse,
+    TaxSection::OftenMissed,
 ];
 
 // ---------------------------------------------------------------------------
@@ -1040,11 +1065,12 @@ fn rich(
         add(
             &mut d,
             FederalIncomeEntry {
+                printed: None,
                 refund_management: None,
                 state_source: Default::default(),
                 id,
                 label: alloc::format!("{who} Bank"),
-                owner: *owner,
+                owner: crate::DocumentOwner::from(*owner),
                 income: savings_income(300, 0),
                 community: CommunityShare::NotNeeded,
             },
@@ -1053,11 +1079,12 @@ fn rich(
         add(
             &mut d,
             FederalIncomeEntry {
+                printed: None,
                 refund_management: None,
                 state_source: Default::default(),
                 id,
                 label: alloc::format!("{who} Shop"),
-                owner: *owner,
+                owner: crate::DocumentOwner::from(*owner),
                 income: cash_business(20_000),
                 community: CommunityShare::NotNeeded,
             },
@@ -1098,11 +1125,12 @@ fn rich(
         add(
             &mut d,
             FederalIncomeEntry {
+                printed: None,
                 refund_management: None,
                 state_source: Default::default(),
                 id,
                 label: "".into(),
-                owner: *owner,
+                owner: crate::DocumentOwner::from(*owner),
                 income: FederalIncome::Alimony { data: alimony_record(20160301) },
                 community: CommunityShare::NotNeeded,
             },
@@ -1147,21 +1175,20 @@ fn rich(
         spouse: joint.then_some(EducatorRole::Educator { classroom: 20_000, instructional: 0 }),
     };
     let v = d.deductions.as_mut().unwrap();
-    v.choice = DeductionSelection::Automatic {
-        expenses: ItemizedChoice::Yes {
-            facts: ItemizedExpenses {
-                income_tax_owners: None,
-                investment_property_tax_owners: None,
-                investment_income_tax: crate::InvestmentIncomeTax::Unresolved,
-                real_estate_taxes: 0,
-                other_lines: vec![],
-                long_term_care: vec![],
-                medical: 0,
-                personal_property_taxes: 500_000,
-                personal_tax: PersonalTaxElection::None,
-                investment_property_taxes: 0,
-            },
-        },
+    {
+        v.itemized = ItemizedExpenses {
+            income_tax_owners: None,
+            investment_property_tax_owners: None,
+            investment_income_tax: crate::InvestmentIncomeTax::Unresolved,
+            real_estate_taxes: 0,
+            other_lines: vec![],
+            long_term_care: vec![],
+            medical: 0,
+            personal_property_taxes: 500_000,
+            personal_tax: PersonalTaxElection::None,
+            investment_property_taxes: 0,
+        };
+        v.itemize_override = None;
     };
     v.cash_charity = 50_000;
     // T3-deduct: the deductions page's vehicle loan and casualty event, and
@@ -1236,7 +1263,7 @@ fn rich(
             your_support_over_half: true,
             gross_income: ava.gross_income(),
         };
-        ava.care = DependentCare::Yes { care_expenses: 300_000 };
+        ava.care = Some(DependentCare::Yes { care_expenses: 300_000 });
         let mut ben = dependent_record(id + 1, "Ben", "Sample", 20040301);
         ben.situation = DependentSituation::Student;
         d.dependents = vec![ava, ben];
@@ -1244,11 +1271,22 @@ fn rich(
         let c = d.credits.as_mut().unwrap();
         c.care = FederalCare::default();
         let student = id + 1;
-        c.education = vec![FederalEducation {
-            student,
-            method: EducationChoice::LifetimeLearning,
-            expenses: education_expenses(300_000),
-        }];
+        set_education(
+            c,
+            vec![{
+                let mut pair = native_education(
+                    student,
+                    education_expenses(300_000),
+                    EducationChoice::LifetimeLearning,
+                );
+
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = true;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            }],
+        );
     }
     // The other taxes page (u5-credits): a household employer and a Trump
     // account for each filer, and a Form 8828 gift; More credits' home
@@ -1274,37 +1312,53 @@ fn rich(
     add(
         &mut d,
         FederalIncomeEntry {
+            printed: None,
             refund_management: None,
             state_source: Default::default(),
             id: home_id,
             label: "Oak Street".into(),
-            owner: Owner::Taxpayer,
+            owner: crate::DocumentOwner::Yours,
             income: FederalIncome::HomeSale {
                 data: MainHomeSale {
-                    address: "Oak Street".into(),
-                    closed: 20260701,
-                    proceeds: 40_000_000,
-                    property_received: false,
-                    foreign_person: false,
-                    form_1099s: true,
-                    acquired: 20200115,
-                    expenses: 2_000_000,
-                    basis: 30_000_000,
-                    lived: HomeLived::WholeTime,
-                    earlier_sale: EarlierHomeSale::No,
-                    spouse: if joint {
-                        HomeSpouse::Joint {
-                            lived: HomeLived::Days { days: 900 },
-                            earlier_sale: EarlierHomeSale::Yes { sold: 20250101 },
-                        }
-                    } else {
-                        HomeSpouse::NotJoint
-                    },
-                    reason: HomeSaleReason::TwoYears,
-                    use_history: HomeRentalUse { depreciation: 0, nonqualified_days: 0 },
-                    more: HomeSaleMore::Nothing,
-                }
-                .record(),
+                    form: crate::HomeSaleSource::Paper(home_sale_paper(Form1099S {
+                        filer: Default::default(),
+                        transferor: Default::default(),
+                        address: "Oak Street".into(),
+                        closed: 20260701,
+                        proceeds: 40_000_000,
+                        property_received: false,
+                        foreign_person: false,
+                    })),
+                    answers: Some(crate::RealEstateSaleUse::MainHome(HomeSaleAnswers {
+                        property_value: SourceCents::NotReported,
+                        firpta_withheld: SourceCents::NotReported,
+                        form_1099s: true,
+                        acquired: 20200115,
+                        received: HomeReceived::Bought,
+                        payment: SalePayment::InFull,
+                        exchange: None,
+                        expenses: 2_000_000,
+                        basis: 30_000_000,
+                        lived: HomeLived::WholeTime,
+                        earlier_sale: EarlierHomeSale::No,
+                        spouse: if joint {
+                            HomeSpouse::Joint {
+                                lived: HomeLived::Days { days: 900 },
+                                earlier_sale: EarlierHomeSale::Yes { sold: 20250101 },
+                            }
+                        } else {
+                            HomeSpouse::NotJoint
+                        },
+                        reason: HomeSaleReason::TwoYears,
+                        use_history: HomeRentalUse {
+                            depreciation: 0,
+                            nonqualified_days: 0,
+                            separate: None,
+                        },
+                        service: None,
+                        more: HomeSaleMore::Nothing,
+                    })),
+                },
             },
             community: CommunityShare::NotNeeded,
         },
@@ -1335,19 +1389,21 @@ fn rich(
     });
     let pay = d.payments.as_mut().unwrap();
     pay.home_kerosene = Some(FederalHomeKerosene {
-        thousandths_of_gallon: 100_000,
+        gallons: 100.0,
         actual_cost: 50_000,
         qualified: true,
         not_claimed_elsewhere: true,
         records_complete: true,
     });
-    pay.estimated_payments = vec![DatedPayment {
-        payer: crate::PaymentPayer::Joint,
-        refund_property: None,
-        date: 20260415,
-        amount: 200_000,
-    }];
-    pay.estimated = Some(200_000);
+    pay.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: vec![DatedPayment {
+            payer: crate::PaymentPayer::Joint,
+            refund_property: None,
+            date: 20260415,
+            amount: 200_000,
+        }],
+    };
+
     pay.extension = 50_000;
     pay.extension_payer = Some(if joint { PaymentPayer::Joint } else { PaymentPayer::Taxpayer });
     pay.prior_year = Some(PriorYearTax {
@@ -1366,6 +1422,7 @@ fn rich(
             .map(|p| InjuredClaimantFacts { person: p.id, claimant: Owner::Taxpayer })
             .collect();
         d.injured_spouse = Some(allocation);
+        d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     }
     if planned {
         // The earlier-year operating-loss kind on Self-employment
@@ -1399,9 +1456,11 @@ fn rich(
     }
     let mut d = crate::interview::with_ticks(d);
     if planned {
-        d.checklist.income |= IncomeTopics::RETIREMENT.0;
-        d.checklist.whole_return |= WholeReturnTopics::DUAL_STATUS.0;
+        d.checklist.carryovers |= CarryoverTopics::MINIMUM_TAX_CREDIT.0;
+        d.set_situations(YourSituations::DUAL_STATUS.0, true);
     }
+    // Admit the assembled source inventory before asserting the saved invariant.
+    let mut d = source_baseline(d);
     // Stored as a save leaves it: the builder asks nothing its walk does
     // not, so the prune removes nothing (a finished page its own save
     // refuses would be reopened, which a stored return may hold).
@@ -1426,7 +1485,7 @@ fn young(applies: bool, planned: bool) -> FederalDraft {
     }
     let mut d = crate::interview::with_ticks(d);
     if planned {
-        d.checklist.whole_return |= WholeReturnTopics::DUAL_STATUS.0;
+        d.set_situations(YourSituations::DUAL_STATUS.0, true);
     }
     let pruned = crate::interview::prune(&mut d);
     assert!(pruned.removed.is_empty(), "{pruned:?}");
@@ -1437,7 +1496,7 @@ fn household_shard(shard: usize) -> Vec<(alloc::string::String, FederalDraft)> {
     let mut out = Vec::new();
     let mut push = |group, name, build: &dyn Fn() -> FederalDraft| {
         if group == shard {
-            out.push((name, build()));
+            out.push((name, source_baseline(build())));
         }
     };
     for applies in [false, true] {
@@ -1505,10 +1564,11 @@ enum Change {
     SpouseDied,
     SpouseBlind,
     NoPeople,
-    UntickWages,
-    UntickIncome,
+    RemoveBusinesses,
+    UntickActivities,
     TickWholeReturn,
-    Route(DeductionRoute),
+    Route(Option<ItemizeOverride>),
+    SpouseItemizes,
     BoxC,
     InjuredSpouse,
     FamilyCoverage,
@@ -1527,12 +1587,12 @@ fn changes() -> Vec<Change> {
         Change::SpouseDied,
         Change::SpouseBlind,
         Change::NoPeople,
-        Change::UntickWages,
-        Change::UntickIncome,
+        Change::RemoveBusinesses,
+        Change::UntickActivities,
         Change::TickWholeReturn,
-        Change::Route(DeductionRoute::Standard),
-        Change::Route(DeductionRoute::Itemize),
-        Change::Route(DeductionRoute::SpouseItemizes),
+        Change::Route(None),
+        Change::Route(Some(ItemizeOverride::Itemize)),
+        Change::SpouseItemizes,
         Change::BoxC,
         Change::InjuredSpouse,
         Change::FamilyCoverage,
@@ -1585,7 +1645,7 @@ fn apply(s: &mut Interview, change: Change) -> Option<Reply> {
             } else if matches!(change, Change::YouYoung) {
                 you.birth_date = 20080101;
             } else {
-                you.claimable = Claimable::Possibly {
+                you.details.claimable = Claimable::Possibly {
                     another_eitc_child: false,
                     dependency: FilerDependency::CanBeClaimed { claimed: false },
                     us_home_over_half_year: true,
@@ -1604,32 +1664,58 @@ fn apply(s: &mut Interview, change: Change) -> Option<Reply> {
             };
             let mut spouse = Filer::from(spouse);
             if matches!(change, Change::SpouseDied) {
-                spouse.more = died_more(20260615);
+                spouse.details.more = died_more(20260615);
             } else {
-                spouse.blind = !spouse.blind;
+                spouse.details.blind = !spouse.details.blind;
             }
             reviewing(save_spouse(&s.draft, spouse))
         }
         Change::NoPeople => {
+            let removed: Vec<_> = s.draft.dependents().iter().map(|person| person.id).collect();
+            let mut request = crate::tests::support::client::income_pages::open_document_center(s);
+            let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+            let before = documents.common.education.students.len();
+            documents
+                .common
+                .education
+                .students
+                .retain(|student| !removed.contains(&student.student_id));
+            if documents.common.education.students.len() != before {
+                // A household edit cannot discard another owner's source.
+                // Correct the affected source explicitly before removing its student.
+                accepted(&send(s, request));
+            }
             edit(s, TaxSection::Children)?;
-            reviewing(save_children(&s.draft, vec![]))
+            let before = s.draft.clone();
+            let reply = send(s, reviewing(save_children(&before, vec![])));
+            if matches!(reply, Reply::Response(P::Problem { .. })) {
+                assert_eq!(s.draft, before);
+            }
+            accepted(&reply);
+            return Some(reply);
         }
-        Change::UntickWages | Change::UntickIncome | Change::TickWholeReturn => {
+        Change::RemoveBusinesses => {
+            let mut request = edit(s, TaxSection::SelfEmployment)?;
+            let P::SaveIncomes { documents, .. } = &mut request else { return None };
+            documents
+                .documents
+                .retain(|row| !matches!(row.document, crate::IncomeRecord::Business(_)));
+            request
+        }
+        Change::UntickActivities => {
             let reply = from_review(s, TaxSection::Checklist);
             let Reply::Edit(P::SaveChecklist { value, .. }) = &reply else {
                 return None;
             };
-            let value = match change {
-                Change::UntickWages => {
-                    Checklist { income: value.income & !IncomeTopics::WAGES.0, ..*value }
-                }
-                Change::UntickIncome => Checklist { income: 0, ..*value },
-                _ => Checklist {
-                    whole_return: value.whole_return | WholeReturnTopics::DUAL_STATUS.0,
-                    ..*value
-                },
-            };
+            let value = Checklist { activities: 0, paid: value.paid, carryovers: value.carryovers };
             crate::tests::cross::interview::tick(reply, value)
+        }
+        Change::TickWholeReturn => {
+            let P::SavePeople { mut you, .. } = edit(s, TaxSection::People)? else {
+                return None;
+            };
+            you.situations |= YourSituations::DUAL_STATUS.0;
+            reviewing(save_you(&s.draft, you))
         }
         Change::Route(route) => {
             let P::SaveDeductions {
@@ -1642,7 +1728,6 @@ fn apply(s: &mut Interview, change: Change) -> Option<Reply> {
                 estimate,
                 warnings: _,
                 progress,
-                allowed_routes,
                 allowed_repayment,
                 document_facts,
                 home_sites,
@@ -1651,9 +1736,6 @@ fn apply(s: &mut Interview, change: Change) -> Option<Reply> {
             else {
                 return None;
             };
-            if !allowed_routes.contains(&(route as i32)) {
-                return None;
-            }
             P::SaveDeductions {
                 user,
                 cookie,
@@ -1664,52 +1746,58 @@ fn apply(s: &mut Interview, change: Change) -> Option<Reply> {
                 estimate,
                 warnings: vec![],
                 progress,
-                allowed_routes,
                 allowed_repayment,
                 document_facts,
                 home_sites,
-                value: Deductions { route, ..value },
+                value: Deductions { itemize_override: route, ..value },
             }
+        }
+        Change::SpouseItemizes => {
+            if s.draft.setup.as_ref()?.filing_status() != FederalStatus::Separate {
+                return None;
+            }
+            let current = s.draft.deductions.as_ref()?.spouse_itemizes?;
+            let mut request = spouse_itemizes_request(&s.draft, !current);
+            let P::SaveSpouseItemizes { review, .. } = &mut request else { unreachable!() };
+            *review = true;
+            request
         }
         Change::BoxC => {
             let mut request = edit(s, TaxSection::Payments)?;
             let P::SavePayments { value, .. } = &mut request else {
                 return None;
             };
-            let PenaltyChoice::Figure { income, .. } = &mut value.penalty else {
+            let PenaltyChoice::Figure { income, .. } = &mut value.more.penalty else {
                 return None;
             };
             *income = IncomeTiming::ByPeriod;
             request
         }
         Change::InjuredSpouse => {
-            let reply = from_review(s, TaxSection::Checklist);
-            let Reply::Edit(P::SaveChecklist { value, joint, .. }) = &reply else {
+            // The injured spouse item is on the spouse page of a joint return.
+            let P::SaveSpouse { spouse, .. } = edit(s, TaxSection::Spouse)? else {
                 return None;
             };
-            // The injured spouse item needs a joint return.
-            if !*joint {
-                return None;
-            }
-            let value = Checklist {
-                whole_return: value.whole_return ^ WholeReturnTopics::INJURED_SPOUSE.0,
-                ..*value
-            };
-            crate::tests::cross::interview::tick(reply, value)
+            let mut spouse = Filer::from(spouse);
+            spouse.situations ^= SpouseSituations::INJURED_SPOUSE.0;
+            reviewing(save_spouse(&s.draft, spouse))
         }
         Change::InterestUp => {
-            let mut request = edit(s, TaxSection::InterestDividends)?;
-            let P::SaveIncomes { documents, .. } = &mut request else {
+            let mut request = crate::tests::support::client::income_pages::open_document_center(s);
+            let P::SaveDocuments { documents, .. } = &mut request else {
                 return None;
             };
-            let int = documents.documents.iter_mut().find_map(|item| match &mut item.document {
-                IncomeDocument::Int1099(v) => Some(v),
-                _ => None,
-            })?;
-            if int.taxable == 1_000_000 {
+            let int =
+                documents.common.interest_dividends.documents.iter_mut().find_map(|item| {
+                    match &mut item.document {
+                        crate::InterestDividendDocument::Int1099(v) => Some(v),
+                        _ => None,
+                    }
+                })?;
+            if int.interest_income == 1_000_000 {
                 return None;
             }
-            int.taxable = 1_000_000;
+            int.interest_income = 1_000_000;
             request
         }
         Change::ParentUnsettled => {
@@ -1728,7 +1816,7 @@ fn apply(s: &mut Interview, change: Change) -> Option<Reply> {
             let before = documents.documents.len();
             documents
                 .documents
-                .retain(|item| !matches!(item.document, IncomeDocument::NetOperatingLoss(_)));
+                .retain(|item| !matches!(item.document, crate::IncomeRecord::NetOperatingLoss(_)));
             if documents.documents.len() == before {
                 return None;
             }
@@ -1794,11 +1882,11 @@ const UNASKED: [Perturbation; 5] = [
         |d| status_of(d) != FederalStatus::Separate,
         |d| {
             let v = d.deductions.as_mut().unwrap();
-            v.spouse_itemizes = !v.spouse_itemizes;
+            v.spouse_itemizes = Some(!v.spouse_itemizes.unwrap_or(false));
         },
     ),
     // A tick with nothing entered.
-    ("planned tick", |_| true, |d| d.checklist.credit_topics ^= CreditTopics::MARKETPLACE.0),
+    ("planned tick", |_| true, |d| d.checklist.carryovers ^= CarryoverTopics::MINIMUM_TAX_CREDIT.0),
 ];
 // The lines where two returns' debug forms differ.
 fn diff(a: &FederalDraft, b: &FederalDraft) -> String {
@@ -1821,18 +1909,22 @@ fn status_of(d: &FederalDraft) -> FederalStatus {
 
 // Actual 2026-10-15 discovery, groups: young, single, joint plain/died/
 // claimable/blind senior, separate, head/surviving. Columns are saves,
-// parent_saves, loss_saves, parent_opened, home_saves, home_spouse_dropped.
+// parent_saves, loss_saves, parent_opened, home_saves,
+// home_spouse_pruned_outside_joint. The final columns cover the retained
+// home sale source and spouse-answer pruning after leaving joint.
 const SAVE_COUNTS: [[i32; 6]; 8] = [
     [48, 2, 0, 2, 0, 0],
-    [64, 0, 2, 0, 60, 0],
-    [72, 0, 2, 0, 68, 12],
-    [72, 0, 2, 0, 68, 12],
-    [76, 0, 2, 0, 72, 12],
-    [72, 0, 2, 0, 68, 12],
-    [68, 0, 2, 0, 64, 0],
-    [70, 0, 2, 0, 66, 0],
+    [64, 0, 2, 0, 64, 0],
+    [72, 0, 2, 0, 72, 12],
+    [72, 0, 2, 0, 72, 12],
+    [76, 0, 2, 0, 76, 12],
+    [72, 0, 2, 0, 72, 12],
+    [68, 0, 2, 0, 68, 0],
+    [70, 0, 2, 0, 70, 0],
 ];
 // Columns are checked and young_checked, in the same household order.
+// Young coverage includes explicit interest-source deletions that make the
+// parent facts unasked.
 const UNASKED_COUNTS: [[i32; 2]; 8] =
     [[178, 18], [312, 0], [372, 0], [372, 0], [372, 0], [372, 0], [228, 0], [342, 0]];
 // Every runtime shard asserts its exact row; these sums therefore preserve the
@@ -1854,28 +1946,34 @@ const _: () = {
         }
         group += 1;
     }
-    let [saves, parent_saves, loss_saves, parent_opened, home_saves, home_spouse_dropped] =
-        saves_total;
+    let [
+        saves,
+        parent_saves,
+        loss_saves,
+        parent_opened,
+        home_saves,
+        home_spouse_pruned_outside_joint,
+    ] = saves_total;
     assert!(saves >= 500);
-    assert!(home_saves >= 300 && home_spouse_dropped >= 5);
+    assert!(home_saves >= 300 && home_spouse_pruned_outside_joint >= 5);
     assert!(parent_saves >= 2 && loss_saves >= 10 && parent_opened >= 2);
     let [checked, young_checked] = unasked_total;
     assert!(checked >= 2000);
     assert!(young_checked >= 10);
 };
 
-// Unit50, 2026-10-15: each household shard checks its observed counters
+// Each household shard checks its observed counters
 // independently. The constant matrices retain the original global floors.
 fn saves_keep_only_walked_data_cases(shard: usize) -> [i32; 6] {
-    // (1) After every save the stored return is its own prune: nothing lies
-    // outside the walk or an allowed list, and every finished page passes
-    // its own save's checks.
+    // (1) After every save the stored return is its own prune: record and
+    // fact cleanup is complete, while source documents retain their facts.
     let mut saves = 0;
     // The u5-losses pages are saved, and a save opens the parent's return.
     let (mut parent_saves, mut loss_saves, mut parent_opened) = (0, 0, 0);
-    // The home sale page's data (u6-home) is saved on, and its spouse
-    // answers leave with a joint return.
-    let (mut home_saves, mut home_spouse_dropped) = (0, 0);
+    // Source retention is asserted for every accepted save, including an
+    // untick. A non-joint household prunes the spouse's topic answers while
+    // retaining the printed home-sale form and every other accepted answer.
+    let (mut home_saves, mut home_spouse_pruned_outside_joint) = (0, 0);
     for (name, d) in household_shard(shard) {
         for change in changes() {
             let mut s = Interview::new(TEST_USER, d.clone());
@@ -1897,17 +1995,31 @@ fn saves_keep_only_walked_data_cases(shard: usize) -> [i32; 6] {
             }
             saves += 1;
             let stored = s.draft.clone();
-            let home = |d: &FederalDraft| {
-                d.income.iter().find_map(|e| match &e.income {
-                    FederalIncome::HomeSale { data } => Some(data.clone()),
-                    _ => None,
-                })
-            };
-            if let Some(sale) = home(&stored) {
+            if let Some(source) =
+                d.income.iter().find(|e| matches!(&e.income, FederalIncome::HomeSale { .. }))
+            {
+                // 2026-10-27: spouse history is a topic answer, not a printed
+                // Form 1099-S fact. Only that answer changes off a joint return.
+                let mut expected = source.clone();
+                if !joint_of(&stored) {
+                    let FederalIncome::HomeSale { data } = &mut expected.income else {
+                        unreachable!()
+                    };
+                    if let Some(crate::RealEstateSaleUse::MainHome(answers)) = &mut data.answers {
+                        answers.spouse = HomeSpouse::NotJoint;
+                    }
+                }
+                assert_eq!(
+                    stored.income.iter().find(|e| e.id == source.id),
+                    Some(&expected),
+                    "{name} {change:?}: home sale source changed",
+                );
                 home_saves += 1;
-                let had = home(&d).and_then(|h| h.facts).and_then(|f| f.spouse_earlier);
-                if had.is_some() && sale.facts.and_then(|f| f.spouse_earlier).is_none() {
-                    home_spouse_dropped += 1;
+                let FederalIncome::HomeSale { data } = &source.income else { unreachable!() };
+                let native = HomeSale::from(data);
+                let had = native.facts.as_ref().and_then(|f| f.spouse_earlier.as_ref());
+                if had.is_some() && !joint_of(&stored) {
+                    home_spouse_pruned_outside_joint += 1;
                 }
             }
             assert!(stored.valid_stored(), "{name} {change:?}");
@@ -1917,7 +2029,7 @@ fn saves_keep_only_walked_data_cases(shard: usize) -> [i32; 6] {
             assert_eq!(again, stored, "{name} {change:?}: {}", diff(&again, &stored));
         }
     }
-    [saves, parent_saves, loss_saves, parent_opened, home_saves, home_spouse_dropped]
+    [saves, parent_saves, loss_saves, parent_opened, home_saves, home_spouse_pruned_outside_joint]
 }
 
 #[test]
@@ -1999,6 +2111,54 @@ fn unasked_data_leaves_the_return_unchanged_cases(shard: usize) -> [i32; 2] {
                 );
                 checked += 1;
             }
+            // An untick retains sources, so the two high-interest young cases
+            // still need Form 8615. Exercise their source-absence parent-fact
+            // coverage separately through an explicit document deletion.
+            if shard == 0
+                && matches!(change, Change::UntickActivities)
+                && crate::interview::parent_tax_in_walk(&stored)
+            {
+                assert_eq!(stored.income, d.income);
+                assert_eq!(crate::federal_rules::form_8615_applies(&estimate(&stored)), Some(true));
+                let mut deletion = Interview::new(TEST_USER, stored.clone());
+                let mut request = crate::tests::support::client::income_pages::open_document_center(
+                    &mut deletion,
+                );
+                let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+                let removed: Vec<_> = documents
+                    .common
+                    .interest_dividends
+                    .documents
+                    .iter()
+                    .map(|row| row.id)
+                    .collect();
+                assert!(!removed.is_empty());
+                documents.common.interest_dividends.documents.clear();
+                accepted(&send(&mut deletion, request));
+                assert!(deletion.draft.income.iter().all(|row| !removed.contains(&row.id)));
+                assert_eq!(
+                    crate::federal_rules::form_8615_applies(&estimate(&deletion.draft)),
+                    Some(false)
+                );
+                assert!(!crate::interview::parent_tax_in_walk(&deletion.draft));
+                assert!(deletion.draft.people.as_ref().unwrap().parent_tax.is_none());
+                assert!(deletion.draft.people.as_ref().is_some_and(|people| {
+                    crate::federal_rules::young_8615(joint_of(&deletion.draft), people)
+                }));
+                let (what, unasked, perturb) =
+                    UNASKED.iter().find(|(what, _, _)| *what == "Form 8615 parent").unwrap();
+                assert!(unasked(&deletion.draft));
+                let lines = crate::draft_return(&estimate(&deletion.draft));
+                let mut changed = deletion.draft.clone();
+                perturb(&mut changed);
+                assert_eq!(
+                    crate::draft_return(&estimate(&changed)),
+                    lines,
+                    "{name} {change:?}: explicit source deletion: {what}"
+                );
+                checked += 1;
+                young_checked += 1;
+            }
         }
     }
     [checked, young_checked]
@@ -2078,7 +2238,7 @@ fn leaving_joint_through_page_1_erases_the_spouses_alimony_received() {
         d.income
             .iter()
             .filter(|e| matches!(e.income, FederalIncome::Alimony { .. }))
-            .map(|e| e.owner)
+            .map(|e| e.owner.owned())
             .collect()
     };
     assert_eq!(alimony(&d), vec![Owner::Taxpayer, Owner::Spouse]);
@@ -2088,37 +2248,34 @@ fn leaving_joint_through_page_1_erases_the_spouses_alimony_received() {
     assert_eq!(alimony(&s.draft), vec![Owner::Taxpayer]);
 }
 
-// A topic the checklist left unticked, opened from the return page and
-// saved with its first entry: the save ticks the topic (follow_ticks runs
-// before the prune), so the entry is kept, not pruned as outside the walk,
-// and the checklist reopens with the topic ticked.
+// A document saved with no box checked, opened from the return page: the
+// walk never removes a document, and no box becomes the person's answer.
 #[test]
-fn a_first_entry_saved_on_an_unticked_topic_ticks_it() {
+fn a_document_saved_with_no_box_checked_is_kept() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let d = s.draft.clone();
-    accepted(&send(&mut s, save_checklist(&d, PAGE_REVIEW, income_ticks(IncomeTopics::WAGES.0))));
-    assert_eq!(s.draft.checklist.income & IncomeTopics::INTEREST_DIVIDENDS.0, 0);
+    accepted(&send(&mut s, save_checklist(&d, PAGE_REVIEW, Checklist::NONE)));
     let reply = from_review(&mut s, TaxSection::InterestDividends);
     assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
-    let d = s.draft.clone();
     let interest = crate::tests::cross::interview::document(
         0,
-        IncomeDocument::Int1099(native_int1099("Bank".into(), 20_000)),
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "Bank".into(),
+                20_000,
+            ))),
+        },
     );
-    accepted(&send(
-        &mut s,
-        crate::tests::cross::interview::save_topic(
-            &d,
-            TaxSection::InterestDividends,
-            vec![interest],
-        ),
-    ));
+    accepted(&{
+        let request = crate::tests::cross::interview::save_documents(&mut s, vec![interest]);
+        send(&mut s, request)
+    });
     assert!(
         s.draft.income.iter().any(|e| matches!(e.income, FederalIncome::Interest { .. })),
         "the 1099-INT was pruned: {:?}",
         s.draft.income
     );
-    assert_ne!(s.draft.checklist.income & IncomeTopics::INTEREST_DIVIDENDS.0, 0);
+    assert_eq!(s.draft.checklist, Checklist::NONE);
     let mut pruned = s.draft.clone();
     assert_eq!(crate::interview::prune(&mut pruned), Default::default());
     assert_eq!(pruned, s.draft);

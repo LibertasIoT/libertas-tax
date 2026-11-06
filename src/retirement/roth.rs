@@ -1,3 +1,6 @@
+use crate::InheritedRothBasis;
+use crate::roth_history::{RothConversion, RothHistory, RothOrdering};
+use crate::roth_source::{InheritedLink, RothCode, RothWithdrawal, age_half};
 // Pub. 590-B chapter 2 and Form 8606 Part III.
 // Coverage: Roth IRA distributions on the 1099-R (unit u6-roth, 2026-09-28).
 //   Nonqualified inherited Roth QHFD coordinates actual dated ordinary/funding
@@ -45,404 +48,15 @@
 //   Inherited PartIII uses separate decedent copies and the existing ordered
 //   funding/basis owner; tests print_inherited_roth_* verify stop rules and cents.
 use crate::federal_rules::valid_date;
-use crate::kernel::lines::line_cents;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line_cents;
 use crate::{
     FederalDraft, FederalIncome, FederalResult, Owner, RetirementKind, RetirementTreatment,
 };
 use alloc::{collections::BTreeMap, vec::Vec};
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// Roth IRA withdrawal
-/// Enter each actual distribution date separately. Combine all this owner's Roth IRA history in Adjustments. A Roth IRA, Roth SEP IRA or Roth SIMPLE IRA own-account withdrawal: an inherited payment uses its linked beneficiary/deceased-owner history. No unentered HSA funding or QCD. Do not enter the same payment as traditional retirement income.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RothWithdrawal {
-    /// Distribution date in 2026
-    #[libertas_date_only]
-    pub distributed: u32,
-    /// Actual order among this pool's payments on the same date
-    /// Needed only when qualified HSA funding shares the date with another payment. Use the actual statement order, not the order of entries in this App. Leave absent when no funding shares the date.
-    #[libertas_number(min = 1)]
-    #[libertas_default($null)]
-    pub sequence: Option<u32>,
-    /// Gross distribution before withholding
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub gross: i64,
-    /// Amount rolled over to another Roth IRA within 60 days
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub rolled_over: i64,
-    /// Federal income tax withheld
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub withholding: i64,
-    /// Form 1099-R box 7a code
-    pub code: RothCode,
-    /// Exception to the 10% additional tax
-    /// Disability from code T's reason or code J's exception; any IRA exception from code J.
-    #[libertas_default($null)]
-    pub exception: Option<crate::RetirementException>,
-    /// Repaid to a Roth IRA
-    #[libertas_default($null)]
-    pub repaid: Option<crate::ExceptionRepayment>,
-    /// Roth SIMPLE IRA inside its first two years (codes J and S)
-    #[libertas_default(false)]
-    pub simple_early: bool,
-    /// Qualified disaster distribution
-    #[libertas_default(No)]
-    pub disaster: crate::DisasterDistribution,
-    /// Inherited Roth IRA
-    /// Code T for a beneficiary: the Inherited IRA record that holds the original owner's five-year period and allocated basis decides the taxable amount of every payment that names it.
-    pub inherited: InheritedLink,
-}
-/// Inherited Roth IRA
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum InheritedLink {
-    /// Your own Roth IRA
-    No,
-    /// An inherited Roth IRA
-    Yes {
-        /// Inherited IRA record
-        /// Absent uses the filer's only inherited Roth IRA record.
-        #[libertas_number(min = 1)]
-        account: Option<i64>,
-    },
-}
-/// Form 1099-R box 7a code
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum RothCode {
-    /// Q — qualified distribution
-    Qualified,
-    /// J — early distribution, no known exception
-    Early,
-    /// T — exception applies
-    ExceptionApplies,
-}
-impl RothWithdrawal {
-    pub(crate) fn valid(&self) -> bool {
-        self.sequence.is_none_or(|v| (1..=100).contains(&v))
-            && valid_date(self.distributed)
-            && self.distributed / 10000 == 2026
-            && [self.gross, self.withholding].iter().all(|v| (0..=100000000000).contains(v))
-            && (0..=self.gross).contains(&self.rolled_over)
-            && self.exception.as_ref().is_none_or(|e| {
-                // The facts of an exception are checked by the early-distribution stage; the
-                // shape is checked here.
-                e.valid(self.distributed, self.gross)
-            })
-            && self.repaid.as_ref().is_none_or(|v| v.valid())
-            && self.disaster.valid(self.gross)
-    }
-    // The exception that makes the owner's age or disability apply on this date, if any.
-    pub(crate) fn disabled_since(&self) -> Option<u32> {
-        match self.exception {
-            Some(crate::RetirementException::Disability { began }) => Some(began),
-            _ => None,
-        }
-    }
-}
-
-/// Basis allocated to an inherited Roth IRA
-/// Use this beneficiary's allocated balances before this year's payments, reconciled to prior withdrawals and all inherited Roth accounts from the same deceased owner. No unentered current-year basis adjustment. Keep other deceased owners and personal contributions separate.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct InheritedRothBasis {
-    /// Remaining regular-contribution basis allocated to this inherited group
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub regular: i64,
-    /// Remaining conversion and qualified-plan-rollover basis allocated to this inherited group
-    /// Combine originally taxable and nontaxable conversion portions; both are recovered before earnings. The inherited death exception removes conversion early-tax recapture regardless of conversion year.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub converted: i64,
-}
-/// Roth IRA history for one filer
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RothHistory {
-    /// Roth IRA owner
-    pub owner: Owner,
-    /// First tax year for which any Roth IRA contribution or conversion was made
-    /// Use the tax year designated for a regular contribution, even if paid the next year. Time in a designated Roth employer account does not start the Roth IRA clock.
-    // Tax structure: Roth IRA history starts with 1998 and cannot begin after this tax year.
-    #[libertas_number(min = 1998, max = 2026)]
-    pub first_year: u32,
-    /// Opening contribution and conversion records
-    /// Needed for a nonqualified withdrawal: absent means none are entered, so the App assumes no earlier contributions or conversions and taxes that withdrawal as earnings, with a note. Leave absent when every withdrawal is qualified by both the five-tax-year period and age or disability. Current-year regular contributions and traditional-to-Roth conversions are taken from their existing entries, not repeated here.
-    pub ordering: Option<RothOrdering>,
-}
-/// Contributions and conversions not yet taken out
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RothOrdering {
-    /// Regular contributions through 2025 not yet taken out
-    /// Your Roth IRA contributions for 1998 through 2025 as they ended up after any recharacterization, including your own Roth SIMPLE or Roth SEP salary deferrals, less what earlier withdrawals took out (your last Form 8606 line 22 worksheet). Add the basis of a Roth 401(k), 403(b) or 457(b) account rolled in, a military death gratuity or SGLI payment rolled in, basis received in a divorce and line 5 of your last Line 25c Worksheet; subtract basis transferred in a divorce. Leave out conversions, contributions returned to you with their earnings, and 2026 contributions, which come from IRA contributions.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub regular: i64,
-    /// Conversions not yet taken out, by year
-    /// One row for each year you converted a traditional IRA, rolled a workplace plan into a Roth IRA or had an employer Roth SEP or SIMPLE contribution reported as converted, less what earlier withdrawals took out. Include conversion basis received in a divorce under its original year; leave out amounts transferred in a divorce, rollovers between Roth accounts and 2026 conversions.
-    /// ----
-    /// Conversion year
-    // Tax structure: one conversion row per distinct year, 1998 through 2025.
-    #[libertas_size(max = 28)]
-    pub conversions: Vec<RothConversion>,
-}
-/// Conversion year
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RothConversion {
-    /// Year converted
-    // Tax structure: opening Roth conversion basis covers 1998 through the prior tax year, 2025.
-    #[libertas_number(min = 1998, max = 2025)]
-    pub year: u32,
-    /// Part that was taxable when converted
-    /// That year's Form 8606 line 18, less what earlier withdrawals took out.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub taxable: i64,
-    /// Part that was not taxable
-    /// That year's Form 8606 line 17, less what earlier withdrawals took out.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub nontaxable: i64,
-}
-impl RothHistory {
-    pub(crate) fn valid(&self) -> bool {
-        (1998..=2026).contains(&self.first_year)
-            && self.ordering.as_ref().is_none_or(|v| {
-                (0..=100000000000).contains(&v.regular)
-                    && v.conversions.iter().enumerate().all(|(i, c)| {
-                        (self.first_year..=2025).contains(&c.year)
-                            && [c.taxable, c.nontaxable]
-                                .iter()
-                                .all(|v| (0..=100000000000).contains(v))
-                            && !v.conversions[..i].iter().any(|other| other.year == c.year)
-                    })
-            })
-    }
-}
-
-// The Retirement topic's 1099-R with a Roth IRA code (unit u6-roth): the box
-// 7a code and the facts it needs, onto the stored RothWithdrawal.
-/// Roth IRA code
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RothIraCode {
-    /// Q — qualified distribution
-    /// You met the five-year period and were 59½ or older or disabled. Not taxed.
-    Qualified,
-    /// J — early distribution, no known exception
-    Early {
-        /// Date of this distribution
-        /// For several payments on this form, the date of the last one. Enter payments from before and after you turned 59½ as two forms.
-        #[libertas_date_only]
-        // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        distributed: u32,
-        /// Exception to the 10% additional tax
-        /// Leave empty when none applies. A first home up to $10,000 (lifetime, all your IRAs) is tax-free when your first Roth IRA year is 2021 or earlier, and otherwise free of the additional tax. Disability, age 59½ with code J printed in error, education, medical expenses, health insurance while unemployed, a birth or adoption, an emergency, terminal illness, domestic abuse, reservist duty, periodic payments and an IRS levy apply as to any IRA. An exception that only an employer plan can use is not offered.
-        /// [NullText]
-        /// No exception to the 10% additional tax applies
-        /// [SetText]
-        /// The exception to the 10% additional tax is
-        exception: Option<crate::RetirementException>,
-        /// Repaid to an IRA
-        /// Only for a birth or adoption, emergency, domestic-abuse or terminal-illness distribution repaid to a Roth IRA within three years. Leave empty when none. Deposits after 2026 may need an amended 2026 return.
-        /// [NullText]
-        /// None of this distribution was repaid under an eligible repayment rule
-        /// [SetText]
-        /// The eligible IRA repayment is
-        repaid: Option<crate::ExceptionRepayment>,
-    },
-    /// T — exception applies
-    /// The payer knows you were 59½ or older, disabled, or a beneficiary, but not whether the five-year period is met.
-    ExceptionApplies {
-        /// Date of this distribution
-        /// For several payments on this form, the date of the last one.
-        #[libertas_date_only]
-        // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        distributed: u32,
-        /// Why the exception applies
-        #[libertas_default(Age)]
-        reason: RothReason,
-    },
-}
-/// Why the exception applies
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RothReason {
-    /// I was 59½ or older
-    Age,
-    /// I am disabled
-    /// You cannot do any substantial gainful activity because of a physical or mental condition that a doctor determined is expected to last indefinitely or end in death.
-    Disabled {
-        /// Date you became disabled
-        #[libertas_date_only]
-        since: u32,
-    },
-    /// I inherited this Roth IRA
-    Inherited {
-        /// Inherited IRA
-        /// The person you inherited it from. Empty uses your only inherited Roth IRA; one entered on this same page is chosen after you save it.
-        /// [NullText]
-        /// Use my only inherited Roth IRA record
-        /// [SetText]
-        /// The inherited Roth IRA record is
-        #[libertas_enum_source("$.inherited_roth_iras")]
-        #[libertas_default($null)]
-        account: Option<i64>,
-    },
-}
-impl RothIraCode {
-    // The 1099-R onto the stored withdrawal. Box 7b with J, Q or T is a Roth SIMPLE IRA
-    // after its two years (or a Roth SEP IRA); J printed with S (box 7b) is a Roth SIMPLE IRA
-    // inside its first two years, taxed at 25%. A qualified distribution's date is never
-    // needed. Codes printed with J (8J, PJ) never reach here: box 7a leads them to the
-    // corrective or not-income branches.
-    pub(crate) fn record(
-        &self,
-        v: &crate::R1099,
-        rolled_over: i64,
-        sequence: Option<u32>,
-    ) -> RothWithdrawal {
-        let (code, distributed, exception, repaid, inherited) = match self {
-            Self::Qualified => (RothCode::Qualified, 20261231, None, None, InheritedLink::No),
-            Self::Early { distributed, exception, repaid } => (
-                RothCode::Early,
-                *distributed,
-                exception.clone(),
-                repaid.clone(),
-                InheritedLink::No,
-            ),
-            Self::ExceptionApplies { distributed, reason } => (
-                RothCode::ExceptionApplies,
-                *distributed,
-                match reason {
-                    RothReason::Disabled { since } => {
-                        Some(crate::RetirementException::Disability { began: *since })
-                    }
-                    _ => None,
-                },
-                None,
-                match reason {
-                    RothReason::Inherited { account } => InheritedLink::Yes { account: *account },
-                    _ => InheritedLink::No,
-                },
-            ),
-        };
-        RothWithdrawal {
-            distributed,
-            sequence,
-            gross: v.gross,
-            rolled_over,
-            withholding: v.withholding,
-            code,
-            exception,
-            repaid,
-            simple_early: v.box7 & crate::DistributionCodes::CODE_S.0 != 0,
-            disaster: v.disaster.clone(),
-            inherited,
-        }
-    }
-    // The reverse: the code and whether box 7b is checked (a Roth SIMPLE IRA or a Roth SEP IRA).
-    // Box 7b has no stored fact of its own; it is printed with every Roth SIMPLE IRA row, so a
-    // reopened row shows it checked when the printed pair J and S says so.
-    pub(crate) fn from_record(v: &RothWithdrawal) -> (Self, bool) {
-        let code = match v.code {
-            RothCode::Qualified => Self::Qualified,
-            RothCode::Early => Self::Early {
-                distributed: v.distributed,
-                exception: v.exception.clone(),
-                repaid: v.repaid.clone(),
-            },
-            RothCode::ExceptionApplies => Self::ExceptionApplies {
-                distributed: v.distributed,
-                reason: match (v.inherited, v.disabled_since()) {
-                    (InheritedLink::Yes { account }, _) => RothReason::Inherited { account },
-                    (_, Some(since)) => RothReason::Disabled { since },
-                    _ => RothReason::Age,
-                },
-            },
-        };
-        (code, v.simple_early)
-    }
-    // ROTH_DISABLED_AFTER_DISTRIBUTION, the client rule on the 1099-R.
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        let (distributed, since, field, parent) = match self {
-            Self::Early {
-                distributed,
-                exception: Some(crate::RetirementException::Disability { began: since }),
-                ..
-            } => (distributed, since, "began", "exception"),
-            Self::ExceptionApplies { distributed, reason: RothReason::Disabled { since } } => {
-                (distributed, since, "since", "reason")
-            }
-            _ => return None,
-        };
-        (since > distributed).then(|| {
-            crate::validation::ValidationIssue::new("ROTH_DISABLED_AFTER_DISTRIBUTION")
-                .at_field(field)
-                .in_field(parent)
-        })
-    }
-}
-
-/// Roth IRA history
-/// Needed for a 1099-R with code J or T: when your first Roth IRA year began and the contributions and conversions not yet taken out. One for each owner.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RothIraHistory {
-    /// First year of any Roth IRA contribution or conversion
-    /// The tax year your first contribution was made for, even if paid the next spring, or the year of your first conversion. Years in a Roth 401(k) or 403(b) do not count.
-    // Tax structure: Roth IRA history starts with 1998 and cannot begin after this tax year.
-    #[libertas_number(min = 1998, max = 2026)]
-    pub first_year: u32,
-    /// Contributions and conversions not yet taken out
-    /// Needed when a 2026 withdrawal is not qualified. Leave it off when you were 59½ or older or disabled and your first year is 2021 or earlier.
-    /// [NullText]
-    /// No nonqualified withdrawal needs these ordering facts
-    /// [SetText]
-    /// The contributions and conversions not yet taken out are
-    pub amounts: Option<RothOrdering>,
-}
-impl RothIraHistory {
-    pub(crate) fn record(&self, owner: Owner) -> RothHistory {
-        RothHistory { owner, first_year: self.first_year, ordering: self.amounts.clone() }
-    }
-    pub(crate) fn from_record(v: &RothHistory) -> Self {
-        Self { first_year: v.first_year, amounts: v.ordering.clone() }
-    }
-    // The client rules, checked again on save.
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        let conversions = self.amounts.as_ref().map_or(&[][..], |v| &v.conversions);
-        if let Some((index, _)) = conversions
-            .iter()
-            .enumerate()
-            .find(|(i, c)| conversions[..*i].iter().any(|o| o.year == c.year))
-        {
-            Some(
-                crate::validation::ValidationIssue::new("ROTH_CONVERSION_YEAR_TWICE")
-                    .at_field("year")
-                    .in_list("conversions", index)
-                    .in_field("amounts"),
-            )
-        } else if let Some((index, _)) =
-            conversions.iter().enumerate().find(|(_, c)| c.year < self.first_year)
-        {
-            Some(
-                crate::validation::ValidationIssue::new("ROTH_CONVERSION_BEFORE_FIRST_YEAR")
-                    .at_field("year")
-                    .in_list("conversions", index)
-                    .in_field("amounts"),
-            )
-        } else {
-            None
-        }
-    }
-}
 #[derive(Default)]
 pub(crate) struct RothResult {
     // Form 1040 line 4b (Form 8606 line 25c) of each Roth row, after the designated disaster
@@ -464,20 +78,6 @@ pub(crate) struct RothResult {
     // Line 5 of the 2026 Line 25c Worksheet: repayments above the taxable amount.
     pub carry: [i64; 2],
 }
-pub(crate) fn age_half(birth: u32) -> u32 {
-    let mut year = birth / 10000 + 59;
-    let mut month = birth / 100 % 100 + 6;
-    if month > 12 {
-        year += 1;
-        month -= 12;
-    }
-    let mut day = birth % 100;
-    while day > 28 && !valid_date(year * 10000 + month * 100 + day) {
-        day -= 1;
-    }
-    year * 10000 + month * 100 + day
-}
-
 // Both ordinary withdrawals and the nontaxable portion of qualified HSA funding
 // consume basis in the same order. Funding itself never incurs conversion tax.
 fn take_basis(balance: &mut i64, left: &mut i64) -> i64 {
@@ -522,7 +122,7 @@ pub(crate) struct FundingOrdering {
 // change the funding/ordinary basis split. Require actual unique source order
 // for that whole date; an entry ID or list position never supplies the fact.
 fn order_funding_payments(
-    payments: &mut [(i64, &RothWithdrawal)],
+    payments: &mut [(i64, RothWithdrawal)],
     is_funding: impl Fn(i64) -> bool,
 ) -> Option<()> {
     payments.sort_by_key(|(_, payment)| (payment.distributed, payment.sequence));
@@ -552,9 +152,7 @@ fn order_funding_payments(
 // remainder on an earlier source still counts.
 pub(crate) fn funding_first_conflict(d: &FederalDraft, source: i64) -> Option<i64> {
     let entry = d.income.iter().find(|e| e.id == source)?;
-    let FederalIncome::Roth { data } = &entry.income else {
-        return None;
-    };
+    let data = entry.income.roth()?;
     if data.code == RothCode::Qualified {
         return None;
     }
@@ -572,7 +170,7 @@ pub(crate) fn funding_first_conflict(d: &FederalDraft, source: i64) -> Option<i6
             {
                 return false;
             }
-            let FederalIncome::Roth { data: ordinary } = &e.income else {
+            let Some(ordinary) = e.income.roth() else {
                 return false;
             };
             if ordinary.code == RothCode::Qualified
@@ -586,7 +184,7 @@ pub(crate) fn funding_first_conflict(d: &FederalDraft, source: i64) -> Option<i6
             let funded = d.adjustments.as_ref().map_or(0, |a| {
                 a.hsa
                     .iter()
-                    .filter(|h| h.owner == e.owner)
+                    .filter(|h| h.owner == e.owner.owned())
                     .flat_map(|h| &h.funding)
                     .filter(|t| t.income == e.id)
                     .map(|t| t.amount)
@@ -621,20 +219,22 @@ pub(crate) fn earlier_funding(d: &FederalDraft, owner: Owner) -> Option<FundingO
     // basis bound; omitting it would claim unknown incoming basis is zero.
     let incoming_regular = contributions.map_or(0, |v| v.roth)
         + crate::ira::provisional_roth_absorbed(d)[usize::from(owner == Owner::Spouse)];
-    if contributions.is_some_and(|v| {
-        v.next_year_deposits
-                .as_ref()
-                .is_some_and(|next| next.roth > v.roth)
-    }) || d.income.iter().any(|e| {
-        e.owner == owner
-            && matches!(&e.income, FederalIncome::EducationDistribution { data }
-                if matches!(data.transfer, crate::Q1099Transfer::RothIra { .. }))
-    }) || d.income.iter().any(|e| {
-            e.owner == owner
-                && matches!(&e.income, FederalIncome::Retirement { data } if data.converted_amount() != 0
-                    || (data.kind == RetirementKind::Ira
-                        && data.ordinary_distribution == RetirementTreatment::EmployerRothContribution
-                        && data.gross != 0))
+    if contributions
+        .is_some_and(|v| v.next_year_deposits.as_ref().is_some_and(|next| next.roth > v.roth))
+        || d.income.iter().any(|e| {
+            e.owner == crate::DocumentOwner::from(owner)
+                && matches!(&e.income, FederalIncome::EducationDistribution { data }
+                if matches!(crate::Q1099::from(&data.form).transfer, crate::Q1099Transfer::RothIra))
+        })
+        || d.income.iter().any(|e| {
+            e.owner == crate::DocumentOwner::from(owner)
+                && e.income.retirement().is_some_and(|data| {
+                    data.converted_amount() != 0
+                        || (data.kind == RetirementKind::Ira
+                            && data.ordinary_distribution
+                                == Some(RetirementTreatment::EmployerRothContribution)
+                            && data.gross != 0)
+                })
         })
     {
         return None;
@@ -646,10 +246,12 @@ pub(crate) fn earlier_funding(d: &FederalDraft, owner: Owner) -> Option<FundingO
         .income
         .iter()
         .filter_map(|e| match &e.income {
-            FederalIncome::Roth { data }
-                if e.owner == owner && data.inherited == crate::InheritedLink::No =>
+            FederalIncome::Roth { data: source }
+                if e.owner == crate::DocumentOwner::from(owner)
+                    && crate::RothWithdrawal::from(source).inherited
+                        == crate::InheritedLink::No =>
             {
-                Some((e.id, data))
+                Some((e.id, crate::RothWithdrawal::from(source)))
             }
             _ => None,
         })
@@ -792,7 +394,7 @@ pub(crate) fn inherited_earlier_funding(
     let mut payments: Vec<_> = crate::inherited_ira::payments(d, group)
         .into_iter()
         .map(|(e, _, _)| match &e.income {
-            FederalIncome::Roth { data } => Some((e.id, data)),
+            FederalIncome::Roth { data } => Some((e.id, crate::RothWithdrawal::from(data))),
             _ => None,
         })
         .collect::<Option<_>>()?;
@@ -812,7 +414,7 @@ pub(crate) fn inherited_earlier_funding(
         .as_ref()?
         .hsa
         .iter()
-        .filter(|h| h.owner == entry.owner)
+        .filter(|h| h.owner == entry.owner.owned())
         .flat_map(|h| &h.funding)
         .filter(|t| payments.iter().any(|(id, _)| *id == t.income))
         .collect();
@@ -881,7 +483,7 @@ pub(crate) fn inherited_earlier_funding(
 pub(crate) fn calculate(
     d: &FederalDraft,
     r: &mut FederalResult,
-    basis: &crate::retirement::BasisResult,
+    basis: &crate::retirement_return::BasisResult,
     funding: &crate::hsa_funding::FundingResult,
 ) -> RothResult {
     let mut result = RothResult::default();
@@ -1032,10 +634,11 @@ pub(crate) fn calculate(
             .iter()
             .filter_map(|e| match &e.income {
                 // An inherited withdrawal is taxed with its record's group above.
-                FederalIncome::Roth { data }
-                    if e.owner == owner && data.inherited == InheritedLink::No =>
-                {
-                    Some((e.id, data))
+                FederalIncome::Roth { data: source } => {
+                    let data = crate::RothWithdrawal::from(source);
+                    (e.owner == crate::DocumentOwner::from(owner)
+                        && data.inherited == InheritedLink::No)
+                        .then_some((e.id, data))
                 }
                 _ => None,
             })
@@ -1094,7 +697,8 @@ pub(crate) fn calculate(
             crate::require_localized!(
                 r,
                 withdrawals.iter().all(|(id, _)| funding.for_entry(*id) == 0),
-                &crate::IssueContext::Review,
+                &crate::IssueContext::Section(crate::TaxSection::Hsa)
+                    .alternatives(&[crate::TaxSection::Hsa, crate::TaxSection::OtherIncome]),
                 "529-to-Roth IRA rollover",
                 "ISSUE_A_2026_QUALIFIED_ROTH_TO_HSA_FUNDING_TRANSFER_TOGETHER_WITH_529_TO_AFFC98A6",
                 "A 2026 qualified Roth-to-HSA funding transfer together with 529-to-Roth transfers needs separate source-date and basis accounting.",
@@ -1152,18 +756,19 @@ pub(crate) fn calculate(
         }
         let mut current = RothConversion { year: 2026, taxable: 0, nontaxable: 0 };
         for e in &d.income {
-            if e.owner == owner
-                && let FederalIncome::Retirement { data } = &e.income
+            if e.owner == crate::DocumentOwner::from(owner)
+                && let Some(data) = e.income.retirement()
                 && data.kind == RetirementKind::Ira
             {
                 // An employer's Roth SEP or Roth SIMPLE contribution is reported as if converted:
                 // taxable in full, a 2026 conversion for the ordering (Notice 2024-2 section L).
-                if data.ordinary_distribution == RetirementTreatment::EmployerRothContribution {
+                if data.ordinary_distribution == Some(RetirementTreatment::EmployerRothContribution)
+                {
                     current.taxable += data.gross;
                     continue;
                 }
                 let gross = data.converted_amount();
-                let taxable = basis.converted(e.id, data);
+                let taxable = basis.converted(e.id, &data);
                 current.taxable += taxable;
                 current.nontaxable += gross - taxable;
             }
@@ -1182,16 +787,16 @@ pub(crate) fn calculate(
         withdrawals.sort_by_key(|(id, v)| (v.distributed, v.sequence, *id));
         // Form 8606 Part III, row by row: the amount each row adds to line 19, the first-home
         // slice of line 20, then the ordering of lines 22 and 24.
-        struct Row<'a> {
+        struct Row {
             id: i64,
-            data: &'a RothWithdrawal,
+            data: RothWithdrawal,
             left_in: i64,
             left: i64,
             recapture: i64,
             age_exempt: bool,
             slice: i64,
         }
-        let mut rows: Vec<Row<'_>> = Vec::new();
+        let mut rows: Vec<Row> = Vec::new();
         let mut home_used = 0;
         for (id, v) in withdrawals {
             crate::require_localized!(
@@ -1359,7 +964,7 @@ pub(crate) fn calculate(
         let mut credited = 0;
         let mut repaid_ids: Vec<i64> = Vec::new();
         for row in &rows {
-            let (id, v) = (row.id, row.data);
+            let (id, v) = (row.id, &row.data);
             let Some(repaid) = &v.repaid else {
                 continue;
             };
@@ -1461,13 +1066,13 @@ pub(crate) fn calculate(
         }
         // Form 5329 line 1 for each row.
         for (i, row) in rows.iter().enumerate() {
-            let (id, v) = (row.id, row.data);
+            let (id, v) = (row.id, &row.data);
             result.taxable.insert(id, left_final[i]);
             let pen = if row.age_exempt { 0 } else { left_final[i] + recapture_final[i] };
             if pen > 0 {
                 if row.slice == 0 && v.exception.is_some() {
                     result.staged.insert(id, pen);
-                } else if v.simple_early {
+                } else if v.simple_early() {
                     result.simple[index] += pen;
                 } else {
                     result.penalized[index] += pen;

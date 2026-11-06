@@ -15,7 +15,7 @@ pub(in crate::tests) fn community_ruling(
     for entry in &mut d.income {
         entry.community = CommunityShare::Community;
         if state == 7 {
-            entry.refund_management = Some(if entry.owner == Owner::Taxpayer {
+            entry.refund_management = Some(if entry.owner == crate::DocumentOwner::Yours {
                 RefundManagement::Taxpayer
             } else {
                 RefundManagement::Spouse
@@ -53,8 +53,11 @@ pub(in crate::tests) fn fixture(profile: &str) -> FederalDraft {
         // nonliable/liable source amounts stay the original ruling amounts.
         if injured == Owner::Spouse {
             for entry in &mut d.income {
-                entry.owner =
-                    if entry.owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+                entry.owner = if entry.owner == crate::DocumentOwner::Yours {
+                    crate::DocumentOwner::Spouses
+                } else {
+                    crate::DocumentOwner::Yours
+                };
                 entry.refund_management = entry.refund_management.map(|v| match v {
                     RefundManagement::Taxpayer => RefundManagement::Spouse,
                     RefundManagement::Spouse => RefundManagement::Taxpayer,
@@ -95,7 +98,7 @@ pub(in crate::tests) fn fixture(profile: &str) -> FederalDraft {
                 }
                 if case == "i-qbi" {
                     let mut source = income(reit_income(10000, 10000, true));
-                    source.owner = Owner::Taxpayer;
+                    source.owner = crate::DocumentOwner::Yours;
                     add(&mut d, source);
                 }
                 d

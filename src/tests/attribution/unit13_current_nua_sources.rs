@@ -49,7 +49,7 @@ fn unit13_current_nua_combines_two_actual_sale_owners_without_a_loss_use_answer(
                 .find(|entry| matches!(entry.income, FederalIncome::NuaSale { .. }))
                 .unwrap()
                 .clone();
-            second.owner = Owner::Spouse;
+            second.owner = crate::DocumentOwner::Spouses;
             add(&mut d, second);
             let check = |draft: &FederalDraft| {
                 let r = supported(draft);

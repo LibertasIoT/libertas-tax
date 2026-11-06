@@ -1,12 +1,17 @@
 // Dispatcher18b70772: exact Unit47 counterexample4674305e, registered in its assigned owner.
 extern crate std;
-use crate::tests::cross::interview::{document, k1_1120s, save_topic};
+use crate::tests::cross::interview::{document, k1_1120s};
 use crate::tests::*;
 
 fn attempt(session: &mut Interview, request: P, case: &str) -> bool {
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let reply = session.handle(P::from_avro(&request.to_avro()).unwrap()).unwrap();
+    let decoded = P::from_avro(&request.to_avro()).unwrap();
+    let reply = if matches!(decoded, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(session, decoded)
+    } else {
+        session.handle(decoded).unwrap()
+    };
     let (Reply::Response(value) | Reply::Edit(value)) = &reply;
     if let Ok(root) = std::env::var("TAX_UNIT47_SCORP_AMT_CASE_DIR") {
         use std::io::Write;
@@ -46,17 +51,19 @@ fn unit17_scorp_amt_ordinary_projection_keeps_separately_admitted_source_amounts
     // K1 page round-trip fixture; no unknown balance is inferred from omission.
     let regular = page.record();
     assert!(regular.valid());
-    let mut alternate = ScorpAmtRecords::SameAsRegular.record(&regular);
+    let mut alternate = ScorpAmtRecords::SameAsRegular.record(&regular).unwrap();
     assert!(alternate.complete);
     assert_eq!(alternate.adjustment, 0);
     assert!(alternate.capital.is_none() && alternate.section1231.is_none());
     assert!(alternate.loans.is_empty());
-    page.amt = ScorpAmtRecords::Separate { record: alternate.clone() };
+    page.amt = Some(ScorpAmtRecords::Separate { record: alternate.clone() });
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let seed = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(0, IncomeDocument::K1Scorp(page.clone()))],
+    let seed = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((page.clone()).into()) },
+        )],
     );
     assert!(attempt(&mut session, seed, "regular-max-explicit-amt-zero"));
     let id = session
@@ -71,11 +78,10 @@ fn unit17_scorp_amt_ordinary_projection_keeps_separately_admitted_source_amounts
     // is representable in i64. The resulting ordinary amount exists only in
     // the canonical AMT validation/calculation projection, not as a new input.
     assert_eq!(page.ordinary.checked_add(alternate.adjustment), Some(2 * MAX));
-    page.amt = ScorpAmtRecords::Separate { record: alternate };
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Scorp(page))],
+    page.amt = Some(ScorpAmtRecords::Separate { record: alternate });
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![document(id, IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) })],
     );
     let passes = attempt(&mut session, request, "regular-max-plus-explicit-amt-max");
     // Preserve actual neutral handler reply and complete accepted state before
@@ -85,6 +91,7 @@ fn unit17_scorp_amt_ordinary_projection_keeps_separately_admitted_source_amounts
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
     let stored = session.draft.income.iter().find(|entry| entry.id == id).unwrap();
     let FederalIncome::Scorp { data } = &stored.income else { panic!("actual source") };
+    let data = &ScorpK1::from(data);
     assert_eq!(data.ordinary, MAX);
     assert_eq!(data.amt.as_ref().unwrap().adjustment, MAX);
     let projected = data.amt.as_ref().unwrap().source(data).unwrap();
@@ -105,7 +112,7 @@ fn unit17_scorp_amt_negative_sources_and_both_original_caps_remain_distinct() {
     page.ordinary = -MAX;
     let owner = page.record();
     assert!(owner.valid());
-    let mut alternate = ScorpAmtRecords::SameAsRegular.record(&owner);
+    let mut alternate = ScorpAmtRecords::SameAsRegular.record(&owner).unwrap();
     alternate.adjustment = -MAX;
     assert!(alternate.valid(&owner));
     let projected = alternate.source(&owner).expect("two admitted signed sources");
@@ -144,7 +151,7 @@ fn unit17_scorp_derived_capacity_never_admits_an_oversized_regular_source() {
         let owner = page.record();
         assert!(!owner.valid());
         assert!(owner.basis_result().is_err());
-        let mut alternate = ScorpAmtRecords::SameAsRegular.record(&owner);
+        let mut alternate = ScorpAmtRecords::SameAsRegular.record(&owner).unwrap();
         // Cancellation cannot turn an invalid original input into a genuine
         // derived source, even though its resulting amount is within100b.
         alternate.adjustment = if amount > 0 { -1 } else { 1 };
@@ -156,11 +163,12 @@ fn unit17_scorp_derived_capacity_never_admits_an_oversized_regular_source() {
 #[test]
 fn unit17_scorp_amt_capacity_survives_the_actual_sale_basis_risk_and_outcome_path() {
     const MAX: i64 = 100_000_000_000;
-    let [_, FederalIncome::Scorp { mut data }] =
+    let [_, FederalIncome::Scorp { data }] =
         crate::tests::passthrough::k1_sale_return::sources(MAX / 100, 0, 0, 20_000)
     else {
         panic!("existing actual S-corporation fixture")
     };
+    let mut data = ScorpK1::from(&data);
     // This independent control exercises the short-held OtherLoss/output
     // path; the existing long-held source fixtures keep section1231 intact.
     data.section179_sales[0].acquired = 20260101;

@@ -109,8 +109,8 @@ fn unit13_niit_deduction_known_fractional_payees_use_injured_first_native_residu
             );
             for entry in &mut d.income {
                 if let FederalIncome::Interest { data } = &mut entry.income {
-                    data.foreign_tax = 50;
-                    data.foreign_country = "CA".into();
+                    edit_interest(data).foreign_tax = 50;
+                    edit_interest(data).foreign_country = "CA".into();
                 }
             }
             d.injured_spouse.as_mut().unwrap().allocations[0].injured = 100;

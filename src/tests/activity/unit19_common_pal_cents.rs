@@ -7,13 +7,13 @@ use crate::tests::support::client::{
 fn fixture() -> FederalDraft {
     let mut draft = complete(FederalStatus::Single);
     let mut source = ordinary_partner_source(-1, false);
-    source.participation = crate::PartnerParticipation::Limited {
+    source.participation = Some(crate::PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
-    source.regular.basis.opening = 10_000;
+    });
+    source.regular.basis.opening = Some(10_000);
     source.regular.risk.start =
         crate::ScorpRiskStart::Detailed { capacity: 10_000, profit: 0, loss: 0 };
     source.alternative = Some(source.regular.clone());
@@ -23,6 +23,7 @@ fn fixture() -> FederalDraft {
 
 fn equipment(receipts: i64, expenses: i64, systems: bool) -> EquipmentRent {
     EquipmentRent {
+        related: crate::RelatedForms::default(),
         receipts,
         expenses,
         basis: 1_000_000,
@@ -55,9 +56,22 @@ fn unit19_common_pal_actual_client_save_reopen_restart() {
     let mut answers = seed.clone();
     let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
     documents.documents = vec![
-        document(0, IncomeDocument::EquipmentRental(equipment(50, 0, false))),
-        document(0, IncomeDocument::EquipmentRental(equipment(0, 149, systems))),
-    ];
+        document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::EquipmentRental(equipment(50, 0, false)),
+            },
+        ),
+        document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::EquipmentRental(equipment(0, 149, systems)),
+            },
+        ),
+    ]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     if let Ok(directory) = std::env::var("TAX_UNIT19_COMMON_PAL_DIR") {
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(std::path::Path::new(&directory).join("seed.avro"), seed.to_avro()).unwrap();
@@ -129,7 +143,7 @@ fn unit19_common_pal_actual_client_save_reopen_restart() {
     assert_eq!(supported(&session.draft), result);
     let mut correction = open_topic(&mut session, TaxSection::OtherIncome);
     let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-    let IncomeDocument::EquipmentRental(page) = &mut documents.documents[1].document else {
+    let crate::IncomeRecord::EquipmentRental(page) = &mut documents.documents[1].document else {
         unreachable!()
     };
     page.expenses += 2;

@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {"order": 384000, "rule": {"select": "^<IncomeByPeriod>", "when": {"width": ["compact", "medium"], "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_PERIOD_MARCH", "fields": ["through_march"]}, {"title": "DISPLAY_PERIOD_MAY", "fields": ["through_may"]}, {"title": "DISPLAY_PERIOD_AUGUST", "fields": ["through_august"]}, {"title": "DISPLAY_PERIOD_YEAR", "fields": ["full_year"]}]}},
+    {"order": 385000, "rule": {"select": "^<IncomeByPeriod>", "when": {"width": ["compact", "medium"], "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERIOD_MARCH", "fields": ["through_march"]}, {"title": "DISPLAY_PERIOD_MAY", "fields": ["through_may"]}, {"title": "DISPLAY_PERIOD_AUGUST", "fields": ["through_august"]}, {"title": "DISPLAY_PERIOD_YEAR", "fields": ["full_year"]}]}},
+    {"order": 386000, "rule": {"select": "^<IncomeByPeriod>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["through_march", "through_may"], "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["through_march"]}, {"ratio": 1, "fields": ["through_may"]}]}, {"ratio": 1, "fields": ["through_august", "full_year"], "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["through_august"]}, {"ratio": 1, "fields": ["full_year"]}]}]}},
+    {"order": 566000, "rule": {"select": "^<PenaltyChoice>", "flatten": true}},
+    {"order": 567000, "rule": {"select": "^<PriorReturn>", "flatten": true}},
+    {"order": 568000, "rule": {"select": "^<WithholdingTiming>", "flatten": true}},
+    {"order": 569000, "rule": {"select": "^<Farmer>", "flatten": true}},
+    {"order": 570000, "rule": {"select": "^<Waiver>", "flatten": true}}
+  ]
+}

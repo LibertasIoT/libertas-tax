@@ -8,6 +8,7 @@ pub(in crate::tests) fn farm_business(
     let FederalIncome::Business { data } = &mut v else { unreachable!() };
     data.activity = BusinessActivity::Farming {
         data: FarmIncome {
+            related: vec![],
             specials: farm_specials(),
             land_basis: vec![],
             header: Some(farm_header()),
@@ -16,7 +17,8 @@ pub(in crate::tests) fn farm_business(
             conservation: None,
             crp: vec![],
             ccc: None,
-            insurance: FarmInsurance::None,
+            insurance_papers: Default::default(),
+            insurance: FarmInsuranceRecords::None,
             accounting: FarmAccounting::Cash { receipts },
         },
     };
@@ -91,11 +93,79 @@ pub(in crate::tests) fn crop_records(
         withholding: withholding * 100,
     }
 }
+pub(in crate::tests) fn install_crop_records(data: &mut FarmIncome, insurance: FarmInsurance) {
+    use crate::farm_insurance_paper::CropInsuranceFacts;
+    match insurance {
+        FarmInsurance::None => {
+            data.insurance = FarmInsuranceRecords::None;
+            data.insurance_papers = CropInsuranceFacts::default();
+        }
+        FarmInsurance::Payments { current, previous_deferred, election, withholding } => {
+            data.insurance =
+                FarmInsuranceRecords::Payments { current, previous_deferred, withholding };
+            data.insurance_papers = match election {
+                CropDeferral::Include => CropInsuranceFacts {
+                    timing: Some(CropPaperTiming::Include),
+                    ..Default::default()
+                },
+                CropDeferral::Defer { practice } => CropInsuranceFacts {
+                    timing: Some(CropPaperTiming::Defer),
+                    practice,
+                    ..Default::default()
+                },
+            };
+        }
+    }
+}
+pub(in crate::tests) fn answer_crop_timing(
+    session: &mut Interview,
+    timing: CropPaperTiming,
+) -> Reply {
+    let activity = crate::farm::sources(&session.draft).next().unwrap().entry.id;
+    let request = P::SaveCropInsuranceTiming {
+        user: TEST_USER,
+        cookie: session.draft.cookie.clone(),
+        revision: session.draft.revision,
+        activity,
+        timing,
+    };
+    send(session, request)
+}
+pub(in crate::tests) fn answer_crop_practice(
+    session: &mut Interview,
+    crop: &str,
+    following: i64,
+) -> Reply {
+    let activity = crate::farm::sources(&session.draft).next().unwrap().entry.id;
+    let opened = {
+        let request = P::OpenCropPractice {
+            user: TEST_USER,
+            cookie: session.draft.cookie.clone(),
+            revision: session.draft.revision,
+            activity,
+            crop: crop.into(),
+        };
+        send(session, request)
+    };
+    assert!(matches!(opened, Reply::Response(P::BeginCropPractice { .. })), "{opened:?}");
+    {
+        let request = P::SaveCropPractice {
+            user: TEST_USER,
+            cookie: session.draft.cookie.clone(),
+            revision: session.draft.revision,
+            activity,
+            crop: crop.into(),
+            normal_total: 1_000_000,
+            normal_following: following,
+        };
+        send(session, request)
+    }
+}
 pub(in crate::tests) fn crop_farm(insurance: FarmInsurance) -> FederalIncome {
     let mut entry = raised_farm(30000, 10000);
     let FederalIncome::Business { data } = &mut entry else { unreachable!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
-    data.insurance = insurance;
+    install_crop_records(data, insurance);
     entry
 }
 pub(in crate::tests) fn crop_return(insurance: FarmInsurance) -> FederalDraft {
@@ -268,10 +338,10 @@ pub(in crate::tests) fn averaging_foreign(
 
 pub(in crate::tests) fn qualified_dividend(amount: i64) -> FederalIncome {
     FederalIncome::Dividend {
-        data: FederalDividend {
+        data: dividend_source(FederalDividend {
             section199a: ReitDividends::None,
             ..native_dividend(amount * 100, amount * 100, 0)
-        },
+        }),
     }
 }
 
@@ -282,11 +352,11 @@ pub(in crate::tests) fn foreign_special_distribution(
     dividends: i64,
 ) -> FederalIncome {
     FederalIncome::Dividend {
-        data: FederalDividend {
+        data: dividend_source(FederalDividend {
             collectible_distributions: collectible * 100,
             unrecaptured_distributions: unrecaptured * 100,
             ..native_dividend(dividends * 100, dividends * 100, gain * 100)
-        },
+        }),
     }
 }
 
@@ -297,7 +367,7 @@ pub(in crate::tests) fn payee_statement_credit(d: &mut FederalDraft, tax: i64) {
     add(
         d,
         income(FederalIncome::Interest {
-            data: FederalInterest { foreign_tax: tax, ..Default::default() },
+            data: interest_source(FederalInterest { foreign_tax: tax, ..Default::default() }),
         }),
     );
     d.credits.as_mut().unwrap().foreign_tax = ForeignTaxClaim::Statements { eligible: Some(true) };
@@ -307,11 +377,11 @@ pub(in crate::tests) fn raise_payee_statement_tax(d: &mut FederalDraft, extra: i
     let Some(FederalIncome::Interest { data }) = d.income.last_mut().map(|e| &mut e.income) else {
         unreachable!("the payee statement is the last entry")
     };
-    data.foreign_tax += extra;
+    edit_interest(data).foreign_tax += extra;
 }
 
 pub(in crate::tests) fn averaging_statement_credit(d: &mut FederalDraft) {
-    add(d, income(FederalIncome::Interest { data: native_interest(100000, 0) }));
+    add(d, income(FederalIncome::Interest { data: interest_source(native_interest(100000, 0)) }));
     payee_statement_credit(d, 30000);
 }
 
@@ -488,6 +558,7 @@ pub(in crate::tests) fn set_land_sales(
         });
         assert_eq!(source.cost_sharing_recapture, 0, "Use explicit actual history for1255 fixture");
         farm.land_sales.push(FarmLandSale {
+            farm_rental_use: None,
             id,
             basis_property: property,
             label: source.label,
@@ -543,7 +614,7 @@ pub(in crate::tests) fn farmland_installment_return() -> FederalDraft {
 }
 
 pub(in crate::tests) fn farmland_statement_credit(d: &mut FederalDraft) {
-    add(d, income(FederalIncome::Interest { data: native_interest(100000, 0) }));
+    add(d, income(FederalIncome::Interest { data: interest_source(native_interest(100000, 0)) }));
     payee_statement_credit(d, 30000);
 }
 
@@ -554,7 +625,7 @@ pub(in crate::tests) fn farmland_marketplace_repayment(d: &mut FederalDraft) {
 
 pub(in crate::tests) fn farmland_installment_low_tax_credit(carry: i64) -> FederalDraft {
     let mut d = farmland_installment_return();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let sale = farmland_resolved_sale(&d, 0);
     d.income[0] = wage(1, Owner::Taxpayer, 0, 0);
     d.income[1].income = raised_farm(0, 0);
@@ -688,7 +759,8 @@ pub(in crate::tests) fn native_cash_fixture() -> FederalDraft {
     let mut d = complete(FederalStatus::Joint);
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 0)];
     d.next_id = 2;
-    d.payments.as_mut().unwrap().estimated = Some(10_000);
+    d.payments.as_mut().unwrap().estimated =
+        crate::tests::support::builders::unknown_estimated(10_000, PaymentPayer::Taxpayer);
     d
 }
 
@@ -717,12 +789,16 @@ pub(in crate::tests) fn farm_rental_data(production: i64, program: i64) -> Feder
         receipts.push(FarmReceipt::Program { amount: program * 100 });
     }
     FederalFarmRental {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
         farm: FarmIncome {
+            related: vec![],
             specials: farm_specials(),
             land_basis: vec![],
             header: None,
             accounting: FarmAccounting::Cash { receipts },
-            insurance: FarmInsurance::None,
+            insurance_papers: Default::default(),
+            insurance: FarmInsuranceRecords::None,
             ccc: None,
             crp: vec![],
             supplies: None,
@@ -739,4 +815,356 @@ pub(in crate::tests) fn farm_rental_data(production: i64, program: i64) -> Feder
         qbi_aggregation_group: None,
         payroll: BusinessPayroll::No,
     }
+}
+
+// Derived partial-sale records under Publication 225, Sale of a Farm.
+pub(in crate::tests) fn partial_land_allocation(amounts: [i64; 4]) -> FarmLandSituation {
+    let [regular, amt, conservation, amt_conservation] =
+        amounts.map(|amount| SourceCents::Reported { amount });
+    FarmLandSituation::PartialParcel {
+        allocation: FarmLandAllocation { regular, amt, conservation, amt_conservation },
+    }
+}
+
+pub(in crate::tests) fn partial_land_parcel() -> FarmLandBasis {
+    FarmLandBasis {
+        id: 0,
+        label: "East and west farm tracts".into(),
+        acquisition: FarmLandAcquisition::Purchased,
+        acquired: 20220101,
+        regular: 10_000_000,
+        amt: 9_000_000,
+        prior_conservation: 2_000_000,
+        prior_amt_conservation: 1_500_000,
+        prior_cost_sharing: vec![],
+    }
+}
+
+// Fully recovered property has established zero remaining basis.
+pub(in crate::tests) fn farmer_gross_asset(
+    gain: i64,
+    livestock: crate::Livestock,
+) -> crate::BusinessAsset {
+    let mut asset = if gain < 0 {
+        depreciable_asset(-gain, EquipmentClass::Five, 20260101, 0)
+    } else {
+        continuing_asset(100_000, 20180101, EquipmentClass::Five, 100_000, crate::AssetDisposal::No)
+    };
+    asset.disposal = crate::AssetDisposal::Disposed {
+        date: 20260601,
+        how: crate::DisposalKind::Sold {
+            proceeds: gain.max(0) * 100,
+            selling_expenses: 0,
+            livestock: livestock.into(),
+            buyer: crate::Buyer::Unrelated,
+            payment: crate::SalePayment::InFull,
+        },
+    };
+    asset
+}
+
+pub(in crate::tests) fn farmer_gross_return(farming: i64, wages: i64) -> FederalDraft {
+    let mut draft = complete(FederalStatus::Single);
+    draft.income = vec![wage(1, Owner::Taxpayer, wages * 100, 0)];
+    draft.next_id = 2;
+    add(&mut draft, income(raised_farm(farming, farming)));
+    draft.screening.as_mut().unwrap().section1231 =
+        Some(crate::Section1231History { regular: vec![], amt: vec![] });
+    draft
+}
+
+pub(in crate::tests) fn farmer_gross_earlier_property() -> EarlierInstallment {
+    EarlierInstallment {
+        owner: Owner::Taxpayer,
+        sale: InstallmentPayments {
+            property: "Retained business-property source".into(),
+            sold: 20230601,
+            gross_profit: 600_000,
+            contract_price: 1_000_000,
+            earlier_payments: 100_000,
+            payments: 500_000,
+            kind: crate::PropertyCharacter::BusinessProperty {
+                used: crate::PropertyUse::Business,
+                unrecaptured: 0,
+            },
+            special: false,
+            qbi: InstallmentQbi::NotQualified,
+            livestock: None,
+        },
+    }
+}
+
+pub(in crate::tests) fn farmer_gross_rental_royalty_return() -> FederalDraft {
+    let mut draft = farmer_gross_return(60_000, 20_000);
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.expenses.clear();
+    add(&mut draft, income(FederalIncome::Rental { data: rental(30_000, 40_000) }));
+    add(&mut draft, income(royalty(30_000, 40_000)));
+    add(&mut draft, income(personal_rent(10_000, 20_000)));
+    draft.payments.as_mut().unwrap().prior_year = Some(PriorYearTax {
+        full_year: true,
+        tax: 10_000_000,
+        agi: Some(10_000_000),
+        spouse_tax: 0,
+    });
+    draft
+}
+
+// Retained real-property exchange; section 1031 has excluded livestock since 2018.
+pub(in crate::tests) fn farmer_gross_earlier_exchange() -> crate::EarlierRelatedExchange {
+    crate::EarlierRelatedExchange {
+        owner: Owner::Taxpayer,
+        exchange: crate::RelatedExchange {
+            property: "Retained business parcel".into(),
+            last_transfer: 20250501,
+            disposed: 20260430,
+            exception: crate::RelatedException::None,
+            deferred: 300_000,
+            kind: crate::PropertyCharacter::BusinessProperty {
+                used: crate::PropertyUse::Business,
+                unrecaptured: 0,
+            },
+            special: false,
+        },
+    }
+}
+
+pub(in crate::tests) fn farmer_gross_qof_source() -> FederalIncome {
+    FederalIncome::OpportunityFund {
+        data: crate::QofInvestment {
+            fund_ein: Default::default(),
+            source_recipient: Default::default(),
+            fund: "Synthetic retained original-property gain".into(),
+            invested_on: 20230601,
+            short_term: Some(0),
+            long_term: Some(300_000),
+            gain_code: crate::QofGainCode::Section1231,
+            event: Some(crate::QofEvent::Held { fair_value: Some(300_000) }),
+            special: false,
+        },
+    }
+}
+
+// Explicit prior-return facts request the penalty computation; the ordinary
+// gross-only fixture deliberately leaves that separate worksheet unrequested.
+pub(in crate::tests) fn farmer_gross_penalty_return(farming: i64, wages: i64) -> FederalDraft {
+    let mut draft = farmer_gross_return(farming, wages);
+    draft.payments.as_mut().unwrap().prior_year = Some(crate::PriorYearTax {
+        full_year: true,
+        tax: 1_000_000,
+        agi: Some(10_000_000),
+        spouse_tax: 0,
+    });
+    draft
+}
+
+pub(in crate::tests) fn relate_farm_component(
+    draft: &mut FederalDraft,
+    activity: i64,
+    component: i64,
+) {
+    let entry = draft.income.iter_mut().find(|entry| entry.id == activity).unwrap();
+    let farm = match &mut entry.income {
+        FederalIncome::Business { data } => {
+            let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
+            data
+        }
+        FederalIncome::FarmRental { data } => &mut data.farm,
+        _ => unreachable!(),
+    };
+    farm.related.push(component);
+}
+
+pub(in crate::tests) fn farm_government_component(draft: &FederalDraft) -> i64 {
+    draft
+        .income
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::GovernmentPayment { data }
+                if data.form.agriculture_payments.unwrap_or(0) != 0 =>
+            {
+                Some(data.component_ids.agriculture)
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+
+// Independent annual penalty operands; source availability is supplied by each case.
+pub(in crate::tests) fn farmland_underpayment_inputs(
+    farmland_applicable: crate::kernel::source_fact::SourceFact<i64>,
+) -> crate::underpayment::Inputs {
+    crate::underpayment::Inputs {
+        line_1: 10_000,
+        line_2: 0,
+        household_tax: 0,
+        line_3: 125,
+        withholding: 0,
+        excess_social: 0,
+        estate_estimated: crate::kernel::ratio::exact::whole(0),
+        separate: false,
+        farming_return_year: Ok(false),
+        farmland_applicable,
+        fund_credit: false,
+        status: FederalStatus::Single,
+        agi: 100_000,
+        taxable: 83_900,
+        standard: 16_100,
+        itemizing: false,
+        credits: 0,
+        child_credit: 0,
+        child_credit_by_column: [0; 4],
+        se_tax: [0; 2],
+        ordinary_tax: true,
+        other_taxes: false,
+    }
+}
+
+// An actual selected sale remains in the source graph when its activity's
+// optional scope is omitted. The second case retains another elected sale.
+pub(in crate::tests) fn farmland_omitted_penalty_return(retain_other: bool) -> FederalDraft {
+    let mut d = farmland_installment_return();
+    let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
+    data.special_treatment = true;
+    if retain_other {
+        let mut retained = income(raised_farm(30_000, 30_000));
+        let FederalIncome::Business { data } = &mut retained.income else { unreachable!() };
+        let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
+        let mut sale = farm_land_sale(20160616, 20260616);
+        sale.deferral = true;
+        set_land_sales(data, vec![sale], &mut d.next_id);
+        add(&mut d, retained);
+    }
+    d.payments.as_mut().unwrap().prior_year = Some(PriorYearTax {
+        full_year: true,
+        tax: 2_000_000,
+        agi: Some(10_000_000),
+        spouse_tax: 0,
+    });
+    d
+}
+
+// Synthetic completion records for the independently stated section175 gross examples.
+pub(in crate::tests) fn conservation_livestock_return(
+    crops: i64,
+    gain: i64,
+    purpose: Option<crate::LivestockPurpose>,
+) -> FederalDraft {
+    let mut draft = conservation_return();
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    let BusinessActivity::Farming { data: farm } = &mut data.activity else { unreachable!() };
+    farm.accounting =
+        FarmAccounting::Cash { receipts: vec![FarmReceipt::Raised { amount: crops * 100 }] };
+    data.expenses.clear();
+    let mut asset = farmer_gross_asset(gain, crate::Livestock::CattleOrHorse);
+    asset.id = draft.next_id;
+    draft.next_id += 1;
+    let crate::AssetDisposal::Disposed { how: crate::DisposalKind::Sold { livestock, .. }, .. } =
+        &mut asset.disposal
+    else {
+        unreachable!()
+    };
+    *livestock = crate::SoldLivestock::CattleOrHorse { purpose };
+    data.assets = vec![asset];
+    draft.screening.as_mut().unwrap().section1231 =
+        Some(crate::Section1231History { regular: vec![], amt: vec![] });
+    draft
+}
+
+// Complete synthetic crop-share use records; no eligibility is inferred from the form.
+pub(in crate::tests) fn farm_rental_property_use() -> crate::FarmRentalPropertyUse {
+    crate::FarmRentalPropertyUse::OnlyThisRental {
+        tenant_connection: Some(crate::FarmRentalTenantConnection::NoOwnershipOrServices),
+        value_enhancement: Some(crate::FarmRentalValueEnhancement::NoParticipation),
+    }
+}
+pub(in crate::tests) fn farm_rental_passive_property_return() -> FederalDraft {
+    farm_rental_passive_property_fixture(true)
+}
+// The ordinary Farming asset editor supports the same-AMT source projection;
+// the distinct native financial fixture above retains separate AMT schedules.
+pub(in crate::tests) fn farm_rental_passive_property_editor_return() -> FederalDraft {
+    farm_rental_passive_property_fixture(false)
+}
+fn farm_rental_passive_property_fixture(separate_depreciation: bool) -> FederalDraft {
+    let mut d = empty_return(FederalStatus::Single);
+    add(&mut d, wage(0, Owner::Taxpayer, 13_000_000, 0));
+    let mut data = farm_rental_data(8_000, 0);
+    data.active_participation = false;
+    // A purchased pre-September-2017 machine first placed in service in 2023:
+    // five-year, half-year MACRS, no section179/bonus. Original annual schedules
+    // retain REG 200% DB prior $27,704.28 and AMT 150% DB prior $22,704.29.
+    // In 2026 both switch to SL over the remaining 2.5 years: REG $4,482.49,
+    // AMT $6,482.49. Actual repairs $17,517.51 plus those native deductions
+    // give total expenses $22,000/$24,000 against $8,000 production shares.
+    data.expenses = vec![ordinary_business_expense(
+        BusinessExpenseCategory::Repairs,
+        if separate_depreciation { 1_751_751 } else { 2_200_000 },
+    )];
+    if separate_depreciation {
+        let mut machine = bonus_equipment(1, 100);
+        machine.id = d.next_id;
+        d.next_id += 1;
+        machine.cost = 3_891_051;
+        machine.acquired = 20160901;
+        machine.placed = 20230101;
+        machine.history = EquipmentHistory::Continuing {
+            initial_section179: 0,
+            carryforward: 0,
+            prior_depreciation: 2_770_428,
+            amt: EquipmentAmtHistory::Separate {
+                prior_depreciation: 2_270_429,
+                schedule: EquipmentSchedule::Manual,
+            },
+            mid_quarter: false,
+            schedule: EquipmentSchedule::Manual,
+        };
+        data.assets.push(machine);
+    }
+    let mut sale = farm_land_sale(20160616, 20260616);
+    sale.proceeds = 11_000_000;
+    sale.selling = 0;
+    sale.conservation = 0;
+    sale.amt = FarmLandAmt::Different { basis: 9_800_000, conservation: 0 };
+    set_land_sales(&mut data.farm, vec![sale], &mut d.next_id);
+    data.farm.land_sales[0].farm_rental_use = Some(farm_rental_property_use());
+    add(&mut d, income(FederalIncome::FarmRental { data }));
+    d.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));
+    d
+}
+
+pub(in crate::tests) fn farm_rental_passive_asset_return() -> FederalDraft {
+    let mut d = farm_rental_passive_property_editor_return();
+    let FederalIncome::FarmRental { data } = &mut d.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    data.farm.land_sales.clear();
+    let mut asset = bonus_equipment(10_000, 100);
+    asset.id = d.next_id;
+    d.next_id += 1;
+    asset.acquired = 20150101;
+    asset.placed = 20150101;
+    asset.method = EquipmentMethod::Declining150;
+    asset.history = EquipmentHistory::Continuing {
+        initial_section179: 0,
+        carryforward: 0,
+        prior_depreciation: 1_000_000,
+        amt: EquipmentAmtHistory::Same,
+        mid_quarter: false,
+        schedule: EquipmentSchedule::Tables { initial_bonus: 0 },
+    };
+    asset.disposal = AssetDisposal::Disposed {
+        date: 20260616,
+        how: DisposalKind::Sold {
+            proceeds: 1_000_000,
+            selling_expenses: 0,
+            payment: SalePayment::InFull,
+            buyer: Buyer::Unrelated,
+            livestock: crate::SoldLivestock::No,
+        },
+    };
+    asset.farm_rental_use = Some(farm_rental_property_use());
+    data.assets.push(asset);
+    d
 }

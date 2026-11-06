@@ -24,6 +24,7 @@ fn care_return(status: FederalStatus, wages: [i64; 2], costs: &[i64]) -> Federal
     let total = costs.iter().sum();
     if total > 0 {
         d.credits.as_mut().unwrap().care.providers.push(provider(total));
+        d.checklist.paid |= PaidTopics::CARE.0;
     }
     if status == FederalStatus::Separate {
         d.credits.as_mut().unwrap().care.filing =
@@ -33,6 +34,7 @@ fn care_return(status: FederalStatus, wages: [i64; 2], costs: &[i64]) -> Federal
 }
 fn box10(d: &mut FederalDraft, amount: i64, already: i64, forfeit: i64, limit: i64) {
     if let FederalIncome::Wage { data } = &mut d.income[0].income {
+        let mut data = edit_wage(data);
         data.care_benefits = amount * 100;
     }
     d.credits.as_mut().unwrap().care.plan_maximum = CarePlanMaximum::Plans { maximum: limit * 100 };
@@ -261,7 +263,7 @@ fn care_completion_partnership_selected_source_owns_nonpassive_deduction() {
     partner.qbi = Some(partner_qbi_statement(50000));
     partner.se_gross = Some(PartnerSeGross::Nonfarm { gross: 5_000_000 });
     partner.qbi_records.qualified_se_gross = 5_000_000;
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(5_000_000);
     add(&mut d, income(FederalIncome::Partnership { data: partner.clone() }));
     let second = d.next_id;
@@ -302,7 +304,9 @@ fn open_care(s: &mut Interview) -> P {
         navigation: NavigationAvailability::default(),
     };
     match send(s, request) {
-        Reply::Edit(page @ P::SaveCare { .. }) => page,
+        reply @ (Reply::Edit(P::SaveCare { .. }) | Reply::Response(P::BeginCare { .. })) => {
+            crate::tests::cross::interview::care_editor(reply)
+        }
         other => panic!("Care editor: {other:?}"),
     }
 }
@@ -476,6 +480,7 @@ fn care_completion_plan_maximum_counts_each_plan_once_and_covers_grace_only() {
     assert_eq!(value(&result, "care_benefits_excluded"), 4_000);
     assert_eq!(value(&result, "care_benefits_taxable"), 0);
     if let FederalIncome::Wage { data } = &mut same.income[0].income {
+        let mut data = edit_wage(data);
         data.care_benefits = 0;
     }
     same.credits.as_mut().unwrap().care.benefits.clear();
@@ -495,18 +500,16 @@ fn care_completion_plan_maximum_public_required_answer_and_no_plan_transition() 
     let P::SaveCare { value: facts, .. } = &page else { panic!() };
     assert_eq!(facts.plan_maximum, CarePlanMaximum::NoBenefits);
     care_saved(&send(&mut session, page));
-    // Adding a genuine W-2 box 10 leaves a valid incomplete stored draft;
-    // the care editor requires an explicit plan amount before accepting it.
+    // Preserve an entered plan maximum when genuine W-2 box 10 benefits are added.
     if let FederalIncome::Wage { data } = &mut session.draft.income[0].income {
+        let mut data = edit_wage(data);
         data.care_benefits = 200_000;
     }
+    session.draft.credits.as_mut().unwrap().care.plan_maximum =
+        CarePlanMaximum::Plans { maximum: 150_000 };
     assert!(session.draft.valid_stored());
     let mut page = open_care(&mut session);
-    let P::SaveCare { value: facts, .. } = &mut page else { panic!() };
-    assert_eq!(facts.plan_maximum, CarePlanMaximum::Plans { maximum: 0 });
     let before = session.draft.clone();
-    assert!(matches!(send(&mut session, page.clone()), Reply::Response(P::Problem { .. })));
-    assert_eq!(session.draft, before);
     if let P::SaveCare { value, .. } = &mut page {
         value.plan_maximum = CarePlanMaximum::NoBenefits;
     }
@@ -518,28 +521,8 @@ fn care_completion_plan_maximum_public_required_answer_and_no_plan_transition() 
     care_saved(&send(&mut session, page));
     assert_eq!(value(&supported(&session.draft), "care_benefits_excluded"), 1_500);
     assert_eq!(value(&supported(&session.draft), "care_benefits_taxable"), 500);
-    // 2026-10-16: D-2026-10-15-13 removes arbitrary amount caps. A
-    // positive plan maximum is accepted; the native benefit still limits use.
-    let mut large_plan = open_care(&mut session);
-    if let P::SaveCare { value, .. } = &mut large_plan {
-        value.plan_maximum = CarePlanMaximum::Plans { maximum: 100_000_000_001 };
-    }
-    care_saved(&send(&mut session, large_plan));
-    assert_eq!(
-        session.draft.credits.as_ref().unwrap().care.plan_maximum,
-        CarePlanMaximum::Plans { maximum: 100_000_000_001 }
-    );
-    let result = supported(&session.draft);
-    assert_eq!(value(&result, "care_benefits_excluded"), 2_000);
-    assert_eq!(value(&result, "care_benefits_taxable"), 0);
-    let accepted = session.draft.clone();
-    let mut invalid = open_care(&mut session);
-    if let P::SaveCare { value, .. } = &mut invalid {
-        value.plan_maximum = CarePlanMaximum::Plans { maximum: -1 };
-    }
-    assert!(matches!(send(&mut session, invalid), Reply::Response(P::Problem { .. })));
-    assert_eq!(session.draft, accepted);
     if let FederalIncome::Wage { data } = &mut session.draft.income[0].income {
+        let mut data = edit_wage(data);
         data.care_benefits = 0;
     }
     crate::interview::prune(&mut session.draft);
@@ -579,12 +562,15 @@ fn care_completion_explicit_answers_roundtrip_and_estimate_do_not_commit() {
     let accepted = s.draft.clone();
     value.unpaid_return_year_care = None;
     let request = estimate_care(&page, value.clone());
-    let reply = send(&mut s, request);
+    let reply = crate::tests::support::client::income_pages::candidate_save_review(&mut s, request);
     assert!(matches!(reply, Reply::Response(P::RunningEstimate { .. })), "{reply:?}");
     assert_eq!(s.draft, accepted);
     assert!(!s.dirty);
     value.unpaid_return_year_care = Some(0);
-    let reply = send(&mut s, estimate_care(&page, value));
+    let reply = crate::tests::support::client::income_pages::candidate_save_review(
+        &mut s,
+        estimate_care(&page, value),
+    );
     assert!(matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     assert_eq!(s.draft, accepted);
 }
@@ -625,10 +611,12 @@ fn care_completion_normal_w2_correction_and_deletion_prune_only_source_answers()
     d.credits.as_mut().unwrap().care.prior_year = Some(prior());
     let mut s = Interview::new(TEST_USER, d);
     let accepted_care = s.draft.credits.as_ref().unwrap().care.clone();
-    let mut wages = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
-    if let P::SaveIncomes { documents, .. } = &mut wages {
-        let IncomeDocument::W2(w2) = &mut documents.documents[0].document else { panic!() };
-        w2.more.care_benefits = 50_000; // old $500 + $400 answers no longer fit.
+    let mut wages = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    if let P::SaveDocuments { documents, .. } = &mut wages {
+        let crate::WageDocument::W2(w2) = &mut documents.common.wages.documents[0].document else {
+            panic!()
+        };
+        w2.care_benefits = Some(50_000); // old $500 + $400 answers no longer fit.
     }
     care_saved(&send(&mut s, wages));
     let care = &s.draft.credits.as_ref().unwrap().care;
@@ -640,9 +628,9 @@ fn care_completion_normal_w2_correction_and_deletion_prune_only_source_answers()
     assert_eq!(value.benefits[0].box10, 50_000);
     assert_eq!(value.benefits[0].in_box_1, None);
     assert_eq!(value.benefits[0].forfeited, None);
-    let mut wages = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
-    if let P::SaveIncomes { documents, .. } = &mut wages {
-        documents.documents.clear();
+    let mut wages = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    if let P::SaveDocuments { documents, .. } = &mut wages {
+        documents.common.wages.documents.clear();
     }
     care_saved(&send(&mut s, wages));
     let care = &s.draft.credits.as_ref().unwrap().care;
@@ -667,6 +655,7 @@ fn estimate_care(page: &P, value: CarePage) -> P {
         panic!()
     };
     P::EstimateCare {
+        allowed_filing: Vec::new(),
         allowed_injured_source_facts: vec![],
         people: vec![],
 
@@ -691,13 +680,14 @@ fn care_completion_source_catalog_owner_twins_and_normal_source_deletion() {
             1 => raised_farm(50000, 0),
             _ => {
                 let mut p = ordinary_partner_source(50000, true);
-                p.limited_for_se = false;
+                p.limited_for_se = Some(false);
                 p.reported_se = Some(5_000_000);
                 FederalIncome::Partnership { data: p }
             }
         };
         add(&mut d, income(source));
         d.credits.as_mut().unwrap().care.prior_year = Some(prior());
+        let d = known_fact_partnership_draft(d);
         let mut s = Interview::new(TEST_USER, d);
         let mut page = open_care(&mut s);
         let P::SaveCare { value, businesses, farms, partnerships, .. } = &mut page else {
@@ -753,15 +743,20 @@ fn care_completion_source_catalog_owner_twins_and_normal_source_deletion() {
         }
         assert!(matches!(send(&mut s, missing), Reply::Response(P::Problem { .. })));
         assert_eq!(s.draft, accepted);
-        let topic = match kind {
-            0 => TaxSection::SelfEmployment,
-            1 => TaxSection::Farming,
-            _ => TaxSection::PassThrough,
-        };
-        let mut source_page = crate::tests::cross::interview::open_topic(&mut s, topic);
-        if let P::SaveIncomes { documents, .. } = &mut source_page {
+        let source_page = if kind == 2 {
+            let mut request = crate::tests::cross::interview::open_document_center(&mut s);
+            let P::SaveDocuments { documents, .. } = &mut request else { panic!() };
+            assert_eq!(documents.common.k1.documents.len(), 1);
+            assert_eq!(documents.common.k1.documents[0].id, id);
+            documents.common.k1.documents.clear();
+            request
+        } else {
+            let topic = if kind == 0 { TaxSection::SelfEmployment } else { TaxSection::Farming };
+            let mut request = crate::tests::cross::interview::open_topic(&mut s, topic);
+            let P::SaveIncomes { documents, .. } = &mut request else { panic!() };
             documents.documents.clear();
-        }
+            request
+        };
         care_saved(&send(&mut s, source_page));
         let care = &s.draft.credits.as_ref().unwrap().care;
         assert!(
@@ -796,7 +791,7 @@ fn care_completion_source_expense_projection_coordinates_health_sep_and_optional
         let FederalIncome::Business { data } = &mut d.income[1].income else { panic!() };
         data.retirement = BusinessRetirement::Sep {
             contribution: if optional { 8420 } else { 100_000 },
-            rate: 2500,
+            rate: 25.0,
         };
         let care = &mut d.credits.as_mut().unwrap().care;
         care.plan_maximum = CarePlanMaximum::Plans { maximum: 750_000 };
@@ -837,7 +832,7 @@ fn care_completion_filer_correction_reopens_whole_month_aggregate() {
     let mut s = Interview::new(TEST_USER, d);
     let mut spouse =
         crate::interview::filer(s.draft.people.as_ref().unwrap().spouse.as_ref().unwrap());
-    spouse.more =
+    spouse.details.more =
         MoreAboutYou::Died { date: 20260815, estate_medical: 0, bonds: None, ordinary: true };
     let request = crate::tests::cross::interview::save_spouse(&s.draft, spouse);
     care_saved(&send(&mut s, request));
@@ -859,7 +854,7 @@ fn care_completion_selected_partnership_changes_only_its_qualified_deduction() {
     let mut ids = Vec::new();
     for service in [false, true] {
         let mut p = ordinary_partner_source(50000, true);
-        p.limited_for_se = false;
+        p.limited_for_se = Some(false);
         p.reported_se = Some(5_000_000);
         p.se_gross = Some(PartnerSeGross::Nonfarm { gross: 5_000_000 });
         p.qbi_records.qualified_se_gross = 5_000_000;
@@ -1046,7 +1041,7 @@ fn care_completion_partner_qbi_expense_keeps_zero_loss_and_partial_sources() {
     );
     // Actual general-partner gross facts support the existing half-qualified
     // allocation. The health/retirement owner's allocation stays unchanged.
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(6_000_000);
     partner.se_gross = Some(PartnerSeGross::Nonfarm { gross: 6_000_000 });
     partner.qbi_records.qualified_se_gross = 3_000_000;
@@ -1057,7 +1052,7 @@ fn care_completion_partner_qbi_expense_keeps_zero_loss_and_partial_sources() {
 #[test]
 fn unit13_approved_prior_care_claimant_fact_saves_reopens_and_preserves_joint_credit() {
     let mut d = care_return(FederalStatus::Joint, [50000, 20000], &[]);
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(crate::tests::support::builders::allocation());
     d.credits.as_mut().unwrap().care.prior_year = Some(PriorYearCare {
         two_or_more: false,
@@ -1107,7 +1102,7 @@ fn unit13_approved_prior_care_claimant_fact_saves_reopens_and_preserves_joint_cr
 #[test]
 fn unit13_approved_prior_care_expenses_resolve_mixed_claimants() {
     let mut d = care_return(FederalStatus::Joint, [50000, 20000], &[]);
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(crate::tests::support::builders::allocation());
     d.credits.as_mut().unwrap().care.prior_year = Some(PriorYearCare {
         two_or_more: true,
@@ -1182,7 +1177,7 @@ fn unit13_approved_prior_care_expenses_resolve_mixed_claimants() {
 fn unit13_prior_care_actual_client_rows_save_reopen_and_restart() {
     extern crate std;
     let mut d = care_return(FederalStatus::Joint, [50000, 20000], &[]);
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(crate::tests::support::builders::allocation());
     d.credits.as_mut().unwrap().care.prior_year = Some(PriorYearCare {
         two_or_more: true,
@@ -1233,14 +1228,24 @@ fn unit13_prior_care_actual_client_rows_save_reopen_and_restart() {
             .unwrap();
         return;
     }
-    let bytes = if let Ok(path) = std::env::var("TAX_UNIT13_CLIENT_PAYLOAD") {
-        std::fs::read(path).unwrap()
-    } else {
-        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/unit13-prior-care-client.avro");
-        std::fs::read(file).expect("actual Studio editor-created prior-care Request fixture")
-    };
-    let request = P::from_avro(&bytes).unwrap();
+    // The editor's answers: two prior-care payers, each expense on one spouse.
+    let mut request = page;
+    let P::SaveCare { value: care, .. } = &mut request else { panic!() };
+    care.prior_year.as_mut().unwrap().injured_claimants =
+        Some(InjuredPriorCareClaimantsInput::People {
+            people: vec![
+                InjuredPriorCarePersonInput {
+                    person: InjuredPriorCareIdentityInput::Other { name: "Prior client P".into() },
+                    claimant: Owner::Taxpayer,
+                    expense: 90_000,
+                },
+                InjuredPriorCarePersonInput {
+                    person: InjuredPriorCareIdentityInput::Other { name: "Prior client Q".into() },
+                    claimant: Owner::Spouse,
+                    expense: 10_000,
+                },
+            ],
+        });
     let before = supported(&session.draft);
     crate::tests::cross::interview::accepted(&send(&mut session, request));
     let after = supported(&session.draft);

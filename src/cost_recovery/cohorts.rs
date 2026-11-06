@@ -2,10 +2,9 @@
 // Original elections and actual prior recovery stay source facts. Shared monthly
 // history owns proration; the property owner owns mandatory disposition income.
 use crate::kernel::cost_recovery::{Month, monthly_history::ActualMonthlySchedule};
-use crate::kernel::lines::{
-    LineValue, emit as emit_lines, line_cents, push_line, row as calculation_row,
-};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::ratio::fraction;
+use crate::line_emission::{emit as emit_lines, line_cents, push_line};
 use crate::{AmortizationEnd, FederalResult, FormLine, TaxForm};
 use alloc::{format, string::String, vec::Vec};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
@@ -18,7 +17,8 @@ pub struct OtherAmortizableCost {
     pub description: String,
     /// Documented qualifying business cost before statutory adjustments
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Date costs were paid or incurred under the accounting method
     #[libertas_date_only]
@@ -82,14 +82,17 @@ pub struct PollutionControlCost {
     pub coal_atmospheric: bool,
     /// Useful life for statutory fifteen-year basis allocation
     #[libertas_number(min = 1)]
+    #[libertas_physical_unit("month")]
     pub useful_life_months: u32,
     /// Documented eligible statutory basis portion before bonus
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amortizable_allocation: i64,
     /// Allowed or allowable bonus on this facility
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub bonus: i64,
     /// Original elected amortization beginning
     pub start_choice: PollutionStart,
@@ -164,8 +167,9 @@ pub enum ResearchTreatment {
 /// Actual elective research capitalization and any whole-cohort property conversion
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct ResearchCapitalization {
-    /// Original elected recovery period in months
+    /// Original elected recovery period
     #[libertas_number(min = 60)]
+    #[libertas_physical_unit("month")]
     pub months: u32,
     /// First month in which benefits were realized
     /// [NullText]
@@ -206,13 +210,16 @@ pub enum DomesticResearchAcceleration {
 pub struct LeaseAcquisitionCost {
     /// Remaining lease term at acquisition
     #[libertas_number(min = 1)]
+    #[libertas_physical_unit("month")]
     pub remaining_term_months: u32,
-    /// Renewal/expected continuation months
+    /// Renewal/expected continuation period
     #[libertas_number(min = 0)]
+    #[libertas_physical_unit("month")]
     pub renewal_months: u32,
     /// Part of acquisition cost attributable to the original remaining term
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost_attributed_to_remaining_term: i64,
 }
 
@@ -676,7 +683,7 @@ impl OtherAmortizableCost {
                         selling_expenses,
                         payment: crate::SalePayment::InFull,
                         buyer: crate::Buyer::Unrelated,
-                        livestock: crate::Livestock::No,
+                        livestock: crate::SoldLivestock::No,
                     } => Some(positive(proceeds - selling_expenses)),
                     crate::DisposalKind::Scrapped | crate::DisposalKind::PersonalUse => Some(0),
                     _ => None,
@@ -1192,7 +1199,8 @@ pub struct OtherAmortizableCostPage {
     pub description: String,
     /// Documented qualifying business cost before statutory adjustments
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Date costs were paid or incurred under the accounting method
     #[libertas_date_only]

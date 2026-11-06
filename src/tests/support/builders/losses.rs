@@ -41,7 +41,7 @@ pub(in crate::tests) fn prior_nol(years: &[(u32, i64)]) -> NolHistory {
 pub(in crate::tests) fn nol_cash_gift(years: &[(u32, i64)]) -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     ded.set_cash_charity(4000000);
     d.screening.as_mut().unwrap().nol = prior_nol(years);
     d
@@ -84,7 +84,7 @@ pub(in crate::tests) fn cash_carry_with_current_property(
         deductions.appraisals.push(gift_appraisal(2, 20260615));
         draft.next_id = 3;
     }
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     draft
 }
 
@@ -124,7 +124,7 @@ pub(in crate::tests) fn cash_carry_with_hosted_student(
             .collect(),
         documented: true,
     });
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     draft
 }
 
@@ -141,7 +141,7 @@ pub(in crate::tests) fn cash_carry_with_appreciated_stock(
     stock.value = gift;
     stock.basis = (gift / 4).min(500_000);
     deductions.property_gifts.push(stock);
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     draft
 }
 
@@ -165,8 +165,8 @@ pub(in crate::tests) fn cash_carry_with_vehicle(
     draft.income = vec![wage(1, Owner::Taxpayer, 10_000_000, 650_000)];
     let deductions = draft.deductions.as_mut().unwrap();
     deductions.charity_carryovers = vec![prior_cash_charity(2025, prior_cash)];
-    deductions.property_gifts.push(donated_personal_vehicle(treatment));
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    push_gift(deductions, donated_personal_vehicle(treatment));
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     draft
 }
 
@@ -190,13 +190,23 @@ pub(in crate::tests) fn nol_work_deductions(
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, wages * 100, 0);
     let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.work_deductions = work_deductions(tips * 100, overtime * 100);
-    d.deductions.as_mut().unwrap().vehicle_loans = vec![FederalVehicleInterest {
-        label: "Synthetic vehicle".into(),
-        interest: interest * 100,
+    drop(data);
+    d.deductions.as_mut().unwrap().vehicle_loans = vec![VehicleLoanSource {
+        id: 0,
+        assigned: crate::DocumentRecipient::Taxpayer,
+        owner_source: Some(crate::OwnerSource::Added),
+        joint_share: None,
         business: 0,
-        original_use: true,
-        assembled_in_us: true,
+        document: vehicle_paper(FederalVehicleInterest {
+            lender: crate::PrintedParty::from_name("Synthetic vehicle".into()),
+            borrower: Default::default(),
+            interest: interest * 100,
+            refund: 0,
+            original_use: true,
+            assembled_in_us: true,
+        }),
     }];
     d
 }
@@ -391,8 +401,8 @@ pub(in crate::tests) fn ptp_ebl_nol_draft(
     let mut draft = complete(status);
     draft.income = vec![wage(1, Owner::Taxpayer, wages, 0)];
     let mut dividend = native_dividend(reit, 0, 0);
-    dividend.section199a = ReitDividends::Reported { amount: reit, eligible: true };
-    add(&mut draft, income(FederalIncome::Dividend { data: dividend }));
+    dividend.section199a = ReitDividends::Reported { amount: reit, eligible: Some(true) };
+    add(&mut draft, income(FederalIncome::Dividend { data: dividend_source(dividend) }));
     draft.screening.as_mut().unwrap().nol = history;
     draft
 }

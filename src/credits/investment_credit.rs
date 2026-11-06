@@ -54,176 +54,21 @@
 //   both owners/claim selections, and actual Business/Rental Save, correction and restart.
 //   This tax source does not establish final property-income attribution. Evidence: as Form 3468.
 
+pub use crate::investment_credit_model::{
+    CreditYear, EnergyProperty, EnergySection, InvestmentCredit, RehabilitationCredit,
+};
+pub(crate) use crate::investment_credit_source::energy_percent;
+#[cfg(test)]
+use crate::investment_credit_source::period_end;
 use crate::kernel::ratio::{dollars, fraction, positive};
 use crate::year_constants::{
-    ENERGY_BASE_RATE_PERCENT, ENERGY_BASIS_REDUCTION_PERCENT, ENERGY_BONUS_BASE_PERCENT,
-    ENERGY_BONUS_INCREASED_PERCENT, ENERGY_CONSTRUCTION_CUTOFF_DATE, ENERGY_INCREASED_RATE_PERCENT,
-    GEOTHERMAL_HEAT_PUMP_CUTOFF_DATE, INVESTMENT_RECAPTURE_PERCENT,
+    ENERGY_BASIS_REDUCTION_PERCENT, ENERGY_CONSTRUCTION_CUTOFF_DATE, INVESTMENT_RECAPTURE_PERCENT,
     REHABILITATION_BASIS_REDUCTION_PERCENT, REHABILITATION_CREDIT_PERCENT,
-    REHABILITATION_PERIOD_MONTHS, REHABILITATION_PERIOD_YEARS, REHABILITATION_PHASED_PERIOD_MONTHS,
-    REHABILITATION_RATABLE_PERCENT, REHABILITATION_SUBSTANTIAL_FLOOR_CENTS,
+    REHABILITATION_PERIOD_YEARS, REHABILITATION_RATABLE_PERCENT,
 };
 use crate::{BusinessAsset, BusinessCredit};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
-
-/// Credit from this property for one earlier year
-/// From your Forms 3800 for that year and later years: the part of that year's credit from this property you used, and the part still carried to 2026.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct CreditYear {
-    /// Year the credit arose
-    // Tax-year source window: only the stated current or prior tax years apply.
-    #[libertas_number(min = 2021, max = 2025)]
-    pub year: u32,
-    /// Part used on your 2025 or earlier returns
-    /// Including any part carried back. Whole dollars.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub used: i64,
-    /// Part carried forward to 2026
-    /// Added to your general business credit carryforwards from this property; do not enter it again under More credits.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub carried: i64,
-}
-
-/// Rehabilitation credit for a certified historic building (Form 3468 Part VII)
-/// The 20% credit for this row's qualified rehabilitation expenditures, allowed 4% a year for five years from the year the building was placed in service. The App reduces the building's depreciable basis by the full 20% and figures recapture (Form 4255) when the building is sold within five years.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct RehabilitationCredit {
-    /// First day of your measuring period (line 1d)
-    /// You choose a 24-month period (60 months for a rehabilitation done in phases under written plans completed before work began) that ends in the year the building was placed in service. The App shows its last day.
-    #[libertas_date_only]
-    pub period_start: u32,
-    /// Rehabilitation done in phases under written architectural plans
-    /// Yes uses a 60-month measuring period.
-    #[libertas_default(false)]
-    pub phased: bool,
-    /// Adjusted basis of the building at the start of the period (line 1e)
-    /// Your cost of the building and its structural components, less depreciation, on the period's first day (or the day you acquired it, if later). Exclude land.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub building_basis: i64,
-    /// Qualified rehabilitation expenditures during the period (line 1f)
-    /// All qualified rehabilitation expenditures for this building during the measuring period, including other phases. They must exceed both $5,000 and the adjusted basis above.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub period_expenditures: i64,
-    /// This building's credit on your 2021–2025 returns
-    /// One row for each year of the five-year credit period before 2026. Leave empty for a building placed in service in 2026.
-    /// ----
-    /// Year
-    #[libertas_unordered]
-    // Tax structure: the five prior credit years, 2021 through 2025.
-    #[libertas_size(max = 5)]
-    pub earlier: Vec<CreditYear>,
-    /// Other credits you could have used instead (Form 4255 line 13)
-    /// Needed only when the building was sold or stopped being used in your business in 2026 within five years: the result of Form 4255 Worksheet 2. Zero when you had no other unused general business credits in those years.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub freed: i64,
-    /// Certified historic rehabilitation confirmed
-    /// The building is listed in the National Register or certified as contributing to a registered historic district; the National Park Service approved the rehabilitation (Part 3 of NPS Form 10-168), or its approval is pending and you will file within 30 months of the first claim; this row holds only qualified rehabilitation expenditures — capitalized, depreciated straight line, not the cost of buying or enlarging the building and not for a part used by a tax-exempt or government user; you own the building (no lease pass-through election) and made no election to take expenditures before the building was placed in service; none of its cost is financed by nonqualified nonrecourse financing (section 49), and after it was placed in service that financing never increased. No leaves the 2026 credit out of this estimate.
-    pub confirmed: bool,
-}
-
-/// Energy property
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum EnergyProperty {
-    /// Solar panels or other solar electric or heating equipment
-    /// Not equipment that heats a swimming pool.
-    Solar,
-    /// Wind turbine
-    /// With construction begun before 2025, a turbine of 100 kilowatts or less.
-    Wind,
-    /// Battery or other energy storage
-    /// At least 5 kilowatt-hours of capacity.
-    Storage,
-    /// Geothermal heat pump
-    /// Equipment using the ground or ground water to heat or cool a building of this business.
-    GeothermalHeatPump,
-}
-
-/// Section of an earlier energy credit
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum EnergySection {
-    /// Energy credit (Form 3468 Part VI, section 48)
-    Energy,
-    /// Clean electricity investment credit (Form 3468 Part V, section 48E)
-    CleanElectricity,
-}
-
-/// Investment credit (Form 3468)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[allow(clippy::large_enum_variant)]
-pub enum InvestmentCredit {
-    /// None
-    No,
-    /// Rehabilitation credit for a certified historic building (Form 3468 Part VII)
-    /// Only on a 39-year building row that holds just the qualified rehabilitation expenditures; enter the purchase of the building and any enlargement as other rows.
-    Rehabilitation(RehabilitationCredit),
-    /// Energy credit for property placed in service in 2026 (Form 3468 Part V or VI)
-    /// Solar, wind, energy storage or geothermal heat pump equipment of this business. The App reduces its depreciable basis by half of the credit.
-    NewEnergy {
-        /// Kind of property
-        kind: EnergyProperty,
-        /// Date construction began (line 4)
-        /// When physical work of a significant nature began, or when you first paid or incurred 5% of the cost. Before 2025 it is the energy credit (section 48); later, the clean electricity investment credit (section 48E), except a geothermal heat pump.
-        #[libertas_date_only]
-        construction_began: u32,
-        /// Qualifies for the 30% rate (line 7a or 8b)
-        /// Yes when the installation's maximum net output is under 1 megawatt AC (storage: under 1 megawatt of capacity), construction began before January 29, 2023, or the prevailing wage and apprenticeship requirements were met without penalty payments. No uses 6%.
-        increased_rate: bool,
-        /// Meets the domestic content requirement (line 9)
-        /// You have the manufacturer's certification that the steel, iron and manufactured products meet the section 48 or 48E domestic content percentage.
-        #[libertas_default(false)]
-        domestic_content: bool,
-        /// Located in an energy community (line 10)
-        /// A brownfield site, or a census tract the IRS lists for the year (statistical area with fossil-fuel employment, or a closed coal mine or plant).
-        #[libertas_default(false)]
-        energy_community: bool,
-        /// Energy credit eligibility confirmed
-        /// A new installation you own (not an expansion of an existing one or leased to you), used in the United States in this business, meeting the IRS performance standards; no low-income communities allocation or interconnection property is claimed; no tax-exempt bonds, subsidized energy financing or nonqualified nonrecourse financing (section 49); for construction begun before 2025, placed in service within four years of it; for clean electricity property begun after 2025, no prohibited foreign entity provided material assistance; no elective payment or transfer of the credit. No leaves this credit out of this estimate.
-        confirmed: bool,
-    },
-    /// Energy credit claimed for an earlier year
-    /// Property placed in service before 2026 whose basis an energy or clean electricity investment credit reduced. The App keeps the reduced depreciable basis and figures recapture (Form 4255) when it is sold within five years.
-    EarlierEnergy {
-        /// Credit
-        section: EnergySection,
-        /// Credit determined for this property
-        /// From the Form 3468 for the year it was placed in service, before any limit. Whole dollars.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 100)]
-        credit: i64,
-        /// Part used on your 2025 or earlier returns
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        used: i64,
-        /// Part carried forward to 2026
-        /// Added to your general business credit carryforwards from this property; do not enter it again under More credits.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        carried: i64,
-        /// Other credits you could have used instead (Form 4255 line 13)
-        /// Needed only when the property was sold or stopped being used in your business in 2026 within five years. Zero when you had no other unused general business credits in those years.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        freed: i64,
-        /// No later change confirmed
-        /// Since it was placed in service, nonqualified nonrecourse financing for it never increased and, if the 30% rate rested on prevailing wages, every alteration or repair paid them. No: the recapture of those changes is not calculated, and this return is refused.
-        unchanged: bool,
-    },
-}
 
 /// Rates from the entity's Form 3468 Part I
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -246,7 +91,8 @@ pub struct EnergyRate {
 pub struct OwnInvestmentCredit {
     /// Gross credit for this property, before Form 3800 limits
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// Property basis and deductible expenses already reflect this credit
     /// Confirm the reductions required by your completed Form3468. The App separately applies this year's outside-basis reduction once; do not subtract that reduction from opening basis. No leaves this credit out of the estimate.
@@ -261,7 +107,8 @@ pub enum K1InvestmentProperty {
         /// Your share of qualified rehabilitation expenditures
         #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         expenditures: i64,
         /// Year the building was placed in service
         /// From the entity's statement. The credit is 4% of the expenditures in each of the five years starting that year.
@@ -282,6 +129,7 @@ pub enum K1InvestmentProperty {
         /// [SetText]
         /// My own Form 3468 credit is
         #[libertas_default($null)]
+        #[libertas_hidden]
         own_form: Option<OwnInvestmentCredit>,
     },
     /// Rehabilitation expenditures, other activities — K-1 (1065) box 20 code D or K-1 (1120-S) box 17 code C
@@ -289,7 +137,8 @@ pub enum K1InvestmentProperty {
         /// Your share of qualified rehabilitation expenditures
         #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         expenditures: i64,
         /// Year the building was placed in service
         #[libertas_llm_doc_field(allow_empty = false)]
@@ -309,6 +158,7 @@ pub enum K1InvestmentProperty {
         /// [SetText]
         /// My own Form 3468 credit is
         #[libertas_default($null)]
+        #[libertas_hidden]
         own_form: Option<OwnInvestmentCredit>,
     },
     /// Basis of energy property placed in service in 2026 — K-1 (1065) box 20 code E or K-1 (1120-S) box 17 code D
@@ -316,7 +166,8 @@ pub enum K1InvestmentProperty {
         /// Your share of the basis
         #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         basis: i64,
         /// Rates from the entity's Form 3468 Part I
         #[libertas_llm_doc_field]
@@ -334,6 +185,7 @@ pub enum K1InvestmentProperty {
         /// [SetText]
         /// My own Form 3468 credit is
         #[libertas_default($null)]
+        #[libertas_hidden]
         own_form: Option<OwnInvestmentCredit>,
     },
     /// Clean electricity investment property placed in service in 2026 — K-1 (1065) box 20 code AV or K-1 (1120-S) box 17 code AV
@@ -341,7 +193,8 @@ pub enum K1InvestmentProperty {
         /// Your share of the basis
         #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         basis: i64,
         /// Energy storage technology
         /// Form 3468 Part V Section B instead of Section A.
@@ -364,24 +217,9 @@ pub enum K1InvestmentProperty {
         /// [SetText]
         /// My own Form 3468 credit is
         #[libertas_default($null)]
+        #[libertas_hidden]
         own_form: Option<OwnInvestmentCredit>,
     },
-}
-
-// ---- dates -------------------------------------------------------------------------------------
-
-// The last day of a measuring period of `months` months beginning on `start`
-// (yyyymmdd): the same day `months` later, less one day (section 47(c)(1)(B)).
-pub(crate) fn period_end(start: u32, months: u32) -> u32 {
-    let (year, month, day) = (start / 10000, start / 100 % 100, start % 100);
-    let total = year * 12 + (month - 1) + months;
-    let (year, month) = (total / 12, total % 12 + 1);
-    let day = day.min(crate::dates::days_in_month(year, month));
-    if day > 1 {
-        return year * 10000 + month * 100 + day - 1;
-    }
-    let (year, month) = if month == 1 { (year - 1, 12) } else { (year, month - 1) };
-    crate::dates::last_day_of_month(year, month)
 }
 
 // Whole years from the first day of the month `placed` to `ceased` (Reg.
@@ -460,31 +298,6 @@ pub(crate) fn recapture(
 // ---- rehabilitation credit ---------------------------------------------------------------------
 
 impl RehabilitationCredit {
-    pub(crate) fn valid(&self) -> bool {
-        crate::federal_rules::valid_date(self.period_start)
-            && (0..=100_000_000_000).contains(&self.building_basis)
-            && (1..=100_000_000_000).contains(&self.period_expenditures)
-            && (0..=100_000_000_000).contains(&self.freed)
-            && self.earlier.len() <= 5
-            && self.earlier.iter().all(|row| {
-                (2021..=2025).contains(&row.year)
-                    && (0..=100_000_000_000).contains(&row.used)
-                    && (0..=100_000_000_000).contains(&row.carried)
-            })
-    }
-
-    // The last day of the measuring period.
-    pub(crate) fn period_end(&self) -> u32 {
-        period_end(
-            self.period_start,
-            if self.phased {
-                REHABILITATION_PHASED_PERIOD_MONTHS
-            } else {
-                REHABILITATION_PERIOD_MONTHS
-            },
-        )
-    }
-
     // Credit used and carried on earlier returns, whole dollars.
     pub(crate) fn used(&self) -> i64 {
         self.earlier.iter().map(|row| row.used).sum()
@@ -492,79 +305,6 @@ impl RehabilitationCredit {
 
     pub(crate) fn carried(&self) -> i64 {
         self.earlier.iter().map(|row| row.carried).sum()
-    }
-
-    // The relationships the server repeats from the page rules and adds
-    // (the measuring period's calendar months, the years of the history and
-    // each year's share), for a property placed in service on `placed` whose
-    // qualified rehabilitation expenditures are `qre` (cents).
-    pub(crate) fn issue(
-        &self,
-        placed: u32,
-        qre: i64,
-    ) -> Option<crate::validation::ValidationIssue> {
-        use crate::validation::ValidationIssue;
-        if self.period_expenditures
-            <= self.building_basis.max(REHABILITATION_SUBSTANTIAL_FLOOR_CENTS)
-        {
-            return Some(
-                ValidationIssue::new("REHABILITATION_NOT_SUBSTANTIAL")
-                    .at_field("period_expenditures"),
-            );
-        }
-        if let Some((i, _)) = self
-            .earlier
-            .iter()
-            .enumerate()
-            .find(|(i, row)| self.earlier[..*i].iter().any(|p| p.year == row.year))
-        {
-            return Some(
-                ValidationIssue::new("INVESTMENT_CREDIT_YEAR_TWICE")
-                    .at_field("year")
-                    .in_list("earlier", i),
-            );
-        }
-        if self.period_end() / 10000 != placed / 10000 {
-            return Some(
-                ValidationIssue::new("REHABILITATION_PERIOD_NOT_IN_SERVICE_YEAR")
-                    .at_field("period_start"),
-            );
-        }
-        let first = placed / 10000;
-        if let Some((i, _)) =
-            self.earlier.iter().enumerate().find(|(_, row)| {
-                row.year < first || row.year >= first + REHABILITATION_PERIOD_YEARS
-            })
-        {
-            return Some(
-                ValidationIssue::new("INVESTMENT_CREDIT_YEAR_OUTSIDE_PERIOD")
-                    .at_field("year")
-                    .in_list("earlier", i),
-            );
-        }
-        let share = dollars(fraction(qre, REHABILITATION_RATABLE_PERCENT, 100)) * 100;
-        if let Some((i, _)) = self
-            .earlier
-            .iter()
-            .enumerate()
-            .find(|(_, row)| i128::from(row.used) + i128::from(row.carried) > i128::from(share))
-        {
-            return Some(
-                ValidationIssue::new("INVESTMENT_CREDIT_HISTORY_ABOVE_CREDIT")
-                    .at_field("carried")
-                    .in_list("earlier", i),
-            );
-        }
-        None
-    }
-    pub(crate) fn rule(&self, placed: u32, qre: i64) -> Option<&'static str> {
-        self.issue(placed, qre).map(|issue| issue.key)
-    }
-
-    // The credit determined for the placed-in-service year (20% of the
-    // expenditures), cents.
-    pub(crate) fn determined(qre: i64) -> i64 {
-        fraction(qre, REHABILITATION_CREDIT_PERCENT, 100)
     }
 
     // The 2026 ratable share (4% of the expenditures) of a building placed in
@@ -591,20 +331,6 @@ impl RehabilitationCredit {
     }
 }
 
-// ---- energy credit -------------------------------------------------------------------------------
-
-// The credit percent of the credit base: the base rate or the increased rate
-// plus the bonuses, which are 10% with the increased rate and 2% otherwise
-// (section 48(a)(12), (14); 48E(a)(3)).
-pub(crate) fn energy_percent(increased: bool, domestic: bool, community: bool) -> i64 {
-    let (base, bonus) = if increased {
-        (ENERGY_INCREASED_RATE_PERCENT, ENERGY_BONUS_INCREASED_PERCENT)
-    } else {
-        (ENERGY_BASE_RATE_PERCENT, ENERGY_BONUS_BASE_PERCENT)
-    };
-    base + if domestic { bonus } else { 0 } + if community { bonus } else { 0 }
-}
-
 impl EnergyRate {
     pub(crate) fn percent(&self) -> i64 {
         energy_percent(self.increased_rate, self.domestic_content, self.energy_community)
@@ -622,30 +348,6 @@ pub(crate) fn energy_section(kind: EnergyProperty, began: u32) -> BusinessCredit
     }
 }
 
-impl InvestmentCredit {
-    pub(crate) fn is_some(&self) -> bool {
-        !matches!(self, Self::No)
-    }
-
-    pub(crate) fn valid(&self) -> bool {
-        match self {
-            Self::No => true,
-            Self::Rehabilitation(claim) => claim.valid(),
-            Self::NewEnergy { kind, construction_began, .. } => {
-                crate::federal_rules::valid_date(*construction_began)
-                    && *construction_began >= 20100101
-                    && (*kind != EnergyProperty::GeothermalHeatPump
-                        || *construction_began < GEOTHERMAL_HEAT_PUMP_CUTOFF_DATE)
-            }
-            Self::EarlierEnergy { credit, used, carried, freed, .. } => {
-                (100..=100_000_000_000).contains(credit)
-                    && [used, carried, freed].iter().all(|v| (0..=100_000_000_000).contains(*v))
-                    && [credit, used, carried, freed].iter().all(|v| **v % 100 == 0)
-            }
-        }
-    }
-}
-
 // ---- the credit on a business or farm asset ------------------------------------------------------
 
 impl BusinessAsset {
@@ -653,9 +355,6 @@ impl BusinessAsset {
     // (the qualified rehabilitation expenditures of a building row).
     pub(crate) fn credit_cost(&self) -> i64 {
         self.credit_cost_on(self.cost)
-    }
-    pub(crate) fn credit_cost_on(&self, cost: i64) -> i64 {
-        self.business_share_of(cost)
     }
 
     // The Form 3800 credit the property's 2026 credit belongs to, or the
@@ -671,23 +370,6 @@ impl BusinessAsset {
                 EnergySection::Energy => BusinessCredit::Energy,
                 EnergySection::CleanElectricity => BusinessCredit::CleanElectricity,
             }),
-        }
-    }
-
-    // The energy credit determined for the supplied contextual cost, whole dollars.
-    pub(crate) fn energy_credit_determined_on(&self, cost: i64) -> i64 {
-        match &self.investment_credit {
-            InvestmentCredit::NewEnergy {
-                increased_rate,
-                domestic_content,
-                energy_community,
-                ..
-            } => dollars(fraction(
-                positive(self.credit_cost_on(cost) - self.elected179()),
-                energy_percent(*increased_rate, *domestic_content, *energy_community),
-                100,
-            )),
-            _ => 0,
         }
     }
 
@@ -740,24 +422,6 @@ impl BusinessAsset {
     // rehabilitation credit determined, half of an energy credit.
     pub(crate) fn investment_basis_reduction(&self) -> i64 {
         self.investment_basis_reduction_on(self.cost)
-    }
-    pub(crate) fn investment_basis_reduction_on(&self, cost: i64) -> i64 {
-        match &self.investment_credit {
-            InvestmentCredit::No => 0,
-            InvestmentCredit::Rehabilitation(_) => fraction(
-                RehabilitationCredit::determined(self.credit_cost_on(cost)),
-                REHABILITATION_BASIS_REDUCTION_PERCENT,
-                100,
-            ),
-            InvestmentCredit::NewEnergy { .. } => fraction(
-                self.energy_credit_determined_on(cost) * 100,
-                ENERGY_BASIS_REDUCTION_PERCENT,
-                100,
-            ),
-            InvestmentCredit::EarlierEnergy { credit, .. } => {
-                fraction(*credit, ENERGY_BASIS_REDUCTION_PERCENT, 100)
-            }
-        }
     }
 
     // The basis increase a recapture in 2026 brings back, cents.
@@ -851,7 +515,7 @@ pub(crate) struct PropertyRows<'a> {
 
 impl PropertyRows<'_> {
     pub(crate) fn report(&self, r: &mut crate::FederalResult) {
-        use crate::kernel::lines::{form_count, form_line, line_cents};
+        use crate::line_emission::{form_count, form_line, line_cents};
         use crate::{FormLine, TaxForm};
         let prefix = self.prefix;
         let input = [self.input];
@@ -1123,7 +787,19 @@ const ACTIVE_ACTIVITY: &str = "Form 3468 for business property needs an active U
 // The investment credits of the business and farm assets and the rental
 // improvements: refusals, Form 3468 and Form 4255 rows and the Form 3800
 // entries of 2026. Schedule K-1 items are collected where the K-1s are.
+#[cfg(test)]
 pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> Claims {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    claims_with_claims(crate::related_forms::RelatedFormContext::original(d, &source_claims), r)
+}
+
+pub(crate) fn claims_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    r: &mut crate::FederalResult,
+) -> Claims {
+    let d = form_context.draft;
+    let source_claims = form_context.claims;
+    let direct_participation = form_context.participation();
     use crate::{FederalIncome, PassiveWorksheet};
     let mut out = Claims::default();
     for entry in &crate::community::entries(d) {
@@ -1140,7 +816,8 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                         crate::BusinessActivity::Ordinary { .. }
                             | crate::BusinessActivity::Farming { .. }
                     ) && data.source == crate::BusinessSource::UnitedStates
-                        && data.material_participation
+                        && (direct_participation.get(entry.id)
+                            == crate::participation::Participation::Yes)
                         && asset.valid();
                     crate::require_localized!(
                         r,
@@ -1173,7 +850,12 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                     if !active {
                         continue;
                     }
-                    let cost = match crate::cooperative_basis::current_cost(d, entry.id, asset) {
+                    let cost = match crate::cooperative_basis::current_cost_with_claims(
+                        d,
+                        entry.id,
+                        asset,
+                        source_claims,
+                    ) {
                         Ok(cost) => cost,
                         Err(issue) => {
                             crate::section179_return::Issue::Prepared(issue).report(r);
@@ -1184,7 +866,7 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                     let credit = asset.current_year_investment_credit_on(cost);
                     if credit > 0 {
                         out.entries.push(crate::general_business_credit::CreditEntry {
-                            source_owner: Some(entry.owner),
+                            source_owner: Some(entry.owner.owned()),
                             conditional_origin: None,
                             transfer: 0,
                             elective: 0,
@@ -1198,7 +880,8 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                     }
                     let recapture_tax = recapture.map_or(0, |v| v.tax);
                     out.recapture_tax += recapture_tax;
-                    out.recapture_by_owner[usize::from(entry.owner == crate::Owner::Spouse)] +=
+                    out.recapture_by_owner
+                        [usize::from(entry.owner == crate::DocumentOwner::Spouses)] +=
                         recapture_tax;
                     for (year, amount, cut) in asset.carried_history() {
                         out.carried.push(Carried {
@@ -1270,7 +953,7 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                     }
                     if credit > 0 {
                         out.entries.push(crate::general_business_credit::CreditEntry {
-                            source_owner: Some(entry.owner),
+                            source_owner: Some(entry.owner.owned()),
                             conditional_origin: None,
                             transfer: 0,
                             elective: 0,
@@ -1280,13 +963,14 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                             year: 2026,
                             amount: credit,
                             passive: (!(data.participation.professional()
-                                && d.professional(entry.owner).is_some()))
+                                && d.professional(entry.owner.owned()).is_some()))
                             .then_some(PassiveWorksheet::Rehabilitation),
                         });
                     }
                     let recapture_tax = recapture.map_or(0, |v| v.tax);
                     out.recapture_tax += recapture_tax;
-                    out.recapture_by_owner[usize::from(entry.owner == crate::Owner::Spouse)] +=
+                    out.recapture_by_owner
+                        [usize::from(entry.owner == crate::DocumentOwner::Spouses)] +=
                         recapture_tax;
                     for row in &claim.earlier {
                         if row.carried > 0 {
@@ -1294,7 +978,7 @@ pub(crate) fn claims(d: &crate::FederalDraft, r: &mut crate::FederalResult) -> C
                                 credit: BusinessCredit::Rehabilitation,
                                 year: row.year,
                                 passive: (!(data.participation.professional()
-                                    && d.professional(entry.owner).is_some()))
+                                    && d.professional(entry.owner.owned()).is_some()))
                                 .then_some(PassiveWorksheet::Rehabilitation),
                                 amount: dollars(row.carried),
                                 cut: fraction(dollars(row.carried), percent, 100),
@@ -1315,41 +999,6 @@ const RECAPTURE_HISTORY: &str = "Investment credit property sold or taken out of
 const RENTAL_SCOPE: &str = "A rental improvement's rehabilitation credit needs a rental with no personal use, no like-kind exchange in 2026, no land in the row and a measuring period that ends in the year it was available to rent.";
 
 impl BusinessAsset {
-    // The shape the investment credit needs from the asset row (the page
-    // rules' server twin): a rehabilitation credit on a 39-year building row
-    // placed in service after 2017, new energy property on 5-year equipment
-    // placed in service in 2026, an earlier energy credit on continuing
-    // 5-year equipment.
-    pub(crate) fn investment_shape_ok(&self) -> bool {
-        self.investment_shape_on_cost(self.cost)
-    }
-    pub(crate) fn investment_shape_on_cost(&self, cost: i64) -> bool {
-        let new = matches!(self.history, crate::EquipmentHistory::New { .. });
-        match &self.investment_credit {
-            InvestmentCredit::No => true,
-            InvestmentCredit::Rehabilitation(claim) => {
-                self.class == crate::EquipmentClass::ThirtyNine
-                    && self.placed >= 20180101
-                    && !self.is_vehicle()
-                    && claim.period_start < self.placed
-                    && claim.rule(self.placed, self.credit_cost_on(cost)).is_none()
-            }
-            InvestmentCredit::NewEnergy { construction_began, .. } => {
-                self.class == crate::EquipmentClass::Five
-                    && new
-                    && !self.is_vehicle()
-                    && self.placed / 10000 == 2026
-                    && *construction_began <= self.placed
-            }
-            InvestmentCredit::EarlierEnergy { credit, used, carried, .. } => {
-                self.class == crate::EquipmentClass::Five
-                    && !new
-                    && !self.is_vehicle()
-                    && used + carried <= *credit
-            }
-        }
-    }
-
     // Whether the credit history is confirmed: a continuing rehabilitation
     // record answered No cannot support a recapture.
     pub(crate) fn history_confirmed(&self) -> bool {
@@ -1398,6 +1047,14 @@ impl K1InvestmentProperty {
             | Self::RehabilitationOther { id, .. }
             | Self::Energy { id, .. }
             | Self::CleanElectricity { id, .. } => id,
+        }
+    }
+    pub(crate) fn own_form_mut(&mut self) -> &mut Option<OwnInvestmentCredit> {
+        match self {
+            Self::RehabilitationRental { own_form, .. }
+            | Self::RehabilitationOther { own_form, .. }
+            | Self::Energy { own_form, .. }
+            | Self::CleanElectricity { own_form, .. } => own_form,
         }
     }
     pub(crate) fn own_form(&self) -> Option<&OwnInvestmentCredit> {
@@ -1552,33 +1209,47 @@ pub(crate) fn report_k1_item(
 }
 
 // Traverse the existing parent-owned property list; there is no second ledger.
-fn k1_properties(income: &crate::FederalIncome) -> alloc::vec::Vec<&K1InvestmentProperty> {
+fn k1_properties(
+    income: &crate::FederalIncome,
+) -> alloc::vec::Vec<alloc::borrow::Cow<'_, K1InvestmentProperty>> {
     match income {
-        crate::FederalIncome::Partnership { data } => data.investment_property.iter().collect(),
-        crate::FederalIncome::Scorp { data } => data.investment_property.iter().collect(),
+        crate::FederalIncome::Partnership { data } => {
+            data.investment_property.iter().map(alloc::borrow::Cow::Borrowed).collect()
+        }
+        crate::FederalIncome::Scorp { data } => crate::ScorpK1::from(data)
+            .investment_property
+            .into_iter()
+            .map(alloc::borrow::Cow::Owned)
+            .collect(),
         crate::FederalIncome::PartnershipActivities { data } => {
-            data.entity.investment_property.iter().collect()
+            data.entity.investment_property.iter().map(alloc::borrow::Cow::Borrowed).collect()
         }
         crate::FederalIncome::ScorpActivities { data } => {
-            data.entity.investment_property.iter().collect()
+            data.entity.investment_property.iter().map(alloc::borrow::Cow::Borrowed).collect()
         }
-        crate::FederalIncome::EstateTrustPortfolio { data } => {
-            data.investment_property.iter().map(|v| &v.property).collect()
-        }
+        crate::FederalIncome::EstateTrustPortfolio { data } => data
+            .statements
+            .investment_property
+            .iter()
+            .map(|v| alloc::borrow::Cow::Borrowed(&v.property))
+            .collect(),
         _ => alloc::vec::Vec::new(),
     }
 }
 pub(crate) fn k1_property_ids(income: &crate::FederalIncome) -> alloc::vec::Vec<i64> {
-    k1_properties(income).into_iter().map(K1InvestmentProperty::id).collect()
+    k1_properties(income).into_iter().map(|property| property.id()).collect()
 }
 pub(crate) fn k1_property_ids_mut(income: &mut crate::FederalIncome) -> alloc::vec::Vec<&mut i64> {
     match income {
         crate::FederalIncome::Partnership { data } => {
             data.investment_property.iter_mut().map(K1InvestmentProperty::id_mut).collect()
         }
-        crate::FederalIncome::Scorp { data } => {
-            data.investment_property.iter_mut().map(K1InvestmentProperty::id_mut).collect()
-        }
+        crate::FederalIncome::Scorp { data } => data
+            .statements
+            .investment_property
+            .iter_mut()
+            .map(K1InvestmentProperty::id_mut)
+            .collect(),
         crate::FederalIncome::PartnershipActivities { data } => {
             data.entity.investment_property.iter_mut().map(K1InvestmentProperty::id_mut).collect()
         }
@@ -1586,7 +1257,7 @@ pub(crate) fn k1_property_ids_mut(income: &mut crate::FederalIncome) -> alloc::v
             data.entity.investment_property.iter_mut().map(K1InvestmentProperty::id_mut).collect()
         }
         crate::FederalIncome::EstateTrustPortfolio { data } => {
-            data.investment_property.iter_mut().map(|v| v.property.id_mut()).collect()
+            data.statements.investment_property.iter_mut().map(|v| v.property.id_mut()).collect()
         }
         _ => alloc::vec::Vec::new(),
     }
@@ -1601,7 +1272,7 @@ pub(crate) struct K1PropertyCreditSource {
 pub(crate) fn k1_property_credit_sources(
     income: &crate::FederalIncome,
 ) -> Option<alloc::vec::Vec<K1PropertyCreditSource>> {
-    property_credit_sources(k1_properties(income))
+    property_credit_sources(k1_properties(income).iter().map(alloc::borrow::Cow::as_ref))
 }
 pub(crate) fn property_credit_sources<'a>(
     properties: impl IntoIterator<Item = &'a K1InvestmentProperty>,
@@ -1690,16 +1361,6 @@ mod tests {
     }
 }
 
-// Allocate source amounts; retained character, identity and confirmations stay facts.
-crate::community::divide_record!(RehabilitationCredit {
-    amounts: [building_basis, period_expenditures, earlier, freed],
-    gains: [],
-    facts: [period_start, phased, confirmed],
-});
-
-// Allocate source amounts; retained character, identity and confirmations stay facts.
-crate::community::divide_record!(CreditYear { amounts: [used, carried], gains: [], facts: [year] });
-
 // Allocate amounts; legal character, dates and retained facts are unchanged.
 crate::community::divide_enum!(K1InvestmentProperty {
     records: [
@@ -1709,37 +1370,6 @@ crate::community::divide_enum!(K1InvestmentProperty {
         CleanElectricity { amounts: [basis, own_form], facts: [storage, rate, id] },
     ],
     units: [],
-    tuples: [],
-});
-
-// Community-property projections preserve accepted source identity and facts.
-crate::community::divide_enum!(InvestmentCredit {
-    records: [
-        NewEnergy {
-            amounts: [kind],
-            facts: [
-                construction_began,
-                increased_rate,
-                domestic_content,
-                energy_community,
-                confirmed
-            ]
-        },
-        EarlierEnergy { amounts: [section, credit, used, carried, freed], facts: [unchanged] }
-    ],
-    units: [No],
-    tuples: [Rehabilitation],
-});
-
-crate::community::divide_enum!(EnergySection {
-    records: [],
-    units: [Energy, CleanElectricity],
-    tuples: [],
-});
-
-crate::community::divide_enum!(EnergyProperty {
-    records: [],
-    units: [Solar, Wind, Storage, GeothermalHeatPump],
     tuples: [],
 });
 

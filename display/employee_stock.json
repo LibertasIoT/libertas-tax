@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 243000, "rule": {"select": "^<EmployeeShareSale>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SALE_1099B", "fields": ["description", "sold", "proceeds", "withholding"]}, {"title": "DISPLAY_SALE_STOCK_PLAN", "fields": ["taxed", "value", "paid", "more"]}]}},
+    {"order": 244000, "rule": {"select": "^<EmployeeShareSale>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SALE_1099B", "fields": ["description", "sold", "proceeds", "withholding"]}, {"title": "DISPLAY_SALE_STOCK_PLAN", "fields": ["taxed", "value", "paid", "more"]}]}}
+  ]
+}

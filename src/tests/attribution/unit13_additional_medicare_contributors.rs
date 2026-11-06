@@ -23,55 +23,84 @@ fn unit13_additional_medicare_contributors_missing_employee_packet_is_not_observ
     before.injured_spouse = None;
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut item = income(savings_income(10000, 0));
-        item.owner = owner;
+        item.owner = crate::DocumentOwner::from(owner);
         add(&mut before, item);
     }
     let mut d = before.clone();
     let mut entry = income(FederalIncome::EmployeeWages {
         data: EmployeeWages {
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             wages: 500000,
             withholding: 0,
             form1099: true,
-            reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
-            complete: false,
+            payroll: crate::EmployeePayrollSource::Unavailable,
         },
     });
     entry.label.clear();
     add(&mut d, entry);
     let id = d.income.last().unwrap().id;
-    let r = supported(&d);
+    // 2026-10-19: missing actual coverage cannot supply an observed zero tax.
+    let r = estimate(&d);
     assert_eq!(value(&r, "agi"), 275000);
-    assert_eq!(value(&r, "regular_income_tax"), 43468);
-    assert_eq!(r.tax, Some(4422800));
-    assert_eq!(r.refund, Some(2577200));
+    assert!(!r.lines.iter().any(|line| line.id == "regular_income_tax"));
+    assert_eq!(r.state, ResultState::Incomplete);
+    assert_eq!(r.tax, None);
+    let source = d.income.iter().find(|entry| entry.id == id).unwrap();
     assert!(
-        r.review_notes
+        r.issues
             .iter()
-            .any(|note| note.display.key == "WARN_EMPLOYEE_WAGES_PAYROLL_TAX_LEFT_OUT")
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE"
+                && issue.context == crate::interview::income_issue_context(source))
     );
-    let mut facts = liability_portfolio_native_facts(&before, Some([0; 2]), Some(&r));
-    // Explicitly supply this actual accepted noninvestment income component;
-    // the older portfolio-only helper rejects EmployeeWages itself.
+    assert_eq!(estimate(&restart(d.clone()).draft), r);
+    // Independent actual-source correction: documented domestic neither-covered
+    // employment supplies a real zero payroll result, unlike unavailable coverage.
+    if let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income {
+        data.payroll = crate::EmployeePayrollSource::Government {
+            social: crate::EmployeeCoverage::NotCovered,
+            medicare: crate::EmployeeCoverage::NotCovered,
+            reason: None,
+        };
+    }
+    let known_result = supported(&d);
+    assert_eq!(known_result.tax, Some(4_422_800));
+    let mut facts = liability_portfolio_native_facts(&before, Some([0; 2]), Some(&known_result));
     facts.other_sources.insert(id, Some(crate::kernel::ratio::exact::whole(500000)));
-    let totals = actual_liability_totals(&r);
-    // A real closed native call omits covered payroll for complete=false and
-    // retains observed8919 ownerzero. This differs from a missing packet.
+    let totals = actual_liability_totals(&known_result);
     facts.income_categories.employee_wage_tax_dollars = Some([0; 2]);
-    let known = crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-        .unwrap();
+    let known = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &known_result,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &known), Some([40714, 5403]));
     facts.income_categories.employee_wage_tax_dollars = None;
-    let missing =
-        crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-            .unwrap();
+    let missing = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &known_result,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &missing), None);
-    assert_eq!(supported(&d), r);
 }
 
 #[test]
 fn unit13_additional_medicare_contributors_native_pools_keep_bounds_and_unavailability() {
     use crate::injured_spouse::income_categories::NativeAdditionalMedicare;
     let mut source = NativeAdditionalMedicare {
+        unavailable_parts: [false; 3],
         tax_dollars: [450, 450, 0],
         payroll_categories: [(300000, [20000000, 10000000]), (0, [0, 0]), (0, [0, 0])],
         railroad: (300000, [0, 30000000]),
@@ -98,6 +127,7 @@ fn unit13_additional_medicare_contributors_native_pools_keep_bounds_and_unavaila
 fn unit13_additional_medicare_contributors_zero_rounded_category_is_not_another_owner() {
     use crate::injured_spouse::income_categories::NativeAdditionalMedicare;
     let mut source = NativeAdditionalMedicare {
+        unavailable_parts: [false; 3],
         tax_dollars: [450, 0, 0],
         payroll_categories: [(300000, [30000000, 0]), (0, [0, 49]), (0, [0, 0])],
         railroad: (0, [0, 0]),

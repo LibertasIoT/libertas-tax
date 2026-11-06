@@ -5,46 +5,107 @@ use crate::tests::support::assert::assert_native_cash_money;
 use crate::tests::support::builders::complete;
 use crate::tests::*;
 use crate::{
-    BasisStart, Farm, FederalDraft, FederalResult, FederalStatus, IncomeDocument,
+    BasisStart, Farm, FederalDraft, FederalResult, FederalStatus, IncomeSource,
     TaxInterviewProtocol as P, TaxSection,
 };
 use alloc::vec::Vec;
 
 // Bind Form8815 to the assigned ID from the accepted 1099-INT source.
 pub(in crate::tests) fn education_bond_session(mut interest: Int1099, amount: i64) -> Interview {
-    use crate::tests::cross::interview::{document, page_documents, save_topic};
+    use crate::tests::cross::interview::{document, page_documents, save_documents};
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     interest.taxable = 0;
     interest.more = IntMore { us_obligations: 300_000, ..Default::default() };
     interest.adjustments =
         Some(InterestAdjustments { previously_reported: 100_000, ..Default::default() });
-    let request = save_topic(
-        &session.draft,
-        TaxSection::InterestDividends,
-        vec![document(0, IncomeDocument::Int1099(interest))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(interest)),
+            },
+        )],
     );
-    accepted(&send(&mut session, request));
-    let source =
-        page_documents(&open_topic(&mut session, TaxSection::InterestDividends))[0].clone();
-    let bonds = IncomeDocument::SavingsBonds(SavingsBonds {
-        proceeds: 1_200_000,
-        redemption_interest: amount,
-        earliest_issue_date: 20100601,
-        interest_statement: source.id,
-        students: vec![SavingsBondStudent {
-            person: -1,
-            expenses: SavingsBondExpenses::Entered { tuition: 1_400_000, benefits: 0 },
-            contributions: 0,
-        }],
+    accepted(&super::income_pages::save_source_fixture_request(&mut session, request));
+    let sources = page_documents(&super::income_pages::open_document_center(&mut session));
+    let mut interest_sources = sources.into_iter().filter(|source| {
+        matches!(
+            source.document,
+            IncomeSource::InterestDividend { value: crate::InterestDividendDocument::Int1099(_) }
+        )
     });
-    let request =
-        save_topic(&session.draft, TaxSection::InterestDividends, vec![source, document(0, bonds)]);
-    accepted(&send(&mut session, request));
+    let source = interest_sources.next().expect("accepted 1099-INT");
+    assert!(interest_sources.next().is_none());
+    let bonds = IncomeSource::InterestDividend {
+        value: crate::InterestDividendDocument::SavingsBonds(savings_bonds_document(
+            savings_bonds_source(SavingsBonds {
+                source_issuer: Default::default(),
+                source_recipient: Default::default(),
+                proceeds: 1_200_000,
+                redemption_interest: amount,
+                earliest_issue_date: 20100601,
+                interest_statement: source.id,
+                students: vec![SavingsBondStudent {
+                    person: -1,
+                    expenses: SavingsBondExpenses::Entered { tuition: 1_400_000, benefits: 0 },
+                    contributions: 0,
+                }],
+            }),
+        )),
+    };
+    let request = save_documents(&mut session, vec![source, document(0, bonds)]);
+    accepted(&super::income_pages::save_source_fixture_request(&mut session, request));
     session
 }
 
 pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
+    if matches!(request, P::SaveEducation { .. } | P::SaveHsa { .. } | P::SaveInjuredSpouse { .. })
+    {
+        return super::source_controls::source_calculation(request);
+    }
+    if matches!(request, P::SaveDocuments { .. }) {
+        return request.clone();
+    }
+    if let P::SaveWagesAnswers {
+        wages,
+        followups,
+        records,
+        businesses,
+        wage_scorporations,
+        allowed_wage_scorporations,
+        allowed_owners,
+        allowed_community,
+        allowed_refund_management,
+        ..
+    } = request
+    {
+        return P::EstimateWagesAnswers {
+            user: TEST_USER,
+            wages: wages.clone(),
+            followups: followups.clone(),
+            records: records.clone(),
+            questions: Vec::new(),
+            situations: crate::DocumentSituations::NoneOfThese,
+            allowed_situations: Vec::new(),
+            situation_answers: Vec::new(),
+            situation_documents: Vec::new(),
+            disaster_choices: Vec::new(),
+            people: Vec::new(),
+            inherited_iras: Vec::new(),
+            inherited_roth_iras: Vec::new(),
+            businesses: businesses.clone(),
+            wage_scorporations: wage_scorporations.clone(),
+            allowed_wage_scorporations: allowed_wage_scorporations.clone(),
+            allowed_owners: allowed_owners.clone(),
+            allowed_community: allowed_community.clone(),
+            allowed_refund_management: allowed_refund_management.clone(),
+        };
+    }
     let P::SaveIncomes {
+        cookie,
+        revision,
+        followups,
         empty_k1_activity_choices,
         allowed_injured_source_facts,
         allowed_injured_retained_owners,
@@ -60,6 +121,7 @@ pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
         transferable_credit_lines,
         allowed_continuing_risk,
         topic,
+        source_choices,
         allowed_documents,
         allowed_owners,
         allowed_community,
@@ -69,12 +131,14 @@ pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
         people,
         farms,
         cooperative_activities,
+
         cooperative_properties,
         businesses,
         qbi_businesses,
         rentals,
         mortgage_loans,
         rental_energy_buildings,
+        casualty_properties,
         royalty_properties,
         equipment_rentals,
         hobbies,
@@ -102,6 +166,17 @@ pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
         unreachable!()
     };
     P::EstimateDocuments {
+        cookie: cookie.clone(),
+        revision: *revision,
+        followups: followups.clone(),
+        questions: Vec::new(),
+        situations: crate::DocumentSituations::NoneOfThese,
+        allowed_situations: Vec::new(),
+        situation_answers: Vec::new(),
+        situation_documents: Vec::new(),
+        disaster_choices: Vec::new(),
+        initial_asset_amt_carry_choices: Vec::new(),
+        initial_interest_limit_choices: Vec::new(),
         initial_rental_recovery_choices: Vec::new(),
         empty_k1_activity_choices: empty_k1_activity_choices.clone(),
         user: TEST_USER,
@@ -119,6 +194,7 @@ pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
         transferable_credit_lines: transferable_credit_lines.clone(),
         allowed_continuing_risk: allowed_continuing_risk.clone(),
         topic: *topic,
+        source_choices: source_choices.clone(),
         allowed_documents: allowed_documents.clone(),
         allowed_owners: allowed_owners.clone(),
         allowed_community: allowed_community.clone(),
@@ -128,12 +204,14 @@ pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
         people: people.clone(),
         farms: farms.clone(),
         cooperative_activities: cooperative_activities.clone(),
+
         cooperative_properties: cooperative_properties.clone(),
         businesses: businesses.clone(),
         qbi_businesses: qbi_businesses.clone(),
         rentals: rentals.clone(),
         mortgage_loans: mortgage_loans.clone(),
         rental_energy_buildings: rental_energy_buildings.clone(),
+        casualty_properties: casualty_properties.clone(),
         royalty_properties: royalty_properties.clone(),
         equipment_rentals: equipment_rentals.clone(),
         hobbies: hobbies.clone(),
@@ -158,6 +236,22 @@ pub(in crate::tests) fn estimate_documents_from_save(request: &P) -> P {
     }
 }
 
+// Admit the entered record and topic facts of a synthetic native fixture through
+// the actual checklist before exercising its source-owner lifecycle.
+pub(in crate::tests) fn admit_native_fixture_facts(session: &mut Interview) {
+    session.draft =
+        crate::tests::support::builders::known_fact_partnership_draft(session.draft.clone());
+    // Assembled accepted fixtures need the same source identities as a saved
+    // inventory before ownership rows can refer to their distinct documents.
+    let accepted_sources = session.draft.clone();
+    crate::interview::assign_native_document_ids(&mut session.draft, &accepted_sources)
+        .expect("distinct accepted native fixture documents");
+    let value = crate::interview::with_ticks(session.draft.clone()).checklist;
+    let reply = crate::tests::cross::interview::from_review(session, TaxSection::Checklist);
+    let request = crate::tests::cross::interview::tick(reply, value);
+    accepted(&send(session, request));
+}
+
 pub(in crate::tests) fn save_native_cash_sources(
     d: FederalDraft,
     topic: TaxSection,
@@ -166,15 +260,18 @@ pub(in crate::tests) fn save_native_cash_sources(
 ) -> FederalResult {
     let before = assert_native_cash_money(&d, categories, agi);
     let mut session = restart(d);
-    let page = crate::tests::cross::interview::open_topic(&mut session, topic);
+    admit_native_fixture_facts(&mut session);
+    let page = super::income_pages::open_document_center(&mut session);
     crate::tests::cross::interview::accepted(&send(&mut session, page));
+    save_native_topic_records(&mut session, topic);
     let persisted = native_draft_records(&session.draft);
     let draft = draft_from_native_records(session.draft.tax_year, &persisted);
     assert_eq!(native_draft_records(&draft), persisted);
     assert_eq!(draft, session.draft);
     let mut session = restart(draft);
-    let page = crate::tests::cross::interview::open_topic(&mut session, topic);
+    let page = super::income_pages::open_document_center(&mut session);
     crate::tests::cross::interview::accepted(&send(&mut session, page));
+    save_native_topic_records(&mut session, topic);
     let after = assert_native_cash_money(&session.draft, categories, agi);
     assert_eq!(before.return_lines, after.return_lines);
     assert_eq!(before.withholding_sources, after.withholding_sources);
@@ -183,11 +280,16 @@ pub(in crate::tests) fn save_native_cash_sources(
 
 pub(crate) fn save_farms(session: &mut Interview, farms: Vec<Farm>) {
     let request = crate::tests::cross::interview::save_topic(
-        &session.draft,
+        session,
         TaxSection::Farming,
         farms
             .into_iter()
-            .map(|farm| crate::tests::cross::interview::document(0, IncomeDocument::Farm(farm)))
+            .map(|farm| {
+                crate::tests::cross::interview::document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) },
+                )
+            })
             .collect(),
     );
     crate::tests::cross::interview::accepted(&send(session, request));
@@ -195,12 +297,12 @@ pub(crate) fn save_farms(session: &mut Interview, farms: Vec<Farm>) {
 }
 
 pub(in crate::tests) fn d6_ptp_source_session(start: BasisStart) -> Interview {
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::accepted;
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    documents.documents = super::builders::d6_ptp_pages(start);
-    accepted(&send(&mut session, request));
+    accepted(&super::income_pages::save_k1_sources_and_answers(
+        &mut session,
+        super::builders::d6_ptp_pages(start),
+    ));
     session
 }
 
@@ -222,12 +324,21 @@ pub(in crate::tests) fn save_reopen_checked_sources(
     checked: impl Fn(&FederalDraft) -> FederalResult,
 ) -> FederalDraft {
     use crate::tests::cross::interview::{accepted, from_review, open_topic};
+    let draft = crate::tests::support::builders::known_fact_scorp_draft(draft);
     let original = checked(&draft);
+    let draft = crate::tests::support::builders::known_fact_partnership_draft(draft);
     let mut session = restart(draft);
+    admit_native_fixture_facts(&mut session);
     let open = |session: &mut Interview, topic| match topic {
+        TaxSection::Documents => super::income_pages::open_document_center(session),
+        TaxSection::OtherItemized => {
+            crate::tests::cross::interview::open_itemized_topic(session, topic)
+        }
         TaxSection::InjuredSpouse => complete_niit_allocation(session),
         TaxSection::Care => match from_review(session, topic) {
-            Reply::Edit(page @ P::SaveCare { .. }) => page,
+            reply @ (Reply::Edit(P::SaveCare { .. }) | Reply::Response(P::BeginCare { .. })) => {
+                crate::tests::cross::interview::care_editor(reply)
+            }
             _ => panic!("expected the actual Care editor"),
         },
         TaxSection::MoreCredits => match from_review(session, topic) {
@@ -256,14 +367,31 @@ pub(in crate::tests) fn save_reopen_checked_sources(
     again.draft
 }
 
+fn save_native_topic_records(session: &mut Interview, topic: TaxSection) {
+    let request = open_topic(session, topic);
+    let save = match &request {
+        P::SaveWagesAnswers { .. } => true,
+        P::SaveIncomes { documents, .. } => !documents.documents.is_empty(),
+        _ => unreachable!(),
+    };
+    if save {
+        accepted(&send(session, request));
+    }
+}
+
 pub(super) fn save_native_income_topics(session: &mut Interview, topics: &[TaxSection]) {
     for &topic in topics {
-        let request = open_topic(session, topic);
+        let request = if topic == TaxSection::Documents {
+            super::income_pages::open_document_center(session)
+        } else {
+            open_topic(session, topic)
+        };
         accepted(&send(session, request));
     }
 }
 
 pub(in crate::tests) fn save_native_credit_sources(session: &mut Interview, topics: &[TaxSection]) {
+    admit_native_fixture_facts(session);
     save_native_income_topics(session, topics);
     let Reply::Edit(request @ P::SaveMoreCredits { .. }) =
         from_review(session, TaxSection::MoreCredits)
@@ -316,7 +444,17 @@ pub(in crate::tests) fn check_wage_classification_source(
                     .collect::<Vec<_>>()
             );
             let mut session = Interview::new(TEST_USER, draft.clone());
-            let request = open_topic(&mut session, TaxSection::Wages);
+            admit_native_fixture_facts(&mut session);
+            let request = super::income_pages::open_document_center(&mut session);
+            accepted(&send(&mut session, request));
+            assert_eq!(session.draft.income, draft.income);
+            assert_wage_classification_money(&supported(&session.draft), case);
+            let draft = session.draft.clone();
+            let accepted_result = estimate(&draft);
+            assert_native_money_unchanged(&accepted_result, &result);
+            assert_eq!(accepted_result.return_lines, result.return_lines);
+            let result = accepted_result;
+            let request = super::income_pages::open_document_center(&mut session);
             accepted(&send(&mut session, request));
             assert_eq!(session.draft, draft);
             assert_eq!(estimate(&session.draft), result);
@@ -324,7 +462,7 @@ pub(in crate::tests) fn check_wage_classification_source(
             assert_eq!(saved, draft);
             let mut restarted = restart(saved);
             assert_eq!(estimate(&restarted.draft), result);
-            let reopened = open_topic(&mut restarted, TaxSection::Wages);
+            let reopened = super::income_pages::open_document_center(&mut restarted);
             accepted(&send(&mut restarted, reopened));
             assert_eq!(restarted.draft, draft);
             assert_eq!(estimate(&restarted.draft), result);
@@ -404,13 +542,23 @@ pub(in crate::tests) fn check_non_code_l_wage_source(owner: Owner) {
                     }
                 };
                 accepted(&send(&mut session, request));
-                assert_eq!(session.draft, draft);
-                assert_eq!(estimate(&session.draft), result);
+                // The first save of an applying topic records the visit, and
+                // nothing else changes.
+                let mut expected = draft.clone();
+                expected.finished_sections = session.draft.finished_sections.clone();
+                expected.revision = session.draft.revision;
+                expected.checklist = session.draft.checklist;
+                assert_eq!(session.draft, expected);
+                let mut visited = result.clone();
+                visited.revision = session.draft.revision;
+                assert_eq!(estimate(&session.draft), visited);
             }
             let saved = roundtrip_native_draft(session.draft.clone());
-            assert_eq!(saved, draft);
-            let mut restarted = restart(saved);
-            assert_eq!(estimate(&restarted.draft), result);
+            assert_eq!(saved, session.draft);
+            let mut restarted = restart(saved.clone());
+            let mut visited = result.clone();
+            visited.revision = saved.revision;
+            assert_eq!(estimate(&restarted.draft), visited);
             for topic in [TaxSection::Wages, TaxSection::EmployeeExpenses] {
                 let request = if topic == TaxSection::Wages {
                     open_topic(&mut restarted, topic)
@@ -421,8 +569,9 @@ pub(in crate::tests) fn check_non_code_l_wage_source(owner: Owner) {
                     }
                 };
                 accepted(&send(&mut restarted, request));
-                assert_eq!(restarted.draft, draft);
-                assert_eq!(estimate(&restarted.draft), result);
+                // A visited topic's unchanged save is a no-op.
+                assert_eq!(restarted.draft, saved);
+                assert_eq!(estimate(&restarted.draft), visited);
             }
             let i = usize::from(injured == Owner::Spouse);
             let mut other = [0; 2];
@@ -456,7 +605,7 @@ pub(in crate::tests) fn save_noninvestment_election_source(d: FederalDraft) -> F
         documents
             .documents
             .iter()
-            .any(|row| matches!(row.document, IncomeDocument::InstallmentPayments(_))
+            .any(|row| matches!(row.document, crate::IncomeRecord::InstallmentPayments(_))
                 && row.owner == Owner::Taxpayer)
     );
     accepted(&send(&mut session, roundtrip_native_request(request)));
@@ -481,14 +630,14 @@ pub(in crate::tests) fn d6_mixed_direct_sources(mut session: Interview) -> (Inte
         income, section1231_history, set_land_sales,
     };
     use crate::{
-        AssetClass, BonusElection, BusinessActivity, FederalGrantUse, FederalIncome,
-        FirstYearDeduction, NoteInterest, SalePayment,
+        AssetClass, BonusElection, BusinessActivity, FederalIncome, FirstYearDeduction,
+        NoteInterest, SalePayment,
     };
     use alloc::vec;
     let mut page = business(4_000_000);
     let mut property = asset(1_000_000, 20260601, AssetClass::Five);
     property.acquired = Some(20160928);
-    property.history = crate::AssetHistory::New {
+    property.gds_mut().unwrap().history = crate::AssetHistory::New {
         first_year: FirstYearDeduction::Section179 {
             description: "Synthetic selected direct source".into(),
             elected: 300_000,
@@ -523,15 +672,29 @@ pub(in crate::tests) fn d6_mixed_direct_sources(mut session: Interview) -> (Inte
     native.acquired = 20160928;
     data.assets[0] = native;
     for id in [business, farm] {
-        add(&mut session.draft, income(cooperative_routed_income(id, 200_000, 50_000)));
+        add(&mut session.draft, income(cooperative_routed_income(200_000, 50_000)));
+        claim_last_cooperative(&mut session.draft, id);
     }
     let mut grant = government_unemployment(0, &[], 0);
-    let FederalIncome::Unemployment { data } = &mut grant.income else { unreachable!() };
-    data.taxable_grants = 250_000;
-    data.grant_use = Some(FederalGrantUse::Business { business: Some(business) });
-    data.agriculture_payment = 400_000;
-    data.agriculture_farm = Some(farm);
+    let FederalIncome::GovernmentPayment { data } = &mut grant.income else { unreachable!() };
+    data.form.taxable_grants = Some(250_000);
+    data.grant_use = None;
+    data.form.agriculture_payments = Some(400_000);
+
     add(&mut session.draft, grant);
+    // The grant belongs to the business; both it and the farm are eligible receivers.
+    let FederalIncome::GovernmentPayment { data } = &session.draft.income.last().unwrap().income
+    else {
+        unreachable!()
+    };
+    let grant_component = data.component_ids.grant;
+    crate::tests::support::builders::claim_related_component(
+        &mut session.draft,
+        business,
+        grant_component,
+    );
+    let component = crate::tests::support::builders::farm_government_component(&session.draft);
+    crate::tests::support::builders::relate_farm_component(&mut session.draft, farm, component);
     let FederalIncome::Business { data } =
         &mut session.draft.income.iter_mut().find(|entry| entry.id == farm).unwrap().income
     else {
@@ -578,17 +741,17 @@ pub(in crate::tests) fn injured_income_source_roundtrip(
     source_topic: TaxSection,
 ) -> FederalDraft {
     let mut session = restart(d);
-    save_native_income_topics(
-        &mut session,
-        &[TaxSection::Wages, TaxSection::InterestDividends, source_topic],
-    );
+    admit_native_fixture_facts(&mut session);
+    save_native_income_topics(&mut session, &[TaxSection::Documents]);
+    save_native_topic_records(&mut session, source_topic);
     let bytes = native_draft_records(&session.draft);
     let draft = draft_from_native_records(session.draft.tax_year, &bytes);
     assert_eq!(native_draft_records(&draft), bytes);
     assert_eq!(draft, session.draft);
     let mut session = restart(draft);
-    let page = open_topic(&mut session, source_topic);
+    let page = super::income_pages::open_document_center(&mut session);
     accepted(&send(&mut session, page));
+    save_native_topic_records(&mut session, source_topic);
     session.draft
 }
 
@@ -604,7 +767,7 @@ pub(in crate::tests) fn save_ira_people(
         page: crate::tests::cross::interview::PAGE_ADJUSTMENTS,
         previous: crate::tests::cross::interview::PAGE_ADJUSTMENTS,
         review: true,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         allowed_owners,
@@ -624,7 +787,7 @@ pub(in crate::tests) fn save_educator(
         page: crate::tests::cross::interview::PAGE_ADJUSTMENTS,
         previous: crate::tests::cross::interview::PAGE_ADJUSTMENTS,
         review: true,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         allowed_owners,
@@ -640,10 +803,221 @@ pub(in crate::tests) fn save_student_loan(d: &FederalDraft, value: StudentLoanIn
         page: crate::tests::cross::interview::PAGE_ADJUSTMENTS,
         previous: crate::tests::cross::interview::PAGE_ADJUSTMENTS,
         review: true,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         document_facts: DocumentFacts { year: 2026 },
         value,
     }
+}
+
+// Accept source facts and their native property classifier through ordinary topic Save.
+pub(in crate::tests) fn current_installment_session(
+    sale: crate::InvestmentInstallmentSale,
+) -> Interview {
+    current_installment_session_for(
+        complete(FederalStatus::Single),
+        sale,
+        crate::Owner::Taxpayer,
+        crate::CommunityShare::NotNeeded,
+    )
+}
+pub(in crate::tests) fn current_installment_session_for(
+    draft: FederalDraft,
+    sale: crate::InvestmentInstallmentSale,
+    owner: crate::Owner,
+    community: crate::CommunityShare,
+) -> Interview {
+    use crate::tests::cross::interview::{document, save_topic};
+    let mut session = Interview::new(TEST_USER, draft);
+    let mut row =
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::InstallmentSale(sale) });
+    row.owner = crate::DocumentOwner::from(owner);
+    row.community = community;
+    let request = save_topic(&mut session, TaxSection::InvestmentSales, vec![row]);
+    accepted(&send(&mut session, roundtrip_native_request(request)));
+    session
+}
+
+// Exercise source identity through the activity's actual native editor.
+pub(in crate::tests) fn reject_unavailable_related_components(
+    case: &str,
+    source: IncomeSource,
+    kinds: &[crate::related_forms::DocumentKind],
+    cross_owner: bool,
+) {
+    use super::income_pages::save_documents;
+    use crate::tests::cross::interview::{business, document, save_businesses};
+    let miscellaneous = matches!(
+        &source,
+        IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Form1099Misc(_) }
+    );
+    let mut draft = empty_return(FederalStatus::Joint);
+    let people = draft.people.as_mut().unwrap();
+    people.taxpayer.first_name = "Alex".into();
+    people.spouse.as_mut().unwrap().first_name = "Jordan".into();
+    name_accepted_income_documents(&mut draft);
+    let mut session = Interview::new(TEST_USER, draft);
+    accepted(&save_businesses(&mut session, vec![business(0)]));
+    let mut row = document(0, source);
+    if cross_owner {
+        row.owner = crate::DocumentOwner::Spouses;
+    }
+    row.document.set_printed_names(&accepted_document_names(&session.draft, row.owner.owned()));
+    let request = save_documents(&mut session, vec![row]);
+    accepted(&send(&mut session, request));
+    let keys = crate::related_forms::catalog(&session.draft)
+        .into_iter()
+        .filter(|component| kinds.contains(&component.kind))
+        .map(|component| component.id)
+        .collect::<Vec<_>>();
+    assert_eq!(keys.len(), kinds.len());
+    if !cross_owner {
+        let mut request = super::income_pages::open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        if miscellaneous {
+            documents.other.other_income.documents.clear();
+        } else {
+            documents.common.government_payments.documents.clear();
+        }
+        accepted(&send(&mut session, request));
+        let remaining = crate::related_forms::catalog(&session.draft);
+        assert!(keys.iter().all(|key| remaining.iter().all(|source| source.id != *key)));
+    }
+    let before = session.draft.clone();
+    let figures = estimate(&before);
+    for key in keys {
+        let mut request = open_topic(&mut session, TaxSection::SelfEmployment);
+        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+        let business = documents
+            .documents
+            .iter_mut()
+            .find_map(|row| match &mut row.document {
+                crate::IncomeRecord::Business(business) => Some(business),
+                _ => None,
+            })
+            .unwrap();
+        business.related.forms.push(crate::RelatedFormView { key, summary: None });
+        let scenario = alloc::format!("{case}-{key}");
+        super::survey::survey_native_refusal(
+            &scenario,
+            &mut session,
+            request,
+            "PROBLEM_RELATED_FORM_UNAVAILABLE",
+            "[documents/documents/0/document/Business/related/forms/0/key]",
+        );
+        assert_eq!(estimate(&session.draft), figures);
+    }
+    let page = open_topic(&mut session, TaxSection::SelfEmployment);
+    accepted(&send(&mut session, page));
+    assert_eq!(session.draft, before);
+}
+
+// Supply the fixture's independent disposition through the ordinary topic editor.
+pub(in crate::tests) fn answer_only_retirement_treatment(
+    session: &mut Interview,
+    treatment: DistributionCode,
+) -> Reply {
+    let mut request = super::income_pages::open_topic(session, TaxSection::Retirement);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    let mut answers = followups.iter_mut().filter_map(|row| match &mut row.answer {
+        crate::DocumentAnswer::RetirementTreatment { code } => Some(code),
+        _ => None,
+    });
+    let answer = answers.next().expect("one retirement source in this fixture");
+    assert!(answers.next().is_none());
+    *answer = Some(treatment.into());
+    send(session, request)
+}
+
+// Preserve a retirement fixture's supplied answers through the real two editors.
+// A failed topic Save is preflighted in a cold session so the caller stays atomic.
+pub(in crate::tests) fn save_retirement_fixture(
+    session: &mut Interview,
+    rows: Vec<IncomeDocumentItem>,
+) -> Reply {
+    fn attempt(session: &mut Interview, rows: &[IncomeDocumentItem]) -> Reply {
+        let (records, sources): (Vec<_>, Vec<_>) = rows
+            .iter()
+            .cloned()
+            .partition(|row| matches!(row.document, IncomeSource::Record { .. }));
+        if !sources.is_empty() {
+            let request = super::income_pages::save_documents(session, sources.clone());
+            let reply = send(session, request);
+            if matches!(reply, Reply::Response(P::Problem { .. })) {
+                return reply;
+            }
+        }
+        let mut request = if sources.is_empty() {
+            super::income_pages::open_topic(session, TaxSection::Retirement)
+        } else {
+            super::income_pages::information_return_answers_for_topic(
+                session,
+                &sources,
+                TaxSection::Retirement,
+            )
+            .unwrap_or_else(|| super::income_pages::open_topic(session, TaxSection::Retirement))
+        };
+        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+        if !records.is_empty() {
+            let supplied: Vec<_> = records
+                .into_iter()
+                .map(|row| crate::IncomeRecordItem::from_income(row).unwrap())
+                .collect();
+            documents.documents.retain(|accepted| {
+                !supplied.iter().any(|row| {
+                    if row.id > 0 {
+                        row.id == accepted.id
+                    } else {
+                        row.owner == accepted.owner
+                            && core::mem::discriminant(&row.document)
+                                == core::mem::discriminant(&accepted.document)
+                    }
+                })
+            });
+            documents.documents.extend(supplied);
+        }
+        send(session, request)
+    }
+    {
+        let mut candidate = restart(session.draft.clone());
+        let reply = attempt(&mut candidate, &rows);
+        if matches!(reply, Reply::Response(P::Problem { .. })) {
+            return reply;
+        }
+    }
+    attempt(session, &rows)
+}
+
+// An accepted pension election remains independently answerable after paper reclassification.
+pub(in crate::tests) fn retirement_pso_ira_refusal(
+    draft: &FederalDraft,
+    desired: R1099Answered,
+) -> Reply {
+    let mut session = restart(draft.clone());
+    let mut eligible = desired.clone();
+    eligible.source_mut().form.ira = false;
+    eligible.source_mut().form.trump = false;
+    eligible.source_mut().form.box7 = crate::DistributionCodes::CODE_7.0;
+    eligible.source_mut().code =
+        Some(DistributionCode::Normal { what_happened: crate::Disposition::Kept });
+    eligible.source_mut().taxable_method = Some(crate::TaxableMethod::BoxTwoA);
+    let row = |id, source| {
+        crate::tests::cross::interview::document(
+            id,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(source)),
+            },
+        )
+    };
+    accepted(&save_retirement_fixture(&mut session, vec![row(0, eligible)]));
+    let id = session.draft.screening.as_ref().unwrap().public_safety.last().unwrap().income_id;
+    let request = super::income_pages::save_documents(&mut session, vec![row(id, desired.clone())]);
+    accepted(&send(&mut session, request));
+    assert!(session.draft.valid_stored());
+    assert!(!session.draft.screening.as_ref().unwrap().public_safety.is_empty());
+    let before = session.draft.clone();
+    let reply = save_retirement_fixture(&mut session, vec![row(id, desired)]);
+    assert_eq!(session.draft, before);
+    reply
 }

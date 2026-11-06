@@ -3,7 +3,7 @@ use crate::tests::support::client::qbi_consolidated::{
 };
 use crate::tests::support::client::{read_native_draft, write_native_draft};
 extern crate std;
-use super::unit47_credit_source_validation::{credit_estimate_documents_from_save, credit_preview};
+use super::unit47_credit_source_validation::{credit_estimate_documents_from_save};
 use super::*;
 
 const PTP_HISTORY: &str =
@@ -11,36 +11,24 @@ const PTP_HISTORY: &str =
 const DOCUMENT_AMOUNTS: &str =
     "ISSUE_FEDERAL_RULES_REVIEW_THE_DOCUMENT_AMOUNTS__THEY_MUST_17724C26";
 
-fn ptp_page(amount: i64, service: bool) -> K1Partnership {
-    // The same explicit limited-partner material-participation and retained
-    // basis/risk facts as the approved existing Unit22 ordinary-source control.
-    let mut page = k1_1065("Current ordinary PTP source");
-    page.publicly_traded = true;
-    page.ordinary = amount * 100;
-    page.interest = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Over500Hours { hours: 600 },
-    };
-    page.basis.start = k1_1065_continuing(
-        1_000_000,
-        ScorpRiskStart::Detailed { capacity: 1_000_000, profit: 0, loss: 0 },
-    );
-    page.qbi = PartnerQbi::Statement {
-        section1231_qbi: 0,
-        ptp_income: 0,
-        reit_dividends: 0,
-        income: amount * 100,
-        wages: 0,
-        property: 0,
-        service,
-    };
-    page
-}
+use crate::tests::support::builders::current_ptp_page as ptp_page;
 
 fn exchange(session: &mut Interview, request: P, case: &str, atomic: bool) -> Reply {
     let before = session.draft.clone();
     let dirty = session.dirty;
     let bytes = request.to_avro();
-    let reply = session.handle(P::from_avro(&bytes).unwrap());
+    let request = P::from_avro(&bytes).unwrap();
+    let reply = if atomic && matches!(request, P::SaveDocuments { .. }) {
+        let mut candidate=restart(session.draft.clone());
+        let reply=crate::tests::support::client::income_pages::save_source_fixture_request(&mut candidate,request);
+        Some(if matches!(reply,Reply::Response(P::Problem{..})) {
+            reply
+        } else {
+            send(&mut candidate,P::ReviewAccepted{user:TEST_USER})
+        })
+    } else if matches!(request, P::SaveDocuments { .. }) {
+        Some(crate::tests::support::client::income_pages::save_source_fixture_request(session, request))
+    } else { session.handle(request) };
     if let Ok(root) = std::env::var("QBI_CURRENT_PTP_CASE_DIR") {
         let directory = std::path::Path::new(&root).join(case);
         std::fs::create_dir_all(&directory).unwrap();
@@ -102,7 +90,15 @@ fn current_ptp_all_statuses_signed_phase_and_fixed_combined_carry() {
                     let page = ptp_page(amount, service);
                     let owner = page.record();
                     let statement = owner.qbi.as_ref().unwrap();
-                    let prepared = statement.calculate(&owner, crate::tests::support::builders::k1_amount(0), 0, taxable, status).unwrap();
+                    let prepared = statement
+                        .calculate(
+                            &owner,
+                            crate::tests::support::builders::k1_amount(0),
+                            0,
+                            taxable,
+                            status,
+                        )
+                        .unwrap();
                     let expected = if service { eligible * amount.signum() } else { amount };
                     assert_eq!(prepared.ptp, crate::kernel::ratio::exact::whole(expected * 100));
                     assert_eq!(prepared.historical, 0);
@@ -150,6 +146,7 @@ fn current_ptp_public_save_estimate_preview_and_source_lifecycle_matrix() {
                 // Explicit synthetic wage source fixes taxable income before
                 // QBI; ordinary income/loss itself is never phased for AGI.
                 draft.income[0] = wage(1, Owner::Taxpayer, (taxable + standard - amount) * 100, 0);
+                name_accepted_income_documents(&mut draft);
                 let wage_source = draft.income[0].clone();
                 let mut session = Interview::new(TEST_USER, draft);
                 ptp_save_prior_carry(
@@ -158,17 +155,13 @@ fn current_ptp_public_save_estimate_preview_and_source_lifecycle_matrix() {
                     exchange,
                 );
                 let page = ptp_page(amount, true);
-                let preview = exchange(
+
+                let request = crate::tests::support::client::income_pages::save_documents(
                     &mut session,
-                    credit_preview(IncomeDocument::K1Partnership(page.clone())),
-                    &alloc::format!("{case}-preview"),
-                    true,
-                );
-                assert!(matches!(preview, Reply::Response(P::IncomePreview { .. })));
-                let request = save_topic(
-                    &session.draft,
-                    TaxSection::PassThrough,
-                    vec![document(0, IncomeDocument::K1Partnership(page.clone()))],
+                    vec![document(
+                        0,
+                        IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+                    )],
                 );
                 let running_estimate = ptp_estimate_and_save(
                     &mut session,
@@ -201,7 +194,7 @@ fn current_ptp_public_save_estimate_preview_and_source_lifecycle_matrix() {
                 assert_eq!(session.draft.screening.as_ref().unwrap().qbi_history.reit_ptp, 300_000);
                 ptp_reopen_and_cold_resave(
                     &mut session,
-                    &[IncomeDocument::K1Partnership(page)],
+                    &[IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }],
                     &result,
                     &case,
                     exchange,
@@ -212,6 +205,10 @@ fn current_ptp_public_save_estimate_preview_and_source_lifecycle_matrix() {
 }
 
 fn refusal(session: &mut Interview, request: P, case: &str, key: &str, path: &str) {
+    if let Some((mut candidate, topic, path)) = crate::tests::support::client::income_pages::topic_fixture_control(session, &request, key, path) {
+        refusal(&mut candidate, topic, case, key, &path);
+        return;
+    }
     let reply = exchange(session, request.clone(), case, true);
     let Reply::Response(problem @ P::Problem { .. }) = reply else {
         panic!("{case}: expected refusal")
@@ -226,30 +223,30 @@ fn current_ptp_wage_property_group_bounds_keep_actual_indices_and_atomic_correct
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let first = ptp_page(2_000, false);
     let good = ptp_page(10_000, true);
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
         vec![
-            document(0, IncomeDocument::K1Partnership(first)),
-            document(0, IncomeDocument::K1Partnership(good)),
+            document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership((first).into()) }),
+            document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership((good).into()) }),
         ],
     );
-    accepted(&exchange(&mut session, request, "ptp-bounds-initial-save", false));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
     let saved = session.draft.clone();
     for field in ["wages", "property"] {
-        let corrected = open_topic(&mut session, TaxSection::PassThrough);
+        let corrected =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         let mut bad = corrected.clone();
-        let P::SaveIncomes { documents, .. } = &mut bad else { unreachable!() };
-        let IncomeDocument::K1Partnership(page) = &mut documents.documents[1].document else {
+        let P::SaveDocuments { documents, .. } = &mut bad else { unreachable!() };
+        let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[1].document
+        else {
             unreachable!()
         };
-        let PartnerQbi::Statement { wages, property, .. } = &mut page.qbi else { unreachable!() };
+        let PartnerQbi::Statement { wages, property, .. } = &mut page.statements.qbi else { unreachable!() };
         if field == "wages" {
             *wages = 1
         } else {
             *property = 1
         };
-        let bad_page = page.clone();
         for (operation, request) in
             [("save", bad.clone()), ("estimate", credit_estimate_documents_from_save(&bad))]
         {
@@ -258,16 +255,9 @@ fn current_ptp_wage_property_group_bounds_keep_actual_indices_and_atomic_correct
                 request,
                 &alloc::format!("ptp-{field}-{operation}"),
                 DOCUMENT_AMOUNTS,
-                &alloc::format!("[documents/documents/1/document/qbi/{field}]"),
+                &alloc::format!("[documents/common/k1/documents/1/document/qbi/{field}]"),
             );
         }
-        refusal(
-            &mut session,
-            credit_preview(IncomeDocument::K1Partnership(bad_page)),
-            &alloc::format!("ptp-{field}-preview"),
-            DOCUMENT_AMOUNTS,
-            &alloc::format!("[document/qbi/{field}]"),
-        );
         accepted(&exchange(
             &mut session,
             corrected,
@@ -276,14 +266,15 @@ fn current_ptp_wage_property_group_bounds_keep_actual_indices_and_atomic_correct
         ));
         assert_eq!(session.draft, saved);
     }
-    let corrected = open_topic(&mut session, TaxSection::PassThrough);
+    let corrected = crate::tests::support::client::income_pages::open_document_center(&mut session);
     let mut bad = corrected.clone();
-    let P::SaveIncomes { documents, .. } = &mut bad else { unreachable!() };
-    assert!(documents.documents[1].id > 0);
-    let IncomeDocument::K1Partnership(page) = &mut documents.documents[1].document else {
+    let P::SaveDocuments { documents, .. } = &mut bad else { unreachable!() };
+    assert!(documents.common.k1.documents[1].id > 0);
+    let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[1].document
+    else {
         unreachable!()
     };
-    page.qbi_group = "Cannot aggregate a PTP".into();
+    page.personal.as_mut().unwrap().qbi_group = "Cannot aggregate a PTP".into();
     for (operation, request) in
         [("save", bad.clone()), ("estimate", credit_estimate_documents_from_save(&bad))]
     {
@@ -292,7 +283,7 @@ fn current_ptp_wage_property_group_bounds_keep_actual_indices_and_atomic_correct
             request,
             &alloc::format!("ptp-group-{operation}"),
             "QBI_AGGREGATION_PARENT_NOT_BUSINESS",
-            "[documents/documents/1/document/qbi_group]",
+            "[documents/common/k1/documents/1/document/qbi_group]",
         );
     }
     accepted(&exchange(&mut session, corrected, "ptp-group-corrected-save", false));
@@ -315,28 +306,46 @@ fn current_ptp_unsupported_sources_and_separate_items_keep_named_priority() {
             3 => {
                 // No prior/history/PAL counter flags this unsupported sale:
                 // its actual current basis-held ordinary loss must do so.
-                owner.disposition = crate::K1Disposition::Sold { proceeds: 0 };
+                owner.disposition = Some(crate::K1Disposition::Sold { proceeds: 0 });
                 owner.regular.ordinary = -100_000;
-                owner.regular.basis.opening = 0;
-                owner.regular.risk.start = ScorpRiskStart::Detailed {
-                    capacity: 100_000, profit: 0, loss: 0,
-                };
+                owner.regular.basis.opening = Some(0);
+                owner.regular.risk.start =
+                    ScorpRiskStart::Detailed { capacity: 100_000, profit: 0, loss: 0 };
                 owner.qbi.as_mut().unwrap().income = -100_000;
                 assert!(owner.qbi_records.history.is_none());
-                assert_eq!([owner.regular.basis.prior_loss,
-                    owner.regular.risk.prior_loss, owner.regular.passive_loss], [0; 3]);
+                assert_eq!(
+                    [
+                        owner.regular.basis.prior_loss,
+                        owner.regular.risk.prior_loss,
+                        owner.regular.passive_loss
+                    ],
+                    [0; 3]
+                );
                 let pool = owner.pool(&owner.regular).unwrap();
-                assert_eq!(pool.activity.basis.suspended[crate::k1_loss::K1LossClass::Ordinary].get(), 100_000);
+                assert_eq!(
+                    pool.activity.basis.suspended[crate::k1_loss::K1LossClass::Ordinary].get(),
+                    100_000
+                );
                 assert_eq!(pool.passive, 0);
             }
             _ => unreachable!(),
         }
         owner.qbi.as_mut().unwrap().ptp_income = 100;
         assert_eq!(
-            owner.qbi.as_ref().unwrap().calculate(
-                &owner, crate::tests::support::builders::k1_amount(0), deductions,
-                239_250, FederalStatus::Single,
-            ).err().expect("unsupported qualified source combination").0,
+            owner
+                .qbi
+                .as_ref()
+                .unwrap()
+                .calculate(
+                    &owner,
+                    crate::tests::support::builders::k1_amount(0),
+                    deductions,
+                    239_250,
+                    FederalStatus::Single,
+                )
+                .err()
+                .expect("unsupported qualified source combination")
+                .0,
             PTP_HISTORY,
         );
     }
@@ -344,20 +353,33 @@ fn current_ptp_unsupported_sources_and_separate_items_keep_named_priority() {
     let PartnerQbi::Statement { ptp_income, .. } = &mut page.qbi else { unreachable!() };
     *ptp_income = 500_000;
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(0, IncomeDocument::K1Partnership(page.clone()))],
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+        )],
     );
-    accepted(&exchange(&mut session, request, "ptp-separate-source-save", false));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
     let saved = session.draft.clone();
     let result = estimate(&saved);
     assert_eq!(result.state, ResultState::Unsupported);
     assert!(
         result.issues.iter().any(|i| i.display.key == "ISSUE_QBI_PTP_COMPONENT_CLASSIFICATION")
     );
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
-    assert_eq!(page_documents(&reopened)[0].document, IncomeDocument::K1Partnership(page));
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    assert_eq!(
+        page_documents(&reopened)
+            .into_iter()
+            .find(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .unwrap()
+            .document,
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+        )[0]
+    );
     accepted(&exchange(&mut session, reopened, "ptp-separate-source-resave", false));
     assert_eq!(session.draft, saved);
     assert_eq!(restart(saved.clone()).draft, saved);
@@ -374,13 +396,15 @@ fn current_ptp_missing_statement_keeps_income_and_distinct_source_notices() {
         // separate amount or historical record to manufacture eligibility.
         page.qbi = PartnerQbi::NoStatement;
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let request = save_topic(
-            &session.draft,
-            TaxSection::PassThrough,
-            vec![document(0, IncomeDocument::K1Partnership(page.clone()))],
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+            )],
         );
         let case = alloc::format!("ptp-no-statement-{amount}");
-        accepted(&exchange(&mut session, request, &case, false));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
         let result = supported(&session.draft);
         assert_eq!(value(&result, "agi"), 60_000 + amount);
         assert_eq!(value(&result, "qbi_deduction"), 0);
@@ -389,8 +413,20 @@ fn current_ptp_missing_statement_keeps_income_and_distinct_source_notices() {
             if amount > 0 { "WARN_K1_QBI_NO_STATEMENT" } else { "WARN_K1_QBI_LOSS_NO_STATEMENT" }
         ));
         let saved = session.draft.clone();
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
-        assert_eq!(page_documents(&reopened)[0].document, IncomeDocument::K1Partnership(page));
+        let reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        assert_eq!(
+            page_documents(&reopened)
+                .into_iter()
+                .find(|row| matches!(row.document, IncomeSource::K1 { .. }))
+                .unwrap()
+                .document,
+            expected_named_sources(
+                &session.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+            )[0]
+        );
         accepted(&exchange(&mut session, reopened, &alloc::format!("{case}-resave"), false));
         assert_eq!(session.draft, saved);
         assert_eq!(restart(saved.clone()).draft, saved);
@@ -404,7 +440,11 @@ fn current_ptp_sstb_keeps_rental_section179_and_other_carried_source_boundaries(
         let key = match branch {
             0 => {
                 page.rentals.real_estate = 100_000;
-                "ISSUE_K1_RENTAL_PTP"
+                page.rentals.participation = Some(crate::K1RentalParticipation::NotActive);
+                // 2026-10-20: rental tax income now has its own PTP pool.
+                // The rental's qualified/SSTB source remains unresolved.
+                page.rentals.real_estate_qbi = Some(K1RentalQbi { wages: 0, property: 0 });
+                "ISSUE_K1_RENTAL_PTP_QBI"
             }
             1 => {
                 page.more.section179 = 500_000;
@@ -423,33 +463,41 @@ fn current_ptp_sstb_keeps_rental_section179_and_other_carried_source_boundaries(
             _ => unreachable!(),
         };
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let request = save_topic(
-            &session.draft,
-            TaxSection::PassThrough,
-            vec![document(0, IncomeDocument::K1Partnership(page.clone()))],
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+            )],
         );
         let case = alloc::format!("ptp-existing-supplier-boundary-{branch}");
-        let preview = exchange(
-            &mut session,
-            credit_preview(IncomeDocument::K1Partnership(page.clone())),
-            &alloc::format!("{case}-preview"),
-            true,
-        );
-        assert!(matches!(preview, Reply::Response(P::IncomePreview { .. })));
+
         let running = exchange(
             &mut session,
             credit_estimate_documents_from_save(&request),
             &alloc::format!("{case}-estimate"),
             true,
         );
-        assert!(matches!(running, Reply::Response(P::IncomeRunningEstimate { .. })));
-        accepted(&exchange(&mut session, request, &alloc::format!("{case}-save"), false));
+        assert!(matches!(running, Reply::Response(P::Review { .. })));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
         let saved = session.draft.clone();
         let result = estimate(&saved);
         assert_eq!(result.state, ResultState::Unsupported);
         assert!(result.issues.iter().any(|issue| issue.display.key == key), "{:?}", result.issues);
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
-        assert_eq!(page_documents(&reopened)[0].document, IncomeDocument::K1Partnership(page));
+        let reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        assert_eq!(
+            page_documents(&reopened)
+                .into_iter()
+                .find(|row| matches!(row.document, IncomeSource::K1 { .. }))
+                .unwrap()
+                .document,
+            expected_named_sources(
+                &session.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+            )[0]
+        );
         accepted(&exchange(&mut session, reopened, &alloc::format!("{case}-resave"), false));
         assert_eq!(session.draft, saved);
         assert_eq!(estimate(&restart(saved.clone()).draft), result);
@@ -558,31 +606,55 @@ fn retained_ptp_fifo_loss_year_sstb_and_no_statement_survive_native_corrections(
         // loss. REIT2000 is taxable, so wage314100 fixes preQBI at300000.
         draft.income[0] = wage(1, Owner::Taxpayer, 31_410_000, 0);
         let mut session = Interview::new(TEST_USER, draft);
-        let dividends = Div1099 {
-            more: DivMore { section199a: 200_000, ..Default::default() },
-            answers: DivAnswers { reit_eligible: Some(true), after_death: None },
+        let dividends = {
+            let mut source = crate::DividendSource::printed(dividend_document(Div1099 {
+             section199a: 200_000,
+
             ..native_div1099("Synthetic retained-loss REIT".into(), 200_000, 0)
+            }));
+            source.reit_eligible = Some(true.into());
+            dividend_document(source)
         };
-        let request = save_topic(&session.draft, TaxSection::InterestDividends,
-            vec![document(0, IncomeDocument::Div1099(dividends))]);
-        accepted(&exchange(&mut session, request, &alloc::format!("{case}-reit"), false));
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividends),
+                },
+            )],
+        );
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, request));
         let mut page = ptp_page(1_500, mode == 1);
-        page.interest = PartnerInterest::LimitedPartner {
-            participation: LimitedParticipation::Investor { prior_years: 0 },
-        };
+        (page.participation, page.limited_for_se) = (Some((LimitedParticipation::Investor { prior_years: 0 }).record()), Some(true));
         let BasisStart::Continuing { carried, .. } = &mut page.basis.start else { unreachable!() };
         carried.passive_loss = 300_000;
-        page.qbi_records.history = Some(PartnerQbiHistory {
-            basis: vec![], risk: vec![],
+        page.qbi_records.as_mut().unwrap().history = Some(PartnerQbiHistory {
+            basis: vec![],
+            risk: vec![],
             // Reverse input order deliberately: source year owns FIFO.
-            passive: vec![loss_year(2023, 2_000, 1_000, 2_000, 1_000),
-                loss_year(2017, 1_000, 0, 1_000, 0)],
+            passive: vec![
+                loss_year(2023, 2_000, 1_000, 2_000, 1_000),
+                loss_year(2017, 1_000, 0, 1_000, 0),
+            ],
         });
-        if mode == 2 { page.qbi = PartnerQbi::NoStatement; }
-        let request = save_topic(&session.draft, TaxSection::PassThrough,
-            vec![document(0, IncomeDocument::K1Partnership(page.clone()))]);
-        let displayed = ptp_estimate_and_save(&mut session, request, &case, exchange,
-            credit_estimate_documents_from_save);
+        if mode == 2 {
+            page.qbi = PartnerQbi::NoStatement;
+        }
+        let request = crate::tests::support::client::income_pages::save_documents(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+            )],
+        );
+        let displayed = ptp_estimate_and_save(
+            &mut session,
+            request,
+            &case,
+            exchange,
+            credit_estimate_documents_from_save,
+        );
         let result = supported(&session.draft);
         // FIFO releases1000 nonqualified +500 at50%=250 qualified.
         // Current nonSSTB1500 survives; SSTB above276750 or no statement
@@ -594,26 +666,45 @@ fn retained_ptp_fifo_loss_year_sstb_and_no_statement_survive_native_corrections(
         assert_eq!(value(&result, "qbi_deduction"), deduction);
         assert_eq!(value(&result, "qbi_loss_carryforward"), 0);
         assert_eq!(displayed, crate::interview::estimate_text(&result));
-        ptp_reopen_and_cold_resave(&mut session, &[IncomeDocument::K1Partnership(page)],
-            &result, &case, exchange);
+        ptp_reopen_and_cold_resave(
+            &mut session,
+            &[IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }],
+            &result,
+            &case,
+            exchange,
+        );
         if mode == 2 {
-            let mut correction = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-            let IncomeDocument::K1Partnership(page) = &mut documents.documents[0].document else { unreachable!() };
-            let year = &mut page.qbi_records.history.as_mut().unwrap().passive[0];
+            let mut correction =
+                crate::tests::support::client::income_pages::open_document_center(&mut session);
+            let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+            let crate::K1Document::K1Partnership(page) =
+                &mut documents.common.k1.documents[0].document
+            else {
+                unreachable!()
+            };
+            let year = &mut page.personal.as_mut().unwrap().qbi_records.history.as_mut().unwrap().passive[0];
             year.qualified = 200_000;
             year.remaining_qualified = 200_000;
             let corrected_page = page.clone();
-            accepted(&exchange(&mut session, correction, &alloc::format!("{case}-correct-qualified"), false));
+            accepted(&exchange(
+                &mut session,
+                correction,
+                &alloc::format!("{case}-correct-qualified"),
+                false,
+            ));
             let result = supported(&session.draft);
             // Same financial loss/AGI, corrected source fraction100%:
             // 500 qualified released, REIT2000−500=1500; deduction300.
             assert_eq!(value(&result, "agi"), 316_100);
             assert_eq!(value(&result, "qbi_reit_ptp"), 1_500);
             assert_eq!(value(&result, "qbi_deduction"), 300);
-            ptp_reopen_and_cold_resave(&mut session,
-                &[IncomeDocument::K1Partnership(corrected_page)], &result,
-                &alloc::format!("{case}-corrected"), exchange);
+            ptp_reopen_and_cold_resave(
+                &mut session,
+                &[IncomeSource::K1 { value: crate::K1Document::K1Partnership(corrected_page) }],
+                &result,
+                &alloc::format!("{case}-corrected"),
+                exchange,
+            );
         }
     }
 }
@@ -624,16 +715,25 @@ fn retained_ptp_current_loss_is_not_released_by_another_ptps_profit() {
     draft.income[0] = wage(1, Owner::Taxpayer, 25_335_000, 0);
     let mut session = Interview::new(TEST_USER, draft);
     let mut loss = ptp_page(-1_000, true);
-    loss.interest = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Investor { prior_years: 0 },
-    };
+    (loss.participation, loss.limited_for_se) = (Some((LimitedParticipation::Investor { prior_years: 0 }).record()), Some(true));
     let profit = ptp_page(2_000, false);
-    let request = save_topic(&session.draft, TaxSection::PassThrough, vec![
-        document(0, IncomeDocument::K1Partnership(loss.clone())),
-        document(0, IncomeDocument::K1Partnership(profit.clone())),
-    ]);
-    let displayed = ptp_estimate_and_save(&mut session, request, "ptp-retained-silos",
-        exchange, credit_estimate_documents_from_save);
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![
+            document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership((loss.clone()).into()) }),
+            document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((profit.clone()).into()) },
+            ),
+        ],
+    );
+    let displayed = ptp_estimate_and_save(
+        &mut session,
+        request,
+        "ptp-retained-silos",
+        exchange,
+        credit_estimate_documents_from_save,
+    );
     let result = supported(&session.draft);
     // Wage253350 +otherPTP2000−standard16100=239250 midpoint.
     // First PTP's financial1000 and eligible500 are both still suspended;
@@ -644,11 +744,20 @@ fn retained_ptp_current_loss_is_not_released_by_another_ptps_profit() {
     assert_eq!(value(&result, "qbi_deduction"), 400);
     assert_eq!(value(&result, "qbi_loss_carryforward"), 0);
     assert_eq!(displayed, crate::interview::estimate_text(&result));
-    ptp_reopen_and_cold_resave(&mut session, &[
-        IncomeDocument::K1Partnership(loss), IncomeDocument::K1Partnership(profit),
-    ], &result, "ptp-retained-silos", exchange);
+    ptp_reopen_and_cold_resave(
+        &mut session,
+        &[
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((loss).into()) },
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((profit).into()) },
+        ],
+        &result,
+        "ptp-retained-silos",
+        exchange,
+    );
 }
 
 mod precision_forensics;
 
 mod exact_category_controls;
+
+mod partner_deductions;

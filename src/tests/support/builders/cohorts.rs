@@ -133,7 +133,7 @@ pub(in crate::tests) fn sale(proceeds: i64) -> AmortizationEnd {
             selling_expenses: 0,
             payment: SalePayment::InFull,
             buyer: Buyer::Unrelated,
-            livestock: Livestock::No,
+            livestock: crate::SoldLivestock::No,
         },
     }
 }
@@ -159,7 +159,8 @@ pub(in crate::tests) fn linked_research_business() -> Business {
 pub(in crate::tests) fn converted_research_business() -> Business {
     let mut page = crate::tests::cross::interview::business(10_000_000);
     let mut asset = crate::tests::cross::interview::asset(840_000, 20260701, AssetClass::Five);
-    asset.history = AssetHistory::New { first_year: FirstYearDeduction::Regular };
+    asset.gds_mut().unwrap().history =
+        AssetHistory::New { first_year: FirstYearDeduction::Regular };
     page.assets.push(asset);
     let mut cost = cohort(
         1_200_000,

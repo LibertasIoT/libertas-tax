@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 277000, "rule": {"select": "^<FederalForm1099Misc>", "layout": "rows", "sections": [{"title": "DISPLAY_MISC_INCOME", "fields": ["rents", "royalties", "other", "other_use", "substitute", "crop_insurance"]}, {"title": "DISPLAY_MISC_BUSINESS", "fields": ["fishing", "medical", "attorney", "client_funds", "fish_sales"]}, {"title": "DISPLAY_MISC_WITHHELD", "fields": ["withholding", "deferred"]}]}}
+  ]
+}

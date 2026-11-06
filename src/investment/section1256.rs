@@ -15,7 +15,7 @@
 //   a fraction of .0, .2, .4, .6 or .8 and never .5, so line 9 as the remainder equals 60% rounded.
 //   Lines 8 and 9 join the Form 6252 earlier-year amounts in Totals.schedule_d_line_4/11 (the one
 //   Schedule D path), the short and long totals, net investment income and the Form 1116 line 3e
-//   capital pass; AMT uses the same amounts. The carryback election is the filer's: the 2026
+//   capital pass; AMT uses independently limited K-1 rows through the same owner. The carryback election is the filer's: the 2026
 //   effect is inside (the amount leaves 2026 as 40/60 gain, reducing the capital loss and the 2027
 //   carryover, section 1212(c)(6)(A)); the refund for 2023-2025 is claimed on Form 1045 or 1040-X
 //   and is not in the estimate (NOTE_SECTION_1256_CARRYBACK). Two blocking checks, exact for
@@ -33,10 +33,10 @@
 //   through RareSituation::Straddles; a hedge, a section 475(f) or 988 election and a dealer's
 //   contracts are left out with WARN_SECTION_1256_LEFT_OUT; Part III is a memo disclosure with no
 //   calculation effect; the amended-return carryback row of line 1 is not an original-return
-//   item; K-1 section 1256 amounts (Form 1065 box 11, Form 1120-S box 10) stay refused until the
-//   K-1 audit; a QOF deferral stays refused (Form 8997). Boxes 8, 9 and 10 are not read: the
-//   broker's box 11 already embodies the closed-contract profit, the reversal of last year's mark
-//   and this year's mark. Tests (hand-computed): src/tests/investment/investment.rs
+//   item; differing K-1 AMT allowances with a carryback election remain unavailable without
+//   independent AMT carryback records; a QOF deferral stays refused (Form 8997). Printed
+//   broker documents retain boxes 8–10 for reconciliation; the actual box 11
+//   remains the authoritative aggregate for this existing calculation. Tests (hand-computed): src/tests/investment/investment.rs
 //   form_6781_net_gain_is_taxed_60_40, form_6781_net_loss_carries_over_without_carryback,
 //   form_6781_carryback_moves_gain_into_the_loss_year_and_checks_the_bound,
 //   form_6781_open_contracts_and_rounding, form_6781_left_out_statement,
@@ -45,9 +45,9 @@
 //   https://www.irs.gov/pub/irs-dft/f6781--dft.pdf
 //   https://www.irs.gov/pub/irs-pdf/i1099b.pdf
 //   https://www.irs.gov/publications/p550
-use crate::kernel::lines::form_line;
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::form_line;
 use crate::{FederalDraft, FederalIncome, FederalResult, FormLine, TaxForm};
 use alloc::format;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
@@ -59,7 +59,8 @@ pub struct Section1256Carryback {
     /// Net section 1256 contracts loss you carry back (Form 6781 line 6)
     /// Figure it from your 2023–2025 returns with Publication 550: earliest year first, no more than each year's net gain from section 1256 contracts, and never creating a net operating loss there. The estimate removes it from 2026; the refund for those years is claimed on Form 1045 or Form 1040-X and is not part of this estimate.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// Actual owners of the loss absorbed in the carryback years
     /// Only for a Form 8379 claim. Use the actual absorbed amounts from the retained carryback worksheets, not the surviving capital-loss shares or the owner of this election page. This is not a current-year refund or payment.
@@ -107,64 +108,135 @@ impl Form6781 {
 
 // The supported working copy's statements and the entered carryback.
 pub(crate) fn form_6781(d: &FederalDraft) -> Form6781 {
-    form_6781_rows(d, false)
+    form_6781_rows(d, false, false)
 }
 
 // The same without the K-1s that have a Schedule K-3 (Form 1116 line 3e).
 pub(crate) fn form_6781_without_k3(d: &FederalDraft) -> Form6781 {
-    form_6781_rows(d, true)
+    form_6781_rows(d, true, false)
 }
 
-fn form_6781_rows(d: &FederalDraft, without_k3: bool) -> Form6781 {
-    let (mut losses, mut gains) = (0, 0);
-    let mut source_net = [0; 2];
+// Independent AMT K-1 allowances through the same Part I calculation.
+pub(crate) fn form_6781_amt(d: &FederalDraft) -> Form6781 {
+    form_6781_rows(d, false, true)
+}
+
+pub(crate) fn form_6781_amt_without_k3(d: &FederalDraft) -> Form6781 {
+    form_6781_rows(d, true, true)
+}
+
+fn form_6781_rows(d: &FederalDraft, without_k3: bool, alternative: bool) -> Form6781 {
+    checked_form_6781_rows(d, without_k3, alternative)
+        .expect("section 1256 financial source admission")
+}
+
+// Accumulate the actual rounded rows widely before narrowing the existing
+// Part I owner. Both normal projection and financial admission use this pass.
+fn checked_form_6781_rows(
+    d: &FederalDraft,
+    without_k3: bool,
+    alternative: bool,
+) -> Option<Form6781> {
+    let (mut losses, mut gains) = (0_i128, 0_i128);
+    let mut source_net = [0_i128; 2];
     for e in &crate::community::entries(d) {
         if without_k3
             && match &e.income {
                 FederalIncome::Partnership { data } => data.schedule_k3.is_some(),
-                FederalIncome::Scorp { data } => data.schedule_k3.is_some(),
+                FederalIncome::Scorp { data } => {
+                    let data = &crate::ScorpK1::from(data);
+                    data.schedule_k3.is_some()
+                }
                 _ => false,
             }
         {
             continue;
         }
-        // Unit B9-1: a K-1's net section 1256 amount (box 11 code C, box 10
+        // A K-1's net section 1256 amount (box 11 code C, box 10
         // code C) after its basis and at-risk limits is one more line 1 row,
         // named for the entity.
         let k1 = match &e.income {
-            FederalIncome::Section1256 { data } => Some(data.aggregate),
+            FederalIncome::Section1256 { .. } | FederalIncome::Broker { .. } => {
+                crate::broker_calculation::contracts_amount(d, e)
+            }
             FederalIncome::Partnership { data } => {
-                Some(crate::community::partner_facts(d, e, data).flows.section1256)
+                let facts = crate::community::partner_facts(d, e, data).ok()?;
+                Some(if alternative {
+                    facts.amt_flows.section1256
+                } else {
+                    facts.flows.section1256
+                })
             }
             FederalIncome::Scorp { data } => {
-                Some(crate::community::scorp_facts(d, e, data).flows.section1256)
+                let data = &crate::ScorpK1::from(data);
+                let facts = crate::community::scorp_facts(d, e, data);
+                Some(if alternative {
+                    facts.amt_flows.section1256
+                } else {
+                    facts.flows.section1256
+                })
             }
             _ => None,
         };
         if let Some(amount) = k1 {
             let row = dollars(amount);
-            source_net[usize::from(e.owner == crate::Owner::Spouse)] += row;
+            let owner = usize::from(e.owner == crate::DocumentOwner::Spouses);
+            source_net[owner] = source_net[owner].checked_add(i128::from(row))?;
             if row < 0 {
-                losses += row;
+                losses = losses.checked_add(i128::from(row))?;
             } else {
-                gains += row;
+                gains = gains.checked_add(i128::from(row))?;
             }
         }
     }
     let carryback = d.screening.as_ref().and_then(|s| s.section_1256_carryback).map_or(0, dollars);
-    let mut form = Form6781::with_carryback(losses + gains, carryback, losses, gains);
-    form.source_net = source_net;
-    form
+    let losses = i64::try_from(losses).ok()?;
+    let gains = i64::try_from(gains).ok()?;
+    let net = losses.checked_add(gains)?;
+    net.checked_add(carryback)?;
+    let mut form = Form6781::with_carryback(net, carryback, losses, gains);
+    form.source_net = [i64::try_from(source_net[0]).ok()?, i64::try_from(source_net[1]).ok()?];
+    // Native Schedule D, AMT, NIIT and attribution consumers carry cents.
+    for amount in [
+        form.losses,
+        form.gains,
+        form.net,
+        form.carryback,
+        form.total,
+        form.short,
+        form.long,
+        form.source_net[0],
+        form.source_net[1],
+    ] {
+        amount.checked_mul(100)?;
+    }
+    Some(form)
+}
+
+pub(crate) fn financial_issue(draft: &FederalDraft) -> Option<(i64, &'static str)> {
+    let id = draft.income.iter().find_map(|entry| {
+        matches!(entry.income, FederalIncome::Broker { .. }).then_some(entry.id)
+    })?;
+    for (without_k3, alternative) in [(false, false), (true, false), (false, true), (true, true)] {
+        if checked_form_6781_rows(draft, without_k3, alternative).is_none() {
+            return Some((id, "BROKER_CONTRACTS_ARITHMETIC_UNAVAILABLE"));
+        }
+    }
+    None
 }
 
 // Whether any Part I statement or carryback is on the return.
 pub(crate) fn present(d: &FederalDraft) -> bool {
     d.income.iter().any(|e| match &e.income {
         FederalIncome::Section1256 { .. } => true,
+        FederalIncome::Broker { data } => {
+            crate::broker_calculation::projection(data).contracts.is_some()
+        }
         FederalIncome::Partnership { data } => {
             data.k1_items().has(crate::k1_items::K1ItemKind::Section1256)
         }
         FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
             data.k1_items().has(crate::k1_items::K1ItemKind::Section1256)
         }
         _ => false,
@@ -208,11 +280,11 @@ pub(crate) fn report(d: &FederalDraft, netting: &Netting, r: &mut FederalResult)
     }
     let form = form_6781(d);
     for e in &d.income {
-        if let FederalIncome::Section1256 { data } = &e.income {
-            crate::kernel::lines::line(
+        if let Some(amount) = crate::broker_calculation::contracts_amount(d, e) {
+            crate::line_emission::line(
                 r,
                 &format!("section_1256_{}_aggregate", e.id),
-                dollars(data.aggregate),
+                dollars(amount),
                 &["income.section_1256"],
                 SOURCE,
                 msg!("EXPLAIN_SECTION_1256_N_AGGREGATE"),

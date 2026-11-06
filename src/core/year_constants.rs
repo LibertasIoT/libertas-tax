@@ -92,6 +92,12 @@ pub(crate) const SOCIAL_SECURITY_WAGE_BASE_CENTS: i64 = SOCIAL_SECURITY_WAGE_BAS
 // Maximum employee Social Security tax withheld on one wage base (6.2% of the wage base), 2026,
 // cents. Source: derived, 6.2% (IRC 3101(a)) of the wage base: $11,439.
 pub(crate) const MAX_EMPLOYEE_SOCIAL_SECURITY_TAX_CENTS: i64 = 1_143_900;
+// Reporting-rounding tolerance for the W-2 payroll-rate checks (box 4 against 6.2% of box 3, box 6
+// against 1.45% of box 5), cents. Employers compute payroll tax per pay period and may print
+// whole-dollar W-2 amounts, so the printed annual totals can differ from the annual rate by up to
+// $1.00 without any over- or under-withholding. Source: General Instructions for Forms W-2 and
+// W-3 (whole-dollar entries permitted); IRC 3102(a) (tax withheld as wages are paid).
+pub(crate) const W2_PAYROLL_RATE_ROUNDING_TOLERANCE_CENTS: i64 = 100;
 // Additional Medicare Tax threshold, joint return, whole dollars. Statutory (IRC 3101(b)(2)),
 // not indexed; Form 8959.
 pub(crate) const ADDITIONAL_MEDICARE_THRESHOLD_JOINT_DOLLARS: i64 = 250_000;
@@ -201,6 +207,10 @@ pub(crate) const SECTION_179_DOLLAR_LIMIT_2026_CENTS: i64 = 256_000_000;
 // Section 179 investment-limit phaseout threshold, 2026, cents ($4,090,000). Source: Rev. Proc.
 // 2025-32 section 4.24.
 pub(crate) const SECTION_179_PHASEOUT_THRESHOLD_2026_CENTS: i64 = 409_000_000;
+
+// Heavy passenger SUV section179 elected-cost limit, 2026, cents ($32,000).
+// Source: IRC179(b)(5), Rev.Proc.2025-32 section4.24; statutory design exceptions are excluded.
+pub(crate) const SECTION_179_SUV_LIMIT_2026_CENTS: i64 = 3_200_000;
 
 // ---- Section 280F passenger-automobile limits (Rev. Proc. tables) ----
 // By the calendar year the vehicle was placed in service, in cents: first year with the section
@@ -431,9 +441,11 @@ pub(crate) const PAID_LEAVE_MIN_WEEKLY_HOURS: u32 = 20;
 // Weeks of leave in a taxable year that earn the credit. Source: IRC 45S(b)(3); Form 8994 worksheet.
 // The validation rule on PaidLeaveEmployee names it as `$PAID_LEAVE_MAX_WEEKS * 100` hundredths of the weekly hours.
 pub(crate) const PAID_LEAVE_MAX_WEEKS: i64 = 12;
-// The lowest rate of payment a written policy may have, in hundredths of a percent (50%). Source: IRC
-// 45S(c)(1)(B). The attribute range on the rate fields names it as `$PAID_LEAVE_MIN_RATE_HUNDREDTHS`.
-pub(crate) const PAID_LEAVE_MIN_RATE_HUNDREDTHS: i64 = 5_000;
+// The lowest rate of payment a written policy may have (50%). Source: IRC 45S(c)(1)(B). The
+// attribute range on the rate fields names it as `$PAID_LEAVE_MIN_RATE_PERCENT`.
+pub(crate) const PAID_LEAVE_MIN_RATE_PERCENT: i64 = 50;
+// The same lowest rate in hundredths of a percent, for the credit worksheet. Source: IRC 45S(c)(1)(B).
+pub(crate) const PAID_LEAVE_MIN_RATE_HUNDREDTHS: i64 = PAID_LEAVE_MIN_RATE_PERCENT * 100;
 // The applicable percentage at the 50% rate, in hundredths of a percent (12.5%). Source: IRC
 // 45S(a)(2)(A); the i8994 Applicable Percentage Worksheet.
 pub(crate) const PAID_LEAVE_BASE_PERCENT_HUNDREDTHS: i64 = 1_250;
@@ -1385,8 +1397,6 @@ pub(crate) const CHARITY_SECTION_B_THRESHOLD_CENTS: i64 = 500_000;
 // Source: https://www.irs.gov/pub/irs-pdf/f8826.pdf
 pub(crate) const DISABLED_ACCESS_CREDIT_LIMIT_CENTS: i64 = 500_000;
 
-pub(crate) use crate::auto_recovery::caps::original_auto_limit_cents;
-
 #[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
@@ -1456,12 +1466,12 @@ mod tests {
     // Removed schema hour ceilings must not return as numeric or named bounds.
     #[test]
     fn attribute_and_rule_values_name_their_year_constants() {
-        let federal_model = include_str!("../federal/federal_model.rs");
-        let adoption = include_str!("../family/adoption.rs");
-        let disaster = include_str!("../retirement/disaster/mod.rs");
-        let care = include_str!("../family/care.rs");
+        let federal_model = crate::federal_model::HUB_SOURCE;
+        let adoption = include_str!("../family/adoption_source.rs");
+        let disaster = include_str!("../retirement/disaster_source.rs");
+        let care = include_str!("../family/care_source.rs");
         let credits = include_str!("../credits/general_business_credit.rs");
-        let investment = include_str!("../credits/investment_credit.rs");
+        let investment = include_str!("../credits/investment_credit_source.rs");
 
         // Each reference appears where the constant was repeated; the repeated literal is gone.
         for (source, reference, literals) in [
@@ -1476,7 +1486,7 @@ mod tests {
             (investment, ".max(REHABILITATION_SUBSTANTIAL_FLOOR_CENTS)", &["> 500000"]),
             (credits, "$PAID_LEAVE_MIN_WEEKLY_HOURS", &["min = 20,"]),
             (credits, "$PAID_LEAVE_COMPENSATION_LIMIT_2026_CENTS", &["9600000"]),
-            (credits, "$PAID_LEAVE_MIN_RATE_HUNDREDTHS", &["min = 5000,"]),
+            (credits, "$PAID_LEAVE_MIN_RATE_PERCENT", &["min = 50,"]),
             (credits, "PAID_LEAVE_MAX_WEEKS * 100 * i64::from(self.weekly_hours)", &["1200 *"]),
             (credits, "$SMALL_EMPLOYER_HEALTH_FTE_HOURS", &["max = 2080"]),
             (credits, "crate::year_constants::WOTC_FIRST_YEAR_CAP_STANDARD_CENTS", &["<= 600000"]),
@@ -1509,6 +1519,6 @@ mod tests {
         // 2026-10-16: Unit 47 removed the redundant schema hour ceilings. The source-specific
         // 12-week native constraint still names PAID_LEAVE_MAX_WEEKS, checked above.
         assert!(attribute_bounds(credits, "weekly_hours", "max").is_empty());
-        assert!(attribute_bounds(credits, "leave_hours_hundredths", "max").is_empty());
+        assert!(attribute_bounds(credits, "leave_hours", "max").is_empty());
     }
 }

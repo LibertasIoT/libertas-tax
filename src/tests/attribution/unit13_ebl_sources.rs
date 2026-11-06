@@ -116,9 +116,12 @@ fn unit13_ebl_sources_native_scaled_owner_net_choice_public_lifecycle() {
 fn unit13_ebl_sources_final_pass_through_ordinary_map_foots_native_owner() {
     let mut d = injured_return((60_000, 5000), (20_000, 500), 0, allocation());
     let mut p = income(FederalIncome::Partnership { data: ordinary_partner_source(20_000, true) });
-    p.owner = Owner::Spouse;
+    p.owner = crate::DocumentOwner::Spouses;
     add(&mut d, p);
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(10_000, true) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(10_000, true)) }),
+    );
     let mut result = supported(&d);
     let rental = crate::extended_rules::rentals(&d, 80_000, &mut result);
     assert!(rental.inputs_complete);

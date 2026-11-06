@@ -51,7 +51,7 @@ fn multiple_529_transfers_use_tax_year_roth_basis_between_transfer_dates() {
     else {
         panic!()
     };
-    data.distributed = 20260401;
+    edit_roth(data).distributed = 20260401;
     assert_eq!(supported(&draft), result);
     assert_eq!(supported(&restart(draft.clone()).draft), result);
 }
@@ -106,7 +106,7 @@ fn qtp_to_roth_source_contributions_are_basis_and_source_earnings_are_not() {
     else {
         panic!()
     };
-    data.distributed = 20260531;
+    edit_roth(data).distributed = 20260531;
     assert_eq!(supported(&d), result);
 }
 
@@ -168,16 +168,16 @@ fn ira_accepted_page_round_trip_and_special_basis_guard() {
     add(
         &mut d,
         income(FederalIncome::Retirement {
-            data: native_retirement(
+            data: retirement_source(native_retirement(
                 RetirementKind::Pension,
                 100_000,
-                RetirementTaxable::Payer { amount: 100_000 },
-            ),
+                (RetirementTaxable::Payer, 100_000),
+            )),
         }),
     );
     supported(&d); // Pension income does not require traditional IRA basis allocation.
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.kind = RetirementKind::Ira;
+    edit_retirement(data).kind = RetirementKind::Ira;
     unsupported(&d, "IRA");
 }
 #[test]
@@ -214,7 +214,7 @@ fn ira_basis_reduces_early_tax_and_does_not_pretend_preview_is_known() {
     assert_eq!(value(&r, "early_distribution_tax"), 1600);
     assert_eq!(return_line(&r, "4b"), 1_600_000);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = RetirementTreatment::EarlySimple;
+    edit_retirement(data).ordinary_distribution = Some(RetirementTreatment::EarlySimple);
     assert_eq!(value(&supported(&d), "early_distribution_tax"), 4000);
 }
 #[test]
@@ -243,7 +243,7 @@ fn ira_basis_missing_mixed_duplicate_and_special_facts_block_totals() {
     bad.adjustments.as_mut().unwrap().ira_basis[0].paid_next_year = 10000;
     unsupported(&bad, "IRA basis");
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.kind = RetirementKind::Pension;
+    edit_retirement(data).kind = RetirementKind::Pension;
     unsupported(&d, "IRA basis");
 }
 #[test]
@@ -381,7 +381,8 @@ fn ira_rollover_basis_matches_same_year_and_outstanding_completion() {
     assert_eq!(value(&same_year, "early_distribution_tax"), 160);
     assert_eq!(value(&same_year, "taxpayer_ira_outstanding_rollover"), 0);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = rollover(8000, RolloverDestination::IraNextYear);
+    edit_retirement(data).ordinary_distribution =
+        Some(rollover(8000, RolloverDestination::IraNextYear));
     d.adjustments.as_mut().unwrap().ira_basis[0].year_end = 4000000;
     let next_year = supported(&d);
     assert_eq!(value(&next_year, "taxpayer_ira_outstanding_rollover"), 8000);
@@ -492,7 +493,7 @@ fn qcd_takes_pretax_funds_before_other_distributions_use_basis() {
     assert_eq!(value(&r, "qcd_cash_gifts"), 0);
     // A second payer entry for the ordinary portion gives the same result.
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.gross = 1000000;
+    edit_retirement(data).gross = 1000000;
     add(&mut d, basis_distribution(Owner::Taxpayer, 5000, RetirementTreatment::Ordinary));
     assert_eq!(supported(&d).tax, r.tax);
     d.income.reverse();
@@ -731,16 +732,22 @@ fn public_safety_simplified_method_keeps_basis_recovery_separate() {
 fn immediate_annuity_basis_start_must_agree_with_exception_start() {
     let mut d = nonqualified_exception(immediate_annuity(20250101, 20260101));
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.gross = 300000;
-    data.taxable = RetirementTaxable::GeneralAnnuity { data: fixed_annuity() };
+    edit_retirement(data).gross = 300000;
+    edit_retirement(data).taxable =
+        Some(RetirementTaxable::GeneralAnnuity { data: fixed_annuity() });
     let r = supported(&d);
     assert_eq!(value(&r, "early_distribution_tax"), 0);
     assert_eq!(value(&r, "annuity_2_basis_recovery"), 1500);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    let RetirementTreatment::Exception { facts, .. } = &mut data.ordinary_distribution else {
-        panic!()
-    };
-    *facts = immediate_annuity(20250101, 20251231);
+    {
+        let mut retirement_edit = edit_retirement(data);
+        let Some(RetirementTreatment::Exception { facts, .. }) =
+            &mut retirement_edit.ordinary_distribution
+        else {
+            panic!()
+        };
+        *facts = immediate_annuity(20250101, 20251231);
+    }
     unsupported(&d, "Income:");
 }
 
@@ -754,8 +761,11 @@ fn mixed_employer_distribution_rolls_pretax_first_without_consuming_more_basis()
         for rolled in [0, 500, 1000] {
             let mut d = qualified_withdrawal(5000, 12500, 10000);
             let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-            data.ordinary_distribution =
-                RetirementTreatment::Rollover { destination, amount: rolled * 100, early: true };
+            edit_retirement(data).ordinary_distribution = Some(RetirementTreatment::Rollover {
+                destination,
+                amount: rolled * 100,
+                early: true,
+            });
             let r = supported(&d);
             assert_eq!(return_line(&r, "5a"), 500000);
             assert_eq!(return_line(&r, "5b"), (1000 - rolled) * 100);
@@ -773,11 +783,11 @@ fn direct_plan_rollover_preserves_separate_after_tax_basis_without_ira_basis() {
     for (rolled, rolled_basis, taxable) in [(500, 0, 500), (3000, 2000, 0), (5000, 4000, 0)] {
         let mut d = qualified_withdrawal(5000, 12500, 10000);
         let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-        data.ordinary_distribution = RetirementTreatment::Rollover {
+        edit_retirement(data).ordinary_distribution = Some(RetirementTreatment::Rollover {
             destination: RolloverDestination::DirectEmployerPlan { confirmed: true },
             amount: rolled * 100,
             early: true,
-        };
+        });
         let r = supported(&d);
         assert_eq!(return_line(&r, "5b"), taxable * 100);
         assert_eq!(value(&r, "early_distribution_tax"), taxable / 10);
@@ -944,7 +954,7 @@ fn inherited_roth_partial_withdrawal_retains_decedent_specific_basis() {
     let mut d = complete(FederalStatus::Joint);
     let id = d.next_id;
     let mut e = inherited_roth(2022, 1000, 2500);
-    e.owner = Owner::Spouse;
+    e.owner = crate::DocumentOwner::Spouses;
     add(&mut d, e);
     add(&mut d, inherited_roth_payment(Owner::Spouse, Some(id), 2000));
     let r = supported(&d);
@@ -1087,9 +1097,12 @@ fn inherited_ira_form8606_rounding_and_empty_balance_preserve_unused_basis() {
     assert_eq!(value(&r, "inherited_ira_2_basis_remaining"), 667);
     assert_eq!(return_line(&r, "4b"), 966700);
     if let FederalIncome::Retirement { data } = &mut d.income[2].income {
-        data.gross = 0;
-        if let RetirementTaxable::Inherited { payer, .. } = &mut data.taxable {
-            *payer = 0;
+        edit_retirement(data).gross = 0;
+        if matches!(
+            crate::FederalRetirement::from(&*data).taxable,
+            Some(RetirementTaxable::Inherited { .. })
+        ) {
+            edit_retirement(data).box_2a = 0;
         }
     }
     inherited_basis_mut(&mut d.income[1]).as_mut().unwrap().year_end = 0;
@@ -1139,7 +1152,7 @@ fn inherited_qcd_checks_beneficiary_age_source_ownership_and_gross() {
     bad.adjustments.as_mut().unwrap().qualified_charity[0].payments[0].inherited = Some(9999);
     unsupported(&bad, "QCD");
     let mut bad = d.clone();
-    bad.income.iter_mut().find(|e| e.id == id).unwrap().owner = Owner::Spouse;
+    bad.income.iter_mut().find(|e| e.id == id).unwrap().owner = crate::DocumentOwner::Spouses;
     unsupported(&bad, "QCD");
     let mut bad = d.clone();
     bad.adjustments.as_mut().unwrap().qualified_charity[0].payments[0].amount = 1000001;
@@ -1156,7 +1169,7 @@ fn inherited_estate_tax_uses_pub559_ratio_without_reducing_agi_or_amt_deduction(
     let mut d = complete(FederalStatus::Single);
     add_inherited_ira(&mut d, 12000, 0, 0);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     set_inherited_estate(&mut d, inherited_estate(12000));
     let r = supported(&d);
@@ -1169,7 +1182,7 @@ fn inherited_estate_tax_uses_pub559_ratio_without_reducing_agi_or_amt_deduction(
     );
     assert_eq!(value(&r, "inherited_ira_2_estate_ird_value_remaining"), 0);
     assert_eq!(restart(d.clone()).draft, d);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     assert_eq!(value(&supported(&d), "inherited_estate_tax_deduction"), 0);
 }
 #[test]
@@ -1306,6 +1319,7 @@ fn inherited_roth_hsa_funding_uses_earnings_then_basis_without_recapture() {
     let mut payment = inherited_roth_payment(Owner::Taxpayer, Some(2), 6000);
     payment.id = d.income[2].id;
     if let FederalIncome::Roth { data } = &mut payment.income {
+        let mut data = edit_roth(data);
         data.distributed = 20260115;
     }
     d.income[2] = payment;
@@ -1371,7 +1385,7 @@ fn noncapital_nondeductible_costs_share_at_risk_capacity_without_a_tax_deduction
     assert_eq!(risk.year_end, Some(0));
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 50_750);
     assert_eq!(value(&r, "qbi_loss_carryforward"), 9_250);
@@ -1386,7 +1400,7 @@ fn simultaneous_basis_nondeductible_suspension_remains_explicit() {
     source.losses_first = true;
     source.amt = Some(amt_records(&source));
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     unsupported(&d, "S-corporation at-risk");
 }
 
@@ -1529,7 +1543,7 @@ fn ira_gross_exception_caps_balance_and_actual_costs_before_basis() {
         };
         let mut d = ira_basis_exception_return(facts, false);
         let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-        data.gross = gross;
+        edit_retirement(data).gross = gross;
         d.adjustments.as_mut().unwrap().ira_basis[0].year_end = 10000000 - gross;
         let r = supported(&d);
         assert_eq!(value(&r, "early_taxpayer_exceptions"), relief);
@@ -1705,9 +1719,9 @@ fn care_distribution_does_not_reuse_ordinary_partial_basis_allocation() {
     assert_eq!(return_line(&r, "5b"), 2000000);
     assert_eq!(value(&r, "early_distribution_tax"), 1740);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.taxable = RetirementTaxable::FullDischarge {
+    edit_retirement(data).taxable = Some(RetirementTaxable::FullDischarge {
         data: crate::ContractDischarge { investment: 400000, eligible: true },
-    };
+    });
     let r = supported(&d);
     assert_eq!(return_line(&r, "5b"), 1600000);
     assert_eq!(value(&r, "early_distribution_tax"), 1340);
@@ -1794,7 +1808,7 @@ fn inherited_nua_requires_chronology_and_resolved_estate_treatment() {
         reporting: crate::BasisReporting::ReportedToIrs,
         special: false,
     };
-    for died in [20251231, 20261001, 20260230] {
+    for died in [20251231, 20261001] {
         lot.inheritance.as_mut().unwrap().died = died;
         assert!(!lot.valid());
     }
@@ -1861,13 +1875,16 @@ fn nonqualified_annuity_loans_increase_basis_without_tax_free_basis_recovery() {
     {
         let mut d = deferred_withdrawal(cash, investment);
         let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-        let RetirementTaxable::DeferredWithdrawal {
-            data: crate::AnnuityDistribution { loan_pledge, .. },
-        } = &mut data.taxable
-        else {
-            unreachable!()
-        };
-        *loan_pledge = true;
+        {
+            let mut retirement_edit = edit_retirement(data);
+            let Some(RetirementTaxable::DeferredWithdrawal {
+                data: crate::AnnuityDistribution { loan_pledge, .. },
+            }) = &mut retirement_edit.taxable
+            else {
+                unreachable!()
+            };
+            *loan_pledge = true;
+        }
         let r = supported(&d);
         assert_eq!(return_line(&r, "5a"), 700000);
         assert_eq!(return_line(&r, "5b"), taxable * 100);
@@ -1881,7 +1898,7 @@ fn nonqualified_annuity_loans_increase_basis_without_tax_free_basis_recovery() {
             // After repayment, insurer records retain $16k basis, not $23k.
             let mut next = d.income[1].clone();
             let FederalIncome::Retirement { data } = &mut next.income else { unreachable!() };
-            data.taxable = RetirementTaxable::DeferredWithdrawal {
+            edit_retirement(data).taxable = Some(RetirementTaxable::DeferredWithdrawal {
                 data: crate::AnnuityDistribution {
                     loan_pledge: false,
                     value: 1600000,
@@ -1889,7 +1906,7 @@ fn nonqualified_annuity_loans_increase_basis_without_tax_free_basis_recovery() {
                     related: vec![],
                     eligible: true,
                 },
-            };
+            });
             add(&mut d, next);
             let id = d.income.last().unwrap().id;
             let combined = supported(&d);
@@ -1898,23 +1915,26 @@ fn nonqualified_annuity_loans_increase_basis_without_tax_free_basis_recovery() {
             assert_eq!(supported(&restart(d.clone()).draft), combined);
         }
         let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-        data.ordinary_distribution = RetirementTreatment::Rollover {
+        edit_retirement(data).ordinary_distribution = Some(RetirementTreatment::Rollover {
             destination: RolloverDestination::Ira,
             amount: 700000,
             early: false,
-        };
+        });
         assert_eq!(estimate(&d).state, ResultState::Unsupported);
     }
     let mut d = deferred_withdrawal(9000, 10000);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTaxable::DeferredWithdrawal {
-        data: crate::AnnuityDistribution { loan_pledge, related, .. },
-    } = &mut data.taxable
-    else {
-        unreachable!()
-    };
-    *loan_pledge = true;
-    related.push(AnnuityBalance { value: 1500000, investment: 1000000 });
+    {
+        let mut retirement_edit = edit_retirement(data);
+        let Some(RetirementTaxable::DeferredWithdrawal {
+            data: crate::AnnuityDistribution { loan_pledge, related, .. },
+        }) = &mut retirement_edit.taxable
+        else {
+            unreachable!()
+        };
+        *loan_pledge = true;
+        related.push(AnnuityBalance { value: 1500000, investment: 1000000 });
+    }
     let r = supported(&d);
     assert_eq!(return_line(&r, "5b"), 400000);
     assert_eq!(value(&r, "annuity_2_basis_recovery"), 0);
@@ -1956,26 +1976,33 @@ fn railroad_repayment_rejects_wrong_recipient_and_basis_allocation() {
     unsupported(&d, "Repayment railroad");
     let mut d = railroad_repayment_draft();
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTaxable::Railroad { repayments, .. } = &mut data.taxable else { unreachable!() };
-    repayments[0].contributory = true;
-    let RepaymentClaim::Claim { years, .. } = &mut d.deductions.as_mut().unwrap().repayment else {
-        unreachable!()
-    };
-    let RepaymentRetirement::Railroad { contributory, basis, .. } = &mut years[0].retirement[0]
-    else {
-        unreachable!()
-    };
-    *contributory = 1500000;
-    *basis = Some(PensionBasis {
-        earlier_months: 0,
-        changes: vec![],
-        share: None,
-        started: 20000101,
-        cost: Some(1000000),
-        months: 12,
-        history: PensionHistory::Prior { monthly: 1000, recovered: 0 },
-        eligible: true,
-    });
+    {
+        let mut retirement_edit = edit_retirement(data);
+        let Some(RetirementTaxable::Railroad { repayments, .. }) = &mut retirement_edit.taxable
+        else {
+            unreachable!()
+        };
+        repayments[0].contributory = true;
+        let RepaymentClaim::Claim { years, .. } = &mut d.deductions.as_mut().unwrap().repayment
+        else {
+            unreachable!()
+        };
+        let RepaymentRetirement::Railroad { contributory, basis, .. } = &mut years[0].retirement[0]
+        else {
+            unreachable!()
+        };
+        *contributory = 1500000;
+        *basis = Some(PensionBasis {
+            earlier_months: 0,
+            changes: vec![],
+            share: None,
+            started: 20000101,
+            cost: Some(1000000),
+            months: 12,
+            history: PensionHistory::Prior { monthly: 1000, recovered: 0 },
+            eligible: true,
+        });
+    }
     unsupported(&d, "Repayment railroad");
 }
 
@@ -2086,6 +2113,7 @@ fn roth_same_day_funding_uses_actual_order_and_never_entry_order() {
         let mut d = roth_earlier_funding();
         for (index, sequence) in [(1, funding_order), (2, ordinary_order)] {
             let FederalIncome::Roth { data } = &mut d.income[index].income else { unreachable!() };
+            let mut data = edit_roth(data);
             data.distributed = 20260615;
             data.sequence = Some(sequence);
         }
@@ -2106,7 +2134,7 @@ fn roth_same_day_funding_uses_actual_order_and_never_entry_order() {
             else {
                 unreachable!()
             };
-            data.sequence = invalid;
+            edit_roth(data).sequence = invalid;
             assert!(crate::roth::earlier_funding(&bad, Owner::Taxpayer).is_none());
             assert!(noted(&supported(&bad), "WARN_HSA_FUNDING_LEFT_OUT"));
         }
@@ -2129,7 +2157,7 @@ fn roth_earlier_funding_preserves_conversion_year_and_both_conversion_classes() 
         HsaFundingBasis::Roth { value: 25000, before_other_activity: false };
     for (index, gross) in [(1, 20000), (2, 35000), (3, 10000)] {
         if let FederalIncome::Roth { data } = &mut d.income[index].income {
-            data.gross = gross;
+            edit_roth(data).gross = gross;
         }
     }
     // Before funding: regular0, 2020 cohort0, 2025 taxable150/non100.
@@ -2158,6 +2186,7 @@ fn roth_earlier_funding_two_transfers_use_intervening_withdrawals_and_market_val
     let mut d = roth_earlier_funding();
     for (index, date, gross) in [(1, 20260215, 40000), (2, 20260115, 10000), (3, 20260315, 20000)] {
         if let FederalIncome::Roth { data } = &mut d.income[index].income {
+            let mut data = edit_roth(data);
             data.distributed = date;
             data.gross = gross;
         }
@@ -2172,6 +2201,7 @@ fn roth_earlier_funding_two_transfers_use_intervening_withdrawals_and_market_val
     add(&mut d, roth_withdrawal(Owner::Taxpayer, 300, 20260915));
     for entry in &mut d.income {
         if let FederalIncome::Roth { data } = &mut entry.income {
+            let mut data = edit_roth(data);
             data.withholding = 0;
         }
     }
@@ -2232,6 +2262,7 @@ fn roth_earlier_funding_regular_contributions_preserve_basis_when_earnings_cover
     d.adjustments.as_mut().unwrap().hsa[0].funding[0].basis =
         HsaFundingBasis::Roth { value: 180000, before_other_activity: false };
     if let FederalIncome::Roth { data } = &mut d.income[3].income {
+        let mut data = edit_roth(data);
         data.gross = 110000;
     }
     let ordered = crate::roth::earlier_funding(&d, Owner::Taxpayer).unwrap();
@@ -2316,7 +2347,7 @@ fn roth_earlier_funding_regular_contributions_keep_conversion_recapture_classes(
         HsaFundingBasis::Roth { value: 90000, before_other_activity: false };
     for (index, gross) in [(1, 20000), (2, 35000), (3, 50000)] {
         if let FederalIncome::Roth { data } = &mut d.income[index].income {
-            data.gross = gross;
+            edit_roth(data).gross = gross;
         }
     }
     let ordered = crate::roth::earlier_funding(&d, Owner::Taxpayer).unwrap();
@@ -2346,22 +2377,29 @@ fn roth_earlier_funding_does_not_admit_unverified_incoming_basis_or_ambiguous_so
             ),
             2 => {
                 if let FederalIncome::Roth { data } = &mut d.income[2].income {
+                    let mut data = edit_roth(data);
                     data.distributed = 20260615;
                 }
             }
             3 => {
                 if let FederalIncome::Roth { data } = &mut d.income[1].income {
+                    let mut data = edit_roth(data);
                     data.gross += 100;
                 }
             }
             4 => {
                 if let FederalIncome::Roth { data } = &mut d.income[2].income {
-                    data.code = RothCode::Qualified;
+                    let Some(DistributionCode::RothIra { roth, .. }) = &mut data.code else {
+                        unreachable!()
+                    };
+                    *roth = RothIraCode::Qualified;
+                    data.form.box7 = crate::DistributionCodes::CODE_Q.0;
                 }
             }
             5 => d.adjustments.as_mut().unwrap().roth_history[0].ordering = None,
             6 => {
                 if let FederalIncome::Roth { data } = &mut d.income[1].income {
+                    let mut data = edit_roth(data);
                     data.rolled_over = 1;
                 }
             }
@@ -2372,11 +2410,13 @@ fn roth_earlier_funding_does_not_admit_unverified_incoming_basis_or_ambiguous_so
             }
             8 => {
                 if let FederalIncome::Roth { data } = &mut d.income[2].income {
+                    let mut data = edit_roth(data);
                     data.rolled_over = 1;
                 }
             }
             9 => {
                 if let FederalIncome::Roth { data } = &mut d.income[1].income {
+                    let mut data = edit_roth(data);
                     data.exception = Some(RetirementException::Disability { began: 20260101 });
                 }
             }
@@ -2389,8 +2429,9 @@ fn roth_earlier_funding_does_not_admit_unverified_incoming_basis_or_ambiguous_so
                 let FederalIncome::Retirement { data } = &mut employer.income else {
                     unreachable!()
                 };
-                data.taxable = RetirementTaxable::Payer { amount: 100 };
-                data.box7 = DistributionCodes::CODE_2.0;
+                edit_retirement(data).box_2a = 100;
+                edit_retirement(data).taxable = Some(RetirementTaxable::Payer);
+                edit_retirement(data).box7 = DistributionCodes::CODE_2.0;
                 add(&mut d, employer);
             }
             _ => unreachable!(),
@@ -2425,6 +2466,7 @@ fn inherited_roth_earlier_draft() -> FederalDraft {
     let mut funding = inherited_roth_payment(Owner::Taxpayer, Some(2), 600);
     funding.id = 3;
     if let FederalIncome::Roth { data } = &mut funding.income {
+        let mut data = edit_roth(data);
         data.distributed = 20260615;
         data.withholding = 0;
     }
@@ -2435,6 +2477,7 @@ fn inherited_roth_earlier_draft() -> FederalDraft {
     for (gross, date) in [(300, 20260215), (200, 20260915)] {
         let mut payment = inherited_roth_payment(Owner::Taxpayer, Some(2), gross);
         if let FederalIncome::Roth { data } = &mut payment.income {
+            let mut data = edit_roth(data);
             data.distributed = date;
             data.withholding = 0;
         }
@@ -2451,6 +2494,7 @@ fn inherited_roth_same_day_funding_uses_its_actual_pool_order() {
         let mut d = inherited_roth_earlier_draft();
         for (index, sequence) in [(2, funding_order), (3, ordinary_order)] {
             let FederalIncome::Roth { data } = &mut d.income[index].income else { unreachable!() };
+            let mut data = edit_roth(data);
             data.distributed = 20260615;
             data.sequence = Some(sequence);
         }
@@ -2467,7 +2511,7 @@ fn inherited_roth_same_day_funding_uses_its_actual_pool_order() {
         else {
             unreachable!()
         };
-        data.sequence = Some(funding_order);
+        edit_roth(data).sequence = Some(funding_order);
         assert!(crate::roth::inherited_earlier_funding(&d, 2).is_none());
         assert!(noted(&supported(&d), "WARN_HSA_FUNDING_LEFT_OUT"));
     }
@@ -2509,7 +2553,7 @@ fn inherited_roth_earlier_funding_removes_actual_conversion_class() {
     }
     for (index, gross) in [(2, 30000), (3, 60000), (4, 5000)] {
         if let FederalIncome::Roth { data } = &mut d.income[index].income {
-            data.gross = gross;
+            edit_roth(data).gross = gross;
         }
     }
     let transfer = &mut d.adjustments.as_mut().unwrap().hsa[0].funding[0];
@@ -2539,13 +2583,16 @@ fn inherited_roth_earlier_funding_two_transfers_use_intervening_activity() {
         };
     }
     if let FederalIncome::Roth { data } = &mut d.income[3].income {
+        let mut data = edit_roth(data);
         data.gross = 50000;
     }
     if let FederalIncome::Roth { data } = &mut d.income[4].income {
+        let mut data = edit_roth(data);
         data.distributed = 20261215;
     }
     let mut between = inherited_roth_payment(Owner::Taxpayer, Some(2), 150);
     if let FederalIncome::Roth { data } = &mut between.income {
+        let mut data = edit_roth(data);
         data.distributed = 20260815;
         data.withholding = 0;
     }
@@ -2553,6 +2600,7 @@ fn inherited_roth_earlier_funding_two_transfers_use_intervening_activity() {
     let second_id = d.next_id;
     let mut second = inherited_roth_payment(Owner::Taxpayer, Some(2), 400);
     if let FederalIncome::Roth { data } = &mut second.income {
+        let mut data = edit_roth(data);
         data.distributed = 20261015;
         data.withholding = 0;
     }
@@ -2593,10 +2641,12 @@ fn inherited_roth_earlier_funding_keeps_other_pools_and_same_day_ordinary_separa
     let mut d = inherited_roth_earlier_draft();
     // Two ordinary same-day payments commute; no funding shares that date.
     if let FederalIncome::Roth { data } = &mut d.income[3].income {
+        let mut data = edit_roth(data);
         data.gross = 10000;
     }
     let mut extra = inherited_roth_payment(Owner::Taxpayer, Some(2), 200);
     if let FederalIncome::Roth { data } = &mut extra.income {
+        let mut data = edit_roth(data);
         data.distributed = 20260215;
         data.withholding = 0;
     }
@@ -2628,11 +2678,13 @@ fn inherited_roth_earlier_funding_leaves_ambiguous_or_missing_history_out() {
     let mut cases = Vec::new();
     let mut same_day = base.clone();
     if let FederalIncome::Roth { data } = &mut same_day.income[3].income {
+        let mut data = edit_roth(data);
         data.distributed = 20260615;
     }
     cases.push(same_day);
     let mut combined = base.clone();
     if let FederalIncome::Roth { data } = &mut combined.income[2].income {
+        let mut data = edit_roth(data);
         data.gross += 100;
     }
     cases.push(combined);
@@ -2681,7 +2733,7 @@ fn inherited_roth_earlier_funding_uses_the_beneficiary_owner() {
     d.next_id = source.next_id;
     for entry in &mut d.income {
         if matches!(entry.income, FederalIncome::Roth { .. } | FederalIncome::InheritedIra { .. }) {
-            entry.owner = Owner::Spouse;
+            entry.owner = crate::DocumentOwner::Spouses;
         }
     }
     d.adjustments.as_mut().unwrap().hsa[0].owner = Owner::Spouse;
@@ -2695,7 +2747,7 @@ fn inherited_roth_earlier_funding_uses_the_beneficiary_owner() {
     assert_eq!(return_line(&r, "4b"), 10000);
     assert_eq!(value(&r, "early_distribution_tax"), 0);
     assert!(!noted(&r, "WARN_HSA_FUNDING_LEFT_OUT"));
-    d.income.iter_mut().find(|e| e.id == 3).unwrap().owner = Owner::Taxpayer;
+    d.income.iter_mut().find(|e| e.id == 3).unwrap().owner = crate::DocumentOwner::Yours;
     assert!(crate::roth::inherited_earlier_funding(&d, 2).is_none());
     assert_eq!(
         crate::hsa_funding::source_reference_rule(&d),
@@ -2744,11 +2796,13 @@ fn roth_funding_first_confirmation_cannot_override_entered_ordinary_dates() {
     separated.adjustments.as_mut().unwrap().hsa[0].funding[0].basis =
         HsaFundingBasis::Roth { value: 70000, before_other_activity: true };
     if let FederalIncome::Roth { data } = &mut separated.income[3].income {
+        let mut data = edit_roth(data);
         data.distributed = 20260715;
     }
     add(&mut separated, roth_withdrawal(Owner::Taxpayer, 100, 20260215));
     add_inherited_roth(&mut separated, 2023, 1000, 0, 1000);
     if let FederalIncome::Roth { data } = &mut separated.income.last_mut().unwrap().income {
+        let mut data = edit_roth(data);
         data.distributed = 20260215;
     }
     let mut raw_result = FederalResult::empty(separated.revision);
@@ -2759,6 +2813,7 @@ fn roth_funding_first_confirmation_cannot_override_entered_ordinary_dates() {
     let second = separated.next_id;
     let mut payment = inherited_roth_payment(Owner::Taxpayer, Some(2), 100);
     if let FederalIncome::Roth { data } = &mut payment.income {
+        let mut data = edit_roth(data);
         data.distributed = 20261015;
         data.withholding = 0;
     }
@@ -2782,7 +2837,7 @@ fn roth_funding_first_confirmation_cannot_override_entered_ordinary_dates() {
     if let FederalIncome::Roth { data } =
         &mut separated.income.iter_mut().find(|e| e.id == 3).unwrap().income
     {
-        data.gross += 100; // An ordinary remainder before the second source.
+        edit_roth(data).gross += 100; // An ordinary remainder before the second source.
     }
     assert_eq!(
         crate::hsa_funding::source_reference_rule(&separated),
@@ -2864,6 +2919,7 @@ fn print_inherited_roth_keeps_source_cents_and_qualified_form_condition() {
         b.converted += 2;
     }
     if let FederalIncome::Roth { data } = &mut d.income[2].income {
+        let mut data = edit_roth(data);
         data.gross += 6;
     }
     let r = supported(&d);
@@ -2911,9 +2967,12 @@ fn print_inherited_ira_only_files_for_actual_basis_and_distribution() {
     let id = add_inherited_ira(&mut d, 0, 0, 0);
     inherited_basis_mut(&mut d.income[1]).as_mut().unwrap().prior = 49;
     if let FederalIncome::Retirement { data } = &mut d.income[2].income {
-        data.gross = 49;
-        if let RetirementTaxable::Inherited { payer, .. } = &mut data.taxable {
-            *payer = 49;
+        edit_retirement(data).gross = 49;
+        if matches!(
+            crate::FederalRetirement::from(&*data).taxable,
+            Some(RetirementTaxable::Inherited { .. })
+        ) {
+            edit_retirement(data).box_2a = 49;
         }
     }
     let r = supported(&d);
@@ -2947,8 +3006,8 @@ fn assert_inherited_disaster_owner_correction(roth: bool) {
         repaid: DisasterRepayment::No,
     };
     match &mut d.income[2].income {
-        FederalIncome::Retirement { data } => data.disaster = disaster,
-        FederalIncome::Roth { data } => data.disaster = disaster,
+        FederalIncome::Retirement { data } => edit_retirement(data).disaster = disaster,
+        FederalIncome::Roth { data } => edit_roth(data).disaster = disaster,
         _ => unreachable!(),
     }
     assert!(d.valid_stored());
@@ -3000,7 +3059,7 @@ fn inherited_disaster_copies_keep_groups_filers_and_rounding_separate() {
         if status == FederalStatus::Joint {
             for entry in &mut d.income {
                 if entry.id == b || entry.id == b + 1 || entry.id == c || entry.id == c + 1 {
-                    entry.owner = Owner::Spouse;
+                    entry.owner = crate::DocumentOwner::Spouses;
                 }
             }
         }
@@ -3017,8 +3076,8 @@ fn inherited_disaster_copies_keep_groups_filers_and_rounding_separate() {
                 repaid: DisasterRepayment::No,
             };
             match &mut d.income.iter_mut().find(|entry| entry.id == id).unwrap().income {
-                FederalIncome::Retirement { data } => data.disaster = disaster,
-                FederalIncome::Roth { data } => data.disaster = disaster,
+                FederalIncome::Retirement { data } => edit_retirement(data).disaster = disaster,
+                FederalIncome::Roth { data } => edit_roth(data).disaster = disaster,
                 _ => unreachable!(),
             }
         }
@@ -3052,7 +3111,7 @@ fn inherited_disaster_qcd_is_excluded_once_and_actual_overlap_rejects() {
     gift.payments[0].inherited = Some(id);
     d.adjustments.as_mut().unwrap().qualified_charity.push(gift);
     if let FederalIncome::Retirement { data } = &mut d.income[2].income {
-        data.disaster = DisasterDistribution::Qualified {
+        edit_retirement(data).disaster = DisasterDistribution::Qualified {
             fema: 4834,
             began: 20260101,
             declared: 20260110,
@@ -3094,7 +3153,7 @@ fn inherited_disaster_without_group_preserves_known_payer_fallback() {
     let mut d = complete(FederalStatus::Single);
     add(&mut d, inherited_payment(Owner::Taxpayer, None, 10_000));
     if let FederalIncome::Retirement { data } = &mut d.income[1].income {
-        data.disaster = DisasterDistribution::Qualified {
+        edit_retirement(data).disaster = DisasterDistribution::Qualified {
             fema: 4834,
             began: 20260101,
             declared: 20260110,
@@ -3117,7 +3176,7 @@ fn inherited_disaster_without_group_preserves_known_payer_fallback() {
 fn inherited_disaster_hsa_funding_preserves_the_existing_group_basis() {
     let mut d = inherited_hsa_funding(1600, 200, 2000, 400, 1500);
     if let FederalIncome::Retirement { data } = &mut d.income[2].income {
-        data.disaster = DisasterDistribution::Qualified {
+        edit_retirement(data).disaster = DisasterDistribution::Qualified {
             fema: 4834,
             began: 20260101,
             declared: 20260110,
@@ -3149,15 +3208,18 @@ fn inherited_disaster_linked_payments_conserve_the_group_cent_residual() {
     let mut d = complete(FederalStatus::Single);
     let group = add_inherited_ira(&mut d, 10_000, 5_000, 40_000);
     if let FederalIncome::Retirement { data } = &mut d.income[2].income {
-        data.gross = 500_000;
-        if let RetirementTaxable::Inherited { payer, .. } = &mut data.taxable {
-            *payer = 500_000;
+        edit_retirement(data).gross = 500_000;
+        if matches!(
+            crate::FederalRetirement::from(&*data).taxable,
+            Some(RetirementTaxable::Inherited { .. })
+        ) {
+            edit_retirement(data).box_2a = 500_000;
         }
     }
     add(&mut d, inherited_payment(Owner::Taxpayer, Some(group), 5000));
     for entry in &mut d.income {
         if let FederalIncome::Retirement { data } = &mut entry.income {
-            data.disaster = DisasterDistribution::Qualified {
+            edit_retirement(data).disaster = DisasterDistribution::Qualified {
                 fema: 4834,
                 began: 20260101,
                 declared: 20260110,

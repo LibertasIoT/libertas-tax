@@ -29,15 +29,16 @@ pub(in crate::tests) fn survey_cash_business_data() -> FederalBusiness {
 pub(in crate::tests) fn survey_uncatalogued_document(
     owner: Owner,
     id: i64,
-    document: IncomeDocument,
+    document: IncomeSource,
 ) -> IncomeDocumentItem {
+    bind_fixture_paper_answers(&document, id);
     IncomeDocumentItem {
         refund_management: None,
         refund_management_needed: None,
         allowed_community: Vec::new(),
         investment_caps: None,
         id,
-        owner,
+        owner: crate::DocumentOwner::from(owner),
         document,
         preview: None,
         community: CommunityShare::NotNeeded,

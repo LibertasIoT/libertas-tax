@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 660000, "rule": {"select": "^<RothIraCode>", "flatten": true}},
+    {"order": 661000, "rule": {"select": "^<RothReason>", "flatten": true}},
+    {"order": 662000, "rule": {"select": "^<RothIraCodeView>", "flatten": true}},
+    {"order": 663000, "rule": {"select": "^<RothReasonView>", "flatten": true}},
+    {"order": 804000, "rule": {"select": "^<RothConversion>.year", "promote": true}}
+  ]
+}

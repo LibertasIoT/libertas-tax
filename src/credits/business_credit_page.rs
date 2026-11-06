@@ -11,9 +11,32 @@ pub enum WageScorpEmployer {
     /// One of my S corporations
     Corporation {
         /// Corporation's Schedule K-1 on this return
+        source: i64,
+    },
+}
+/// S corporation that paid this W-2
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub enum WageScorpEmployerView {
+    /// One of my S corporations
+    Corporation {
+        /// Corporation's Schedule K-1 on this return
         #[libertas_enum_source("$.wage_scorporations")]
         source: i64,
     },
+}
+impl From<&WageScorpEmployer> for WageScorpEmployerView {
+    fn from(value: &WageScorpEmployer) -> Self {
+        match value {
+            WageScorpEmployer::Corporation { source } => Self::Corporation { source: *source },
+        }
+    }
+}
+impl From<&WageScorpEmployerView> for WageScorpEmployer {
+    fn from(value: &WageScorpEmployerView) -> Self {
+        match value {
+            WageScorpEmployerView::Corporation { source } => Self::Corporation { source: *source },
+        }
+    }
 }
 impl WageScorpEmployer {
     pub(crate) fn id(&self) -> i64 {
@@ -21,6 +44,7 @@ impl WageScorpEmployer {
             Self::Corporation { source } => *source,
         }
     }
+    #[cfg(test)]
     pub(crate) fn from_id(source: i64) -> Self {
         Self::Corporation { source }
     }
@@ -120,6 +144,7 @@ impl From<CreditSource> for CreditSourcePage {
 
 /// General business credit figured on its own source form
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[libertas_calculation_root("BusinessCreditElectionOptions")]
 pub struct EnteredBusinessCreditPage {
     /// Credit and Form 3800 line
     #[libertas_constrained_by("$.entered_credits")]
@@ -129,7 +154,8 @@ pub struct EnteredBusinessCreditPage {
     pub source: CreditSourcePage,
     /// Whole-dollar amount from the source form, excluding a research payroll-tax election
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 100, max = 100000000000)]
     pub amount: i64,
     /// Available elections
     #[libertas_hidden]
@@ -203,6 +229,7 @@ impl From<EnteredBusinessCredit> for EnteredBusinessCreditPage {
 
 /// Unused credit carried forward to 2026
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[libertas_calculation_root("ResearchCreditSourceOptions")]
 pub struct BusinessCreditCarryforwardPage {
     /// Credit
     #[libertas_calculation_request("ResearchCreditSourceOptions")]
@@ -213,7 +240,8 @@ pub struct BusinessCreditCarryforwardPage {
     pub origin_year: u32,
     /// Whole-dollar balance after recapture or adjustment
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 100, max = 100000000000)]
     pub amount: i64,
     /// Prior unallowed passive credit worksheet
     /// Worksheet 1 requires active participation both then and now. Pre-1990 housing uses Worksheet 2.
@@ -266,6 +294,7 @@ impl From<BusinessCreditCarryforward> for BusinessCreditCarryforwardPage {
 
 /// 2026 credit carried back to an earlier return
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[libertas_calculation_root("ResearchCreditSourceOptions")]
 pub struct BusinessCreditCarrybackPage {
     /// Credit
     #[libertas_constrained_by("$.carryback_credits")]
@@ -278,7 +307,8 @@ pub struct BusinessCreditCarrybackPage {
     pub year: u32,
     /// Whole-dollar amount used on that earlier return
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 100, max = 100000000000)]
     pub amount: i64,
     /// Available originating-business question
     #[libertas_hidden]
@@ -319,19 +349,19 @@ impl From<BusinessCreditCarryback> for BusinessCreditCarrybackPage {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct BusinessCreditHistoryPage {
     /// Credits figured on their own source forms
+    #[libertas_unordered]
     /// ----
     /// Credit
-    #[libertas_unordered]
     pub credits: Vec<EnteredBusinessCreditPage>,
     /// Credits carried forward to 2026
+    #[libertas_unordered]
     /// ----
     /// Carryforward
-    #[libertas_unordered]
     pub carryforwards: Vec<BusinessCreditCarryforwardPage>,
     /// 2026 credits carried back to earlier returns
+    #[libertas_unordered]
     /// ----
     /// Carryback
-    #[libertas_unordered]
     pub carrybacks: Vec<BusinessCreditCarrybackPage>,
     /// Your spouse has no general business credit for 2026
     /// Married filing separately only: includes carryforwards and carrybacks.
@@ -419,7 +449,6 @@ pub enum K1CreditCodePage {
     OtherRentalRealEstate {
         /// Form 3800 line
         /// Use the Form 3800 line the attached credit statement names.
-        #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_constrained_by("$.k1_credit_lines")]
         line: BusinessCredit,
     },
@@ -427,7 +456,6 @@ pub enum K1CreditCodePage {
     OtherRental {
         /// Form 3800 line
         /// Use the Form 3800 line the attached credit statement names.
-        #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_constrained_by("$.k1_credit_lines")]
         line: BusinessCredit,
     },
@@ -470,7 +498,6 @@ pub enum K1CreditCodePage {
     RenewableElectricity {
         /// Form 3800 line
         /// Use line 4e only when the statement establishes that the facility is in its first four years; otherwise line 1f.
-        #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_constrained_by("$.renewable_credit_lines")]
         line: BusinessCredit,
     },
@@ -504,7 +531,6 @@ pub enum K1CreditCodePage {
     Transferred {
         /// Form 3800 line
         /// Use the Form 3800 line the attached credit statement names.
-        #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_constrained_by("$.transferable_credit_lines")]
         line: BusinessCredit,
     },
@@ -512,7 +538,6 @@ pub enum K1CreditCodePage {
     Other {
         /// Form 3800 line
         /// Use the Form 3800 line the attached credit statement names.
-        #[libertas_llm_doc_field(allow_empty = false)]
         #[libertas_constrained_by("$.k1_credit_lines")]
         line: BusinessCredit,
     },
@@ -521,13 +546,11 @@ pub enum K1CreditCodePage {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct K1CreditPage {
     /// Printed credit code
-    #[libertas_llm_doc_field]
-    #[libertas_calculation_request("K1CarbonOxideOriginOptions")]
     pub code: K1CreditCodePage,
     /// Reported amount
-    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// Actual equipment origin for the carbon oxide credit
     /// Source-document facts only; this does not elect payment or determine any other credit.
@@ -537,6 +560,7 @@ pub struct K1CreditPage {
     /// The equipment origin details are
     #[libertas_default($null)]
     #[libertas_constrained_by("^.allowed_carbon_oxide_origins")]
+    #[libertas_hidden]
     pub carbon_oxide_origin: Option<crate::CarbonOxideCreditOrigin>,
     /// Applicable carbon-capture source detail
     #[libertas_hidden]
@@ -552,6 +576,7 @@ pub struct K1CreditPage {
     /// The facility origin details are
     #[libertas_default($null)]
     #[libertas_constrained_by("^.allowed_renewable_facility_origins")]
+    #[libertas_hidden]
     pub renewable_facility_origin: Option<crate::RenewableFacilityCreditOrigin>,
     /// Applicable renewable-facility source detail
     #[libertas_hidden]
@@ -778,6 +803,8 @@ pub struct EnteredBusinessCreditInitial {
     pub credit: BusinessCredit,
     pub source: CreditSourcePage,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub amount: i64,
     pub allowed_elections: Vec<i32>,
     pub election: CreditElection,
@@ -810,6 +837,8 @@ pub struct BusinessCreditCarryforwardInitial {
     pub credit: BusinessCredit,
     pub origin_year: u32,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub amount: i64,
     pub passive: Option<PassiveWorksheet>,
     pub filer: CarryFiler,
@@ -838,6 +867,8 @@ pub struct BusinessCreditCarrybackInitial {
     pub credit: BusinessCredit,
     pub year: u32,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub amount: i64,
     pub allowed_research_choices: Vec<i32>,
     pub research_source: Option<ResearchCreditBusiness>,

@@ -16,7 +16,8 @@ pub enum FarmInsurance {
         /// 2025 proceeds previously elected into 2026 income
         /// Copy retained prior-year deferral records. This amount is included now and cannot be deferred again. Accrual returns with this prior cash-method election need an accounting-change worksheet.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         previous_deferred: i64,
         /// Election for this farming business
@@ -25,7 +26,8 @@ pub enum FarmInsurance {
         /// Federal income tax actually withheld in 2026
         /// Copy the 2026 payment statements, including voluntary disaster-payment withholding. Deferring income does not defer this payment credit. Exclude withholding already credited in 2025 or entered elsewhere.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         withholding: i64,
     },
@@ -42,7 +44,8 @@ pub enum CropPayment {
         crop: alloc::string::String,
         /// Gross proceeds attributable to physical loss
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
         /// Year of physical crop damage or prevented planting
         // Tax structure: this source year must be no later than the 2026 return year.
@@ -54,7 +57,8 @@ pub enum CropPayment {
     Other {
         /// Gross proceeds
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }
@@ -76,7 +80,6 @@ pub enum CropDeferral {
     Defer {
         /// Actual normal sales practice for every identified damaged crop
         /// The current estimate computes the election when every affected crop has more than half its normal income in a following year. Mixed practices need their separate election eligibility treatment; the estimate keeps current income and leaves the deferral out.
-        #[libertas_size(min = 1)]
         practice: Vec<crate::FarmCropPractice>,
     },
 }
@@ -95,7 +98,11 @@ impl FarmInsurance {
             }
         }
         if let CropDeferral::Defer { practice } = election {
-            if practice.is_empty() || practice.len() > 400 {
+            let needs_practice = current.iter().any(|payment| {
+                matches!(payment,
+                CropPayment::Physical {year,..} if *year == crate::year_constants::TAX_YEAR)
+            });
+            if (needs_practice && practice.is_empty()) || practice.len() > 400 {
                 return Some(
                     ValidationIssue::new("CROP_PRACTICE_SOURCE")
                         .at_field("practice")
@@ -124,7 +131,7 @@ impl FarmInsurance {
                 }
             }
             for (i, payment) in current.iter().enumerate() {
-                if matches!(payment, CropPayment::Physical { crop, .. } if !practice.iter().any(|record| &record.crop == crop))
+                if matches!(payment, CropPayment::Physical { crop, year, .. } if *year == crate::year_constants::TAX_YEAR && !practice.iter().any(|record| &record.crop == crop))
                 {
                     return Some(
                         ValidationIssue::new("CROP_PRACTICE_SOURCE")
@@ -218,19 +225,19 @@ impl FarmInsurance {
             0
         }
     }
+    /// Current payment records before the election, excluding prior-year deferrals.
+    pub(crate) fn current_total(&self) -> i64 {
+        match self {
+            Self::None => 0,
+            Self::Payments { current, .. } => current.iter().map(CropPayment::amount).sum(),
+        }
+    }
     pub(crate) fn income(&self, cash: bool) -> i64 {
         match self {
             Self::None => 0,
-            Self::Payments { current, previous_deferred, .. } => {
-                current.iter().map(CropPayment::amount).sum::<i64>() + previous_deferred
-                    - self.deferred(cash)
+            Self::Payments { previous_deferred, .. } => {
+                self.current_total() + previous_deferred - self.deferred(cash)
             }
-        }
-    }
-    pub(crate) fn withholding(&self) -> i64 {
-        match self {
-            Self::None => 0,
-            Self::Payments { withholding, .. } => *withholding,
         }
     }
     pub(crate) fn report(
@@ -241,7 +248,7 @@ impl FarmInsurance {
         r: &mut FederalResult,
     ) {
         let input = form.input("insurance");
-        let Self::Payments { current, previous_deferred, election, withholding } = self else {
+        let Self::Payments { previous_deferred, election, withholding, .. } = self else {
             return;
         };
         crate::require_localized!(
@@ -268,7 +275,7 @@ impl FarmInsurance {
         for (name, value, note) in [
             (
                 "crop_insurance_before_deferral",
-                current.iter().map(CropPayment::amount).sum(),
+                self.current_total(),
                 msg!("EXPLAIN_FARM_N_N_CROP_INSURANCE_BEFORE_DEFERRAL"),
             ),
             (
@@ -278,7 +285,7 @@ impl FarmInsurance {
             ),
             (
                 "crop_insurance_current_taxable",
-                current.iter().map(CropPayment::amount).sum::<i64>() - self.deferred(cash),
+                self.current_total() - self.deferred(cash),
                 msg!("EXPLAIN_FARM_N_N_CROP_INSURANCE_CURRENT_TAXABLE"),
             ),
             (
@@ -316,7 +323,7 @@ impl FarmInsurance {
                 _ => None,
             }
             .map(|line| crate::FormLine::new(form.tax_form(), line));
-            crate::kernel::lines::push_line(
+            crate::line_emission::push_line(
                 r,
                 form_line,
                 &alloc::format!("farm_{id}_{name}"),

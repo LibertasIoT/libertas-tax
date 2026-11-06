@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 443000, "rule": {"select": "^<AveragingSource>", "flatten": true}},
+    {"order": 444000, "rule": {"select": "^<AveragingNol>", "flatten": true}},
+    {"order": 445000, "rule": {"select": "^<AveragingCapital>", "flatten": true}}
+  ]
+}

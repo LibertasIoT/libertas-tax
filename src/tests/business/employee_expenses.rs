@@ -4,9 +4,7 @@
 // Whole-return fixtures F1-F3 also run as data in tests/returns.rs.
 use super::*;
 use crate::federal_model::NoteIdentity;
-use crate::tests::cross::interview::{
-    PAGE_REVIEW, accepted, from_review, go_to, page_documents, refusal, shown,
-};
+use crate::tests::cross::interview::{PAGE_REVIEW, accepted, go_to, refusal, shown};
 
 const ADJUSTMENTS: i32 = TaxSection::Adjustments as i32;
 
@@ -17,12 +15,13 @@ fn w2_entry(id: i64, owner: Owner, label: &str, wages: i64, code_l: i64) -> Fede
     if code_l > 0
         && let FederalIncome::Wage { data } = &mut entry.income
     {
+        let mut data = edit_wage(data);
         data.other_box12.push(W2CodeAmount { code: W2Code::L, amount: code_l });
     }
     entry
 }
 fn bank_interest(amount: i64) -> FederalIncomeEntry {
-    income(FederalIncome::Interest { data: native_interest(amount, 0) })
+    income(FederalIncome::Interest { data: interest_source(native_interest(amount, 0)) })
 }
 fn claim(
     owner: Owner,
@@ -31,6 +30,8 @@ fn claim(
     employers: &[i64],
 ) -> EmployeeExpenseClaim {
     EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         leased_vehicles: vec![],
         owner,
@@ -230,12 +231,16 @@ fn performing_artist_expenses_must_exceed_ten_percent_of_box_1() {
     assert_eq!(line10, 181_365);
     // Box 1 of 18,136.50 in all: Example Opera 9,136.50 -> 10% = 1,813.65 = line 10.
     let FederalIncome::Wage { data } = &mut d.income[1].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.wages = 913_650;
+    drop(data);
     assert_eq!(artist_lines(&d).gross, 1_813_650);
     assert_eq!(artist_lines(&d).line10 * 10, artist_lines(&d).gross);
     assert!(noted(&estimate(&d), "WARN_PERFORMING_ARTIST_TEN_PERCENT"));
     let FederalIncome::Wage { data } = &mut d.income[1].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.wages = 913_649;
+    drop(data);
     assert!(!noted(&estimate(&d), "WARN_PERFORMING_ARTIST_TEN_PERCENT"));
 }
 
@@ -345,6 +350,7 @@ fn fee_basis_official_excess_reimbursement_is_wage_income() {
 fn actual_page_vehicle(first_year: FirstYearDeduction) -> Vehicle {
     Vehicle {
         method: VehicleMethod::Actual {
+            macrs_source: None,
             id: 0,
             history_details: None,
             amt_section179_income_carry: None,
@@ -357,7 +363,7 @@ fn actual_page_vehicle(first_year: FirstYearDeduction) -> Vehicle {
             business_miles: 8_000,
             operating_costs: 300_000,
             loan_interest: 0,
-            passenger_automobile: true,
+            kind: crate::VehicleKind::PassengerCar,
             history: AssetHistory::New { first_year },
             disposal: AssetDisposal::No,
             earlier_business_percent: None,
@@ -385,6 +391,7 @@ fn a_vehicle_credit_reduces_the_actual_expense_vehicle_basis() {
     //   Line 27 = 3,000 x 80% = 2,400.00; line 1 = 14,400.00.
     let vehicle = |credit| Vehicle {
         method: VehicleMethod::Actual {
+            macrs_source: None,
             id: 0,
             history_details: None,
             amt_section179_income_carry: None,
@@ -397,7 +404,7 @@ fn a_vehicle_credit_reduces_the_actual_expense_vehicle_basis() {
             business_miles: 8_000,
             operating_costs: 300_000,
             loan_interest: 0,
-            passenger_automobile: true,
+            kind: crate::VehicleKind::PassengerCar,
             history: AssetHistory::New { first_year: FirstYearDeduction::Bonus },
             disposal: AssetDisposal::No,
             earlier_business_percent: None,
@@ -480,7 +487,7 @@ fn employee_vehicle_sale_takes_the_business_asset_rows_and_unsupported_history_i
     form.vehicle_assets[0].disposal = AssetDisposal::Disposed {
         date: 20261201,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds: 2_000_000,
             selling_expenses: 0,
             payment: crate::SalePayment::InFull,
@@ -608,13 +615,15 @@ fn open_page(s: &mut Interview) -> P {
 fn save_page(s: &Interview, template: &P, forms: Vec<EmployeeExpenseForm>) -> P {
     let P::SaveEmployeeExpenses { allowed_owners, value, .. } = template else { unreachable!() };
     P::SaveEmployeeExpenses {
+        rental_energy_buildings: Vec::new(),
+        initial_asset_amt_carry_choices: Vec::new(),
         user: TEST_USER,
         cookie: s.draft.cookie.clone(),
         revision: s.draft.revision,
         page: ADJUSTMENTS,
         previous: ADJUSTMENTS,
         review: true,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         allowed_owners: allowed_owners.clone(),
@@ -627,6 +636,8 @@ fn page_form(
     vehicles: Vec<Vehicle>,
 ) -> EmployeeExpenseForm {
     EmployeeExpenseForm {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         owner: Owner::Taxpayer,
         occupation: "Army Reserve sergeant".into(),
@@ -720,12 +731,12 @@ fn form_2106_capacity_is_one_required_choice_of_three() {
         accepted(&send(&mut s, request));
         assert_eq!(s.draft.adjustments.as_ref().unwrap().employee_expenses[0].capacity, capacity);
     }
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     let form = &model[model.find("pub struct EmployeeExpenseForm").unwrap()..];
     let capacity =
         &form[form.find("pub capacity").unwrap() - 120..form.find("pub capacity").unwrap()];
     assert!(!capacity.contains("libertas_default"), "{capacity}");
-    let module = include_str!("../../business/employee_expenses.rs");
+    let module = include_str!("../../business/employee_expense_model.rs");
     let variants = &module[module.find("pub enum EmployeeCapacity").unwrap()..];
     let variants = &variants[..variants.find("\n}").unwrap()];
     assert_eq!(
@@ -815,7 +826,7 @@ fn form_2106_server_twins_reject_what_the_client_rules_reject() {
         total_miles,
         business_miles,
         operating_costs,
-        passenger_automobile,
+        kind,
         history,
         disposal,
         ..
@@ -825,6 +836,7 @@ fn form_2106_server_twins_reject_what_the_client_rules_reject() {
     };
     let with_interest = Vehicle {
         method: VehicleMethod::Actual {
+            macrs_source: None,
             id: 0,
             history_details: None,
             amt_section179_income_carry: None,
@@ -837,7 +849,7 @@ fn form_2106_server_twins_reject_what_the_client_rules_reject() {
             business_miles,
             operating_costs,
             loan_interest: 100,
-            passenger_automobile,
+            kind,
             history,
             disposal,
             earlier_business_percent: None,
@@ -890,31 +902,19 @@ fn form_2106_server_twins_reject_what_the_client_rules_reject() {
 }
 
 #[test]
-fn form_2106_saved_forms_tick_their_own_checklist_topic() {
-    let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let page = open_page(&mut s);
-    let request =
-        save_page(&s, &page, vec![page_form(EmployeeCapacity::FeeBasisOfficial, &[1], vec![])]);
-    accepted(&send(&mut s, request));
-    // Saving the page ticks its own checklist bit (the topic is walk-owned data).
-    assert_eq!(AdjustmentTopics::EMPLOYEE_EXPENSES.0, 1 << 5);
-    assert_ne!(s.draft.checklist.adjustments & AdjustmentTopics::EMPLOYEE_EXPENSES.0, 0);
-}
-
-#[test]
 fn w2_box_12_code_l_imports_stores_and_reopens() {
     // Box 12 code L is an import target (the W-2 instruction returns each printed code
     // the result schema supports) and maps onto the stored code list.
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     // The code list is the unified W2Code enum; its entry's code and amount are import targets.
     let entry = &model[model.find("pub struct Box12Entry").unwrap()..];
     let entry = &entry[..entry.find("\n}").unwrap()];
-    assert!(entry.contains("libertas_llm_doc_field(allow_empty = false)"));
+    assert!(entry.contains("libertas_llm_doc_field(blank = 0)"));
+    assert!(entry.contains("libertas_default(0)"));
     assert!(
         model
-            .contains("    /// L — substantiated employee business expense reimbursements\n    L,")
+            .contains("    /// L — substantiated employee business expense reimbursements\n    #[libertas_form_code(\"L\")]\n    L,")
     );
-    assert!(model.contains("/// Codes not listed (C, J, V, Y, DD, GG, HH)"));
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
     let mut w = crate::tests::cross::interview::w2(6_000_000);
@@ -923,11 +923,15 @@ fn w2_box_12_code_l_imports_stores_and_reopens() {
         Box12Entry { code: W2Code::D, amount: 100_000 },
     ];
     let request = crate::tests::cross::interview::save_documents(
-        &original,
-        vec![crate::tests::cross::interview::document(0, IncomeDocument::W2(w.clone()))],
+        &mut session,
+        vec![crate::tests::cross::interview::document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w.clone())) },
+        )],
     );
     accepted(&send(&mut session, request));
     let FederalIncome::Wage { data } = &session.draft.income[0].income else { unreachable!() };
+    let data = &FederalWage::from(data);
     assert_eq!(
         data.other_box12,
         vec![
@@ -939,27 +943,41 @@ fn w2_box_12_code_l_imports_stores_and_reopens() {
     let plain = {
         let mut d = session.draft.clone();
         let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+        let mut data = edit_wage(data);
         data.other_box12.retain(|c| c.code != W2Code::L);
+        drop(data);
         d
     };
     let with_l = supported(&session.draft);
     assert_eq!(with_l.tax, supported(&plain).tax);
     // Reopening rebuilds the identical page.
     let mut session = restart(session.draft);
-    let Reply::Edit(page) = from_review(&mut session, TaxSection::Wages) else {
-        panic!("expected the wages page")
+    let page = crate::tests::cross::interview::open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = page else {
+        panic!("expected the wages source editor")
     };
-    assert_eq!(page_documents(&page)[0].document, IncomeDocument::W2(w.clone()));
+    assert_eq!(documents.common.wages.documents.len(), 1);
+    let source = documents.common.wages.documents[0].id;
+    let IncomeSource::Wage { value: expected } = expected_named_source(
+        &session.draft,
+        Owner::Taxpayer,
+        IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w.clone())) },
+    ) else {
+        unreachable!()
+    };
+    assert_eq!(documents.common.wages.documents[0].document, expected);
     // Two code L entries are one W2_BOX12_CODE_TWICE.
     let mut twice = w;
     twice.more.box12 = vec![
         Box12Entry { code: W2Code::L, amount: 1_000 },
         Box12Entry { code: W2Code::L, amount: 2_000 },
     ];
-    let original = session.draft.clone();
     let request = crate::tests::cross::interview::save_documents(
-        &original,
-        vec![crate::tests::cross::interview::document(1, IncomeDocument::W2(twice))],
+        &mut session,
+        vec![crate::tests::cross::interview::document(
+            source,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(twice)) },
+        )],
     );
     crate::tests::cross::interview::rejected_with(
         send(&mut session, request),
@@ -969,7 +987,7 @@ fn w2_box_12_code_l_imports_stores_and_reopens() {
 
 #[test]
 fn search_destination_names_the_form_its_filers_and_the_other_page() {
-    let source = include_str!("../../core/protocol.rs");
+    let source = include_str!("../../core/shared/navigation.rs");
     let at = source.find("    EmployeeExpenses,").unwrap();
     let doc = &source[source[..at].rfind("    /// Reservist, performing artist").unwrap()..at];
     for term in [
@@ -992,4 +1010,425 @@ fn search_destination_names_the_form_its_filers_and_the_other_page() {
     // The destination is offered in the adjustments group.
     let availability = NavigationAvailability::from_sections(&[TaxSection::EmployeeExpenses]);
     assert_eq!(availability.adjustments, vec![TaxSection::EmployeeExpenses as i32]);
+}
+
+#[test]
+fn employee_nonvehicle_recovery_saves_corrects_reopens_and_restarts() {
+    use crate::tests::support::builders::nonmacrs::property;
+    let mut session = restart(complete(FederalStatus::Single));
+    let page = open_page(&mut session);
+    let mut form = page_form(EmployeeCapacity::FeeBasisOfficial, &[1], vec![]);
+    form.travel = 0;
+    form.meals = 0;
+    let patent = property(
+        510_000,
+        20260401,
+        NonMacrsRecovery::FiniteLife {
+            facts: FiniteLifeRecovery::PatentCopyright {
+                legal_remaining_months: 204,
+                useful_months: 204,
+                salvage: 0,
+            },
+        },
+    );
+    let software = property(
+        3_600_000,
+        20260701,
+        NonMacrsRecovery::Software {
+            facts: SoftwareRecovery {
+                classification: SoftwareKind::Standalone,
+                exempt_lease: None,
+                bonus_eligible: false,
+            },
+        },
+    );
+    form.equipment_assets =
+        crate::interview::vehicle_and_asset_items(&[], &[patent, software]).unwrap().1;
+    let request = save_page(&session, &page, vec![form]);
+    accepted(&send(&mut session, request));
+    let sources =
+        session.draft.adjustments.as_ref().unwrap().employee_expenses[0].equipment_assets.clone();
+    assert!(sources[0].id > 0 && sources[1].id > 0 && sources[0].id != sources[1].id);
+    let result = supported(&session.draft);
+    // Pub946's $225 patent + six software months at $1,000 = $6,225.
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 6_225);
+    assert_eq!(value(&result, "employee_expenses_1_line_1"), 0);
+    assert_eq!(value(&result, "schedule_1_employee_business_expenses"), 6_225);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_depreciation_class_16"), 6_225);
+    let reopened = open_page(&mut session);
+    let P::SaveEmployeeExpenses { value: page, .. } = &reopened else { unreachable!() };
+    let mut corrected = page.forms.clone();
+    corrected[0].equipment_assets[1].cost = 1_800_000;
+    let request = save_page(&session, &reopened, corrected);
+    accepted(&send(&mut session, request));
+    let result = supported(&session.draft);
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 3_225);
+    let accepted_draft = session.draft.clone();
+    let mut again = restart(accepted_draft.clone());
+    let page = open_page(&mut again);
+    let P::SaveEmployeeExpenses { value: page, .. } = page else { unreachable!() };
+    assert_eq!(page.forms[0].equipment_assets[0].id, sources[0].id);
+    assert_eq!(page.forms[0].equipment_assets[1].id, sources[1].id);
+    assert_eq!(page.forms[0].equipment_assets[1].cost, 1_800_000);
+    assert_eq!(again.draft, accepted_draft);
+    assert_eq!(supported(&again.draft), result);
+}
+
+#[test]
+fn employee_software_disposal_reuses_recapture_without_self_employment_or_qbi() {
+    use crate::tests::support::builders::nonmacrs::{continuing, property};
+    let mut software = property(
+        3_600_000,
+        20250701,
+        NonMacrsRecovery::Software {
+            facts: SoftwareRecovery {
+                classification: SoftwareKind::Standalone,
+                exempt_lease: None,
+                bonus_eligible: false,
+            },
+        },
+    );
+    continuing(&mut software, 600_000);
+    software.disposal = AssetDisposal::Disposed {
+        date: 20261001,
+        how: DisposalKind::Sold {
+            proceeds: 3_000_000,
+            selling_expenses: 0,
+            payment: SalePayment::InFull,
+            buyer: Buyer::Unrelated,
+            livestock: crate::SoldLivestock::No,
+        },
+    };
+    let mut form = claim(
+        Owner::Taxpayer,
+        "Fictional county official",
+        EmployeeCapacity::FeeBasisOfficial,
+        &[1],
+    );
+    form.equipment_assets = vec![software];
+    let draft = with_claims(complete(FederalStatus::Single), vec![form]);
+    let result = supported(&draft);
+    // Nine service months recover $9,000; $30,000 price less $21,000 basis
+    // is $9,000 ordinary recapture. Neither amount acquires SE/QBI character.
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 9_000);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_disposal_1245_recapture"), 9_000);
+    assert_eq!(value(&result, "self_employment_tax"), 0);
+    assert_eq!(value(&result, "qbi_deduction"), 0);
+    let mut report = FederalResult::empty(draft.revision);
+    assert_eq!(crate::employee_expenses::calculate(&draft, &mut report).amt_adjustment(&draft), 0);
+    assert_eq!(supported(&restart(draft).draft), result);
+}
+
+#[test]
+fn employee_equipment_election_saves_corrects_and_required_lookback_stays_unknown() {
+    use crate::tests::support::builders::nonmacrs::property;
+    let mut software = property(
+        3_600_000,
+        20260701,
+        NonMacrsRecovery::Software {
+            facts: SoftwareRecovery {
+                classification: SoftwareKind::PublicNonexclusive,
+                exempt_lease: None,
+                bonus_eligible: false,
+            },
+        },
+    );
+    software.history = EquipmentHistory::New {
+        section179: Section179::Eligible { elected: 100_000 },
+        bonus: BonusElection::ElectOut,
+        tables: false,
+    };
+    let forecast = property(
+        20_000_000,
+        20260101,
+        NonMacrsRecovery::IncomeForecast {
+            facts: IncomeForecastRecovery {
+                kind: ForecastPropertyKind::BookCopyright,
+                current_income: 2_000_000,
+                forecast_total_income: 10_000_000,
+                remaining_basis: 20_000_000,
+                participations: ForecastParticipations::None,
+                lookback: ForecastLookback::WorksheetNeeded,
+            },
+        },
+    );
+    for source in [software, forecast] {
+        let mut session = restart(complete(FederalStatus::Single));
+        let page = open_page(&mut session);
+        let mut form = page_form(EmployeeCapacity::FeeBasisOfficial, &[1], vec![]);
+        form.equipment_assets =
+            crate::interview::vehicle_and_asset_items(&[], core::slice::from_ref(&source))
+                .unwrap()
+                .1;
+        let request = save_page(&session, &page, vec![form]);
+        accepted(&send(&mut session, request));
+        let stored =
+            &session.draft.adjustments.as_ref().unwrap().employee_expenses[0].equipment_assets[0];
+        assert_eq!(stored.history, source.history);
+        assert_eq!(stored.class, source.class);
+        if source.available179() > 0 {
+            // Pub946 software: ($36,000-$1,000) x6/36 = $5,833;
+            // line4 includes the single $1,000 allowance.
+            let expected = supported(&session.draft);
+            assert_eq!(value(&expected, "employee_expenses_1_line_4"), 6_833);
+            assert_eq!(value(&expected, "employee_expenses_1_equipment_1_section179"), 1_000);
+            assert_eq!(value(&expected, "section179_carryforward"), 0);
+            assert_eq!(value(&expected, "self_employment_tax"), 0);
+            assert_eq!(value(&expected, "qbi_deduction"), 0);
+            let mut again = restart(session.draft.clone());
+            assert_eq!(supported(&again.draft), expected);
+            let source_id = again.draft.adjustments.as_ref().unwrap().employee_expenses[0]
+                .equipment_assets[0]
+                .id;
+            let reopened = open_page(&mut again);
+            let P::SaveEmployeeExpenses { value: editor, .. } = &reopened else { unreachable!() };
+            let mut forms = editor.forms.clone();
+            let AssetRecoveryPage::NonMacrs {
+                facts: NonMacrsPropertyRecovery::Software { history, .. },
+            } = &mut forms[0].equipment_assets[0].recovery
+            else {
+                unreachable!()
+            };
+            *history = NonMacrsHistory::New {
+                section179: Section179::Eligible { elected: 200_000 },
+                bonus: BonusElection::ElectOut,
+            };
+            let request = save_page(&again, &reopened, forms);
+            accepted(&send(&mut again, request));
+            let revised = supported(&again.draft);
+            assert_eq!(value(&revised, "employee_expenses_1_line_4"), 7_667);
+            assert_eq!(
+                again.draft.adjustments.as_ref().unwrap().employee_expenses[0].equipment_assets[0]
+                    .id,
+                source_id
+            );
+            assert_eq!(supported(&restart(again.draft).draft), revised);
+        } else {
+            unsupported(&session.draft, "Form 2106 equipment");
+            // The native source remains unavailable at its own equipment page.
+            // A projection adapter must not restart that failure and discard
+            // independently known zero capital/expense source categories.
+            let result = estimate(&session.draft);
+            assert_eq!(result.capital_footing, Some([0, 0]));
+            assert_eq!(result.expense_roles.as_ref().unwrap().connected_dollars, Some(0));
+            assert_eq!(
+                result
+                    .issues
+                    .iter()
+                    .filter(|issue| issue.display.key == "ASSET_FORECAST_LOOKBACK_UNAVAILABLE")
+                    .count(),
+                1
+            );
+            assert_eq!(crate::employee_expenses::before179_compensation(&session.draft), Ok(0));
+            let mut reimbursed = session.draft.clone();
+            reimbursed.adjustments.as_mut().unwrap().employee_expenses[0].reimbursements = 1;
+            assert_eq!(
+                crate::employee_expenses::before179_compensation(&reimbursed),
+                Err(Section179PreparedIssue::SourceBoundaryUnavailable(
+                    crate::asset_sale::employee_source_id(0),
+                    "ASSET_FORECAST_LOOKBACK_UNAVAILABLE"
+                ))
+            );
+            let again = restart(session.draft.clone());
+            assert_eq!(again.draft, session.draft);
+            unsupported(&again.draft, "Form 2106 equipment");
+        }
+    }
+}
+
+#[test]
+fn reservist_generic_equipment_does_not_establish_an_overnight_travel_source() {
+    use crate::tests::support::builders::nonmacrs::property;
+    let source = property(
+        3_600_000,
+        20260701,
+        NonMacrsRecovery::Software {
+            facts: SoftwareRecovery {
+                classification: SoftwareKind::Standalone,
+                exempt_lease: None,
+                bonus_eligible: false,
+            },
+        },
+    );
+    let mut form = claim(Owner::Taxpayer, "Fictional reservist", EmployeeCapacity::Reservist, &[1]);
+    form.equipment_assets = vec![source.clone()];
+    let draft = with_claims(complete(FederalStatus::Single), vec![form]);
+    assert_eq!(
+        draft.adjustments.as_ref().unwrap().employee_expenses[0].equipment_assets,
+        vec![source]
+    );
+    unsupported(&draft, "Form 2106 equipment");
+    assert_eq!(restart(draft.clone()).draft, draft);
+}
+
+#[test]
+fn employee_section179_shares_direct_pool_and_current_precedes_carry() {
+    let mut draft = complete(FederalStatus::Single);
+    draft.income = vec![w2_entry(1, Owner::Taxpayer, "Synthetic office", 100_000, 0)];
+    let mut business = cash_business(0);
+    let FederalIncome::Business { data } = &mut business else { unreachable!() };
+    let mut direct = elected_asset(1_000, 1_000, BonusElection::ElectOut);
+    direct.id = 100;
+    data.assets = vec![direct];
+    add(&mut draft, income(business));
+    let source = draft.income[1].id;
+    let mut employee =
+        claim(Owner::Taxpayer, "Synthetic official", EmployeeCapacity::FeeBasisOfficial, &[1]);
+    let mut equipment = elected_asset(1_000, 1_000, BonusElection::ElectOut);
+    equipment.id = 101;
+    employee.equipment_assets = vec![equipment];
+    draft = with_claims(draft, vec![employee]);
+    draft.next_id = 102;
+    let result = supported(&draft);
+    assert_eq!(value(&result, "section179_business_income_limit"), 1_000);
+    assert_eq!(value(&result, "section179_deduction"), 1_000);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_section179"), 500);
+    assert_eq!(value(&result, &alloc::format!("business_{source}_asset_0_section179")), 500);
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 500);
+    assert_eq!(value(&result, "section179_carryforward"), 1_000);
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    let mut prior = carried_asset(2025, 1_000);
+    prior.id = 100;
+    prior.amt_section179_income_carry = Some(100_000);
+    data.assets = vec![prior];
+    let result = supported(&draft);
+    assert_eq!(value(&result, "section179_prior_carryover_total"), 1_000);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_section179"), 1_000);
+    assert_eq!(value(&result, &alloc::format!("business_{source}_asset_0_section179")), 0);
+    assert_eq!(value(&result, "section179_carryforward"), 1_000);
+}
+
+#[test]
+fn employee_section179_uses_before179_reimbursement_compensation_once() {
+    let mut draft = complete(FederalStatus::Single);
+    draft.income = vec![w2_entry(1, Owner::Taxpayer, "Synthetic office", 10_000, 0)];
+    let mut employee =
+        claim(Owner::Taxpayer, "Synthetic official", EmployeeCapacity::FeeBasisOfficial, &[1]);
+    let mut equipment = elected_asset(1_000, 1_000, BonusElection::ElectOut);
+    equipment.id = 100;
+    employee.equipment_assets = vec![equipment];
+    employee.other = 20_000;
+    employee.meals = 10_000;
+    employee.reimbursements = 100_000;
+    draft = with_claims(draft, vec![employee]);
+    draft.next_id = 101;
+    // Without179: A=$200,B=$100, ratio=.333, reimbursementB=$333;
+    // excessA=$467 supplies compensation, so line11=$100+$467=$567.
+    // Actual179=$567: A=$767, ratio=.115, reimbursementB=$115;
+    // excessA=$118 is the final wage addition. Neither worksheet is iterated.
+    let result = supported(&draft);
+    assert_eq!(value(&result, "section179_business_income_limit"), 567);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_section179"), 567);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_section179_carryforward"), 433);
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 767);
+    assert_eq!(value(&result, "employee_expenses_1_excess_reimbursement"), 118);
+    assert_eq!(value(&result, "wages"), 218);
+    assert_eq!(value(&result, "self_employment_tax"), 0);
+    // Reg.1.179-2(c)(1), (6)(iv): independently sourced foreign wages
+    // join the same before179 compensation once, not the final reimbursement.
+    add(&mut draft, income(foreign_pay(200)));
+    assert_eq!(crate::employee_expenses::before179_compensation(&draft), Ok(46_700));
+    for system in [Section179IncomeSystem::Regular, Section179IncomeSystem::Alternative] {
+        let selected = crate::section179_return::prepare(&draft, system).unwrap();
+        assert_eq!(selected.allocation.income.business_income_limit_cents, 76_700);
+        assert_eq!(selected.allocation.employee_allowed(0), Ok(76_700));
+    }
+    assert_eq!(value(&supported(&draft), "section179_business_income_limit"), 767);
+}
+
+#[test]
+fn employee_section179_retains_independent_amt_carry_and_depreciation_adjustment() {
+    let mut draft = complete(FederalStatus::Single);
+    draft.income = vec![w2_entry(1, Owner::Taxpayer, "Synthetic office", 100_000, 0)];
+    let mut employee =
+        claim(Owner::Taxpayer, "Synthetic official", EmployeeCapacity::FeeBasisOfficial, &[1]);
+    let mut equipment = carried_asset(2025, 2_000);
+    equipment.id = 100;
+    equipment.amt_section179_income_carry = Some(50_000);
+    employee.equipment_assets = vec![equipment];
+    employee.other = 20_000;
+    employee.meals = 10_000;
+    employee.reimbursements = 100_000;
+    draft = with_claims(draft, vec![employee]);
+    draft.next_id = 101;
+    // The same before179 compensation is $467 in each system. Regular179
+    // uses $1,467 of $2,000; AMT uses its separately reported $500 carry.
+    let pair = [Section179IncomeSystem::Regular, Section179IncomeSystem::Alternative]
+        .map(|system| crate::section179_return::prepare(&draft, system).unwrap());
+    assert_eq!(pair[0].allocation.employee_allowed(0), Ok(146_700));
+    assert_eq!(pair[1].allocation.employee_allowed(0), Ok(50_000));
+    let mut report = FederalResult::empty(draft.revision);
+    let calculated =
+        crate::employee_expenses::calculate_with_section179(&draft, &mut report, Some(&pair), None);
+    // i6251 line2l compares depreciation deductions; no duplicate adjustment
+    // from separately recomputing reimbursement allocations belongs here.
+    assert_eq!(calculated.amt_adjustment(&draft), 96_700);
+    let result = supported(&draft);
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_section179_carryforward"), 533);
+    assert_eq!(value(&result, "amt_business_depreciation_adjustment"), 967);
+    let original = draft.clone();
+    draft.adjustments.as_mut().unwrap().employee_expenses[0].equipment_assets[0]
+        .amt_section179_income_carry = None;
+    unsupported(&draft, "Section 179 source");
+    // A zero REG carry does not certify that the independent AMT carry is zero.
+    let asset = &mut draft.adjustments.as_mut().unwrap().employee_expenses[0].equipment_assets[0];
+    let EquipmentHistory::Continuing { carryforward, prior_depreciation, .. } = &mut asset.history
+    else {
+        unreachable!()
+    };
+    *carryforward = 0;
+    *prior_depreciation = 200_000;
+    assert!(
+        crate::section179_return::needed(crate::related_forms::RelatedFormContext::original(
+            &draft,
+            &crate::related_forms::effective_claimants(&draft)
+        ))
+        .unwrap()
+    );
+    unsupported(&draft, "Section 179 source");
+    assert_eq!(supported(&restart(original).draft), result);
+}
+
+#[test]
+fn employee_section179_runs_performing_artist_qualification_after_allocation() {
+    let mut draft = artist_return(FederalStatus::Single, 0, 300_000, 0);
+    let mut equipment = elected_asset(2_000, 2_000, BonusElection::ElectOut);
+    equipment.id = 100;
+    let employee = &mut draft.adjustments.as_mut().unwrap().employee_expenses[0];
+    employee.travel = 0;
+    employee.meals = 0;
+    employee.equipment_assets = vec![equipment];
+    draft.next_id = 101;
+    let result = supported(&draft);
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 2_000);
+    assert_eq!(value(&result, "schedule_1_employee_business_expenses"), 1_700);
+    let FederalIncome::Wage { data } = &mut draft.income[1].income else { unreachable!() };
+    let mut data = edit_wage(data);
+    data.wages = 800_000;
+    drop(data);
+    let result = supported(&draft);
+    assert!(noted(&result, "WARN_PERFORMING_ARTIST_AGI"));
+    assert_eq!(value(&result, "employee_expenses_1_equipment_1_section179"), 2_000);
+    assert!(!result.lines.iter().any(|line| line.id == "schedule_1_employee_business_expenses"));
+}
+
+#[test]
+fn employee_section179_without_spouse_records_reuses_ordinary_recovery_policy() {
+    let mut draft = complete(FederalStatus::Separate);
+    let mut employee =
+        claim(Owner::Taxpayer, "Synthetic official", EmployeeCapacity::FeeBasisOfficial, &[1]);
+    let mut equipment = elected_asset(1_000, 1_000, BonusElection::ElectOut);
+    equipment.id = 100;
+    employee.equipment_assets = vec![equipment];
+    draft = with_claims(draft, vec![employee]);
+    draft.next_id = 101;
+    let original = draft.clone();
+    let result = supported(&draft);
+    assert!(noted(&result, "WARN_SECTION_179_SPOUSE_RECORDS_LEFT_OUT"));
+    assert_eq!(value(&result, "employee_expenses_1_line_4"), 200);
+    assert_eq!(draft, original);
+    assert_eq!(
+        draft.adjustments.as_ref().unwrap().employee_expenses[0].equipment_assets[0].elected179(),
+        100_000
+    );
 }

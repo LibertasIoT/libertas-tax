@@ -25,21 +25,34 @@ fn term_end(started: u32, months: u32) -> Option<u32> {
     Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
 )]
 pub enum PensionDuration {
-    /// One lifetime
+    /// One lifetime, my age from my date of birth
+    /// The age comes from the date of birth on your people page and the annuity starting date, so it is not asked. For an annuity of someone whose date of birth is not on this return, choose the entered age instead.
+    Own {
+        /// Annuitant's age at the annuity starting date
+        /// Worked out by the App from the owner's date of birth; absent while that date is not on the people page.
+        #[libertas_hidden]
+        #[libertas_read_only]
+        #[libertas_default($null)]
+        age: Option<u32>,
+    },
+    /// One lifetime, age entered
     /// For a CSRS/FERS child permanently disabled at the annuity starting date, with no surviving-spouse annuity, use that child's original age. Other temporary child beneficiaries share this lifetime exclusion; do not use their ages to create a joint-lifetime factor.
     Single {
         /// Annuitant's age at the annuity starting date
         #[libertas_number(min = 0)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
     },
     /// Joint and survivor lifetimes
     Joint {
         /// Primary annuitant's age at the starting date
         #[libertas_number(min = 0)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
         /// Survivor's age at the starting date
         /// With multiple survivors use the youngest survivor. With no primary annuitant use the oldest and youngest annuitants' ages.
         #[libertas_number(min = 0)]
+        #[libertas_physical_unit("year-person")]
         survivor_age: u32,
     },
     /// Fixed period, independent of anyone's life expectancy
@@ -53,25 +66,22 @@ impl PensionDuration {
     pub(crate) fn payments(self, started: u32) -> i64 {
         // Pub. 575 Worksheet A: Table 2 applies only to starts after 1997.
         // Earlier joint-life contracts use the primary annuitant's Table 1 age.
-        let duration = match self {
-            Self::Joint { age, .. } if started < 19980101 => Self::Single { age },
-            other => other,
+        let single = |age: u32| match age {
+            0..=55 if started < 19961119 => 300,
+            56..=60 if started < 19961119 => 260,
+            61..=65 if started < 19961119 => 240,
+            66..=70 if started < 19961119 => 170,
+            _ if started < 19961119 => 120,
+            0..=55 => 360,
+            56..=60 => 310,
+            61..=65 => 260,
+            66..=70 => 210,
+            _ => 160,
         };
-        match duration {
-            Self::Single { age } if started < 19961119 => match age {
-                0..=55 => 300,
-                56..=60 => 260,
-                61..=65 => 240,
-                66..=70 => 170,
-                _ => 120,
-            },
-            Self::Single { age } => match age {
-                0..=55 => 360,
-                56..=60 => 310,
-                61..=65 => 260,
-                66..=70 => 210,
-                _ => 160,
-            },
+        match self {
+            Self::Joint { age, .. } if started < 19980101 => single(age),
+            Self::Own { age } => single(age.unwrap_or_default()),
+            Self::Single { age } => single(age),
             Self::Joint { age, survivor_age } => match age.saturating_add(survivor_age) {
                 0..=110 => 410,
                 111..=120 => 360,
@@ -84,6 +94,7 @@ impl PensionDuration {
     }
     fn valid(self) -> bool {
         match self {
+            Self::Own { age } => age.is_some_and(|age| age <= 120),
             Self::Single { age } => age <= 120,
             Self::Joint { age, survivor_age } => age <= 120 && survivor_age <= 120,
             Self::Fixed { payments } => (1..=1500).contains(&payments),
@@ -103,12 +114,14 @@ pub enum PensionHistory {
         /// Monthly tax-free amount from the prior worksheet line 4
         /// Keep the original amount even if pension payments have changed. Do not calculate a new amount from your remaining basis.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         monthly: i64,
         /// Basis recovered before the worksheet year, prior worksheet line 10
         /// Include amounts that could have been recovered even if omitted on a prior return. For a pre-1987 starting date, enter zero; the lifetime cost cap does not apply.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         recovered: i64,
     },
 }
@@ -122,17 +135,20 @@ pub struct PensionShare {
     /// Monthly payments to beneficiaries preceding this recipient
     /// Use one consistent beneficiary order in the common allocation record on every recipient's return. Enter zero for the first recipient; otherwise enter the sum of the preceding original monthly payments. This order only assigns rounding cents and must remain unchanged with the retained worksheet.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub preceding: i64,
     /// This recipient's monthly payment at allocation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub payment: i64,
     /// Total monthly payments to all simultaneous annuitants at allocation
     /// Includes this recipient and recipients filing other returns. Exclude ordinary railroad spouse annuities, which cannot recover employee contributions.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub total: i64,
 }
 impl PensionShare {
@@ -173,18 +189,19 @@ pub struct PensionChange {
 /// Pension Simplified Method facts
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PensionBasis {
-    /// Earlier common payment months in this worksheet year
+    /// Earlier common payment period in this worksheet year
     /// Payments to other annuitants before this recipient's first payment. Use the same common monthly exclusion and include every earlier recovery month once. Do not include earlier years here or add these months to this recipient's payment months. Changed common exclusions or deferred recoveries need another reconciliation.
     // Tax structure: payment months and scheduled annual installments cannot exceed twelve.
     #[libertas_number(min = 0, max = 11)]
     #[libertas_default(0)]
+    #[libertas_physical_unit("month")]
     pub earlier_months: u32,
     /// Changes in allocation during these payment months
     /// Leave empty for unchanged beneficiaries. List each entitlement change once; dates determine the order. This recipient must receive payments throughout the entered months. Earlier common payment months are entered separately; excess-exclusion carryovers or a change in the common monthly exclusion require further reconciliation.
-    /// ----
-    /// Allocation change
     // Tax structure: at most one allocation change in each month after the first.
     #[libertas_size(max = 11)]
+    /// ----
+    /// Allocation change
     pub changes: alloc::vec::Vec<PensionChange>,
     /// Share the exclusion with simultaneous annuitants
     /// Leave absent for one recipient. When present, cost and prior recovered amounts cover the whole contract and every recipient; the prior monthly amount is the common amount before allocation. Do not enter an already allocated monthly amount and allocate it again.
@@ -204,13 +221,15 @@ pub struct PensionBasis {
     /// [SetText]
     /// The original after-tax cost in the contract was
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub cost: Option<i64>,
-    /// Months for which payments were made in the worksheet year
+    /// Period for which payments were made in the worksheet year
     /// Use 2026 for current income; historical repayment worksheets use their selected original year.
     // Tax structure: payment months and scheduled annual installments cannot exceed twelve.
     #[libertas_number(min = 1, max = 12)]
+    #[libertas_physical_unit("month")]
     pub months: u32,
     /// New calculation or retained worksheet
     pub history: PensionHistory,
@@ -219,6 +238,27 @@ pub struct PensionBasis {
     pub eligible: bool,
 }
 impl PensionBasis {
+    // The owner's age on the starting date, kept equal to the owner's date of birth and this
+    // starting date on every accepted save (the derived-value pass), absent when either is unknown.
+    pub(crate) fn follow_birth(&mut self, birth: Option<u32>) {
+        if let PensionHistory::New { duration: PensionDuration::Own { age } } = &mut self.history {
+            *age = birth
+                .filter(|birth| {
+                    valid_date(*birth) && valid_date(self.started) && *birth <= self.started
+                })
+                .map(|birth| crate::accepted_filers::age_on_rule(birth, self.started, false));
+        }
+    }
+    // The age is to come from the owner's date of birth, which the people page does not hold
+    // (or which cannot precede this starting date).
+    pub(crate) fn lacks_birth(&self, birth: Option<u32>) -> bool {
+        let mut followed = self.clone();
+        followed.follow_birth(birth);
+        matches!(
+            followed.history,
+            PensionHistory::New { duration: PensionDuration::Own { age: None } }
+        )
+    }
     // The worksheet cost; the server resolves an empty one from box 9b on save.
     pub(crate) fn cost(&self) -> i64 {
         self.cost.unwrap_or(0)
@@ -366,32 +406,38 @@ pub enum AnnuityDuration {
         /// Nearest-birthday age at original annuitization
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
-        /// Original maximum term in months
+        /// Original maximum term
         /// From the contract, not remaining months. The App selects the IRS table using the nearest whole number of years. Terms over forty years need further treatment.
         // Tax structure: Pub. 939 Table VIII covers temporary terms through 40 years.
         #[libertas_number(min = 13, max = 480)]
+        #[libertas_physical_unit("month")]
         months: u32,
     },
     /// Joint life and last survivor, two annuitants
     JointLife {
-        /// Whole months from original annuitization to the first primary payment
+        /// Delay from original annuitization to the first primary payment
         /// Use original timing for the common payment frequency, even after the first death. Do not restart the timing calculation for the survivor.
         // Tax structure: Pub. 939 payment-frequency timing adjustments end at twelve months.
         #[libertas_number(min = 0, max = 12)]
+        #[libertas_physical_unit("month")]
         delay: u32,
         /// Primary annuitant's nearest-birthday age at the original starting date
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
         /// Survivor's nearest-birthday age at the original starting date
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         survivor_age: u32,
         /// Original periodic payment promised after the primary annuitant's death
         /// Enter the contract's survivor amount even while the primary annuitant is alive. It may differ from the primary amount entered above.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         survivor_payment: i64,
         /// All payments entered for 2026 were paid to the designated survivor
         /// No means all were paid to the primary annuitant. For a year with payments to both recipients, enter each recipient separately and include the first annuitant's earlier original-payment amounts on the survivor's worksheet. Enter any final-annuitant deduction separately and link this income entry. Original ages, payment terms and total contract cost remain unchanged after the first death; prior recovery includes both recipients' earlier exclusions.
@@ -409,18 +455,21 @@ pub enum AnnuityDuration {
         /// Original total payments guaranteed even after death
         /// Enter zero when payments stop at death without a guarantee. Otherwise enter the total dollars the contract guarantees to the annuitant and beneficiary together, not the remaining guarantee or a tax adjustment. For a guaranteed installment count, use the contract's total at the original payment rate. The guarantee may end with a fractional installment; all preceding installments must use the full regular amount. A fractional original first installment needs another worksheet. Payments continue for life if the annuitant survives it. The App derives duration and the Table VII refund adjustment. This covers continued installments, not a cash refund at death or beneficiary receipts. Guarantees over forty years or a rounded term below one year without the young-annuitant zero-value exception need further calculation.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         guaranteed: i64,
-        /// Whole months from original annuitization to the first payment
+        /// Delay from original annuitization to the first payment
         /// Used with payment frequency to select the IRS adjustment to the lifetime factor.
         // Tax structure: Pub. 939 payment-frequency timing adjustments end at twelve months.
         #[libertas_number(min = 0, max = 12)]
+        #[libertas_physical_unit("month")]
         delay: u32,
         /// Age at the birthday nearest the original annuity starting date
         /// Use the original annuitant's nearest-birthday age, not their current age or age at the last birthday. Table V and, when applicable, Table VII must apply to the entire investment.
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
     },
 }
@@ -516,7 +565,8 @@ pub struct GeneralAnnuity {
     /// Original-payment amounts received by the first annuitant earlier in 2026
     /// On the designated survivor's entry, total the original-payment portions paid to the first annuitant before this survivor's payments, including delayed or fractional original installments but excluding cost-of-living increases. Use payment records, not a calculated tax-free amount. Those receipts belong on the first annuitant's income entry or return, not in this entry's gross income. Enter zero otherwise. Do not also count this year's recovery in the recovery-through-2025 field or other deduction payouts.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub earlier_payments: i64,
     /// Annuity starting date
@@ -529,15 +579,18 @@ pub struct GeneralAnnuity {
     /// [SetText]
     /// The original qualified-plan annuitant's age was
     #[libertas_number(min = 0)]
+    #[libertas_physical_unit("year-person")]
     pub qualified_age: Option<u32>,
     /// Original net cost of the contract
     /// After-tax premiums less tax-free pre-annuity returns and other documented basis adjustments, before any refund-feature adjustment. Not the current account value or remaining basis. The App computes the refund adjustment separately for the exclusion ratio; lifetime recovery limits retain this net cost.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Original regular periodic payment in the contract
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub periodic: i64,
     /// Payment duration in the original contract
     pub duration: AnnuityDuration,
@@ -548,18 +601,21 @@ pub struct GeneralAnnuity {
     /// Partial first-period payment received in 2026
     /// Enter only the fractional original first-period payment received this year, including a delayed first-period payment from an earlier year. Exclude it from the full-installment count and do not repeat amounts received or recovered earlier. Other fractional adjustments need separate treatment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub partial: i64,
     /// Total 2026 cost-of-living increases above the original payments
     /// Enter the actual additional dollars received during 2026 from payment statements, including any midyear increase. Keep the original periodic contract payment above unchanged. These increases are fully taxable and do not increase basis recovery. Enter zero if none; other contract changes require review.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub increase: i64,
     /// Cost recovered tax-free before 2026
     /// From retained returns/worksheets. Enter zero for a new annuity. Do not subtract this from original cost when calculating the exclusion ratio.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub recovered: i64,
     /// Fixed-payment General Rule pension or annuity with complete, unchanged records
     /// A qualified-plan pension must either have started before November 19, 1996 using the General Rule, or meet the age-75 and five-year guarantee rules using the entered original age and guaranteed installments. Prior payments must consistently use the General Rule, without an irrevocable Simplified Method election. Not variable, foreign, charitable or exchanged; inherited contracts are excluded except the designated survivor of the entered joint-life contract. For lifetime or temporary-life contracts, Tables V through VIII apply to the entire cost: contributions after June 30, 1986, or a documented election to use these tables. No allocation to older sex-specific tables. No refund feature except the entered single-life guaranteed installments, payment changes other than the entered cost-of-living increases, changed basis, surrender, loan, simultaneous shared-recipient allocation or unentered adjustment. All this contract's 2026 payments are entered once; prior recovery used the General Rule. Starting dates before July 2, 1986 still need separate treatment. For July–December 1986 starts, prior tax-free recovery can exceed original cost; the periodic exclusion continues without a lifetime cost cap. No recovers no cost: the whole payment is taxed, with a notice.
@@ -576,7 +632,11 @@ impl GeneralAnnuity {
         };
         self.started < 19961119 || (self.qualified_age.is_some_and(|age| age >= 75) && five_years)
     }
+    #[cfg(test)]
     pub(crate) fn valid(self, gross: i64) -> bool {
+        self.valid_with_source_alignment(gross, true)
+    }
+    pub(crate) fn valid_with_source_alignment(self, gross: i64, source_alignment: bool) -> bool {
         valid_date(self.started)
             && (19860702..=20261231).contains(&self.started)
             && (0..=100000000000).contains(&self.cost)
@@ -607,7 +667,9 @@ impl GeneralAnnuity {
             && (self.started < 19870101 || self.recovered <= self.cost)
             && (0..=100000000000).contains(&self.increase)
             && (self.increase == 0 || self.received > 0 || self.partial > 0)
-            && gross == self.payment() * i64::from(self.received) + self.partial + self.increase
+            && (!source_alignment
+                || gross
+                    == self.payment() * i64::from(self.received) + self.partial + self.increase)
             && (self.started < 20260101 || self.recovered == 0)
     }
     fn payment(self) -> i64 {
@@ -746,11 +808,13 @@ pub enum VariablePayments {
         /// Original age for a new contract; current age when refiguring the remaining term.
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
-        /// Maximum term in months from the calculation period
+        /// Maximum term from the calculation period
         /// Original term for a new contract, which must exceed twelve months; remaining term for a shortfall election. The App rounds to the nearest whole year for Table VIII. Less than six remaining months or terms over forty years need further treatment.
         // Tax structure: Pub. 939 Table VIII covers temporary terms through 40 years.
         #[libertas_number(min = 6, max = 480)]
+        #[libertas_physical_unit("month")]
         months: u32,
     },
     /// Two lives, unchanged benefit units through the last survivor
@@ -760,14 +824,17 @@ pub enum VariablePayments {
         /// At original annuitization for a new contract; at the current first payment period when refiguring while both annuitants are alive.
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
         /// Second annuitant's nearest-birthday age at the same date
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         survivor_age: u32,
-        /// Whole months from that period's start to payment
+        /// Delay from that period's start to payment
         // Tax structure: Pub. 939 payment-frequency timing adjustments end at twelve months.
         #[libertas_number(min = 0, max = 12)]
+        #[libertas_physical_unit("month")]
         delay: u32,
     },
 
@@ -784,11 +851,13 @@ pub enum VariablePayments {
         /// At the original starting date for a new contract; at the current payment period for a shortfall adjustment. Table V must apply to the entire investment.
         // Tax structure: Pub. 939 life-expectancy tables cover nearest-birthday ages through 115.
         #[libertas_number(min = 5, max = 115)]
+        #[libertas_physical_unit("year-person")]
         age: u32,
-        /// Whole months from the period starting date to its payment
+        /// Delay from the period starting date to its payment
         /// At original annuitization for a new contract; from the current first period to payment when refiguring. The App applies the IRS timing adjustment for the selected payment frequency. Use the actual contractual timing, not a tax calculation.
         // Tax structure: Pub. 939 payment-frequency timing adjustments end at twelve months.
         #[libertas_number(min = 0, max = 12)]
+        #[libertas_physical_unit("month")]
         delay: u32,
     },
 }
@@ -826,15 +895,17 @@ impl VariablePayments {
     Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
 )]
 pub struct VariableRefigure {
-    /// Number of full prior years with unelected shortfalls
+    /// Full prior periods with unelected shortfalls
     /// Each included year used the same retained annual exclusion and had total payments below that allowance. Exclude years whose shortfall was already used in an election. Partial-year allowances or changed exclusions require a separate history calculation.
     #[libertas_number(min = 1)]
     #[libertas_default(1)]
+    #[libertas_physical_unit("year")]
     pub years: u32,
     /// Total payments actually received in those shortfall years
     /// Add the payer's statement amounts, including zero-payment years. The App calculates the unused allowance; do not enter a tax shortfall.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub paid: i64,
     /// Remaining payment facts at the current first payment period
     pub remaining: VariablePayments,
@@ -852,12 +923,14 @@ pub enum VariableHistory {
         /// Annual tax-free amount from the preceding worksheet
         /// Retain any previously elected adjustments; do not substitute the taxable amount or remaining investment.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         annual: i64,
         /// Total cost recovered tax-free through 2025
         /// Include all earlier annuitants' recovery through 2025. Do not include the first annuitant's 2026 recovery supplied separately in the earlier-payment facts.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         recovered: i64,
         /// Elect to adjust future tax-free payments after the previous shortfall
         /// None keeps the existing tax-free amount. Choosing an adjustment requires the statement described in the result; the App does not submit a return or election.
@@ -883,7 +956,8 @@ pub struct VariableEarlier {
     /// Gross receipts for those installments
     /// Source payment statements, not the calculated tax-free recovery. Do not include this amount in the survivor's gross receipts.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross: i64,
 }
 
@@ -940,6 +1014,7 @@ pub struct VariableAnnuity {
     /// Annuitant's age on the original starting date
     /// Retain for the election statement. Lifetime expectation uses the nearest-birthday age specified separately.
     #[libertas_number(min = 0)]
+    #[libertas_physical_unit("year-person")]
     pub age: u32,
     /// First day of the first payment period paid in 2026
     /// This may be in late 2025 when payment is due in arrears. Enter the period start, not the receipt date. If death preceded every 2026 installment, enter the period start for the first installment that had been scheduled.
@@ -947,7 +1022,8 @@ pub struct VariableAnnuity {
     pub period: u32,
     /// Original net investment in the contract
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Regular payment schedule in the contract
     pub frequency: AnnuityFrequency,
@@ -1210,17 +1286,20 @@ pub struct AnnuityLoss {
     pub started: u32,
     /// Net investment before recovery, from original contract records
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Tax-free investment recovered through 2025
     /// Include recoverable amounts required by the retained worksheet and all earlier annuitants' recovery. Current-year recovery is calculated from the linked income entry. A linked Simplified Method worksheet includes all common recovery in its earlier and entered payment months. General Rule and variable-annuity survivor worksheets also include calculated recovery from the first annuitant's earlier current-year payments. Do not enter those amounts again as other payouts.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub recovered: i64,
     /// Other tax-free contract payouts reducing unrecovered investment
     /// Include tax-free refund or death-settlement amounts not already counted as periodic recovery. Do not include a payout twice.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub refunds: i64,
     /// All annuity payments ceased at this final annuitant's death
     /// This is the final annuitant's 2026 return; no surviving annuitant, continuing guaranteed payments, transfer, surrender, IRA loss or duplicate deduction. Original investment and recoveries are complete and agree with the linked entry's basis calculation. Retirement income entered here belongs to the decedent, not the estate or a beneficiary. The payer's notice shows whether payments stopped. No claims no deduction.

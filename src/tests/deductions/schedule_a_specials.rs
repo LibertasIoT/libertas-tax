@@ -5,6 +5,7 @@ use super::*;
 // below are the whole-dollar amounts printed on the return.
 fn loan(home: MortgageHome, incurred: u32, average: i64, interest: i64) -> MortgageLoan {
     MortgageLoan {
+        printed: None,
         id: 1,
         property: "Synthetic home".into(),
         lender: MortgageLender::Institution,
@@ -25,7 +26,7 @@ fn loan(home: MortgageHome, incurred: u32, average: i64, interest: i64) -> Mortg
 fn itemizing(status: FederalStatus) -> FederalDraft {
     let mut d = complete(status);
     let deductions = d.deductions.as_mut().unwrap();
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     d
 }
 
@@ -105,7 +106,8 @@ fn a_mixed_use_heloc_repayments_retire_other_use_before_acquisition() {
     });
     mortgage_ledger_mut(&mut second).average =
         MortgageAverageBalance::FirstAndLast { last_balance: 19_000_000 };
-    d.deductions.as_mut().unwrap().mortgage = identified_mortgages(vec![first, second]);
+    d.deductions.as_mut().unwrap().mortgage =
+        mortgage_loan_sources(identified_mortgages(vec![first, second]));
     let r = supported(&d);
     assert_eq!(value(&r, "mortgage_post_2017_balance"), 850_000);
     assert_eq!(value(&r, "mortgage_qualified_loan_limit"), 750_000);
@@ -132,7 +134,8 @@ fn b_cash_out_refinance_splits_old_debt_improvements_and_points() {
     mortgage_ledger_mut(&mut new).average =
         MortgageAverageBalance::FirstAndLast { last_balance: 39_500_000 };
     new.points = MortgagePoints::Improvement { amount: 800_000, term_months: 360 };
-    d.deductions.as_mut().unwrap().mortgage = identified_mortgages(vec![old, new]);
+    d.deductions.as_mut().unwrap().mortgage =
+        mortgage_loan_sources(identified_mortgages(vec![old, new]));
     let r = supported(&d);
     assert_eq!(value(&r, "mortgage_pre_2018_balance"), 307_500);
     assert_eq!(value(&r, "mortgage_post_2017_balance"), 45_000);
@@ -147,17 +150,17 @@ fn b_cash_out_refinance_splits_old_debt_improvements_and_points() {
 #[test]
 fn c_third_home_is_excluded_and_houseboat_interest_is_an_amt_adjustment() {
     let mut d = itemizing(FederalStatus::Joint);
-    d.deductions.as_mut().unwrap().mortgage = identified_mortgages(vec![
+    d.deductions.as_mut().unwrap().mortgage = mortgage_loan_sources(identified_mortgages(vec![
         loan(MortgageHome::Main, 20200601, 500_000, 20_000),
         loan(MortgageHome::Second, 20210601, 200_000, 9_000),
         loan(MortgageHome::NotQualified, 20220601, 150_000, 6_000),
-    ]);
+    ]));
     let r = supported(&d);
     assert_a(&r, "mortgage_interest_8a", "8a", 29_000);
     assert_eq!(value(&r, "mortgage_not_qualified_home_interest"), 6_000);
     assert_eq!(value(&r, "amt_mortgage_dwelling_interest"), 0);
     assert_foots(&r);
-    mortgage_ledger_mut(&mut d.deductions.as_mut().unwrap().mortgage[1]).home =
+    mortgage_ledger_mut(&mut edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[1])).home =
         MortgageHome::SecondVehicle;
     let r = supported(&d);
     assert_a(&r, "mortgage_interest_8a", "8a", 29_000);
@@ -170,23 +173,27 @@ fn c_third_home_is_excluded_and_houseboat_interest_is_an_amt_adjustment() {
 fn d_box_4_recovery_uses_prior_tax_benefit_without_reducing_current_interest() {
     let mut d = itemizing(FederalStatus::Single);
     let mut mortgage = loan(MortgageHome::Main, 20200601, 100_000, 9_000);
-    mortgage.refund_of_interest =
-        MortgageInterestRefund::Yes { amount: 40_000, origin: MortgageRefundOrigin::NotDeducted };
-    d.deductions.as_mut().unwrap().mortgage = identified_mortgages(vec![mortgage]);
+    mortgage.refund_of_interest = MortgageInterestRefund::Yes {
+        amount: 40_000,
+        origin: Some(MortgageRefundOrigin::NotDeducted),
+    };
+    d.deductions.as_mut().unwrap().mortgage =
+        mortgage_loan_sources(identified_mortgages(vec![mortgage]));
     let no_benefit = supported(&d);
     assert_a(&no_benefit, "mortgage_interest_8a", "8a", 9_000);
     assert_eq!(value(&no_benefit, "agi"), 60_000);
-    d.deductions.as_mut().unwrap().mortgage[0].refund_of_interest = MortgageInterestRefund::Yes {
-        amount: 40_000,
-        origin: MortgageRefundOrigin::Deducted(PriorYearRecovery {
-            year: 2025,
-            deducted: 1_200_000,
-            itemized: 1_600_000,
-            standard: 1_575_000,
-            taxable_income: 5_000_000,
-            ordinary: true,
-        }),
-    };
+    edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]).refund_of_interest =
+        MortgageInterestRefund::Yes {
+            amount: 40_000,
+            origin: Some(MortgageRefundOrigin::Deducted(PriorYearRecovery {
+                year: 2025,
+                deducted: 1_200_000,
+                itemized: 1_600_000,
+                standard: 1_575_000,
+                taxable_income: 5_000_000,
+                ordinary: true,
+            })),
+        };
     let partial = supported(&d);
     assert_a(&partial, "mortgage_interest_8a", "8a", 9_000);
     assert_eq!(value(&partial, "recovery_2025_taxable"), 250);
@@ -205,7 +212,7 @@ fn f_teacher_and_coach_expenses_split_above_line_and_itemized_deductions() {
     assert_eq!(value(&r, "adjustments"), 350);
     assert_a(&r, "educator_itemized_deduction", "17k", 1_350);
     assert_foots(&r);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let standard = supported(&d);
     assert_eq!(value(&standard, "adjustments"), 350);
     assert_a(&standard, "educator_itemized_deduction", "17k", 0);
@@ -231,7 +238,8 @@ fn g_refinanced_old_debt_changes_category_at_original_term_end() {
     });
     mortgage_ledger_mut(&mut mortgage).average =
         MortgageAverageBalance::FirstAndLast { last_balance: 83_600_000 };
-    d.deductions.as_mut().unwrap().mortgage = identified_mortgages(vec![mortgage]);
+    d.deductions.as_mut().unwrap().mortgage =
+        mortgage_loan_sources(identified_mortgages(vec![mortgage]));
     let r = supported(&d);
     assert_eq!(value(&r, "mortgage_pre_2018_balance"), 285_000);
     assert_eq!(value(&r, "mortgage_post_2017_balance"), 562_000);
@@ -288,7 +296,8 @@ fn monthly_balances_retire_other_use_first_and_payoff_deducts_remaining_points()
     };
     let mut paid_off = loan(MortgageHome::Main, 20240101, 10_000, 1_000);
     paid_off.points = MortgagePoints::Amortized { amount: 360_000, term_months: 360, ended: true };
-    d.deductions.as_mut().unwrap().mortgage = identified_mortgages(vec![mixed, paid_off]);
+    d.deductions.as_mut().unwrap().mortgage =
+        mortgage_loan_sources(identified_mortgages(vec![mixed, paid_off]));
     let r = supported(&d);
     // Qualified month-end balances: 80,000 + 70,000, divided by 12;
     // interest: 1,600 * 150,000 / 160,000 = 1,500. The other loan
@@ -316,10 +325,10 @@ fn box_4_recoveries_share_one_year_limit_and_reject_conflicting_year_facts() {
     let mut mortgage = loan(MortgageHome::Main, 20200601, 100_000, 9_000);
     mortgage.refund_of_interest = MortgageInterestRefund::Yes {
         amount: 40_000,
-        origin: MortgageRefundOrigin::Deducted(history.clone()),
+        origin: Some(MortgageRefundOrigin::Deducted(history.clone())),
     };
     d.deductions.as_mut().unwrap().mortgage =
-        identified_mortgages(vec![mortgage.clone(), mortgage]);
+        mortgage_loan_sources(identified_mortgages(vec![mortgage.clone(), mortgage]));
     add(
         &mut d,
         income(FederalIncome::OtherIncome {
@@ -333,13 +342,15 @@ fn box_4_recoveries_share_one_year_limit_and_reject_conflicting_year_facts() {
     let r = supported(&d);
     assert_eq!(value(&r, "recovery_2025_taxable"), 250);
     assert_eq!(value(&r, "agi"), 60_250);
-    let loans = &mut d.deductions.as_mut().unwrap().mortgage;
-    let MortgageInterestRefund::Yes { origin: MortgageRefundOrigin::Deducted(history), .. } =
-        &mut loans[1].refund_of_interest
+    let mut loan = edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[1]);
+    let MortgageInterestRefund::Yes {
+        origin: Some(MortgageRefundOrigin::Deducted(history)), ..
+    } = &mut loan.refund_of_interest
     else {
         panic!()
     };
     history.taxable_income += 100;
+    drop(loan);
     let r = estimate(&d);
     assert_eq!(r.state, ResultState::Unsupported);
     assert!(r.issues.iter().any(|issue| issue.display.key
@@ -349,4 +360,37 @@ fn box_4_recoveries_share_one_year_limit_and_reject_conflicting_year_facts() {
             IssueContext::Record { section: TaxSection::Mortgage, .. }
                 | IssueContext::Section(TaxSection::Mortgage)
         )));
+}
+
+#[test]
+fn w2_box14_state_disability_joins_line_5a_only_when_itemizing_the_income_tax() {
+    let build = |itemize: bool, election: PersonalTaxElection| {
+        let mut d = if itemize {
+            itemizing(FederalStatus::Single)
+        } else {
+            complete(FederalStatus::Single)
+        };
+        d.income = vec![wage(1, Owner::Taxpayer, 6_000_000, 0)];
+        d.next_id = 2;
+        itemized(d.deductions.as_mut().unwrap()).personal_tax = election;
+        let FederalIncome::Wage { data: WageSource::W2(source) } = &mut d.income[0].income else {
+            unreachable!()
+        };
+        source.form.box14a = vec![W2OtherItem {
+            label: "CA SDI".into(),
+            value: W2OtherValue::Money { amount: 123_400 },
+        }];
+        source.classify_box14();
+        d
+    };
+    let income =
+        || PersonalTaxElection::Income { paid: 0, allocation: TaxIncomeAllocation::CurrentReturn };
+    assert_a(&supported(&build(true, income())), "salt_income_or_sales_tax", "5a", 1_234);
+    assert_a(&supported(&build(false, income())), "salt_income_or_sales_tax", "5a", 0);
+    assert_a(
+        &supported(&build(true, PersonalTaxElection::Sales { paid: 0 })),
+        "salt_income_or_sales_tax",
+        "5a",
+        0,
+    );
 }

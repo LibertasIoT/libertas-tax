@@ -34,7 +34,7 @@ fn unit13_resolved_final_rental_loss_and_personal_gross_keep_native_owners() {
         let property = rental(10_000, 1);
         add(&mut draft, income(FederalIncome::Rental { data: property }));
         let mut entry = income(personal_rent(0, 0));
-        entry.owner = Owner::Spouse;
+        entry.owner = crate::DocumentOwner::Spouses;
         let FederalIncome::NonbusinessProperty { receipts, .. } = &mut entry.income else {
             panic!()
         };
@@ -82,10 +82,10 @@ fn unit13_resolved_ltc_and_nol_keep_separate_native_annual_boundaries() {
         );
         let mut first = income(ltc_form(15_000, Some(3)));
         let FederalIncome::LtcBenefits { data } = &mut first.income else { panic!() };
-        data.benefits += cents;
+        data.form.benefits = Some(data.form.benefits.unwrap_or(0) + cents);
         add(&mut draft, first);
         let mut second = income(ltc_form(15_000, Some(3)));
-        second.owner = Owner::Spouse;
+        second.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, second);
         source_owned_nol(&mut draft, 377_100, Owner::Taxpayer);
         let extra = i64::from(cents >= 50);

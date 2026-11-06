@@ -1,8 +1,8 @@
 // HOME's casualty source interface, in cents. The casualty owner retains
 // character; Form8829 and its ScheduleC/F caller own the remaining tiers.
-// Dispatcher eac268d: current casualty, current depreciation, then prior
-// carry; within characterized prior carry casualty precedes depreciation.
-// The latter is an approved inference: the printed form carries one total.
+// Current casualty precedes current depreciation, then prior carry; within
+// characterized prior carry casualty precedes depreciation. The printed
+// home-use worksheet carries one combined prior total (Pub527, Worksheet5-1).
 use crate::kernel::carry::{self, Amount, Cents, LedgerError};
 use crate::kernel::phase;
 
@@ -62,11 +62,8 @@ impl ThirdTierResult {
     // Form8829line35 requires the actual casualty character, not an unknown
     // prior carry relabeled depreciation. Current known amounts stay known.
     pub(crate) fn allowed_casualty_cents(&self) -> Option<i64> {
-        Some(
-            self.otherwise_allowed_casualty_cents
-                + self.allowed_excess_casualty_cents
-                + self.allowed_prior_casualty_cents?,
-        )
+        let prior = self.allowed_prior_casualty_cents?;
+        Some(self.otherwise_allowed_casualty_cents + self.allowed_excess_casualty_cents + prior)
     }
     pub(crate) fn allowed_depreciation_cents(&self) -> Option<i64> {
         Some(self.allowed_current_depreciation_cents + self.allowed_prior_depreciation_cents?)
@@ -104,6 +101,21 @@ pub(crate) fn third_tier(
             let no_use = (previous.used.get() == 0).then_some(0);
             (no_use, no_use, (previous.closing.get() == 0).then_some(0))
         };
+    // Independently valid source amounts can overflow their combined closing
+    // ledger, including after the form projects source cents to whole dollars.
+    let closing_total = casualty
+        .closing
+        .get()
+        .checked_add(depreciation.closing.get())
+        .and_then(|amount| amount.checked_add(previous.closing.get()))
+        .ok_or(LedgerError::InvalidAmount)?;
+    let total_allowed = casualty.used.get() + depreciation.used.get() + previous.used.get();
+    if let Some(prior_casualty) = allowed_prior_casualty_cents {
+        otherwise_allowed_casualty_cents
+            .checked_add(casualty.used.get())
+            .and_then(|amount| amount.checked_add(prior_casualty))
+            .ok_or(LedgerError::InvalidAmount)?;
+    }
     let result = ThirdTierResult {
         otherwise_allowed_casualty_cents,
         excess_casualty_cents,
@@ -114,11 +126,9 @@ pub(crate) fn third_tier(
         current_casualty_carry_cents: casualty.closing.get(),
         current_depreciation_carry_cents: depreciation.closing.get(),
         prior_carry_remaining_cents: previous.closing.get(),
-        total_allowed_cents: casualty.used.get() + depreciation.used.get() + previous.used.get(),
+        total_allowed_cents: total_allowed,
         carry: ThirdTierCarry {
-            total_cents: casualty.closing.get()
-                + depreciation.closing.get()
-                + previous.closing.get(),
+            total_cents: closing_total,
             casualty_cents: prior_casualty_left.map(|amount| amount + casualty.closing.get()),
         },
     };
@@ -134,8 +144,9 @@ pub(crate) fn third_tier(
                 + result.prior_carry_remaining_cents
         || result.allowed_casualty_cents().zip(result.allowed_depreciation_cents()).is_some_and(
             |(casualty, depreciation)| {
-                casualty + depreciation
-                    != otherwise_allowed_casualty_cents + result.total_allowed_cents
+                i128::from(casualty) + i128::from(depreciation)
+                    != i128::from(otherwise_allowed_casualty_cents)
+                        + i128::from(result.total_allowed_cents)
             },
         )
     {

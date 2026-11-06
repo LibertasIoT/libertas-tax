@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"order": 210000, "rule": {"select": "^<Finish>", "button_labels": {"go_back": "DISPLAY_RETURN_TO_REVIEW", "next": "DISPLAY_FINISH_REVIEW"}}},
+    {"order": 212000, "rule": {"select": "^<Review.result.return_lines>", "layout": "table", "columns": [{"value": "label", "header": "DISPLAY_RETURN_LINE"}, "money", {"value": "explanation", "header": "DISPLAY_HOW_CALCULATED"}]}},
+    {"order": 214000, "rule": {"select": "^<Review.remaining_items>[]", "style": {"color": "error", "icon": "warning"}}},
+    {"order": 216000, "rule": {"select": "^<Review.answers>[]", "style": {"color": "primary", "icon": "check"}}},
+    {"order": 222000, "rule": {"select": "^<Review>", "when": {"form": "desktop"}, "style": {"density": "compact"}}},
+    {"order": 847000, "rule": {"select": "^<Review.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 849000, "rule": {"select": "^<RunningEstimate.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

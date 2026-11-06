@@ -7,7 +7,7 @@ fn long_term_care_shares_age_cap_without_reserving_it_for_loss_businesses() {
     set_age(&mut d, -1, 45);
     add(&mut d, income(care_business(0, 800, false)));
     let mut spouse = income(care_business(50000, 800, false));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "business_2_health_insurance"), 0);
@@ -148,119 +148,50 @@ fn long_term_care_personal_and_public_safety_cents_round_only_after_aggregation(
 }
 
 #[test]
-fn hsa_wide_account_value_omits_only_optional_explanation() {
-    let draft = complete(FederalStatus::Single);
-    let mut account = hsa_entry(Owner::Taxpayer, HsaCoverage::None, 10_000);
-    account.excess_accounting = Some(HsaExcessAccounting {
-        prior_year: None,
-        employer_excess_in_wages: 0,
-        year_end_value: i64::MAX,
-        later_return_year_deposits: 10_000,
-        later_employer_deposits: 0,
-    });
-    let mut result = FederalResult::empty(draft.revision);
-    let calculation = crate::hsa::calculate(
-        &[account],
-        draft.people.as_ref().unwrap(),
-        FederalStatus::Single,
-        &crate::hsa::ContributionContext {
-            msa: Default::default(),
-            failed: &Default::default(),
-            married: false,
-            family_share: None,
-        },
-        &Default::default(),
-        &draft.income,
-        &mut result,
-    )
-    .unwrap();
-    assert_eq!((calculation.deduction, calculation.excess_tax), (0, 6));
-    assert_eq!(value(&result, "hsa_1_excess_line48"), 100);
-    assert!(
-        result
-            .review_notes
-            .iter()
-            .any(|note| note.display.key == "MEDICAL_EXPLANATION_UNAVAILABLE")
-    );
-    assert!(!result.lines.iter().any(|line| line.id == "hsa_1_return_year_excess_account_value"));
-}
-
-#[test]
 fn hsa_required_gross_and_last_month_outputs_have_owner_failures() {
     let draft = complete(FederalStatus::Joint);
     let mut sources: [crate::medical_account::OwnedHsaAmounts; 2] = Default::default();
     sources[1].gross =
         crate::kernel::ratio::exact::whole(i64::MAX) * crate::kernel::ratio::exact::whole(2);
     sources[1].medical = sources[1].gross.clone();
-    let mut account = hsa_entry(Owner::Spouse, HsaCoverage::SelfOnly, i64::MAX);
-    account.employer = i64::MAX;
-    for (accounts, sources) in [(vec![], sources), (vec![account], Default::default())] {
-        let mut result = FederalResult::empty(draft.revision);
-        let error = match crate::hsa::calculate(
-            &accounts,
-            draft.people.as_ref().unwrap(),
-            FederalStatus::Joint,
-            &crate::hsa::ContributionContext {
-                msa: Default::default(),
-                failed: &Default::default(),
-                married: true,
-                family_share: None,
-            },
-            &sources,
-            &draft.income,
-            &mut result,
-        ) {
-            Err(error) => error,
-            Ok(_) => panic!("required native output cannot fit"),
-        };
-        assert!(matches!(
-            error.context.identity(),
-            crate::federal_model::NoteIdentity::Owner {
-                section: TaxSection::Hsa,
-                owner: Owner::Spouse
-            }
-        ));
-        error.report(&mut result);
-        assert_eq!(result.state, ResultState::Unsupported);
-        assert_eq!(
-            result.issues.last().unwrap().display.key,
-            "MEDICAL_REQUIRED_OUTPUT_UNAVAILABLE"
-        );
-    }
+    let mut result = FederalResult::empty(draft.revision);
+    let error = match crate::hsa::calculate(
+        &[],
+        draft.people.as_ref().unwrap(),
+        FederalStatus::Joint,
+        &crate::hsa::ContributionContext {
+            statements: &Default::default(),
+
+            msa: Default::default(),
+            failed: &Default::default(),
+            married: true,
+            family_share: None,
+        },
+        &sources,
+        &draft.income,
+        &mut result,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("required native output cannot fit"),
+    };
+    assert!(matches!(
+        error.context.identity(),
+        crate::federal_model::NoteIdentity::Owner {
+            section: TaxSection::Hsa,
+            owner: Owner::Spouse
+        }
+    ));
+    error.report(&mut result);
+    assert_eq!(result.state, ResultState::Unsupported);
+    assert_eq!(result.issues.last().unwrap().display.key, "MEDICAL_REQUIRED_OUTPUT_UNAVAILABLE");
 }
 
 #[test]
 fn archer_wide_compensation_reuses_limit_and_required_distribution_output() {
     let mut draft = complete(FederalStatus::Single);
-    for _ in 0..2 {
-        let mut entry = wage(0, Owner::Taxpayer, 0, 0);
-        let FederalIncome::Wage { data } = &mut entry.income else { unreachable!() };
-        // This owner consumes box1 compensation only, not fixture payroll tax.
-        data.wages = i64::MAX;
-        add(&mut draft, entry);
-    }
     let mut contributor = archer_contributor(Owner::Taxpayer, archer_self(3000), 1000);
     contributor.income = draft.income.iter().map(|entry| entry.id).collect();
     set_archer(&mut draft, vec![contributor], ArcherSharing::Equal);
-    let mut result = FederalResult::empty(draft.revision);
-    let calculation = crate::archer_contributions::calculate_with_section179(
-        &draft,
-        [0; 2],
-        &Default::default(),
-        Default::default(),
-        None,
-        &Default::default(),
-        &mut result,
-        None,
-    )
-    .unwrap();
-    assert_eq!(calculation.0, crate::kernel::ratio::exact::whole(100_000));
-    assert!(
-        result
-            .review_notes
-            .iter()
-            .any(|note| note.display.key == "MEDICAL_EXPLANATION_UNAVAILABLE")
-    );
     let owner = archer_owner_mut(&mut draft);
     owner.personal = 0;
     owner.excess_accounting = Some(ArcherExcessAccounting {

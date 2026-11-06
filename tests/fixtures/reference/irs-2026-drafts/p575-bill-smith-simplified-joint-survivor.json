@@ -1,0 +1,64 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF pp. 14-15",
+  "example": "Simplified Method, Bill Smith (Worksheet A)",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "Bill born 1960-06-15 (age 65 on the 2026-01-01 annuity starting date)",
+   "reason": "the example gives age 65 only"
+  },
+  {
+   "fact": "box 2a shows the full $14,400, so the Simplified Method amount applies",
+   "reason": "Worksheet A line 9 note: a larger 1099-R amount is replaced"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19600615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7",
+     "gross": 14400,
+     "taxable": 14400,
+     "method": {
+      "kind": "simplified",
+      "cost": 31000,
+      "months": 12,
+      "ages": [
+       65,
+       65
+      ],
+      "started": 20260101
+     }
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 14400,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 13200,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

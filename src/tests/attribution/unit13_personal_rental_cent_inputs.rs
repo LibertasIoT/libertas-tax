@@ -17,7 +17,7 @@ fn fixture() -> FederalDraft {
     asset.description = "Equipment rented to others".into();
     add(&mut d, income(personal_rent_with_assets(11_000, 2000, vec![asset])));
     let mut second = income(personal_rent_with_history(20_000, 4000, 3000, 5000, false));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     d
 }
@@ -81,7 +81,7 @@ fn unit13_personal_rental_inputs_do_not_invent_an_allowed_or_zero_cent_loss() {
     let mut d = complete(FederalStatus::Joint);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(personal_rent(0, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::NonbusinessProperty { expenses, .. } = &mut entry.income else {
             panic!()
         };
@@ -134,7 +134,7 @@ fn unit13_personal_rental_inputs_actual_client_save_reopen_restart() {
             let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
             let row = &mut documents.documents[if profile == "receipt" { 0 } else { 1 }];
             row.owner = if profile == "receipt" { Owner::Spouse } else { Owner::Taxpayer };
-            let IncomeDocument::EquipmentRental(value) = &mut row.document else { panic!() };
+            let crate::IncomeRecord::EquipmentRental(value) = &mut row.document else { panic!() };
             if profile == "receipt" {
                 value.receipts = 1_200_000;
             } else {

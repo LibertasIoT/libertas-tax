@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 200000, "rule": {"select": "^<SaveSaver>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 582000, "rule": {"select": "^<SaverDistributionPeriod>", "flatten": true}},
+    {"order": 584000, "rule": {"select": "^<SaverChoice>", "flatten": true}},
+    {"order": 761000, "rule": {"select": "^<SaverContribution>.owner", "promote": true}},
+    {"order": 768000, "rule": {"select": "^<FederalSaverDistribution>.owner", "promote": {"use_parent_name": false}}},
+    {"order": 836000, "rule": {"select": "^<SaveSaver.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

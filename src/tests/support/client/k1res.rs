@@ -1,7 +1,46 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{PAGE_ADJUSTMENTS, accepted, document, open_topic};
+use crate::tests::cross::interview::{PAGE_ADJUSTMENTS, accepted};
 use crate::tests::support::builders::k1res::*;
 use crate::tests::*;
+
+/// Supplied fixture answers go through the printed editor and their actual topic.
+pub(crate) fn send_fixture(session: &mut Interview, mut request: P) -> Reply {
+    if matches!(request, P::SaveDocuments { .. }) {
+        name_fixture_sources(&session.draft, &mut request);
+        crate::tests::support::client::income_pages::save_source_fixture_request(session, request)
+    } else {
+        send(session, request)
+    }
+}
+
+fn name_fixture_sources(draft: &FederalDraft, request: &mut P) {
+    for row in documents(request) {
+        let owner = draft
+            .income
+            .iter()
+            .find(|entry| entry.id == row.id)
+            .map_or(Owner::Taxpayer, |entry| entry.owner.owned());
+        let named = crate::tests::support::builders::named_document(
+            draft,
+            if owner == Owner::Spouse { -2 } else { -1 },
+            row.id,
+            IncomeSource::K1 { value: row.document.clone() },
+        );
+        let IncomeSource::K1 { value } = named.document else { unreachable!() };
+        row.document = value;
+    }
+}
+
+fn accept_source_answers(session: &mut Interview, mut request: P) {
+    name_fixture_sources(&session.draft, &mut request);
+    let rows = crate::tests::support::client::income_pages::page_documents(&request)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect();
+    accepted(&crate::tests::support::client::income_pages::save_k1_sources_and_answers(
+        session, rows,
+    ));
+}
 pub(crate) fn initial(scorp: bool) -> (Interview, P) {
     initial_with_properties(scorp, false)
 }
@@ -22,7 +61,9 @@ fn initial_on_return(
     draft: FederalDraft,
 ) -> (Interview, P) {
     let mut session = Interview::new(TEST_USER, draft);
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     assert!(documents(&mut request).is_empty());
     let mut income = fresh_income(scorp);
     if with_properties {
@@ -53,9 +94,17 @@ fn initial_on_return(
     if nullable {
         nullable_sources(&mut income);
     }
-    let mut row = document(0, input(&income));
+    let mut row = source_row(0, input(&income));
+    let named = crate::tests::support::builders::named_document(
+        &session.draft,
+        -1,
+        0,
+        IncomeSource::K1 { value: row.document },
+    );
+    let IncomeSource::K1 { value } = named.document else { unreachable!() };
+    row.document = value;
     assert_eq!(row.id, 0);
-    let P::SaveIncomes { allowed_community, .. } = &request else { unreachable!() };
+    let P::SaveDocuments { allowed_community, .. } = &request else { unreachable!() };
     row.allowed_community = allowed_community.clone();
     assert_eq!(page(&mut row.document).choices, K1ActivityChoiceContext::default());
     documents(&mut request).push(row);
@@ -63,7 +112,7 @@ fn initial_on_return(
 }
 pub(crate) fn accepted_session(scorp: bool) -> Interview {
     let (mut session, request) = initial(scorp);
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
     session
 }
 
@@ -79,11 +128,11 @@ pub(crate) fn unchanged_source_roundtrip(session: &mut Interview) {
             .iter()
             .any(|issue| issue.display.key == "ISSUE_K1_ACTIVITY_OWNER_OUTPUT_UNAVAILABLE")
     );
-    let request = open_topic(session, TaxSection::PassThrough);
+    let request = crate::tests::support::client::income_pages::open_document_center(session);
     accepted(&send(session, request));
     assert_eq!(session.draft, before);
     let mut cold = restart(before.clone());
-    let request = open_topic(&mut cold, TaxSection::PassThrough);
+    let request = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     accepted(&send(&mut cold, request));
     assert_eq!(cold.draft, before);
 }
@@ -117,13 +166,13 @@ pub(crate) fn partner_source(session: &Interview) -> &PartnerActivityK1 {
 
 pub(crate) fn partner_benefit_session() -> Interview {
     let (mut session, mut request) = initial(false);
-    let IncomeDocument::K1PartnershipActivities(data) = &mut documents(&mut request)[0].document
+    let crate::K1Document::K1PartnershipActivities(data) = &mut documents(&mut request)[0].document
     else {
         unreachable!()
     };
-    data.entity.regular.distributions = 50_000;
+    data.entity.regular.as_mut().unwrap().distributions = 50_000;
     data.person = None;
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
     session
 }
 
@@ -169,48 +218,73 @@ fn ordinary_multi_parent_session_on_return(
     draft: FederalDraft,
 ) -> Interview {
     let (mut session, request) = initial_on_return(false, false, false, draft);
-    accepted(&send(&mut session, request));
-    let mut benefits = open_activity_benefits(&mut session);
-    let benefit = &mut activity_benefits(&mut benefits).activity_partnerships[0];
-    benefit.from_distributions = Some(0);
-    benefit.health = Some(SeHealth::None);
-    benefit.retirement = Some(PartnerPlan::None);
-    accepted(&send(&mut session, benefits));
-    let saved_source = session
+    accept_source_answers(&mut session, request);
+    let source_id = session
         .draft
         .income
         .iter()
         .find_map(|entry| {
-            if matches!(entry.income, FederalIncome::PartnershipActivities { .. }) {
-                crate::k1_activity::source(&entry.income)
-            } else {
-                None
-            }
+            matches!(entry.income, FederalIncome::PartnershipActivities { .. }).then_some(entry.id)
         })
         .unwrap();
-    let accepted_ids: Vec<_> = saved_source.ids().collect();
+    let mut benefits = open_activity_benefits(&mut session);
+    let benefit = activity_benefits(&mut benefits)
+        .activity_partnerships
+        .iter_mut()
+        .find(|benefit| benefit.id == source_id)
+        .unwrap();
+    benefit.from_distributions = Some(0);
+    benefit.health = Some(SeHealth::None);
+    benefit.retirement = Some(PartnerPlan::None);
+    accepted(&send(&mut session, benefits));
+    let saved_income =
+        &session.draft.income.iter().find(|entry| entry.id == source_id).unwrap().income;
+    let saved_source = crate::k1_activity::source(saved_income).unwrap();
     let K1ComponentStatement::Entered { source: component_source } = &mut value.activities else {
         unreachable!()
     };
-    let old_components: Vec<_> =
-        component_source.components.iter().map(|component| component.id).collect();
-    for (id, accepted) in component_source.ids_mut().zip(accepted_ids) {
-        *id = accepted;
+    let mut accepted_ids = alloc::collections::BTreeMap::new();
+    for component in &component_source.components {
+        accepted_ids.insert(
+            component.id,
+            saved_source.components.iter().find(|saved| saved.name == component.name).unwrap().id,
+        );
     }
-    for index in 0..2 {
-        component_source.components[index].risk_group =
-            Some(component_source.risk_groups[index].id);
-        component_source.components[index].passive_group =
-            Some(component_source.passive_groups[index].id);
+    for group in &component_source.risk_groups {
+        accepted_ids.insert(
+            group.id,
+            saved_source.risk_groups.iter().find(|saved| saved.name == group.name).unwrap().id,
+        );
+    }
+    for group in &component_source.passive_groups {
+        accepted_ids.insert(
+            group.id,
+            saved_source.passive_groups.iter().find(|saved| saved.name == group.name).unwrap().id,
+        );
+    }
+    for block in &component_source.qbi_blocks {
+        accepted_ids.insert(
+            block.id,
+            saved_source.qbi_blocks.iter().find(|saved| saved.name == block.name).unwrap().id,
+        );
+    }
+    for id in component_source.ids_mut() {
+        *id = accepted_ids[id];
+    }
+    for component in &mut component_source.components {
+        component.risk_group = component.risk_group.map(|id| accepted_ids[&id]);
+        component.passive_group = component.passive_group.map(|id| accepted_ids[&id]);
     }
     for block in &mut component_source.qbi_blocks {
         for allocation in block.allocations.iter_mut().flatten() {
-            let index = old_components
-                .iter()
-                .position(|id| *id == allocation.component)
-                .expect("fixture allocation names its original component");
-            allocation.component = component_source.components[index].id;
+            allocation.component = accepted_ids[&allocation.component];
         }
+    }
+    for binding in component_source.investment_property_sources.iter_mut().flatten() {
+        binding.component = accepted_ids[&binding.component];
+    }
+    for binding in component_source.section179_sale_sources.iter_mut().flatten() {
+        binding.component = accepted_ids[&binding.component];
     }
     session
 }
@@ -220,9 +294,26 @@ pub(crate) fn ordinary_multi_retained_qbi_session() -> Interview {
     let mut value = ordinary_multi_retained_qbi_parent();
     let mut session = ordinary_multi_parent_session(&mut value);
     let income = FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) };
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     documents(&mut request)[0].document = input(&income);
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
+    session
+}
+
+/// Save current and retained sources together using the original accepted native identities.
+pub(crate) fn ordinary_multi_current_retained_qbi_session(
+    mut value: PartnerActivityK1,
+    wages: i64,
+) -> Interview {
+    let mut session = ordinary_multi_parent_session(&mut value);
+    add(&mut session.draft, wage(0, Owner::Taxpayer, wages, 0));
+    session = restart(session.draft);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    documents(&mut request)[0].document =
+        input(&FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) });
+    accept_source_answers(&mut session, request);
     session
 }
 
@@ -242,40 +333,69 @@ pub(crate) fn ordinary_multi_current_qbi_session_with_statements(
     let mut value = ordinary_multi_current_qbi_parent_with_statements(statements);
     let mut session = ordinary_multi_parent_session_on_return(&mut value, draft);
     let income = FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) };
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     let row = documents(&mut request)
         .iter_mut()
-        .find(|row| matches!(row.document, IncomeDocument::K1PartnershipActivities(_)))
+        .find(|row| matches!(row.document, crate::K1Document::K1PartnershipActivities(_)))
         .unwrap();
     row.document = input(&income);
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
     session
 }
 
 fn scorp_ordinary_multi_on_return(draft: FederalDraft) -> (Interview, ScorpActivityK1) {
     let (mut session, request) = initial_on_return(true, false, false, draft);
-    accepted(&send(&mut session, request));
-    let mut benefits = open_activity_benefits(&mut session);
-    activity_benefits(&mut benefits).activity_scorporations[0].health = Some(SeHealth::None);
-    accepted(&send(&mut session, benefits));
-    let value = session
+    accept_source_answers(&mut session, request);
+    let source_id = session
         .draft
         .income
         .iter()
         .find_map(|entry| {
-            if let FederalIncome::ScorpActivities { data } = &entry.income {
-                Some(data.clone())
-            } else {
-                None
-            }
+            matches!(entry.income, FederalIncome::ScorpActivities { .. }).then_some(entry.id)
         })
         .unwrap();
+    let mut benefits = open_activity_benefits(&mut session);
+    activity_benefits(&mut benefits)
+        .activity_scorporations
+        .iter_mut()
+        .find(|benefit| benefit.activity == source_id)
+        .unwrap()
+        .health = Some(SeHealth::None);
+    accepted(&send(&mut session, benefits));
+    let FederalIncome::ScorpActivities { data } =
+        &session.draft.income.iter().find(|entry| entry.id == source_id).unwrap().income
+    else {
+        unreachable!()
+    };
+    let value = data.clone();
     (session, scorp_ordinary_multi_baseline(value))
 }
 
 /// Preserve the original no-wage baseline; its test supplies the original wage later.
 pub(crate) fn scorp_ordinary_multi_session() -> (Interview, ScorpActivityK1) {
     scorp_ordinary_multi_on_return(empty_return(FederalStatus::Single))
+}
+
+pub(crate) fn scorp_entity_interest_session(
+    draft: FederalDraft,
+    interest: i64,
+    losses: [i64; 2],
+    capacity: i64,
+    passive_history: i64,
+) -> (Interview, ScorpActivityK1) {
+    let (session, value) = scorp_ordinary_multi_on_return(draft);
+    (session, scorp_entity_interest_source(value, interest, losses, capacity, passive_history))
+}
+
+pub(crate) fn scorp_source_request(session: &mut Interview, value: ScorpActivityK1) -> P {
+    let mut request = crate::tests::support::client::income_pages::open_document_center(session);
+    let row = documents(&mut request)
+        .iter_mut()
+        .find(|row| matches!(row.document, crate::K1Document::K1ScorpActivities(_)))
+        .unwrap();
+    row.document = input(&FederalIncome::ScorpActivities { data: value });
+    request
 }
 
 /// One existing complete-return wage, then native benefits and current-source Saves.
@@ -293,13 +413,56 @@ pub(crate) fn ordinary_multi_current_scorp_qbi_session_with_statements(
 ) -> Interview {
     let (mut session, value) = scorp_ordinary_multi_on_return(draft);
     let value = current_scorp_qbi_source_with_statements(value, statements);
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     let row = documents(&mut request)
         .iter_mut()
-        .find(|row| matches!(row.document, IncomeDocument::K1ScorpActivities(_)))
+        .find(|row| matches!(row.document, crate::K1Document::K1ScorpActivities(_)))
         .unwrap();
     row.document = input(&FederalIncome::ScorpActivities { data: value });
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
+    session
+}
+
+// The callback exposes native source fields for missing/mixed gross controls,
+// passive participation and retained-history boundaries, without fixture copies.
+pub(crate) fn ordinary_multi_current_loss_qbi_session(
+    scorp: bool,
+    facts: &CurrentLossQbiFacts,
+    configure: impl FnOnce(&mut FederalIncome),
+) -> Interview {
+    let (mut session, mut income) = if scorp {
+        let (session, value) = scorp_ordinary_multi_on_return(complete(FederalStatus::Single));
+        (
+            session,
+            FederalIncome::ScorpActivities { data: current_loss_scorp_qbi_source(value, facts) },
+        )
+    } else {
+        let mut value = ordinary_multi_parent();
+        let session =
+            ordinary_multi_parent_session_on_return(&mut value, complete(FederalStatus::Single));
+        (
+            session,
+            FederalIncome::PartnershipActivities {
+                data: alloc::boxed::Box::new(current_loss_partner_qbi_source(value, facts)),
+            },
+        )
+    };
+    configure(&mut income);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let row = documents(&mut request)
+        .iter_mut()
+        .find(|row| {
+            matches!(
+                row.document,
+                crate::K1Document::K1PartnershipActivities(_)
+                    | crate::K1Document::K1ScorpActivities(_)
+            )
+        })
+        .unwrap();
+    row.document = input(&income);
+    accept_source_answers(&mut session, request);
     session
 }
 
@@ -308,7 +471,7 @@ pub(crate) fn ordinary_multi_current_scorp_qbi_session_with_statements(
 pub(crate) fn financial_property_session(scorp: bool) -> Interview {
     let draft = complete(FederalStatus::Single);
     let (mut session, request) = initial_on_return(scorp, true, false, draft);
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
     let mut benefits = open_activity_benefits(&mut session);
     let value = activity_benefits(&mut benefits);
     if scorp {
@@ -334,19 +497,21 @@ pub(crate) fn financial_property_session(scorp: bool) -> Interview {
         .income
         .clone();
     financial_property_sources(&mut income);
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     let row = documents(&mut request)
         .iter_mut()
         .find(|row| {
             matches!(
                 row.document,
-                IncomeDocument::K1PartnershipActivities(_) | IncomeDocument::K1ScorpActivities(_)
+                crate::K1Document::K1PartnershipActivities(_)
+                    | crate::K1Document::K1ScorpActivities(_)
             )
         })
         .unwrap();
     row.document = input(&income);
     bind_properties(&mut row.document);
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
     session
 }
 
@@ -402,6 +567,73 @@ pub(crate) fn assert_native_review(session: &mut Interview) {
     assert_eq!(result.tax, expected.tax);
 }
 
+/// Establish durable source IDs and existing benefits before the dividend Save.
+pub(crate) fn entity_dividend_session(
+    scorp: bool,
+    draft: FederalDraft,
+    losses: bool,
+    regular: [i64; 2],
+    alternative: Option<[i64; 2]>,
+) -> Interview {
+    entity_dividend_session_for_owner(scorp, draft, Owner::Taxpayer, losses, regular, alternative)
+}
+
+pub(crate) fn entity_dividend_session_for_owner(
+    scorp: bool,
+    draft: FederalDraft,
+    owner: Owner,
+    losses: bool,
+    regular: [i64; 2],
+    alternative: Option<[i64; 2]>,
+) -> Interview {
+    let iso_answers: Vec<_> = draft
+        .screening
+        .iter()
+        .flat_map(|screening| &screening.iso_exercises)
+        .map(|exercise| {
+            crate::tests::support::builders::named_document(
+                &draft,
+                if exercise.owner == Owner::Spouse { -2 } else { -1 },
+                exercise.id,
+                IncomeSource::InvestmentSale {
+                    value: crate::InvestmentSaleDocument::Form3921(
+                        crate::tests::support::builders::iso_document(exercise.clone()),
+                    ),
+                },
+            )
+        })
+        .collect();
+    let (mut session, mut value) = if scorp {
+        let (session, value) = scorp_ordinary_multi_on_return(draft);
+        (session, FederalIncome::ScorpActivities { data: value })
+    } else {
+        let mut value = ordinary_multi_parent();
+        let session = ordinary_multi_parent_session_on_return(&mut value, draft);
+        (session, FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) })
+    };
+    prepare_entity_dividends(&mut value, losses);
+    set_entity_dividends(&mut value, regular, alternative);
+    assert!(crate::k1_activity::income_issue(&value).is_none());
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let mut document = IncomeSource::K1 { value: input(&value) };
+    let recipient =
+        fixture_document_names(&session.draft, if owner == Owner::Spouse { -2 } else { -1 })
+            .expect("the source owner has household facts")
+            .recipient;
+    set_fixture_recipient(&mut document, &recipient);
+    let IncomeSource::K1 { value: document } = document else { unreachable!() };
+    documents(&mut request)[0].document = document;
+    accept_source_answers(&mut session, request);
+    if !iso_answers.is_empty() {
+        crate::tests::support::client::income_pages::save_information_return_answers(
+            &mut session,
+            &iso_answers,
+        );
+    }
+    session
+}
+
 /// Existing native ordinary/exempt fixture with an explicit component source partition.
 pub(crate) fn component_exempt_other_session(scorp: bool) -> (Interview, FederalIncome) {
     let (session, mut income) = entity_exempt_other_session(scorp);
@@ -412,9 +644,21 @@ pub(crate) fn component_exempt_other_session(scorp: bool) -> (Interview, Federal
 pub(crate) fn section179_session(scorp: bool, regular: [i64; 2], amt: [i64; 2]) -> Interview {
     let (mut session, mut income) = entity_exempt_other_session(scorp);
     configure_section179(&mut income, regular, amt);
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
     documents(&mut request)[0].document = input(&income);
-    accepted(&send(&mut session, request));
+    accept_source_answers(&mut session, request);
+    session
+}
+
+/// Accept an independently supplied ordinary graph through the native source editor.
+pub(crate) fn ordinary_multi_source_session(mut value: PartnerActivityK1) -> Interview {
+    let mut session = ordinary_multi_parent_session(&mut value);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let income = FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) };
+    documents(&mut request)[0].document = input(&income);
+    accept_source_answers(&mut session, request);
     session
 }
 
@@ -423,7 +667,7 @@ pub(crate) fn section179_direct(session: &mut Interview, receipts: i64, elected:
     let mut value = business(receipts);
     let mut property = asset(elected, 20260601, AssetClass::Five);
     property.acquired = Some(20250120);
-    property.history = AssetHistory::New {
+    property.gds_mut().unwrap().history = AssetHistory::New {
         first_year: FirstYearDeduction::Section179 {
             description: "Actual direct equipment".into(),
             elected,
@@ -451,12 +695,12 @@ pub(crate) fn section179_second_parent(session: &mut Interview) {
         component.risk_group = None;
         component.passive_group = None;
     }
-    let mut request = open_topic(session, TaxSection::PassThrough);
+    let mut request = crate::tests::support::client::income_pages::open_document_center(session);
     let mut row = documents(&mut request)[0].clone();
     row.id = 0;
     row.document = input(&income);
     documents(&mut request).push(row);
-    accepted(&send(session, request));
+    accept_source_answers(session, request);
     let parent_id = session.draft.income[1].id;
     let mut benefits = open_activity_benefits(session);
     let benefit = activity_benefits(&mut benefits)
@@ -474,7 +718,104 @@ pub(crate) fn section179_second_parent(session: &mut Interview) {
         component.risk_group = Some(actual_source.risk_groups[index].id);
         component.passive_group = Some(actual_source.passive_groups[index].id);
     }
-    let mut request = open_topic(session, TaxSection::PassThrough);
+    let mut request = crate::tests::support::client::income_pages::open_document_center(session);
     documents(&mut request)[1].document = input(&income);
-    accepted(&send(session, request));
+    accept_source_answers(session, request);
+}
+
+/// Native graph Save supplies identities; ordinary wages provide uncapped QBI capacity.
+pub(crate) fn ordinary_se_qbi_session(value: PartnerActivityK1) -> Interview {
+    let mut session = ordinary_multi_source_session(value);
+    add(&mut session.draft, wage(0, Owner::Taxpayer, 6_000_000, 0));
+    restart(session.draft)
+}
+
+// Preserve one complete-return wage and establish benefits before replacing the source.
+pub(crate) fn ordinary_multi_passive_qbi_session(qualified: i64, active: [bool; 2]) -> Interview {
+    let mut value = ordinary_multi_passive_qbi_parent(qualified, active);
+    let mut session =
+        ordinary_multi_parent_session_on_return(&mut value, complete(FederalStatus::Single));
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let row = documents(&mut request)
+        .iter_mut()
+        .find(|row| matches!(row.document, crate::K1Document::K1PartnershipActivities(_)))
+        .unwrap();
+    row.document =
+        input(&FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) });
+    accept_source_answers(&mut session, request);
+    session
+}
+
+pub(crate) fn ordinary_multi_passive_scorp_qbi_session(
+    qualified: i64,
+    active: [bool; 2],
+) -> Interview {
+    let (mut session, value) = scorp_ordinary_multi_on_return(complete(FederalStatus::Single));
+    let value = passive_scorp_qbi_source(value, qualified, active);
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let row = documents(&mut request)
+        .iter_mut()
+        .find(|row| matches!(row.document, crate::K1Document::K1ScorpActivities(_)))
+        .unwrap();
+    row.document = input(&FederalIncome::ScorpActivities { data: value });
+    accept_source_answers(&mut session, request);
+    session
+}
+
+/// The ordinary native benefits lifecycle establishes IDs before this candidate Save.
+pub(crate) fn partner_entity_interest_session(
+    draft: FederalDraft,
+    interest: i64,
+    operating: [i64; 2],
+    capacity: i64,
+    passive_history: i64,
+) -> (Interview, alloc::boxed::Box<PartnerActivityK1>) {
+    let mut value = partner_entity_interest_source(interest, operating, capacity, passive_history);
+    let session = ordinary_multi_parent_session_on_return(&mut value, draft);
+    (session, alloc::boxed::Box::new(value))
+}
+
+pub(crate) fn partner_source_request(
+    session: &mut Interview,
+    value: alloc::boxed::Box<PartnerActivityK1>,
+) -> P {
+    let mut request = crate::tests::support::client::income_pages::open_document_center(session);
+    let row = documents(&mut request)
+        .iter_mut()
+        .find(|row| matches!(row.document, crate::K1Document::K1PartnershipActivities(_)))
+        .unwrap();
+    row.document = input(&FederalIncome::PartnershipActivities { data: value });
+    request
+}
+
+pub(crate) fn entity_capital_session(scorp: bool) -> (Interview, FederalIncome) {
+    let (session, mut income) = entity_exempt_other_session(scorp);
+    configure_entity_capital(&mut income);
+    (session, income)
+}
+
+pub(crate) fn component_capital_session(scorp: bool, scale: i64) -> (Interview, FederalIncome) {
+    let (session, mut income) = if scorp {
+        let (session, value) = scorp_ordinary_multi_session();
+        (session, FederalIncome::ScorpActivities { data: value })
+    } else {
+        let mut value = ordinary_multi_parent();
+        let session = ordinary_multi_parent_session(&mut value);
+        (session, FederalIncome::PartnershipActivities { data: alloc::boxed::Box::new(value) })
+    };
+    configure_component_capital_source(&mut income, scale);
+    (session, income)
+}
+
+/// The actual keyed depletion question on its existing K-1 topic.
+pub(crate) fn depletion_page(request: &mut P, id: i64) -> &mut crate::K1DepletionSourcesPage {
+    let P::SaveIncomes { followups, .. } = request else { unreachable!() };
+    let key = alloc::format!("income/{id}/depletion_sources");
+    let row = followups.iter_mut().find(|row| row.key == key).unwrap();
+    let crate::DocumentAnswer::K1DepletionSources { value } = &mut row.answer else {
+        unreachable!()
+    };
+    value
 }

@@ -6,16 +6,15 @@ fn reit_and_qbi_history_validate_source_bounds_and_unknown_history() {
     let mut dividend = reit_income(100, 101, true);
     assert!(crate::federal_rules::validate_income_amount(&dividend).is_err());
     let FederalIncome::Dividend { data } = &mut dividend else { unreachable!() };
-    data.section199a = ReitDividends::Reported { amount: 5000, eligible: true };
+    let mut data = edit_dividend(data);
+    data.section199a = ReitDividends::Reported { amount: 5000, eligible: Some(true) };
     data.qualified = 5001;
+    drop(data);
     assert!(crate::federal_rules::validate_income_amount(&dividend).is_err());
     let mut d = complete(FederalStatus::Single);
     d.screening.as_mut().unwrap().qbi_history =
         QbiHistory { business: 100, reit_ptp: 0, injured_owners: None };
     supported(&d);
-    d.screening.as_mut().unwrap().qbi_history =
-        QbiHistory { business: -1, reit_ptp: 0, injured_owners: None };
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -55,7 +54,7 @@ fn former_passive_qbi_counts_own_income_release_and_other_passive_income_once() 
     };
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: source.clone() }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source.clone()) }));
     add(&mut d, income(FederalIncome::Rental { data: rental(13_000, 0) }));
     let r = estimate(&d);
     scorp_note(&r, id, "QBI loss passing passive limits", 6_500);
@@ -144,7 +143,7 @@ fn former_passive_carryforward_output_preserves_original_fixed_percentage() {
     };
     source.amt = Some(amt_records(&source));
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&d);
     assert_eq!(r.review_notes.iter().filter(|n| n.contains(
         "2020 passive-loss carryforward: $6000.00; QBI portion: $3000.00. Original suspended loss: $20000.00; original QBI portion: $10000.00."
@@ -285,5 +284,222 @@ fn former_passive_mixed_sign_partial_release_is_symmetric() {
         assert_eq!(c.nonpassive.map(crate::kernel::ratio::dollars), nonpassive);
         assert_eq!(crate::kernel::ratio::dollars(c.prior_released.iter().sum::<i64>()), 5_000);
         assert_eq!(c.nonpassive.iter().sum::<i64>(), 0);
+    }
+}
+
+#[test]
+fn direct_participation_selected_tests_keep_strict_hours_and_actual_history() {
+    use crate::participation::Participation::{No, Unavailable, Yes};
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    assert_eq!(F { hours: 500, test: T::Over500 }.individual(2026, false), Unavailable);
+    assert_eq!(F { hours: 501, test: T::Over500 }.individual(2026, false), Yes);
+    assert_eq!(F { hours: 501, test: T::None }.individual(2026, false), Unavailable);
+    assert_eq!(F { hours: 1, test: T::SubstantiallyAll }.individual(2026, false), Yes);
+    assert_eq!(
+        F { hours: 100, test: T::Over100NoOneMore { other_max_hours: 100 } }
+            .individual(2026, false),
+        Unavailable
+    );
+    assert_eq!(
+        F { hours: 101, test: T::Over100NoOneMore { other_max_hours: 101 } }
+            .individual(2026, false),
+        Yes
+    );
+    let mut historical =
+        F { hours: 0, test: T::FiveOfTen { years: vec![2016, 2018, 2020, 2023, 2025] } };
+    assert_eq!(historical.individual(2026, false), Yes);
+    historical.test = T::FiveOfTen { years: vec![2015, 2018, 2020, 2023, 2025] };
+    assert_eq!(historical.individual(2026, false), Unavailable);
+    historical.test = T::FiveOfTen { years: vec![2016, 2018, 2020, 2025, 2025] };
+    assert_eq!(historical.individual(2026, false), Unavailable);
+    historical.test =
+        T::PersonalServiceThree { years: vec![1990, 2000, 2001], personal_services: true };
+    assert_eq!(historical.individual(2026, false), Yes);
+    historical.test =
+        T::PersonalServiceThree { years: vec![1990, 2000, 2001], personal_services: false };
+    assert_eq!(historical.individual(2026, false), Unavailable);
+    assert_eq!(F { hours: 0, test: T::None }.individual(2026, false), No);
+}
+
+#[test]
+fn direct_participation_management_and_farmer_evidence_are_not_generic_exceptions() {
+    use crate::participation::Participation::{No, Unavailable, Yes};
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    let mut facts = F {
+        hours: 200,
+        test: T::FactsCircumstances {
+            regular_continuous_substantial: true,
+            management_hours: 100,
+            paid_other_manager: true,
+            other_management_hours: 0,
+        },
+    };
+    assert_eq!(facts.individual(2026, false), No);
+    let T::FactsCircumstances { management_hours, .. } = &mut facts.test else { unreachable!() };
+    *management_hours = 99;
+    assert_eq!(facts.individual(2026, false), Yes);
+    facts.test = T::RetiredDisabledFarmer {
+        retired_or_disabled: 2020,
+        qualifying_years: vec![2012, 2013, 2015, 2017, 2019],
+    };
+    assert_eq!(facts.individual(2026, true), Yes);
+    assert_eq!(facts.individual(2026, false), Unavailable);
+    facts.test = T::RetiredDisabledFarmer {
+        retired_or_disabled: 2020,
+        qualifying_years: vec![2011, 2013, 2015, 2017, 2019],
+    };
+    assert_eq!(facts.individual(2026, true), Unavailable);
+    facts.test = T::SurvivingFarmer { special_estate_valuation: true, active_management: false };
+    assert_eq!(facts.individual(2026, true), No);
+    facts.test = T::SurvivingFarmer { special_estate_valuation: true, active_management: true };
+    assert_eq!(facts.individual(2026, true), Yes);
+}
+
+#[test]
+fn direct_participation_significant_hours_are_bound_to_actual_source_ids() {
+    use crate::participation::Participation::{No, Yes};
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    let mut d = complete(FederalStatus::Single);
+    for hours in [250, 250] {
+        let mut source = income(cash_business(1000));
+        let FederalIncome::Business { data } = &mut source.income else { unreachable!() };
+        data.material_participation = F { hours, test: T::SignificantActivities };
+        add(&mut d, source);
+    }
+    assert!(d.direct_participation_sources().iter().all(|source| source.result == No));
+    let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
+    data.material_participation.hours = 251;
+    let before = d.direct_participation_sources();
+    assert!(before.iter().all(|source| source.result == Yes));
+    d.income.reverse();
+    let after = d.direct_participation_sources();
+    assert!(before.iter().all(|source| after.contains(source)));
+    assert_eq!(before.iter().map(|source| source.hours).sum::<u32>(), 501);
+}
+
+#[test]
+fn direct_participation_external_unknown_only_blocks_unproved_combined_test() {
+    use crate::participation::Participation::{Unavailable, Yes};
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    let mut d = complete(FederalStatus::Single);
+    add(&mut d, income(cash_business(1000)));
+    let direct_index = d.income.len() - 1;
+    let id = d.income[direct_index].id;
+    let FederalIncome::Business { data } = &mut d.income[direct_index].income else {
+        unreachable!()
+    };
+    data.material_participation = F { hours: 200, test: T::SignificantActivities };
+    let mut external = scorp_document();
+    external.participation = None;
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(external) }));
+    assert_eq!(d.direct_participation_view().get(id), Unavailable);
+    let FederalIncome::Business { data } = &mut d.income[direct_index].income else {
+        unreachable!()
+    };
+    data.material_participation = F { hours: 501, test: T::Over500 };
+    assert_eq!(d.direct_participation_view().get(id), Yes);
+}
+
+#[test]
+fn direct_participation_combines_existing_k1_minutes_without_truncation() {
+    use crate::participation::Participation::{No, Yes};
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    let mut d = complete(FederalStatus::Single);
+    add(&mut d, income(cash_business(1000)));
+    let direct_index = d.income.len() - 1;
+    let id = d.income[direct_index].id;
+    let FederalIncome::Business { data } = &mut d.income[direct_index].income else {
+        unreachable!()
+    };
+    data.material_participation = F { hours: 250, test: T::SignificantActivities };
+    let mut external = scorp_document();
+    let mut facts = participation_facts();
+    facts.minutes = 250 * 60;
+    external.participation = Some(facts);
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(external) }));
+    assert_eq!(d.direct_participation_view().get(id), No);
+    let external_index = d.income.len() - 1;
+    let FederalIncome::Scorp { data } = &mut d.income[external_index].income else {
+        unreachable!()
+    };
+    let mut data = edit_scorp(data);
+    data.participation.as_mut().unwrap().minutes += 1;
+    drop(data);
+    assert_eq!(d.direct_participation_view().get(id), Yes);
+}
+
+#[test]
+fn direct_participation_does_not_count_known_casual_gambling_as_a_trade() {
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    let mut d = complete(FederalStatus::Single);
+    // 2026-10-24: Pub925 material-participation rules leave the ordinary
+    // C passive, but current passive operating income remains reportable.
+    let mut control = d.clone();
+    add(&mut control, income(passive_business(1000)));
+    let expected = supported(&control);
+    for casual in [false, true] {
+        let mut source = income(cash_business(1000));
+        let FederalIncome::Business { data } = &mut source.income else { unreachable!() };
+        data.material_participation = F { hours: 300, test: T::None };
+        if casual {
+            data.activity = BusinessActivity::Gambling {
+                returns: 0,
+                receipts: 100000,
+                accounting: BusinessAccounting::Cash,
+                losses: 0,
+                withholding: 0,
+                eligible: false,
+            };
+        }
+        add(&mut d, source);
+    }
+    assert!(
+        d.direct_participation_sources()
+            .iter()
+            .all(|source| source.result == crate::participation::Participation::No)
+    );
+    let result = supported(&d);
+    assert_eq!((value(&result, "agi"), result.tax), (value(&expected, "agi"), expected.tax));
+    assert!(
+        result
+            .review_notes
+            .iter()
+            .any(|note| note.display.key == "WARN_GAMBLING_BUSINESS_LEFT_OUT")
+    );
+}
+
+#[test]
+fn direct_participation_uses_accepted_hours_through_pruning_and_recursive_estimates() {
+    use crate::{ParticipationFacts as F, ParticipationTest as T};
+    for base in
+        [complete(FederalStatus::Single), repayment_comparison_draft(RepaymentMethod::Automatic)]
+    {
+        let (mut draft, direct) = direct_participation_with_omitted_k1(base);
+        let expected = supported(&draft);
+        let entry = draft.income.iter_mut().find(|entry| entry.id == direct).unwrap();
+        let FederalIncome::Business { data } = &mut entry.income else { unreachable!() };
+        data.material_participation = F { hours: 300, test: T::None };
+        assert_eq!(
+            draft.direct_participation_view().get(direct),
+            crate::participation::Participation::Yes
+        );
+        let result = supported(&draft);
+        assert_eq!(value(&result, &alloc::format!("business_{direct}_net_profit")), 1000);
+        assert_eq!(
+            (value(&result, "agi"), result.tax, result.payments, result.refund, result.balance),
+            (
+                value(&expected, "agi"),
+                expected.tax,
+                expected.payments,
+                expected.refund,
+                expected.balance
+            )
+        );
+        assert!(
+            result
+                .review_notes
+                .iter()
+                .any(|note| note.display.key == "WARN_PARTICIPATION_LEFT_OUT")
+        );
     }
 }

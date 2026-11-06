@@ -12,19 +12,24 @@ use alloc::vec::Vec;
 
 /// Existing direct-business risk admission, with expenses supplied by their
 /// actual stage (before home use in source admission, after it in HOME).
-pub(crate) fn business_loss_needs_risk(
-    d: &FederalDraft,
+pub(crate) fn business_loss_needs_risk_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     id: i64,
     business: &crate::FederalBusiness,
     total_expense: i64,
 ) -> Result<bool, crate::Section179PreparedIssue> {
-    Ok(!business.current_risk_supported()
-        && crate::federal_rules::farm_receipts(d, id, business)? < total_expense)
+    let d = form_context.draft;
+    let source_claims = form_context.claims;
+    let participation = form_context.participation();
+    Ok(!business.current_risk_supported(participation.get(id))
+        && crate::federal_rules::farm_receipts_with_claims(d, id, business, source_claims)?
+            < total_expense)
 }
 
 struct ScopeNotes<'a> {
     review: &'a mut Vec<crate::federal_model::ReviewNote>,
     financial_omission: bool,
+    source_claims: &'a alloc::collections::BTreeMap<i64, i64>,
 }
 
 pub(crate) struct SupportedScope {
@@ -149,15 +154,24 @@ fn investment_credits(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                 }
             }
             FederalIncome::Scorp { data } => {
+                let mut properties = crate::ScorpK1::from(&*data).investment_property;
                 k1_investment_credits(
-                    &mut data.investment_property,
-                    data.investment_confirmed,
+                    &mut properties,
+                    data.personal
+                        .investment_confirmed
+                        .map(crate::K1InvestmentConfirmation::confirmed),
                     notes,
                     label(),
                     &context,
                 );
-                if data.investment_property.is_empty() {
-                    data.investment_confirmed = None;
+                data.statements
+                    .investment_property
+                    .retain(|property| properties.iter().any(|kept| kept.id() == property.id()));
+                data.personal
+                    .investment_forms
+                    .retain(|answer| properties.iter().any(|kept| kept.id() == answer.id));
+                if properties.is_empty() {
+                    data.personal.investment_confirmed = None;
                 }
             }
             FederalIncome::PartnershipActivities { data } => {
@@ -267,14 +281,20 @@ pub(crate) fn supported(
     d: &FederalDraft,
     notes: &mut Vec<crate::federal_model::ReviewNote>,
 ) -> Option<FederalDraft> {
-    supported_with_scope(d, notes).working
+    let claims = crate::related_forms::effective_claimants(d);
+    supported_with_scope(crate::related_forms::RelatedFormContext::original(d, &claims), notes)
+        .working
 }
 
 pub(crate) fn supported_with_scope(
-    d: &FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     review: &mut Vec<crate::federal_model::ReviewNote>,
 ) -> SupportedScope {
-    let notes = &mut ScopeNotes { review, financial_omission: false };
+    let d = form_context.draft;
+    let participation = form_context.participation();
+    let macrs = form_context.macrs();
+    let source_claims = form_context.claims;
+    let notes = &mut ScopeNotes { review, financial_omission: false, source_claims };
     // Check the accepted source graph before optional facts are omitted; a
     // removed incoming contribution/conversion must not manufacture support.
     let mut earlier_roth: Vec<_> = [crate::Owner::Taxpayer, crate::Owner::Spouse]
@@ -289,19 +309,56 @@ pub(crate) fn supported_with_scope(
         if matches!(&entry.income, FederalIncome::InheritedIra { data } if data.roth())
             && let Some(ordered) = crate::roth::inherited_earlier_funding(d, entry.id)
         {
-            earlier_roth.extend(ordered.basis.into_keys().map(|id| (entry.owner, id)));
+            earlier_roth.extend(ordered.basis.into_keys().map(|id| (entry.owner.owned(), id)));
         }
     }
     let mut working = d.clone();
+    crate::savings_bonds::apply_redemptions(&mut working.income);
+    for entry in &mut working.income {
+        if matches!(entry.income, FederalIncome::EsppSaleSource { .. })
+            && let Ok(data) = crate::espp_return::resolve(d, entry)
+        {
+            entry.income = FederalIncome::EsppSale { data };
+        } else if matches!(entry.income, FederalIncome::IsoSaleSource { .. })
+            && let Ok(data) = crate::iso_return::resolve(d, entry)
+        {
+            entry.income = FederalIncome::IsoSale { data };
+        } else if matches!(entry.income, FederalIncome::NuaSaleSource { .. })
+            && let Ok(data) = crate::nua_sale::resolve(d, entry)
+        {
+            entry.income = FederalIncome::NuaSale { data };
+        }
+        // A Form 1099-NEC answered as employee pay is figured as Form 8919 pay.
+        if let FederalIncome::Nec1099 { data } = &entry.income
+            && let Some(data) = data.employee_wages()
+        {
+            entry.income = FederalIncome::EmployeeWages { data };
+        }
+    }
     name_destinations(&mut working);
     screening(&mut working, notes);
     income(&mut working, notes);
+    broker_sources(&working, notes);
     farm_weather_classes(&mut working, notes);
     farm_named_benefits(&mut working, notes);
     estate_loss_sources(&mut working, notes);
     notes.financial_omission |= crate::after_death::apply(&mut working, notes.review);
     notes.financial_omission |= crate::investment_statements::apply(&mut working, notes.review);
     community_items(&mut working, notes);
+    if matches!(
+        working.adjustments.as_ref().map(|a| &a.social_election),
+        Some(crate::SocialElection::Compare { complete: true, .. })
+    ) && let Some(id) = crate::social_documents::unallocated_railroad_years(&working)
+    {
+        let entry = working.income.iter().find(|entry| entry.id == id).unwrap();
+        notice(
+            notes,
+            "RRB_EARLIER_YEAR_ALLOCATION_NEEDED",
+            None,
+            &crate::interview::income_issue_context(entry),
+        );
+        working.adjustments.as_mut().unwrap().social_election = crate::SocialElection::Regular;
+    }
     adjustments(&mut working, notes, &earlier_roth);
     deductions(&mut working, notes);
     credits(&mut working, notes);
@@ -309,20 +366,73 @@ pub(crate) fn supported_with_scope(
     inherited_links(&working, notes);
     lump_sums(&mut working, notes);
     special_code_notes(&working, notes);
-    group1a(&mut working, notes);
+    group1a(&mut working, notes, &participation, &macrs);
     group1b(&mut working, notes);
     k1_items_left_out(&mut working, notes);
     foreign_claims(&mut working, notes);
     ltc_links(&working, notes);
     method_changes(&mut working, notes);
     business_sales(&mut working, notes);
+    macrs_source_benefits(&working, &macrs, notes);
     destinations_left_out(d, &mut working, notes);
     notes.financial_omission |= crate::statutory_wages::omitted(d, &mut working, notes.review);
-    crate::statutory_wages::route(&mut working);
-    crate::information_returns::route(&mut working);
+    crate::statutory_wages::route_with_claims(&mut working, notes.source_claims);
+    crate::information_returns::route(&mut working, notes.source_claims);
     SupportedScope {
         working: (working != *d).then_some(working),
         financial_source_scope_complete: !notes.financial_omission,
+    }
+}
+
+// Recovery owners omit only a current deduction whose source is unavailable.
+// Keep the actual asset, elections and history for class-wide rules, source
+// associations, and mandatory disposition/recapture checks.
+fn macrs_source_benefits(
+    d: &FederalDraft,
+    source_view: &crate::macrs_source::MacrsElectionView,
+    notes: &mut ScopeNotes<'_>,
+) {
+    fn asset_note(
+        asset: &crate::BusinessAsset,
+        context: IssueContext,
+        invocation: crate::macrs_source::AdsInvocation<'_>,
+        notes: &mut ScopeNotes<'_>,
+    ) {
+        // Invalid entered facts belong to Save validation, not an assumption.
+        if asset.macrs_source_fact_issue().is_some() {
+            return;
+        }
+        if let Some(reason) = asset.macrs_source_issue_in_context(invocation) {
+            let label = display_label(&context, &asset.description);
+            notice_args(
+                notes,
+                "WARN_ASSET_MACRS_RECOVERY_LEFT_OUT",
+                alloc::vec![label, MessageArg::Resource(reason.into())],
+                &context,
+            );
+        }
+    }
+    for entry in &d.income {
+        let Some(assets) = crate::nonmacrs::recovery_assets(&entry.income) else {
+            continue;
+        };
+        let context = crate::interview::income_issue_context(entry);
+        for (index, asset) in assets.iter().enumerate() {
+            let invocation = source_view.context(entry.owner.owned(), Some(entry.id), asset);
+            asset_note(asset, context.item("assets", index), invocation, notes);
+        }
+    }
+    for (index, claim) in d.adjustments.iter().flat_map(|a| &a.employee_expenses).enumerate() {
+        let context = claim.context(index);
+        for (field, assets) in [
+            ("vehicle_assets", &claim.vehicle_assets),
+            ("equipment_assets", &claim.equipment_assets),
+        ] {
+            for (asset_index, asset) in assets.iter().enumerate() {
+                let invocation = source_view.context(claim.owner, None, asset);
+                asset_note(asset, context.item(field, asset_index), invocation, notes);
+            }
+        }
     }
 }
 
@@ -394,11 +504,16 @@ fn name_destinations(d: &mut FederalDraft) {
     for index in 0..d.income.len() {
         let owner = d.income[index].owner;
         for flow in crate::information_returns::flows(&d.income[index].income) {
-            if flow.choice.is_some() {
+            if flow.choice.is_some() || flow.kind.is_none() {
                 continue;
             }
             if let crate::information_returns::Lookup::Found(id) =
-                crate::information_returns::lookup(d, owner, flow.kind, None)
+                crate::information_returns::lookup(
+                    d,
+                    owner.owned(),
+                    flow.kind.expect("explicit destination kind"),
+                    None,
+                )
             {
                 crate::information_returns::name_record(&mut d.income[index].income, flow.slot, id);
             }
@@ -415,14 +530,28 @@ fn destinations_left_out(
     notes: &mut ScopeNotes<'_>,
 ) {
     use crate::information_returns::{candidates, clear, flows, nothing_left};
+    let claims = notes.source_claims;
     let mut remove = Vec::new();
     for index in 0..d.income.len() {
         let owner = d.income[index].owner;
         let mut dropped = false;
         for flow in flows(&d.income[index].income) {
-            let Some(id) = flow.choice else { continue };
-            if candidates(d, owner, flow.kind).contains(&id)
-                || !candidates(original, owner, flow.kind).contains(&id)
+            let (kind, id) = if let Some(kind) = flow.kind {
+                let Some(id) = flow.choice else { continue };
+                (kind, id)
+            } else {
+                let Some(target) = crate::information_returns::resolve_flow(
+                    original,
+                    &d.income[index],
+                    &flow,
+                    claims,
+                ) else {
+                    continue;
+                };
+                target
+            };
+            if candidates(d, owner.owned(), kind).contains(&id)
+                || !candidates(original, owner.owned(), kind).contains(&id)
             {
                 continue;
             }
@@ -454,7 +583,7 @@ fn community_items(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     };
     d.income.retain(|entry| {
         let gone = crate::community::self_divided(&entry.income)
-            && crate::community::share(&setup, entry.owner, entry.community, &entry.income)
+            && crate::community::share(&setup, entry.owner.owned(), entry.community, &entry.income)
                 .is_some_and(|share| share.none());
         if gone {
             let context = crate::interview::income_issue_context(entry);
@@ -544,6 +673,30 @@ fn screening(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     }
 }
 
+// Keep the document and its withholding even when only one component can
+// be calculated. The supported native views omit special components without
+// rewriting paper or the person's independent treatment answers.
+fn broker_sources(d: &FederalDraft, notes: &mut ScopeNotes<'_>) {
+    for entry in &d.income {
+        let FederalIncome::Broker { data } = &entry.income else { continue };
+        let context = crate::interview::income_issue_context(entry);
+        let label = || Some(MessageArg::Nested(alloc::boxed::Box::new(context.label())));
+        let view = data.projection();
+        for key in [view.sale_boundary, view.contracts_boundary].into_iter().flatten() {
+            notice(notes, key, None, &context);
+        }
+        if let Some(receipt) = view.receipt.filter(|receipt| receipt.amount != 0) {
+            notice(notes, receipt.boundary(), None, &context);
+        }
+        if let Some(key) = view.sale.as_ref().and_then(|sale| sale.special.notice()) {
+            notice(notes, key, label(), &context);
+        }
+        if view.contracts.as_ref().is_some_and(|contracts| contracts.special_treatment) {
+            notice(notes, "WARN_SECTION_1256_LEFT_OUT", label(), &context);
+        }
+    }
+}
+
 fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     let joint = d.setup.as_ref().is_some_and(|s| s.filing_status() == crate::FederalStatus::Joint);
     d.income.retain(|entry| { let context = crate::interview::income_context(entry, &d.dependents); match &entry.income {
@@ -567,7 +720,9 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         // the form is an ordinary 529 withdrawal (education_account.rs) and the deposit is a
         // regular Roth contribution the person enters on the IRA page.
         FederalIncome::EducationDistribution { data } => {
-            if let crate::Q1099Transfer::RothIra { rollover } = &data.transfer
+            let data = &crate::FederalEducationDistribution::from(data);
+            if matches!(data.transfer, crate::Q1099Transfer::RothIra)
+                && let Some(rollover) = &data.roth_rollover
                 && !rollover.confirmed
             {
                 let context = context
@@ -595,30 +750,40 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             notice(notes, "WARN_PARTNERSHIP_K1_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
             false
         }
-        FederalIncome::Partnership { data } if matches!(&data.participation, crate::PartnerParticipation::General { facts } if facts.left_out()) => {
+        FederalIncome::Partnership { data } if matches!(&data.participation, Some(crate::PartnerParticipation::General { facts }) if facts.left_out()) => {
             notice(notes, "WARN_PARTICIPATION_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
             false
         }
-        FederalIncome::Scorp { data } if data.participation.as_ref().is_some_and(|p| p.left_out()) => {
+        FederalIncome::Scorp { data } if crate::ScorpK1::from(data).participation.as_ref().is_some_and(|p| p.left_out()) => {
             notice(notes, "WARN_PARTICIPATION_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
             false
         }
-        FederalIncome::HomeSale { data } if !data.ordinary => {
+        // Other property is figured as its own sale, or on its own page.
+        FederalIncome::HomeSale { data } if data.other_property() => true,
+        FederalIncome::HomeSale { data } if !crate::HomeSale::from(data).ordinary => {
             notice(notes, "WARN_HOME_SALE_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
             false
         }
-        FederalIncome::HomeSale { data } => match data.facts.as_ref().and_then(|f| f.left_out()) {
+        FederalIncome::HomeSale { data } => match crate::HomeSale::from(data).facts.as_ref().and_then(|f| f.left_out()) {
             Some(key) => {
                 notice(notes, key, Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
                 false
             }
             None => true,
         },
-        // Pay the ordinary Social Security and Medicare rules don't cover
-        // (railroad, section 218 or totalization): preserve current-year income
-        // and warn that only the payroll-tax part is left out.
-        FederalIncome::EmployeeWages { data } if !data.complete => {
-            notice(notes, "WARN_EMPLOYEE_WAGES_PAYROLL_TAX_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
+        // Preserve income and source guidance. The payroll owner decides whether
+        // unavailable coverage can change tax, after all physical bases are known;
+        // an immaterial unknown must not remove a known payment capacity.
+        FederalIncome::EmployeeWages { data } if data.wages > 0 && matches!(data.payroll, crate::EmployeePayrollSource::Unavailable) => {
+            information(notes, "WARN_EMPLOYEE_WAGES_PAYROLL_TAX_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
+            true
+        }
+        FederalIncome::EmployeeWages { data } if data.railroad().is_some_and(|source| source.known()[1..].iter().any(Option::is_none)) => {
+            if joint || entry.owner == crate::DocumentOwner::Yours {
+            notice(notes, "WARN_EMPLOYEE_RAILROAD_WITHHOLDING_UNAVAILABLE", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
+            } else {
+            information(notes, "WARN_EMPLOYEE_RAILROAD_WITHHOLDING_UNAVAILABLE", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
+            }
             true
         }
         // A recovery that needs the earlier year's tax refigured (unused
@@ -632,7 +797,7 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             notice(notes, "WARN_HOBBY_SALES_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
             false
         }
-        FederalIncome::QualifiedSmallBusinessSale { data } if data.special => {
+        FederalIncome::QualifiedSmallBusinessSale { data } if data.special == Some(true) => {
             notice(notes, "WARN_QSBS_SALE_LEFT_OUT", Some(display_label(&context, &data.issuer)), &context);
             false
         }
@@ -648,17 +813,20 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
 
             false
         }
-        FederalIncome::Scorp { data } if !data.risk.complete => {
+        FederalIncome::Scorp { data } if !crate::ScorpK1::from(data).risk.complete => {
             notice(notes, "WARN_SCORP_K1_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
             false
         }
-        FederalIncome::Retirement { data } => match &data.taxable {
-            crate::RetirementTaxable::PropertyProceeds { data } if !data.confirmed => {
+        FederalIncome::Retirement { data: source } => {
+let data = &crate::FederalRetirement::from(source);
+match &data.taxable {
+            Some(crate::RetirementTaxable::PropertyProceeds { data }) if !data.confirmed => {
                 notice(notes, "WARN_PROPERTY_ROLLOVER_LEFT_OUT", Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))), &context);
                 false
             }
             _ => true,
-        },
+        }
+},
         _ => true,
     } });
     for entry in &mut d.income {
@@ -694,40 +862,40 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                     data.prior_fuel_credit = None;
                 }
             }
-            FederalIncome::Retirement { data } => {
+            FederalIncome::Retirement { data: source } => {
                 use crate::RetirementTaxable as T;
                 // An unconfirmed deferral or basis-recovery method is left out:
                 // the whole distribution is taxed as the payer's amount.
-                let key = match &mut data.taxable {
-                    T::CivilServiceDeath {
+                let key = match crate::FederalRetirement::from(&*source).taxable {
+                    Some(T::CivilServiceDeath {
                         data: crate::SurvivorLumpSum { eligible: false, .. },
-                    }
-                    | T::FullDischarge { data: crate::ContractDischarge { eligible: false, .. } }
-                    | T::QualifiedWithdrawal {
+                    })
+                    | Some(T::FullDischarge {
+                        data: crate::ContractDischarge { eligible: false, .. },
+                    })
+                    | Some(T::QualifiedWithdrawal {
                         data: crate::PlanDistribution { eligible: false, .. },
-                    }
-                    | T::DeferredWithdrawal {
+                    })
+                    | Some(T::DeferredWithdrawal {
                         data: crate::AnnuityDistribution { eligible: false, .. },
-                    } => Some("WARN_RETIREMENT_BASIS_LEFT_OUT"),
-                    T::Simplified { data: basis } if !basis.eligible => {
+                    }) => Some("WARN_RETIREMENT_BASIS_LEFT_OUT"),
+                    Some(T::Simplified { data: basis }) if !basis.eligible => {
                         Some("WARN_RETIREMENT_BASIS_LEFT_OUT")
                     }
-                    T::GeneralAnnuity { data: annuity } if !annuity.eligible => {
+                    Some(T::GeneralAnnuity { data: annuity }) if !annuity.eligible => {
                         Some("WARN_RETIREMENT_BASIS_LEFT_OUT")
                     }
-                    T::VariableAnnuity { data: annuity } if !annuity.eligible => {
+                    Some(T::VariableAnnuity { data: annuity }) if !annuity.eligible => {
                         Some("WARN_RETIREMENT_BASIS_LEFT_OUT")
                     }
-                    T::Railroad { basis: basis @ Some(_), .. }
-                        if basis.as_ref().is_some_and(|b| !b.eligible) =>
-                    {
+                    Some(T::Railroad { basis: Some(basis), .. }) if !basis.eligible => {
                         notice(
                             notes,
                             "WARN_RETIREMENT_BASIS_LEFT_OUT",
                             Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                             &context,
                         );
-                        *basis = None;
+                        source.clear_railroad_basis();
                         None
                     }
                     _ => None,
@@ -739,17 +907,21 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                         Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                         &context,
                     );
-                    data.taxable = T::Payer { amount: data.gross };
+                    source.tax_payer_amount();
                 }
             }
-            FederalIncome::Scorp { data } if data.amt.as_ref().is_some_and(|amt| !amt.complete) => {
+            FederalIncome::Scorp { data }
+                if crate::ScorpK1::from(&*data).amt.as_ref().is_some_and(|amt| !amt.complete) =>
+            {
                 notice(
                     notes,
                     "WARN_SCORP_AMT_LEFT_OUT",
                     Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                     &context,
                 );
-                data.amt = Some(crate::k1_page::ScorpAmtRecords::same_as(data));
+                data.personal.amt = crate::ScorpK1::from(&*data)
+                    .opening
+                    .map(|_| crate::ScorpAmtRecords::SameAsRegular);
             }
             _ => {}
         }
@@ -759,18 +931,25 @@ fn income(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
 // The farm or farm rental each Form 1099-PATR and each Form 1099-G with a box 7
 // payment is routed to (its chosen farm, or its owner's only one), by document
 // identity, taken before any farm is left out.
-fn routed_targets(d: &FederalDraft) -> Vec<(i64, i64)> {
+fn routed_targets(
+    d: &FederalDraft,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Vec<(i64, i64)> {
     d.income
         .iter()
         .filter_map(|entry| {
             let choice = match &entry.income {
-                FederalIncome::Unemployment { data } if data.agriculture_payment != 0 => {
-                    data.agriculture_farm
+                FederalIncome::GovernmentPayment { data }
+                    if crate::FederalUnemployment::from(data).agriculture_payment != 0 =>
+                {
+                    data.component_ids.agriculture
                 }
                 _ => return None,
             };
-            let owner = usize::from(entry.owner == crate::Owner::Spouse);
-            crate::federal_rules::routed_farm(d, owner, choice).ok().map(|farm| (entry.id, farm))
+            let owner = usize::from(entry.owner == crate::DocumentOwner::Spouses);
+            crate::federal_rules::routed_farm(d, owner, choice, source_claims)
+                .ok()
+                .map(|farm| (entry.id, farm))
         })
         .collect()
 }
@@ -789,11 +968,10 @@ fn farm_documents(
     // missing recipient is a required placement source, not erased income.
     for entry in &mut d.income {
         let left_out = gone(entry.id);
-        if let FederalIncome::Unemployment { data } = &mut entry.income
+        if let FederalIncome::GovernmentPayment { data } = &mut entry.income
             && left_out
         {
-            data.agriculture_payment = 0;
-            data.agriculture_farm = None;
+            data.form.agriculture_payments = Some(0);
         }
     }
 }
@@ -834,11 +1012,21 @@ fn adjustments(
 
 fn deductions(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     let allocated_entries = crate::community::entries(d);
-    let unresolved_estate_investment = allocated_entries.iter().filter(|entry| matches!(&entry.income, FederalIncome::EstateTrustPortfolio { data } if crate::estate_trust::investment_adjustment(data).is_none()
+    let unresolved_estate_investment = allocated_entries.iter().filter(|entry| matches!(&entry.income, FederalIncome::EstateTrustPortfolio { data } if { let data = &crate::FederalEstateTrustPortfolioK1::from(data); crate::estate_trust::investment_adjustment(data).is_none()
         || crate::estate_trust::capital_parts(data, false, crate::estate_trust::CapitalLossUse::Investment).is_none()
-        || crate::estate_trust::capital_parts(data, true, crate::estate_trust::CapitalLossUse::Investment).is_none() || data.unentered.contains(&crate::EstateTrustK1Item::InvestmentIncome))).map(|entry| crate::interview::income_issue_context(entry)).collect::<Vec<_>>();
+        || crate::estate_trust::capital_parts(data, true, crate::estate_trust::CapitalLossUse::Investment).is_none() || data.unentered.contains(&crate::EstateTrustK1Item::InvestmentIncome) })).map(|entry| crate::interview::income_issue_context(entry)).collect::<Vec<_>>();
     drop(allocated_entries);
-    if d.deductions.as_ref().is_some_and(|deductions| deductions.investment_interest().is_some())
+    // A final-year box 11 code B investment interest deduction is Form 4952
+    // line 1 interest too, limited by the same investment income.
+    let estate_interest = d.income.iter().any(|entry| {
+        matches!(&entry.income, FederalIncome::EstateTrustPortfolio { data }
+            if data.statements.final_character.as_ref().is_some_and(|f| f.additional.iter().any(|item|
+                matches!(item, crate::EstateFinalDeduction::InvestmentInterest { .. }))))
+    });
+    if (estate_interest
+        || d.deductions
+            .as_ref()
+            .is_some_and(|deductions| deductions.investment_interest().is_some()))
         && !unresolved_estate_investment.is_empty()
     {
         for context in unresolved_estate_investment {
@@ -846,6 +1034,15 @@ fn deductions(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         }
         if let Some(deductions) = d.deductions.as_mut() {
             deductions.investment_interest = None;
+        }
+        for entry in &mut d.income {
+            if let FederalIncome::EstateTrustPortfolio { data } = &mut entry.income
+                && let Some(finals) = &mut data.statements.final_character
+            {
+                finals.additional.retain(|item| {
+                    !matches!(item, crate::EstateFinalDeduction::InvestmentInterest { .. })
+                });
+            }
         }
     }
 
@@ -886,15 +1083,10 @@ fn deductions(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         // a benefit they are simply not claimed.
         for entry in &mut d.income {
             match &mut entry.income {
-                FederalIncome::Unemployment { data } => {
+                FederalIncome::GovernmentPayment { data } => {
                     data.repayments.retain(|v| v.received_year >= 2026)
                 }
-                FederalIncome::Retirement { data } => {
-                    if let crate::RetirementTaxable::Railroad { repayments, .. } = &mut data.taxable
-                    {
-                        repayments.clear();
-                    }
-                }
+                FederalIncome::Retirement { data } => data.clear_railroad_repayments(),
                 _ => (),
             }
         }
@@ -937,12 +1129,19 @@ fn schedule_k3(d: &FederalDraft, notes: &mut ScopeNotes<'_>) -> bool {
     let claim = d.credits.as_ref().map(|c| &c.foreign_tax);
     let mut drop_claim = false;
     for entry in &d.income {
+        let scorp = match &entry.income {
+            FederalIncome::Scorp { data } => Some(crate::ScorpK1::from(data)),
+            _ => None,
+        };
         let (k3, foreign_taxes) = match &entry.income {
             FederalIncome::Partnership { data } => (
                 data.schedule_k3.as_ref(),
                 data.separate.as_ref().map_or(0, |items| items.foreign_taxes),
             ),
-            FederalIncome::Scorp { data } => (data.schedule_k3.as_ref(), data.foreign_taxes),
+            FederalIncome::Scorp { .. } => {
+                let data = scorp.as_ref().unwrap();
+                (data.schedule_k3.as_ref(), data.foreign_taxes)
+            }
             _ => continue,
         };
         let context = crate::interview::income_issue_context(entry);
@@ -989,11 +1188,11 @@ fn aotc_ban(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         return;
     };
     let mut switched = false;
-    for entry in &mut credits.education {
-        if entry.method != crate::EducationChoice::AmericanOpportunity {
+    for entry in &mut credits.students {
+        if entry.method != Some(crate::EducationChoice::AmericanOpportunity) {
             continue;
         }
-        entry.method = crate::EducationChoice::LifetimeLearning;
+        entry.method = Some(crate::EducationChoice::LifetimeLearning);
         switched = true;
         let name = insured_label(&students, entry.student);
         information_args(
@@ -1022,6 +1221,10 @@ fn credits(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     };
     if k3_drops_claim {
         credits.foreign_tax = crate::ForeignTaxClaim::No;
+    }
+    if credits.bba_audit_interest.as_ref().is_some_and(|source| source.model().is_err()) {
+        notice(notes, "WARN_BBA_AUDIT_LEFT_OUT", None, &context);
+        credits.bba_audit_interest = None;
     }
     retain_scoped(
         &mut credits.adoption_carry,
@@ -1082,20 +1285,26 @@ fn credits(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             if !bond.supported() {
                 notice(
                     notes,
-                    if matches!(bond.origin.entity(), Some(e) if e.income_kind == crate::TaxCreditIncomeKind::Interest)
+                    if bond
+                        .answers
+                        .origin
+                        .as_ref()
+                        .and_then(crate::TaxCreditOrigin::entity)
+                        .is_some_and(|e| e.income_kind == crate::TaxCreditIncomeKind::Interest)
                     {
                         "WARN_TAX_CREDIT_K1_INTERFACE_LEFT_OUT"
                     } else {
                         "WARN_TAX_CREDIT_BOND_LEFT_OUT"
                     },
-                    Some(display_label(context, &bond.issuer_name)),
+                    Some(display_label(context, &bond.form.issuer.name)),
                     context,
                 );
             }
 
-            // An undocumented prior carry is simply not claimed.
-            if !bond.prior_carry_confirmed {
-                bond.prior_carry_dollars = 0;
+            // An explicitly unconfirmed carry is not claimed. An unanswered
+            // confirmation remains unknown and cannot supply a zero carry.
+            if bond.answers.prior_carry_confirmed == Some(false) {
+                bond.answers.prior_carry_dollars = 0;
             }
             true
         },
@@ -1130,12 +1339,14 @@ fn inherited_links(d: &FederalDraft, notes: &mut ScopeNotes<'_>) {
     }
 }
 
-// Form 1099-LTC (care_benefits.rs): a per diem payment with no Long-term care periods record to
+// Form 1099-LTC (care_benefit_return.rs): a per diem payment with no Long-term care periods record to
 // place it (none entered, or several and none chosen) is taxed in full, with a notice; the
 // calculation itself falls back the same way.
 fn ltc_links(d: &FederalDraft, notes: &mut ScopeNotes<'_>) {
     for entry in &d.income {
-        if crate::care_benefits::link_of(d, entry) == Some(crate::care_benefits::Link::Missing) {
+        if crate::care_benefit_return::link_of(d, entry)
+            == Some(crate::care_benefit_return::Link::Missing)
+        {
             let context = crate::interview::income_issue_context(entry);
             notice(
                 notes,
@@ -1152,7 +1363,7 @@ fn ltc_links(d: &FederalDraft, notes: &mut ScopeNotes<'_>) {
 // still a 2026 credit.
 fn special_code_notes(d: &FederalDraft, notes: &mut ScopeNotes<'_>) {
     for entry in &d.income {
-        let FederalIncome::Retirement { data } = &entry.income else {
+        let Some(data) = entry.income.retirement() else {
             continue;
         };
         let context = crate::interview::income_issue_context(entry);
@@ -1180,11 +1391,12 @@ fn lump_sums(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     for entry in &mut d.income {
         let context = crate::interview::income_issue_context(entry);
         let label = Some(MessageArg::Nested(alloc::boxed::Box::new(context.label())));
-        let owner = usize::from(entry.owner == crate::Owner::Spouse);
-        let FederalIncome::Retirement { data } = &mut entry.income else {
+        let owner = usize::from(entry.owner == crate::DocumentOwner::Spouses);
+        let FederalIncome::Retirement { data: source } = &mut entry.income else {
             continue;
         };
-        let crate::RetirementTreatment::LumpSum { data: election } = &data.ordinary_distribution
+        let Some(crate::RetirementTreatment::LumpSum { data: election }) =
+            crate::FederalRetirement::from(&*source).ordinary_distribution
         else {
             continue;
         };
@@ -1198,7 +1410,7 @@ fn lump_sums(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         } else {
             continue;
         };
-        data.ordinary_distribution = election.fallback();
+        source.lump_sum_with_other_income();
         if unresolved {
             notice(notes, key, label, &context);
         } else {
@@ -1219,11 +1431,18 @@ fn foreign_claims(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     use crate::{ForeignHousing, ForeignHousingHousehold, ForeignQualification};
     let mut earned = [0i64; 2];
     for entry in &d.income {
-        let i = usize::from(entry.owner == crate::Owner::Spouse);
+        let i = usize::from(entry.owner == crate::DocumentOwner::Spouses);
         earned[i] += match &entry.income {
             FederalIncome::ForeignEmployment { data } => data.wages,
             FederalIncome::Wage { data } => {
-                data.abroad + crate::statutory_wages::foreign_gross(d, entry, data)
+                let data = &crate::FederalWage::from(data);
+                data.abroad
+                    + crate::statutory_wages::foreign_gross_with_claims(
+                        d,
+                        entry,
+                        data,
+                        notes.source_claims,
+                    )
             }
             FederalIncome::Business { data }
                 if matches!(data.source, crate::BusinessSource::ForeignServices { .. }) =>
@@ -1306,13 +1525,20 @@ fn foreign_claims(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
 // Audit group 4 (batch 4): retirement, rental, business, farm, foreign,
 // fuel-credit, health, Roth, refund and Trump-account items.
 fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
+    let special_espp: Vec<i64> = d
+        .income
+        .iter()
+        .filter(|entry| crate::espp_return::is_special(d, entry.id))
+        .map(|entry| entry.id)
+        .collect();
     // The approved partial worksheet does not establish cooperative patron
     // wage allocation. Omit only its new optional capacity on the working
     // copy; the accepted statements, expenses and credits remain untouched.
-    let cooperative_businesses: Vec<i64> = crate::cooperative::sources(d)
-        .iter()
-        .filter_map(|source| source.allocation.activity)
-        .collect();
+    let cooperative_businesses: Vec<i64> =
+        crate::cooperative::sources_with_claims(d, notes.source_claims)
+            .iter()
+            .filter_map(|source| source.activity)
+            .collect();
     for entry in &mut d.income {
         let context = crate::interview::income_issue_context(entry);
         let payroll = match &mut entry.income {
@@ -1359,27 +1585,68 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             },
         );
     }
+    // A government's one paper can contain independent payment and refund
+    // components. Leaving one unsupported component out never removes its
+    // other amounts or the paper's withholding from the working projection.
+    for entry in &mut d.income {
+        let context = crate::interview::income_issue_context(entry);
+        if let FederalIncome::GovernmentPayment { data } = &mut entry.income {
+            if data.form.state_or_local_income_tax_refunds != 0 && !data.history.supported() {
+                notice(
+                    notes,
+                    "WARN_TAX_REFUND_LEFT_OUT",
+                    Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
+                    &context,
+                );
+                data.form.state_or_local_income_tax_refunds = 0;
+                data.history = crate::TaxRefundHistory::NotDeducted;
+            }
+            if data.special && (data.form.has_payments() || !data.repayments.is_empty()) {
+                notice(
+                    notes,
+                    "WARN_UNEMPLOYMENT_LEFT_OUT",
+                    Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
+                    &context,
+                );
+                data.form.unemployment_compensation = 0;
+                data.form.rtaa_payments = Some(0);
+                data.form.taxable_grants = Some(0);
+                data.form.agriculture_payments = Some(0);
+                data.form.market_gain = Some(0);
+                data.form.family_leave_benefits = 0;
+                data.repayments.clear();
+                data.special = false;
+            }
+        }
+    }
     d.income.retain(|entry| {
         let context = crate::interview::income_issue_context(entry);
         let key = match &entry.income {
+            FederalIncome::EsppSaleSource { .. } if special_espp.contains(&entry.id) => {
+                "WARN_ESPP_SALE_LEFT_OUT"
+            }
+            FederalIncome::EsppSaleSource { .. } => "ESPP_ACQUISITION_NEEDED",
+            // A printed ISO or NUA sale still waiting for its answers.
+            FederalIncome::IsoSaleSource { .. } => "ISO_SALE_ANSWERS_NEEDED",
+            FederalIncome::NuaSaleSource { .. } => "NUA_SALE_ANSWERS_NEEDED",
             FederalIncome::EsppSale { data } if data.special => "WARN_ESPP_SALE_LEFT_OUT",
             FederalIncome::Rental { data } if !data.ordinary_rental => "WARN_RENTAL_LEFT_OUT",
-            FederalIncome::TaxRefund { history, .. } if !history.supported() => {
-                "WARN_TAX_REFUND_LEFT_OUT"
-            }
             // A direct transfer to a plan that does not account for the after-tax part
             // separately leaves 2026 income unchanged (the after-tax part is untaxed either
             // way): the entry computes as confirmed and the note says what to ask the plan.
-            FederalIncome::Retirement { data }
-                if matches!(
-                    data.ordinary_distribution,
-                    crate::RetirementTreatment::Rollover {
-                        destination: crate::RolloverDestination::DirectEmployerPlan {
-                            confirmed: false
-                        },
-                        ..
-                    }
-                ) =>
+            FederalIncome::Retirement { data: source }
+                if {
+                    let data = &crate::FederalRetirement::from(source);
+                    matches!(
+                        data.ordinary_distribution,
+                        Some(crate::RetirementTreatment::Rollover {
+                            destination: crate::RolloverDestination::DirectEmployerPlan {
+                                confirmed: false
+                            },
+                            ..
+                        })
+                    )
+                } =>
             {
                 notice(
                     notes,
@@ -1403,17 +1670,28 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         let context = crate::interview::income_issue_context(entry);
         let label = entry.label.as_str();
         // No: no Schedule R credit on this disability income.
-        if let FederalIncome::Wage { data: crate::FederalWage { disability, .. } }
-        | FederalIncome::Retirement { data: crate::FederalRetirement { disability, .. } } =
-            &mut entry.income
+        let disability = match &mut entry.income {
+            FederalIncome::Wage { data } => {
+                data.answers_mut().and_then(|answers| answers.disability.as_mut())
+            }
+            _ => None,
+        };
+        if let Some(disability) = disability
             && let crate::DisabilityIncome::Qualifying { eligible, .. } = disability
             && !*eligible
         {
             *disability = crate::DisabilityIncome::None;
         }
+        if let FederalIncome::Retirement { data } = &mut entry.income
+            && let crate::DisabilityIncome::Qualifying { eligible: false, .. } =
+                crate::FederalRetirement::from(&*data).disability
+        {
+            data.leave_out_disability();
+        }
         match &mut entry.income {
-            FederalIncome::Retirement { data } => {
-                if let T::LegacyAnnuity { data: legacy } = &data.taxable
+            FederalIncome::Retirement { data: source } => {
+                if let Some(T::LegacyAnnuity { data: legacy }) =
+                    &crate::FederalRetirement::from(&*source).taxable
                     && !legacy.confirmed
                 {
                     notice(
@@ -1422,7 +1700,7 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                         Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                         &context,
                     );
-                    data.taxable = T::Payer { amount: data.gross };
+                    source.tax_payer_amount();
                 }
             }
             FederalIncome::InheritedIra { data } => {
@@ -1445,7 +1723,7 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             }
             FederalIncome::Rental { data } => {
                 if matches!(data.sale, crate::RentalSale::Sold { .. })
-                    && data.statement.as_ref().is_some_and(|s| s.property_received)
+                    && data.statement.as_ref().is_some_and(|s| s.box_6_property_or_services)
                 {
                     notice(
                         notes,
@@ -1510,7 +1788,7 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             }
             FederalIncome::Scorp { data } => {
                 health_plan(
-                    &mut data.health_insurance,
+                    &mut data.personal.health_insurance,
                     label,
                     &people,
                     &health_people,
@@ -1536,12 +1814,8 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             _ => {}
         }
     }
-    if let Some(deductions) = d.deductions.as_mut()
-        && let crate::DeductionSelection::Automatic {
-            expenses: crate::ItemizedChoice::Yes { facts },
-        }
-        | crate::DeductionSelection::Itemized { facts } = &mut deductions.choice
-    {
+    if let Some(deductions) = d.deductions.as_mut() {
+        let facts = &mut deductions.itemized;
         retain_scoped(
             &mut facts.long_term_care,
             &IssueContext::Section(TaxSection::Medical),
@@ -1569,6 +1843,7 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         );
     }
     let k3_rows = k3_sources(d);
+    let estate_foreign = d.income.iter().any(|entry| crate::estate_foreign::admitted(d, entry.id));
     if d.credit_refusals.contains(&crate::MoreCreditRefusal::OtherCredit) {
         notice(
             notes,
@@ -1590,7 +1865,12 @@ fn group4(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             ) {
                 *amt_limitation = crate::ForeignAmtLimitation::Normal;
             }
-            if sources.is_empty() && !k3_rows && !history.present() && !loss_history.present() {
+            if sources.is_empty()
+                && !k3_rows
+                && !estate_foreign
+                && !history.present()
+                && !loss_history.present()
+            {
                 credits.foreign_tax = F::No;
             } else if !situations.is_empty() {
                 // A checked situation this estimate does not figure leaves out
@@ -1696,7 +1976,12 @@ fn fuel_lines(
 // Audit group 1, rows 8-101 (batch 5a): filers, community property, income
 // statements with special treatment, Schedule C scope answers, fuel uses and
 // recoveries, de minimis expenses and the estate or trust K-1 activities.
-fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
+fn group1a(
+    d: &mut FederalDraft,
+    notes: &mut ScopeNotes<'_>,
+    direct_participation: &alloc::sync::Arc<crate::direct_participation::DirectParticipationView>,
+    macrs: &alloc::sync::Arc<crate::macrs_source::MacrsElectionView>,
+) {
     if let Some(people) = d.people.as_mut() {
         for (owner, person) in [
             (crate::Owner::Taxpayer, Some(&mut people.taxpayer)),
@@ -1732,10 +2017,10 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         // without its suspended losses (the adjustments notice says so).
         for entry in d.income.iter_mut() {
             if let FederalIncome::Scorp { data } = &mut entry.income
-                && let Some(person) = people.person(entry.owner)
+                && let Some(person) = people.person(entry.owner.owned())
                 && person.died.as_ref().is_some_and(|died| !died.ordinary)
             {
-                data.drop_suspended_history();
+                drop_scorp_suspended_history(data);
             }
         }
     }
@@ -1746,13 +2031,29 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         .iter()
         .filter_map(|entry| match &entry.income {
             FederalIncome::Business { data }
-                if !data.current_risk_supported()
-                    && business_loss_needs_risk(
+                if direct_participation.get(entry.id)
+                    != crate::participation::Participation::Unavailable
+                    && !data.current_risk_supported(direct_participation.get(entry.id))
+                    && crate::section179::operating_in_context(
                         d,
                         entry.id,
                         data,
-                        crate::section179::operating(d, entry.id, data),
+                        notes.source_claims,
+                        macrs,
                     )
+                    .and_then(|operating| {
+                        business_loss_needs_risk_with_claims(
+                            crate::related_forms::RelatedFormContext::bound(
+                                d,
+                                notes.source_claims,
+                                direct_participation,
+                            )
+                            .with_macrs(macrs),
+                            entry.id,
+                            data,
+                            operating,
+                        )
+                    })
                     .is_ok_and(|loss| loss) =>
             {
                 Some(entry.id)
@@ -1765,12 +2066,14 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                     data.at_risk,
                     Some(crate::RentalAtRisk::Limited { record: None, .. })
                 ) && data
-                    .net(
+                    .net_in_context(
                         d,
-                        usize::from(entry.owner == crate::Owner::Spouse),
+                        usize::from(entry.owner == crate::DocumentOwner::Spouses),
                         entry.id,
                         crate::depreciation::mid_quarter(d),
                         false,
+                        notes.source_claims,
+                        Some(macrs.as_ref()),
                     )
                     .is_ok_and(|net| net < 0) =>
             {
@@ -1779,7 +2082,7 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             _ => None,
         })
         .collect();
-    let targets = routed_targets(d);
+    let targets = routed_targets(d, notes.source_claims);
     let mut removed = Vec::new();
     d.income.retain(|entry| {
         let context = crate::interview::income_issue_context(entry);
@@ -1799,15 +2102,17 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             FederalIncome::OpportunityFundDeferral { data } if !data.within_180_days => {
                 "WARN_QOF_DEFERRAL_NOT_ALLOWED"
             }
-            FederalIncome::Interest { data } => match data.special.notice() {
-                Some(key) => key,
-                None => return true,
-            },
+            FederalIncome::Interest { data } => {
+                match crate::FederalInterest::from(data).special.notice() {
+                    Some(key) => key,
+                    None => return true,
+                }
+            }
             FederalIncome::Dividend { data } => match data.special.notice() {
                 Some(key) => key,
                 None => return true,
             },
-            FederalIncome::Oid { data } => match data.special.notice() {
+            FederalIncome::Oid { data } => match crate::FederalOid::from(data).special.notice() {
                 Some(key) => key,
                 None => return true,
             },
@@ -1815,21 +2120,19 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                 Some(key) => key,
                 None => return true,
             },
-            FederalIncome::Section1256 { data } if data.special_treatment => {
-                "WARN_SECTION_1256_LEFT_OUT"
+            FederalIncome::Section1256 { data } if data.special => "WARN_SECTION_1256_LEFT_OUT",
+            FederalIncome::Gambling { data } if !crate::FederalGambling::from(data).ordinary => {
+                "WARN_GAMBLING_LEFT_OUT"
             }
-            FederalIncome::SocialSecurity { data } if data.special_treatment => {
-                "WARN_SOCIAL_SECURITY_LEFT_OUT"
-            }
-            FederalIncome::Unemployment { data } if !data.ordinary => "WARN_UNEMPLOYMENT_LEFT_OUT",
-            FederalIncome::Gambling { data } if !data.ordinary => "WARN_GAMBLING_LEFT_OUT",
             FederalIncome::Business { data } => {
                 let key = if matches!(
                     data.activity,
                     BusinessActivity::Gambling { eligible: false, .. }
                 ) {
                     "WARN_GAMBLING_BUSINESS_LEFT_OUT"
-                } else if !data.material_participation
+                } else if (direct_participation.get(entry.id)
+                    == crate::participation::Participation::No
+                    && !data.current_passive_supported(direct_participation.get(entry.id)))
                     || data.special_treatment
                     || matches!(
                         data.source,
@@ -1908,27 +2211,27 @@ fn group1a(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                         &context,
                     );
                 }
-                if data.tips.as_ref().is_some_and(|tips| tips.amount > 0 && !tips.eligible) {
+                if data.tips.as_ref().is_some_and(|tips| !tips.eligible) {
                     notice(
                         notes,
                         "WARN_BUSINESS_TIPS_LEFT_OUT",
                         Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                         &context,
                     );
-                    data.tips = None;
+                    if let Some(tips) = &mut data.tips {
+                        tips.amount = 0;
+                    }
                 }
-                if data
-                    .overtime
-                    .as_ref()
-                    .is_some_and(|overtime| overtime.amount > 0 && !overtime.eligible)
-                {
+                if data.overtime.as_ref().is_some_and(|overtime| !overtime.eligible) {
                     notice(
                         notes,
                         "WARN_BUSINESS_OVERTIME_LEFT_OUT",
                         Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                         &context,
                     );
-                    data.overtime = None;
+                    if let Some(overtime) = &mut data.overtime {
+                        overtime.amount = 0;
+                    }
                 }
                 if data.fuel_tax_credit.as_ref().is_some_and(|credit| !credit.records_complete) {
                     notice(
@@ -2052,17 +2355,27 @@ fn k1_items_left_out(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                     names
                 },
             ),
-            FederalIncome::Scorp { data } => (
-                data.k1_items(),
-                data.special.iter().filter_map(|situation| situation.item()).collect::<Vec<_>>(),
-                false,
-                {
-                    let names =
-                        data.unentered.iter().filter_map(|item| item.item()).collect::<Vec<_>>();
-                    data.unentered.retain(|item| !item.left_out());
-                    names
-                },
-            ),
+            FederalIncome::Scorp { data } => {
+                let native = crate::ScorpK1::from(&*data);
+                let items = native.k1_items();
+                let specials = native
+                    .special
+                    .iter()
+                    .filter_map(|situation| situation.item())
+                    .collect::<Vec<_>>();
+                let names =
+                    native.unentered.iter().filter_map(|item| item.item()).collect::<Vec<_>>();
+                data.statements.situations.retain(|item| !item.left_out());
+                data.paper.information.retain(|row| row.code != "R");
+                data.paper.credits.retain(|row| {
+                    matches!(row.code.as_str(), "AX" | "O" | "E")
+                        || row.code == "M" && row.amount.is_none_or(|amount| amount >= 0)
+                        || native.credits.iter().any(|credit| {
+                            crate::partnership_source::credit_code_name(&credit.code) == row.code
+                        })
+                });
+                (items, specials, false, names)
+            }
             _ => continue,
         };
         let label = MessageArg::Nested(alloc::boxed::Box::new(context.label()));
@@ -2089,9 +2402,8 @@ fn k1_items_left_out(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     }
 }
 
-// Audit group 1, rows 1-7 and 102-220 (batch 5b): business intangibles,
-// charity carryovers, child annuities, employee stock and the federal model's
-// relief, bad-debt, credit, mortgage and charity confirmations.
+// Scope charity carryovers, child annuities, employee stock and the federal
+// model's relief, bad-debt, credit, mortgage and charity confirmations.
 fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     use crate::RetirementTaxable as T;
     d.income.retain(|entry| {
@@ -2101,7 +2413,9 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                 "WARN_EMPLOYEE_STOCK_SALE_LEFT_OUT"
             }
             FederalIncome::NuaSale { data } if data.special => "WARN_NUA_SALE_LEFT_OUT",
-            FederalIncome::Scorp { data } if !data.basis_complete() => "WARN_SCORP_K1_LEFT_OUT",
+            FederalIncome::Scorp { data } if !crate::ScorpK1::from(data).basis_complete() => {
+                "WARN_SCORP_K1_LEFT_OUT"
+            }
             FederalIncome::DisasterMitigation { data } if !data.qualified => {
                 "WARN_DISASTER_MITIGATION_LEFT_OUT"
             }
@@ -2148,21 +2462,31 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         let context = crate::interview::income_issue_context(entry);
         match &mut entry.income {
             FederalIncome::Business { data } => {
+                // Omit only the uncomputed benefit, retaining this activity's
+                // known income. IDs and accepted predecessor answers are unchanged;
+                // association validity belongs to the complete source graph.
                 retain_scoped(
                     &mut data.intangibles,
                     &context,
                     "data.intangibles",
-                    |asset, context| match asset.eligible {
-                        true => true,
-                        false => {
-                            notice(
-                                notes,
-                                "WARN_SECTION_197_LEFT_OUT",
-                                Some(display_label(context, &asset.label)),
-                                context,
-                            );
-                            false
+                    |record, item| {
+                        if record.mandatory_tax_boundary().is_some() {
+                            return true;
                         }
+                        let Some(reason) = record.boundary() else { return true };
+                        notice_args(
+                            notes,
+                            "WARN_INTANGIBLE_BENEFIT_LEFT_OUT",
+                            alloc::vec![
+                                display_label(item, &record.label),
+                                MessageArg::Nested(alloc::boxed::Box::new(Message::new(
+                                    reason,
+                                    alloc::vec![],
+                                ))),
+                            ],
+                            &item.clone().named(&record.label),
+                        );
+                        false
                     },
                 );
                 let beauty_unsupported = |credit: &crate::EmployerTipFicaCredit| {
@@ -2230,7 +2554,9 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                     data.paid_leave_credit = None;
                 }
             }
-            FederalIncome::EstateTrustPortfolio { data } => {
+            FederalIncome::EstateTrustPortfolio { data: stored } => {
+                let mut record = crate::FederalEstateTrustPortfolioK1::from(&*stored);
+                let data = &mut record;
                 for activity in &mut data.activities.activities {
                     let unresolved = matches!(
                         activity.participation,
@@ -2316,7 +2642,7 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                     data.foreign_statement = None;
                 }
                 if let Some(finals) = &data.final_character {
-                    if !finals.entity_terminated || !finals.successor {
+                    if !data.final_successor() {
                         notice(notes, "WARN_ESTATE_FINAL_ENTITLEMENT_LEFT_OUT", None, &context);
                         data.final_67e_deduction = 0;
                         data.final_short_carry = 0;
@@ -2329,20 +2655,13 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                         data.final_character = None;
                     } else {
                         for item in &finals.additional {
-                            match item {
-                                crate::EstateFinalDeduction::InvestmentInterest { .. } => notice(
-                                    notes,
-                                    "WARN_ESTATE_FINAL_INTEREST_LEFT_OUT",
-                                    None,
-                                    &context,
-                                ),
-                                crate::EstateFinalDeduction::Other { description } => notice_args(
+                            if let crate::EstateFinalDeduction::Other { description } = item {
+                                notice_args(
                                     notes,
                                     "WARN_ESTATE_FINAL_OTHER_LEFT_OUT",
                                     alloc::vec![MessageArg::Text(description.clone())],
                                     &context,
-                                ),
-                                crate::EstateFinalDeduction::Mortgage { .. } => {}
+                                );
                             }
                         }
                     }
@@ -2369,18 +2688,17 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                     );
                     data.final_nol = None;
                 }
+                *stored = crate::EstateTrustSource::from_record(&record);
             }
-            FederalIncome::Scorp { data } if !data.passive.complete => {
+            FederalIncome::Scorp { data } if !crate::ScorpK1::from(&*data).passive.complete => {
                 notice(
                     notes,
                     "WARN_SCORP_PASSIVE_HISTORY_LEFT_OUT",
                     Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                     &context,
                 );
-                data.passive = crate::ScorpPassiveHistory { loss: 0, complete: true };
-                // The same confirmation covers the rental activities'
-                // carryovers (boxes 2 and 3).
-                data.rentals.drop_passive_history();
+                data.personal.exact.passive_complete = None;
+                drop_scorp_passive_history(data);
             }
             FederalIncome::NuaSale { data } => {
                 // The supported working copy omits the uncomputed deduction.
@@ -2397,9 +2715,10 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                 }
             }
 
-            FederalIncome::Retirement { data } => {
+            FederalIncome::Retirement { data: source } => {
                 // An unconfirmed temporary child annuity recovers no cost.
-                if let T::ChildAnnuity { data: child } = &data.taxable
+                if let Some(T::ChildAnnuity { data: child }) =
+                    &crate::FederalRetirement::from(&*source).taxable
                     && !child.confirmed
                 {
                     notice(
@@ -2408,7 +2727,7 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
                         Some(MessageArg::Nested(alloc::boxed::Box::new(context.label()))),
                         &context,
                     );
-                    data.taxable = T::Payer { amount: data.gross };
+                    source.tax_payer_amount();
                 }
             }
             _ => {}
@@ -2451,8 +2770,8 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         }
     }
     if let Some(deductions) = d.deductions.as_ref() {
-        for (i, loan) in deductions.mortgage_loans().iter().enumerate() {
-            if matches!(&loan.refund_of_interest, crate::MortgageInterestRefund::Yes { origin: crate::MortgageRefundOrigin::Deducted(w), .. } if !w.ordinary)
+        for (i, loan) in deductions.mortgage_loans().unwrap_or_default().iter().enumerate() {
+            if matches!(&loan.refund_of_interest, crate::MortgageInterestRefund::Yes { origin: Some(crate::MortgageRefundOrigin::Deducted(w)), .. } if !w.ordinary)
             {
                 let context = IssueContext::Section(TaxSection::Mortgage).item("mortgage.loans", i);
                 notice(
@@ -2496,24 +2815,60 @@ fn group1b(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         }
     }
     if let Some(deductions) = d.deductions.as_mut() {
-        let all = deductions.property_gifts.clone();
-        retain_scoped(
-            &mut deductions.property_gifts,
-            &IssueContext::Section(TaxSection::GiftCarryovers),
-            "deductions.property_gifts",
-            |gift, context| {
-                let kept = gift.qualified(&all, &deductions.appraisals, deductions.basis_election);
-                if !kept {
-                    notice(
-                        notes,
-                        "WARN_GIFT_LEFT_OUT",
-                        Some(display_label(context, &gift.description)),
-                        context,
-                    );
-                }
-                kept
-            },
-        );
+        // Qualification waits for every printed treatment; unresolved gifts stay
+        // in the calculation so their named source boundary remains visible.
+        if let Ok(all) = deductions.gifts() {
+            let documents = &deductions.vehicle_gift_documents;
+            retain_scoped(
+                &mut deductions.property_gifts,
+                &IssueContext::Section(TaxSection::GiftCarryovers),
+                "deductions.property_gifts",
+                |gift, context| {
+                    let kept =
+                        gift.qualified(&all, &deductions.appraisals, deductions.basis_election);
+                    if !kept {
+                        notice(
+                            notes,
+                            "WARN_GIFT_LEFT_OUT",
+                            Some(display_label(context, &gift.description)),
+                            context,
+                        );
+                    }
+                    kept
+                },
+            );
+            retain_scoped(
+                &mut deductions.vehicle_gifts,
+                &IssueContext::Section(TaxSection::GiftCarryovers),
+                "deductions.vehicle_gifts",
+                |vehicle, context| {
+                    let Some(document) =
+                        documents.iter().find(|document| document.id == vehicle.id)
+                    else {
+                        return true;
+                    };
+                    let Ok(gift) = crate::PropertyGift::try_from((&*vehicle, &document.form))
+                    else {
+                        return true;
+                    };
+                    let kept =
+                        gift.qualified(&all, &deductions.appraisals, deductions.basis_election);
+                    if !kept {
+                        notice(
+                            notes,
+                            "WARN_GIFT_LEFT_OUT",
+                            Some(display_label(context, &gift.description)),
+                            context,
+                        );
+                    }
+                    kept
+                },
+            );
+            let vehicles = &deductions.vehicle_gifts;
+            deductions
+                .vehicle_gift_documents
+                .retain(|document| vehicles.iter().any(|vehicle| vehicle.id == document.id));
+        }
         retain_scoped(
             &mut deductions.charity_carryovers,
             &IssueContext::Section(TaxSection::GiftCarryovers),
@@ -2563,47 +2918,60 @@ fn farm_rental_section_179(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
     }
 }
 
-// A separate return whose spouse section 179 records are answered No takes no
+// A separate return without spouse section 179 records takes no
 // section 179 this year (no share of the dollar limit, section179::facts):
 // 2026 elections become ordinary depreciation of the same assets and
 // carryforwards wait for 2027. A K-1 section 179 amount still refuses there.
 fn section179_without_spouse_records(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
-    let context = IssueContext::Section(TaxSection::Setup);
+    let context = IssueContext::Business;
     use crate::{EquipmentHistory as H, Section179 as S};
     if !d.setup.as_ref().is_some_and(|setup| {
         matches!(
             setup.status,
-            crate::FilingChoice::Separate {
-                section179: crate::Section179Spouse::NotSupplied
-                    | crate::Section179Spouse::Records { eligible: false, .. },
-            }
+            crate::FilingChoice::Separate { section179: crate::Section179Spouse::NotSupplied }
         )
     }) || d.income.iter().any(|entry| match &entry.income {
         FederalIncome::Partnership { data } => {
             data.section179 > 0 || data.regular.carried.section179 > 0
         }
-        FederalIncome::Scorp { data } => data.section179 > 0 || data.carried.section179 > 0,
+        FederalIncome::Scorp { data } => {
+            let data = crate::ScorpK1::from(data);
+            data.section179 > 0 || data.carried.section179 > 0
+        }
         _ => false,
     }) {
         return;
     }
     let mut changed = d.income.iter().any(|entry| match &entry.income {
         FederalIncome::Partnership { data } => data.section179_carryover > 0,
-        FederalIncome::Scorp { data } => data.section179_carryover > 0,
+        FederalIncome::Scorp { data } => crate::ScorpK1::from(data).section179_carryover > 0,
         _ => false,
     });
-    for entry in &mut d.income {
-        if let FederalIncome::Business { data } = &mut entry.income {
-            for asset in &mut data.assets {
-                match &mut asset.history {
-                    H::New { section179: S::Eligible { elected }, .. } if *elected > 0 => {
-                        *elected = 0;
-                        changed = true;
-                    }
-                    H::Continuing { carryforward, .. } if *carryforward > 0 => changed = true,
-                    _ => {}
-                }
+    for asset in d
+        .income
+        .iter_mut()
+        .filter_map(|entry| {
+            if let FederalIncome::Business { data } = &mut entry.income {
+                Some(&mut data.assets)
+            } else {
+                None
             }
+        })
+        .flatten()
+        .chain(
+            d.adjustments
+                .iter_mut()
+                .flat_map(|a| &mut a.employee_expenses)
+                .flat_map(|claim| &mut claim.equipment_assets),
+        )
+    {
+        match &mut asset.history {
+            H::New { section179: S::Eligible { elected }, .. } if *elected > 0 => {
+                *elected = 0;
+                changed = true;
+            }
+            H::Continuing { carryforward, .. } if *carryforward > 0 => changed = true,
+            _ => {}
         }
     }
     if changed {
@@ -2671,7 +3039,7 @@ fn estate_loss_sources(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         let FederalIncome::EstateTrustPortfolio { data } = &mut entry.income else {
             continue;
         };
-        let Some(nol) = &mut data.final_nol else {
+        let Some(nol) = &mut data.statements.final_nol else {
             continue;
         };
         if !nol.valid() {
@@ -2695,7 +3063,7 @@ fn estate_loss_sources(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
             }
         });
         if nol.years.is_empty() {
-            data.final_nol = None;
+            data.statements.final_nol = None;
         }
     }
     let conflicts = crate::estate_trust::loss_conflicts(d);
@@ -2704,7 +3072,7 @@ fn estate_loss_sources(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         let FederalIncome::EstateTrustPortfolio { data } = &mut entry.income else {
             continue;
         };
-        let Some(nol) = &mut data.final_nol else {
+        let Some(nol) = &mut data.statements.final_nol else {
             continue;
         };
         if !nol.valid() {
@@ -2733,7 +3101,44 @@ fn estate_loss_sources(d: &mut FederalDraft, notes: &mut ScopeNotes<'_>) {
         }
         nol.years.retain(|y| y.regular_balance != 0 || y.alternative_balance != 0);
         if nol.years.is_empty() {
-            data.final_nol = None;
+            data.statements.final_nol = None;
         }
+    }
+}
+
+// An unconfirmed passive history leaves out the passive loss carryover and the rental
+// activities' carryovers (boxes 2 and 3).
+fn drop_scorp_passive_history(source: &mut crate::ScorpSource) {
+    if let crate::K1ScorpStart::Continuing { carried, .. } = &mut source.personal.basis.start {
+        carried.passive_loss = 0;
+        carried.rental_real_estate_passive_loss = 0;
+        carried.other_rental_passive_loss = 0;
+        carried.rental_real_estate_section1231_passive_loss = 0;
+        carried.other_rental_section1231_passive_loss = 0;
+    }
+}
+
+// Pub. 559: suspended S-corporation losses do not carry onto the shareholder's final return.
+fn drop_scorp_suspended_history(source: &mut crate::ScorpSource) {
+    if let crate::K1ScorpStart::Continuing { carried, .. } = &mut source.personal.basis.start {
+        carried.basis_loss = 0;
+        carried.risk_loss = 0;
+        carried.passive_loss = 0;
+        carried.basis_short = 0;
+        carried.basis_long = 0;
+        carried.basis_collectibles = 0;
+        carried.risk_short = 0;
+        carried.risk_long = 0;
+        carried.risk_collectibles = 0;
+        carried.section1231_basis_loss = 0;
+        carried.section1231_risk_loss = 0;
+        carried.section1231_passive_loss = 0;
+        carried.rental_real_estate_passive_loss = 0;
+        carried.other_rental_passive_loss = 0;
+        carried.rental_real_estate_section1231_passive_loss = 0;
+        carried.other_rental_section1231_passive_loss = 0;
+    }
+    if let Some(crate::ScorpAmtRecords::Separate { record }) = &mut source.personal.amt {
+        record.rentals.drop_passive_history();
     }
 }

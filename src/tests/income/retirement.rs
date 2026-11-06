@@ -98,7 +98,7 @@ fn unemployment_repayment_sources_keep_spouses_separate_and_ignore_row_order() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, government_unemployment(10000, &[2000], 0));
     let mut spouse = government_unemployment(5000, &[1000], 0);
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "unemployment_2_taxable"), 8000);
@@ -114,12 +114,7 @@ fn unemployment_net_benefits_reach_social_security_but_never_ira_compensation() 
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 3000000, 0);
     add(&mut d, government_unemployment(10000, &[2000], 0));
-    add(
-        &mut d,
-        income(FederalIncome::SocialSecurity {
-            data: FederalSocial { benefits: 2000000, withholding: 0, special_treatment: false },
-        }),
-    );
+    add(&mut d, income(social_security_net(2000000, 0)));
     let r = supported(&d);
     assert_eq!(value(&r, "taxable_social_security"), 16400);
     assert_eq!(value(&r, "agi"), 54400);

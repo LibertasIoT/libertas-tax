@@ -15,8 +15,12 @@ fn education_exception_matches_irs_taxable_basis_examples() {
                 early_simple: false,
             },
         );
-        let FederalIncome::Retirement { data } = &mut e.income else { unreachable!() };
-        data.taxable = RetirementTaxable::Payer { amount: taxable * 100 };
+        {
+            let FederalIncome::Retirement { data } = &mut e.income else { unreachable!() };
+            let mut data = edit_retirement(data);
+            data.box_2a = taxable * 100;
+            data.taxable = Some(RetirementTaxable::Payer);
+        }
         add(&mut d, e);
         let r = supported(&d);
         assert_eq!(value(&r, "early_distribution_tax"), expected);
@@ -46,7 +50,29 @@ fn able_rollover_allocation_cannot_create_negative_remaining_basis() {
     {
         let mut d = complete(FederalStatus::Single);
         add(&mut d, income(mixed_able(amount, earnings, 0)));
-        assert!(!d.valid_stored(), "invalid allocation {amount}/{earnings}");
+        let intrinsic = amount >= 0 && (0..=amount).contains(&earnings);
+        assert_eq!(d.valid_stored(), intrinsic, "allocation {amount}/{earnings}");
+        if intrinsic {
+            let FederalIncome::Able { data } = &d.income.last().unwrap().income else {
+                unreachable!()
+            };
+            let key = AbleDistribution::from(data)
+                .answer_issue()
+                .expect("the original allocation check remains strict")
+                .key;
+            assert!(!estimate(&d).financial_source_scope_complete);
+            let mut session = restart(d);
+            let request = crate::tests::support::client::income_pages::open_topic(
+                &mut session,
+                TaxSection::OtherIncome,
+            );
+            let before = session.draft.clone();
+            let Reply::Response(P::Problem { message, .. }) = send(&mut session, request) else {
+                panic!("invalid rollover must be refused on its topic")
+            };
+            assert_eq!(message, libertas::libertas_formatted_text(key, &[]));
+            assert_eq!(session.draft, before);
+        }
     }
 }
 
@@ -132,12 +158,24 @@ fn trump_account_death_value_above_basis_enters_acquirers_return_once() {
     add(
         &mut d,
         income(FederalIncome::TrumpDeath {
-            data: TrumpDeathAcquisition {
+            data: trump_death_source(TrumpDeathAcquisition {
+                form_boxes: Default::default(),
+                box_2a: crate::kernel::ratio::positive((150_000) - (100_000)),
+                box_3: 0,
+                box_6: 0,
+                box_8a: 0,
+                box_8b_percent: None,
+                box_9a_percent: None,
+                box_9b: None,
+                box_10: 0,
+                box7: crate::DistributionCodes::CODE_4.0,
+                ira: false,
+                trump: true,
                 beneficiary_estate: false,
                 value: 150_000,
-                basis: 100_000,
+                basis: Some(100_000),
                 withholding: 1_000,
-            },
+            }),
         }),
     );
     let r = supported(&d);
@@ -163,7 +201,10 @@ fn trump_account_death_value_above_basis_enters_acquirers_return_once() {
     assert_eq!(estimate(&restart(d.clone()).draft), r);
 
     if let FederalIncome::TrumpDeath { data } = &mut d.income[1].income {
-        data.basis = 200_000;
+        let Some(DistributionCode::TrumpDeath { basis, .. }) = &mut data.code else {
+            unreachable!()
+        };
+        *basis = Some(200_000);
     }
     let below_basis = supported(&d);
     assert_eq!(value(&below_basis, "trump_death_taxable_income"), 0);
@@ -172,7 +213,10 @@ fn trump_account_death_value_above_basis_enters_acquirers_return_once() {
     // The estate case is the child's final return: Trump accounts began on 2026-07-04, so an
     // owner who died on 2026-07-03 cannot have held one.
     if let FederalIncome::TrumpDeath { data } = &mut d.income[1].income {
-        data.beneficiary_estate = true;
+        let Some(DistributionCode::TrumpDeath { estate, .. }) = &mut data.code else {
+            unreachable!()
+        };
+        *estate = true;
     }
     let person = &mut d.people.as_mut().unwrap().taxpayer;
     person.birth_date = 20180615;
@@ -190,18 +234,33 @@ fn trump_account_estate_acquisition_belongs_on_beneficiarys_final_return() {
     add(
         &mut d,
         income(FederalIncome::TrumpDeath {
-            data: TrumpDeathAcquisition {
+            data: trump_death_source(TrumpDeathAcquisition {
+                form_boxes: Default::default(),
+                box_2a: crate::kernel::ratio::positive((120_000) - (100_000)),
+                box_3: 0,
+                box_6: 0,
+                box_8a: 0,
+                box_8b_percent: None,
+                box_9a_percent: None,
+                box_9b: None,
+                box_10: 0,
+                box7: crate::DistributionCodes::CODE_4.0,
+                ira: false,
+                trump: true,
                 beneficiary_estate: true,
                 value: 120_000,
-                basis: 100_000,
+                basis: Some(100_000),
                 withholding: 0,
-            },
+            }),
         }),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "trump_death_taxable_income"), 200);
     if let FederalIncome::TrumpDeath { data } = &mut d.income[1].income {
-        data.beneficiary_estate = false;
+        let Some(DistributionCode::TrumpDeath { estate, .. }) = &mut data.code else {
+            unreachable!()
+        };
+        *estate = false;
     }
     unsupported(&d, "Synthetic document");
 }
@@ -216,12 +275,24 @@ fn deceased_trump_beneficiary_still_owes_unreturned_2026_excess_tax() {
     add(
         &mut d,
         income(FederalIncome::TrumpDeath {
-            data: TrumpDeathAcquisition {
+            data: trump_death_source(TrumpDeathAcquisition {
+                form_boxes: Default::default(),
+                box_2a: crate::kernel::ratio::positive((700_000) - (500_000)),
+                box_3: 0,
+                box_6: 0,
+                box_8a: 0,
+                box_8b_percent: None,
+                box_9a_percent: None,
+                box_9b: None,
+                box_10: 0,
+                box7: crate::DistributionCodes::CODE_4.0,
+                ira: false,
+                trump: true,
                 beneficiary_estate: true,
                 value: 700_000,
-                basis: 500_000,
+                basis: Some(500_000),
                 withholding: 0,
-            },
+            }),
         }),
     );
     let baseline = supported(&d);
@@ -242,6 +313,7 @@ fn deceased_trump_beneficiary_still_owes_unreturned_2026_excess_tax() {
     assert_eq!(estimate(&restart(d.clone()).draft), r);
 
     d.screening.as_mut().unwrap().trump_accounts[0].returns.push(TrumpExcessReturn {
+        document_id: None,
         principal: 10_000,
         earnings: 0,
         received: 20270101,

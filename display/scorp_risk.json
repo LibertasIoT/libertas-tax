@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 360000, "rule": {"select": "^<ScorpRisk>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["start", "excluded_funding", "protected", "released", "excluded_returns"]}, {"ratio": 1, "fields": ["prior_loss", "prior_nondeductible", "deducted", "recaptured", "complete"]}]}},
+    {"order": 952000, "rule": {"select": "^<ScorpRisk>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SRISK_HISTORY", "fields": ["start", "excluded_funding", "protected", "released", "excluded_returns"]}, {"title": "DISPLAY_SRISK_LOSSES", "fields": ["prior_loss", "prior_nondeductible", "deducted", "recaptured", "complete"]}]}},
+    {"order": 953000, "rule": {"select": "^<ScorpRisk>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SRISK_HISTORY", "fields": ["start", "excluded_funding", "protected", "released", "excluded_returns"]}, {"title": "DISPLAY_SRISK_LOSSES", "fields": ["prior_loss", "prior_nondeductible", "deducted", "recaptured", "complete"]}]}}
+  ]
+}

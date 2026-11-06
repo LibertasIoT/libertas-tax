@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"order": 288000, "rule": {"select": "^<R1099>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["payer", "recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "taxable", "taxable_not_determined", "total_distribution", "box_3", "withholding", "employee_contributions", "box_6", "box7", "ira", "trump", "excess_contribution_earnings", "box_8a", "box_8b_percent", "box_9a_percent", "box_9b", "box_10", "first_roth_year", "fatca", "payment_date", "state_details"]}]}},
+    {"order": 289000, "rule": {"select": "^<R1099>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["payer", "recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "taxable", "taxable_not_determined", "total_distribution", "box_3", "withholding", "employee_contributions", "box_6", "box7", "ira", "trump", "excess_contribution_earnings", "box_8a", "box_8b_percent", "box_9a_percent", "box_9b", "box_10", "first_roth_year", "fatca", "payment_date", "state_details"]}]}},
+    {"order": 290000, "rule": {"select": "^<Form1099RPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "taxable", "taxable_not_determined", "total_distribution", "box_3", "withholding", "employee_contributions", "box_6", "box7", "ira", "trump", "excess_contribution_earnings", "box_8a", "box_8b_percent", "box_9a_percent", "box_9b", "box_10", "first_roth_year", "fatca", "payment_date", "state_details"]}]}},
+    {"order": 291000, "rule": {"select": "^<Form1099RPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "taxable", "taxable_not_determined", "total_distribution", "box_3", "withholding", "employee_contributions", "box_6", "box7", "ira", "trump", "excess_contribution_earnings", "box_8a", "box_8b_percent", "box_9a_percent", "box_9b", "box_10", "first_roth_year", "fatca", "payment_date", "state_details"]}]}},
+    {"order": 418000, "rule": {"select": "^<DisasterDistribution>", "flatten": true}},
+    {"order": 419000, "rule": {"select": "^<EarlierForm8915>", "flatten": {"name_row": false}}},
+    {"order": 420000, "rule": {"select": "^<Form8915Year>", "flatten": true}},
+    {"order": 479000, "rule": {"select": "^<libertas-tax::RetirementDocument>", "flatten": true}},
+    {"order": 498000, "rule": {"select": "^<DistributionCode>", "flatten": true}},
+    {"order": 499000, "rule": {"select": "^<RetirementTreatmentView>", "flatten": true}},
+    {"order": 500000, "rule": {"select": "^<Disposition>", "flatten": true}},
+    {"order": 501000, "rule": {"select": "^<LumpSumTax>", "flatten": true}},
+    {"order": 502000, "rule": {"select": "^<InheritedLumpSumTax>.Form4972", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_4972_PARTICIPANT", "fields": ["born", "estate_tax", "death_benefit"]}, {"title": "DISPLAY_4972_ELECTION", "fields": ["method", "include_nua"]}, {"title": "DISPLAY_4972_CONDITIONS", "fields": ["first_payment", "last_prior_payment", "entire_balance", "confirmed"]}]}},
+    {"order": 503000, "rule": {"select": "^<InheritedLumpSumTax>.Form4972", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_4972_PARTICIPANT", "fields": ["born", "estate_tax", "death_benefit"]}, {"title": "DISPLAY_4972_ELECTION", "fields": ["method", "include_nua"]}, {"title": "DISPLAY_4972_CONDITIONS", "fields": ["first_payment", "last_prior_payment", "entire_balance", "confirmed"]}]}},
+    {"order": 504000, "rule": {"select": "^<InheritedLumpSumTax>", "flatten": true}},
+    {"order": 505000, "rule": {"select": "^<EarlyException>", "flatten": true}},
+    {"order": 506000, "rule": {"select": "^<TaxableMethod>", "flatten": true}},
+    {"order": 678000, "rule": {"select": "^<EarlierForm8915>.year", "promote": {"use_parent_name": false}}}
+  ]
+}

@@ -1,3 +1,8 @@
+pub use crate::farm_averaging_source::{FarmAveragingHistoryScope, FarmAveragingSelection};
+#[allow(unused_imports)]
+pub use crate::farm_conservation_model::{
+    FarmConservationCarry, FarmConservationFacts, FarmConservationPlan, FarmConservationWork,
+};
 use crate::validation::ValidationIssue;
 // Coverage: F18 source identity/lifetime (2026-10-12). Supplemental farm
 //   source rows reuse the accepted farm_sources catalog for page and stored
@@ -5,7 +10,7 @@ use crate::validation::ValidationIssue;
 //   does not establish a new calculation or source entitlement. Evidence:
 //   src/tests/cross/fix_f18.rs D6 genuine W2 selection/delete/cold-load and nine absent99
 //   negative controls; the existing EnumSource/client and walk contracts.
-// Coverage: section126 mixed funding (batch11). An answered actual excluded
+// Coverage: section126 mixed funding. An answered actual excluded
 //   funding allocation supplies mixed-improvement basis once; supported FMV/PV
 //   still own qualified income and1255. Client and Save bound the funding fact
 //   and require zero on known nonexcluded branches. Missing mixed funding stays
@@ -108,35 +113,43 @@ pub struct FarmCostSharing {
     pub conservation_certified: bool,
     /// Government amount received or accrued under actual method
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub government_received: i64,
     /// Actual total improvement cost
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub total_cost: i64,
     /// Owner paid capital contribution
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub owner_contribution: i64,
     /// Actual fair market value of completed improvement
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub fmv_improvement: i64,
     /// Cost financed by a noneligible program
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub non126_program: i64,
     /// Cost not covered by conservation certification
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub uncertified: i64,
     /// Government payment for rent or services
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub rent_services: i64,
     /// Cost financed by payments associated with current allowable deductions
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub current_deductible: i64,
     /// Excluded cost-share funding applied to this improvement
     /// For mixed funding, use the actual excluded funding allocation, not the present value of an income right. This amount cannot exceed the improvement's cost or the government payment received.
@@ -145,7 +158,8 @@ pub struct FarmCostSharing {
     /// [SetText]
     /// Excluded funding applied
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub excluded_funding_applied: Option<i64>,
     /// Exclusion or actual timely election not to exclude
@@ -173,7 +187,8 @@ pub enum Farm126Election {
     NotExcludePart {
         /// Portion elected out, from the actual election statement
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
         /// Exclusion source records
         facts: Farm126Exclusion,
@@ -181,12 +196,12 @@ pub enum Farm126Election {
 }
 
 /// Source facts used only for an exclusion claim
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct Farm126Exclusion {
-    /// Affected acreage in hundredths, for example 10000 means 100 acres
-    #[libertas_number(min = 1)]
-    pub acres_hundredths: u32,
+    /// Affected acreage
+    #[libertas_number(min = 0.01, max = 1000000, step = 0.01)]
+    #[libertas_physical_unit("acre")]
+    pub acres: f64,
     /// Gross receipts from the affected acreage in the three years before installation began
     // Tax structure: section 126 compares the three years preceding installation.
     #[libertas_size(min = 3, max = 3)]
@@ -199,6 +214,8 @@ pub struct Farm126Exclusion {
     /// The supported section 126 valuation is
     pub valuation: Option<FarmIncomeRightValue>,
 }
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for Farm126Exclusion {}
 impl Farm126Election {
     fn facts(&self) -> Option<&Farm126Exclusion> {
         match self {
@@ -217,7 +234,8 @@ pub struct FarmAffectedIncome {
     pub year: u32,
     /// Actual annual affected-acre gross receipts, not profit, average or present value
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub income: i64,
 }
 
@@ -226,11 +244,13 @@ pub struct FarmAffectedIncome {
 pub struct FarmIncomeRightValue {
     /// Present fair market value of right to receive ten-percent average annual income
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub ten_percent_value: i64,
     /// Present fair market value of right to receive two dollars fifty cents per affected acre annually
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub acre_value: i64,
     /// Appraisal method, date, source and income-right assumptions
     #[libertas_size(min = 1)]
@@ -257,7 +277,8 @@ pub struct FarmWeatherSale {
     /// Current class realized income already included in product receipts, after resale basis; excludes prior deferral
     /// Include all animals of this generic class under the taxpayer's usual practice, not only the weather-forced animals. Do not add this amount to receipts again.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub class_income: i64,
     /// Farming is taxpayer principal trade or business
     pub principal_farming: bool,
@@ -289,7 +310,8 @@ pub enum FarmWeatherSource {
     MixedProducts {
         /// Raised-for-sale part of this record's class income or retained deferred amount
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         raised: i64,
     },
     /// Class includes draft, breeding, sport or dairy animals; needs the actual business-asset character owner
@@ -374,7 +396,8 @@ pub struct FarmPriorWeather {
     pub source: FarmWeatherSource,
     /// Actual retained postponed income included automatically this year; do not repeat in product receipts
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub deferred: i64,
 }
 
@@ -395,7 +418,8 @@ pub enum FarmOtherIncome {
 pub struct FarmPositiveReceipt {
     /// Receipt taxable under the identified source rule
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -407,6 +431,8 @@ pub struct FarmSignedReceipt {
     pub description: String,
     /// Recognized taxable receipt or ordinary loss
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -434,6 +460,8 @@ pub struct FarmHedge {
     pub settled: u32,
     /// Signed realized settlement after applicable hedge timing
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub settlement: i64,
     /// Ordinary farm inventory/input/borrowing risk hedged
     #[libertas_size(min = 1)]
@@ -482,6 +510,7 @@ pub struct FarmProductionCohort {
     pub productive: Option<u32>,
     /// Actual normal preproductive period
     #[libertas_number(min = 1)]
+    #[libertas_physical_unit("month")]
     pub normal_preproductive_months: u32,
     /// Legal original exemption or method facts
     pub tax_treatment: FarmCapitalization,
@@ -490,11 +519,13 @@ pub struct FarmProductionCohort {
     pub costs: Vec<FarmProductionCost>,
     /// Unrecovered capitalized tax basis entering year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_basis: i64,
     /// Separate AMT retained basis entering year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_amt_basis: i64,
     /// Existing inventory or depreciable basis route
     pub destination: FarmBasisDestination,
@@ -559,13 +590,15 @@ pub struct FarmGrossYear {
     // Tax structure: this source year must be no later than the 2026 return year.
     #[libertas_number(min = 1900, max = $crate::year_constants::TAX_YEAR)]
     pub year: u32,
-    /// Months in this actual tax year; short-year annualization is derived once
+    /// Length of this actual tax year; short-year annualization is derived once
     // Tax structure: a tax year has at most twelve calendar months.
     #[libertas_number(min = 1, max = 12)]
+    #[libertas_physical_unit("month")]
     pub months: u32,
     /// Aggregated statutory gross receipts from original records before annualization
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross: i64,
 }
 
@@ -595,24 +628,29 @@ pub struct FarmProductionCost {
     pub treatment: BusinessExpenseKind,
     /// Current paid/incurred tax cost before allocation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Required capital cost under rules other than section 263 A
     /// Actual acquisition/construction or inventory cost; an exemption from uniform capitalization does not turn this into a deduction. Keep it disjoint from the section 263 A allocation below.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub non263a_capital: i64,
     /// Separate required AMT capital cost outside section 263 A
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub non263a_amt_capital: i64,
     /// Actual cost portion allocable under section 263 A cost records
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub capital_allocated: i64,
     /// Corresponding AMT cost allocation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt_capital_allocated: i64,
     /// Direct, indirect or capitalizable interest component
     pub kind: FarmProductionCostKind,
@@ -639,11 +677,13 @@ pub enum FarmBasisDestination {
         /// Actual regular tax cost of the identified portion sold or consumed in 2026
         /// From its unrecovered source-cost allocation. Do not repeat it in ordinary expenses, farm inventory balances or purchased-product cost.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         released: i64,
         /// Corresponding actual AMT tax cost released
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amt_released: i64,
     },
     /// Existing breeding/bearer/improvement asset
@@ -669,7 +709,8 @@ pub struct FarmFertilizerCost {
     pub description: String,
     /// Original capital fertilizer/material/application cost, kept out of ordinary fertilizer expenses
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Date paid under the cash method or incurred under the accrual method
     #[libertas_date_only]
@@ -720,10 +761,12 @@ pub enum FarmFertilizerTreatment {
 pub struct FarmFertilizerRecovery {
     /// Actual supported useful benefit period, not an arbitrary rate
     #[libertas_number(min = 1)]
+    #[libertas_physical_unit("month")]
     pub benefit_months: u32,
     /// Basis already recovered through prior returns
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_recovered: i64,
 }
 
@@ -737,11 +780,13 @@ pub struct FarmExternalSource {
     pub character: FarmSourceCharacter,
     /// Gross production sales from retained statement, not net profit
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross_sales: i64,
     /// Product cost/inventory reduction attributable to those sales
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub product_cost: i64,
     /// Required written pre-production crop/vessel share agreement facts
     #[libertas_default($null)]
@@ -922,35 +967,43 @@ pub struct FarmCostSharingInput {
     pub conservation_certified: bool,
     /// Government amount received or accrued under actual method
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub government_received: i64,
     /// Actual total improvement cost
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub total_cost: i64,
     /// Owner paid capital contribution
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub owner_contribution: i64,
     /// Actual fair market value of completed improvement
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub fmv_improvement: i64,
     /// Cost financed by a noneligible program
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub non126_program: i64,
     /// Cost not covered by conservation certification
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub uncertified: i64,
     /// Government payment for rent or services
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub rent_services: i64,
     /// Cost financed by payments associated with current allowable deductions
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub current_deductible: i64,
     /// Excluded cost-share funding applied to this improvement
     /// For mixed funding, use the actual excluded funding allocation, not the present value of an income right. This amount cannot exceed the improvement's cost or the government payment received.
@@ -959,7 +1012,8 @@ pub struct FarmCostSharingInput {
     /// [SetText]
     /// Excluded funding applied
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub excluded_funding_applied: Option<i64>,
     /// Exclusion or actual timely election not to exclude
@@ -1006,6 +1060,7 @@ pub struct FarmProductionCohortInput {
     pub productive: Option<u32>,
     /// Actual normal preproductive period
     #[libertas_number(min = 1)]
+    #[libertas_physical_unit("month")]
     pub normal_preproductive_months: u32,
     /// Legal original exemption or method facts
     pub tax_treatment: FarmCapitalization,
@@ -1014,11 +1069,13 @@ pub struct FarmProductionCohortInput {
     pub costs: Vec<FarmProductionCost>,
     /// Unrecovered capitalized tax basis entering year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_basis: i64,
     /// Separate AMT retained basis entering year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_amt_basis: i64,
     /// Existing inventory or depreciable basis route
     pub destination: FarmBasisDestinationInput,
@@ -1033,11 +1090,13 @@ pub enum FarmBasisDestinationInput {
         /// Actual regular tax cost of the identified portion sold or consumed in 2026
         /// From its unrecovered source-cost allocation. Do not repeat it in ordinary expenses, farm inventory balances or purchased-product cost.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         released: i64,
         /// Corresponding actual AMT tax cost released
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amt_released: i64,
     },
     /// Existing breeding/bearer/improvement asset
@@ -1066,11 +1125,13 @@ pub struct FarmExternalSourceInput {
     pub character: FarmSourceCharacter,
     /// Gross production sales from retained statement, not net profit
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross_sales: i64,
     /// Product cost/inventory reduction attributable to those sales
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub product_cost: i64,
     /// Required written pre-production crop/vessel share agreement facts
     /// [NullText]
@@ -1129,7 +1190,8 @@ pub struct CccSourceFactsInput {
     pub producer_owned_raised: bool,
     /// Original tax production cost not already deducted
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecovered_production_cost: i64,
     /// Actual original section 77 election history
     pub history: CccElectionHistory,
@@ -1141,11 +1203,13 @@ pub struct CccSourceFactsInput {
 pub struct FarmAveragingSelectionInput {
     /// Schedule J line 2 b net capital gain selected within total elected amount
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub capital_elected: i64,
     /// Line 2 c farm unrecaptured section 1250 gain within selected capital
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecaptured_elected: i64,
     /// Distinct additional eligible sources shown in current accepted-record catalog
     #[libertas_size(min = 0)]
@@ -1177,19 +1241,23 @@ pub struct FarmLandBasis {
     pub acquired: u32,
     /// Actual adjusted basis entering year, or supported acquisition basis for a current-year parcel; excludes live current126/175/COOP adjustments
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub regular: i64,
     /// Corresponding actual AMT opening/acquisition basis, excluding those same live adjustments
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt: i64,
     /// Your prior section175 deductions allowed on this parcel, excluding current amounts and a decedent's reset balance
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_conservation: i64,
     /// Corresponding prior section 175 deductions actually allowed for AMT
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_amt_conservation: i64,
     /// Your prior section126 excludable portions on this parcel, excluding a decedent's reset balance under estate fair-market-value basis
     pub prior_cost_sharing: Vec<Farm126History>,
@@ -1206,7 +1274,8 @@ pub struct Farm126History {
     pub received: u32,
     /// Amount actually excluded under section 126 in that original year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub excluded: i64,
     /// Original payment/program and statement reference
     #[libertas_size(min = 1)]
@@ -1227,7 +1296,8 @@ pub struct ConservationCostInput {
     /// Cost paid or incurred under your farm accounting method
     /// Exclude reimbursements, amounts deducted elsewhere, ordinary maintenance and separately depreciable assets.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Actual conservation plan and work facts
     pub facts: FarmConservationFacts,
@@ -1259,37 +1329,18 @@ pub struct ConservationAssessmentInput {
     pub label: String,
     /// Total assessment against all district members for this property
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub total: i64,
     /// Your complete assessment for this property, including future installments
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub share: i64,
     /// Payments or accruals under your accounting method
     /// Cash filers enter each paid installment; accrual filers enter the amount in its proper incurred year, not again when paid. The App combines entries for the same year.
     #[libertas_size(min = 1)]
     pub payments: Vec<ConservationAssessmentPayment>,
-}
-
-/// Retained section 175 carry for one parcel and source year
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct FarmConservationCarry {
-    /// Canonical farm land parcel
-    #[libertas_number(min = 1)]
-    pub property: i64,
-    /// Original cost year from retained worksheets
-    // Tax structure: this source year must be no later than the 2026 return year.
-    #[libertas_number(min = 1954, max = $crate::year_constants::TAX_YEAR)]
-    pub year: u32,
-    /// Unused regular-tax 25-percent-limited cost
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub regular: i64,
-    /// Corresponding unused AMT cost
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub amt: i64,
 }
 
 /// Retained section 175 carry for one parcel and source year
@@ -1306,64 +1357,14 @@ pub struct FarmConservationCarryInput {
     pub year: u32,
     /// Unused regular-tax 25-percent-limited cost
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub regular: i64,
     /// Corresponding unused AMT cost
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt: i64,
-}
-
-/// Conservation plan, work and actual land-use facts
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct FarmConservationFacts {
-    /// Actual approved plan source
-    pub plan: FarmConservationPlan,
-    /// Actual work rather than an eligibility checkbox
-    pub work: FarmConservationWork,
-    /// Land used in farming now or previously by you or your tenant
-    /// A newly acquired operating farm also qualifies when you substantially continue the immediately preceding owner's farming use. Newly developed unused land does not qualify merely because future farming is intended.
-    pub land_farmed: bool,
-    /// NRCS/state or endangered-species site-specific approval identifier
-    /// [NullText]
-    /// No approved conservation plan applies
-    /// [SetText]
-    /// The conservation-plan approval identifier is
-    #[libertas_size(min = 1)]
-    pub plan_reference: Option<String>,
-}
-
-/// Actual conservation plan source
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum FarmConservationPlan {
-    /// NRCS-approved soil/water plan
-    Nrcs,
-    /// Comparable state plan
-    ComparableState,
-    /// Site-specific approved endangered-species recovery plan
-    EndangeredRecovery,
-    /// No approved qualifying plan; no elective deduction
-    None,
-}
-
-/// Actual cost category
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum FarmConservationWork {
-    /// Conservation/erosion work otherwise eligible
-    QualifyingLandWork,
-    /// Site-specific endangered-species management
-    EndangeredRecovery,
-    /// Wetlands draining/filling; capitalize
-    WetlandDrainage,
-    /// Center-pivot irrigation land preparation; capitalize
-    PivotPreparation,
-    /// Owner depreciable facility; shared asset owner
-    OwnerDepreciable,
-    /// Ordinary repairs/maintenance; expense owner
-    Maintenance,
 }
 
 /// Actual current unused-supply purchase and refund
@@ -1380,7 +1381,8 @@ pub struct FarmSupplyPurchase {
     pub material_distortion: bool,
     /// Current refund attributable to this identified payment
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub refunded: i64,
     /// Original payment date
     #[libertas_date_only]
@@ -1409,7 +1411,8 @@ pub struct FarmProductionPoultryCurrent {
     pub label: String,
     /// Actual current paid purchase cost before the prepaid ceiling
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Original payment date
     #[libertas_date_only]
@@ -1422,9 +1425,10 @@ pub struct FarmProductionPoultryCurrent {
     // Tax structure: this source event must occur on or before the end of the 2026 return year.
     #[libertas_number(min = 19000101, max = $TAX_YEAR_END_DATE)]
     pub started: u32,
-    /// Actual useful business life in whole months
+    /// Actual useful business life, as a whole number
     /// From the lot's production and replacement records. The hypothetical section 464 period is the lesser of this life and 12 months; do not enter a deduction percentage.
     #[libertas_number(min = 1)]
+    #[libertas_physical_unit("month")]
     pub useful_months: u32,
     /// Existing adopted paid/sold cost method where legally applicable
     pub adopted: FarmPoultryMethod,
@@ -1461,81 +1465,6 @@ impl FarmProductionPoultryCurrent {
         let now = crate::kernel::ratio::fraction(self.cost, i64::from(current), i64::from(period));
         Some([now, self.cost - now])
     }
-}
-
-/// Exact election delta on existing FarmAveraging, retaining all base-year types
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct FarmAveragingSelection {
-    /// Schedule J line 2 b net capital gain selected within total elected amount
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub capital_elected: i64,
-    /// Line 2 c farm unrecaptured section 1250 gain within selected capital
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub unrecaptured_elected: i64,
-    /// Distinct additional eligible sources shown in current accepted-record catalog
-    #[libertas_size(min = 0)]
-    pub sources: Vec<i64>,
-    /// Actual retained base-year scope; known limitations affect averaging only
-    pub history_scope: FarmAveragingHistoryScope,
-}
-
-impl FarmAveragingSelection {
-    pub(crate) fn issue(&self, elected: i64) -> Option<ValidationIssue> {
-        if !(0..=elected).contains(&self.capital_elected) {
-            return Some(
-                ValidationIssue::new("FARM_AVERAGING_SELECTION_INVALID")
-                    .at_field("capital_elected"),
-            );
-        }
-        if !(0..=self.capital_elected).contains(&self.unrecaptured_elected) {
-            return Some(
-                ValidationIssue::new("FARM_AVERAGING_SELECTION_INVALID")
-                    .at_field("unrecaptured_elected"),
-            );
-        }
-        if self.sources.len() > 100 {
-            return Some(
-                ValidationIssue::new("FARM_AVERAGING_SOURCES_INVALID").at_field("sources"),
-            );
-        }
-        for (i, source) in self.sources.iter().enumerate() {
-            if !(1..=100_000_000_000).contains(source) || self.sources[..i].contains(source) {
-                return Some(
-                    ValidationIssue::new("FARM_AVERAGING_SOURCES_INVALID")
-                        .at_list_item("sources", i),
-                );
-            }
-        }
-        None
-    }
-    pub(crate) fn rule(&self, elected: i64) -> Option<&'static str> {
-        self.issue(elected).map(|issue| issue.key)
-    }
-    pub(crate) fn valid(&self, elected: i64) -> bool {
-        self.rule(elected).is_none()
-    }
-}
-
-/// Remaining original history boundaries
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum FarmAveragingHistoryScope {
-    /// Full-year resident returns with retained return/J/foreign/investment source worksheets
-    /// Use the actual worksheets. This choice does not establish missing current income, source attribution or spouse allocation.
-    CompleteSupported,
-    /// Two farming spouses with separate incomplete base-year ownership history
-    SeparateSpouseHistories,
-    /// Prior NOL components need HIST owner
-    PriorNol,
-    /// Prior/current MSA attribution not supplied
-    ArcherMsa,
-    /// Minor-filer base tax needs its owner
-    MinorTax,
-    /// Unmodeled short-year/nonresident tax worksheet
-    ShortYearOrForeign,
 }
 
 /// Request-local keyed source catalog item
@@ -1575,7 +1504,8 @@ pub struct CccSourceFacts {
     pub producer_owned_raised: bool,
     /// Original tax production cost not already deducted
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub unrecovered_production_cost: i64,
     /// Actual original section 77 election history
     pub history: CccElectionHistory,
@@ -1618,11 +1548,13 @@ pub struct FarmCropPractice {
     pub crop: String,
     /// Actual normal annual crop income supported by records
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub normal_total: i64,
     /// Normal portion belonging to a year after the damage year
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub normal_following: i64,
 }
 
@@ -1721,7 +1653,7 @@ pub(crate) fn report_header(
         ("F", "information_required", Message::new(required, alloc::vec![])),
         ("G", "information_filed", Message::new(filed, alloc::vec![])),
     ] {
-        crate::kernel::lines::form_value(
+        crate::line_emission::form_value(
             r,
             FormLine::new(TaxForm::ScheduleF, printed),
             &alloc::format!("farm_{id}_header_{suffix}"),
@@ -1909,7 +1841,7 @@ pub(crate) fn source_choices(d: &FederalDraft) -> Vec<FarmChoice> {
         .filter(|e| external_source_available(d, e.id))
         .map(|e| FarmChoice {
             id: e.id,
-            label: crate::interview::income_display_label(e, d.dependents()).encode(),
+            label: crate::income_names::income_display_label(e, d.dependents()).encode(),
         })
         .collect()
 }
@@ -2499,7 +2431,7 @@ impl FarmSpecials {
             ("weather_prior_included", prior, "EXPLAIN_FARM_WEATHER_PRIOR_INCLUDED"),
         ] {
             if amount != 0 {
-                crate::kernel::lines::line_cents(
+                crate::line_emission::line_cents(
                     r,
                     &alloc::format!("farm_{id}_{suffix}"),
                     amount,
@@ -2649,7 +2581,11 @@ impl FarmIncome {
             }
         }
         if let Some((i, _)) = self.land_sales.iter().enumerate().find(|(i, sale)| {
-            self.land_sales[..*i].iter().any(|prior| prior.basis_property == sale.basis_property)
+            self.land_sales[..*i].iter().any(|prior| {
+                prior.basis_property == sale.basis_property
+                    && (!matches!(prior.situation, FarmLandSituation::PartialParcel { .. })
+                        || !matches!(sale.situation, FarmLandSituation::PartialParcel { .. }))
+            })
         }) {
             return Some(
                 ValidationIssue::new("FARM_LAND_DUPLICATE_PARCEL")
@@ -2667,6 +2603,14 @@ impl FarmIncome {
                         .in_list("land_sales", i),
                 );
             };
+            if let FarmLandSituation::PartialParcel { allocation } = &sale.situation
+                && let Some(issue) = allocation.issue(parcel)
+            {
+                return Some(issue.in_field("situation").in_list("land_sales", i));
+            }
+            if let Some(issue) = crate::farm_land::partial_capacity_issue(self, parcel, i) {
+                return Some(issue.in_list("land_sales", i));
+            }
             if parcel.acquired > sale.sold {
                 return Some(
                     ValidationIssue::new("FARM_LAND_SOLD_BEFORE_ACQUIRED")
@@ -2801,10 +2745,10 @@ impl FarmCostSharing {
         }
         if let Some(facts) = self.election.facts() {
             let first = self.installation_year;
-            if !(1..=100_000_000).contains(&facts.acres_hundredths) {
+            if !(1..=100_000_000).contains(&crate::kernel::natural::units(facts.acres, 100)) {
                 return Some(
                     ValidationIssue::new("FARM126_PRIOR_INCOME_YEARS")
-                        .at_field("acres_hundredths")
+                        .at_field("acres")
                         .in_field("facts")
                         .in_field("election"),
                 );
@@ -3009,7 +2953,7 @@ impl FarmSpecials {
             ];
             for (name, amount, key) in rows {
                 if let Some(amount) = amount {
-                    crate::kernel::lines::line_cents(
+                    crate::line_emission::line_cents(
                         r,
                         &alloc::format!("farm_{id}_costsharing_{index}_{name}"),
                         amount,
@@ -3046,24 +2990,37 @@ impl FarmIncome {
 }
 
 impl FarmIncome {
-    pub(crate) fn report_parcels(
+    pub(crate) fn report_parcels_with_claims(
         &self,
         draft: &FederalDraft,
         id: i64,
         form: crate::farm::FarmForm,
         r: &mut FederalResult,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
     ) {
         for parcel in &self.land_basis {
             if !self.specials.cost_sharing.iter().any(|source| source.asset == parcel.id)
-                && crate::cooperative::land_adjustments(draft, id, parcel.id).0 == 0
+                && crate::cooperative::land_adjustments_with_claims(
+                    draft,
+                    id,
+                    parcel.id,
+                    source_claims,
+                )
+                .0 == 0
             {
                 continue;
             }
             for (name, amt) in [("regular", false), ("amt", true)] {
                 if let Some(basis) = self.parcel_basis(parcel.id, amt) {
-                    let basis =
-                        basis - crate::cooperative::land_adjustments(draft, id, parcel.id).0;
-                    crate::kernel::lines::line_cents(
+                    let basis = basis
+                        - crate::cooperative::land_adjustments_with_claims(
+                            draft,
+                            id,
+                            parcel.id,
+                            source_claims,
+                        )
+                        .0;
+                    crate::line_emission::line_cents(
                         r,
                         &alloc::format!("farm_{id}_landbasis_{}_{}", parcel.id, name),
                         basis,
@@ -3204,38 +3161,6 @@ impl FarmSupplyPurchase {
         matches!(self.kind, FarmSupplyPaymentKind::BindingPurchase) && !self.material_distortion
     }
 }
-
-// Community-property projections preserve accepted source identity and facts.
-crate::community::divide_record!(FarmConservationCarry {
-    amounts: [regular, amt],
-    gains: [],
-    facts: [property, year],
-});
-
-crate::community::divide_record!(FarmConservationFacts {
-    amounts: [plan, work],
-    gains: [],
-    facts: [land_farmed, plan_reference],
-});
-
-crate::community::divide_enum!(FarmConservationWork {
-    records: [],
-    units: [
-        QualifyingLandWork,
-        EndangeredRecovery,
-        WetlandDrainage,
-        PivotPreparation,
-        OwnerDepreciable,
-        Maintenance
-    ],
-    tuples: [],
-});
-
-crate::community::divide_enum!(FarmConservationPlan {
-    records: [],
-    units: [Nrcs, ComparableState, EndangeredRecovery, None],
-    tuples: [],
-});
 
 crate::community::divide_record!(FarmProductionPoultryCurrent {
     amounts: [cost, adopted],
@@ -3517,7 +3442,7 @@ crate::community::divide_enum!(Farm126Election {
 crate::community::divide_record!(Farm126Exclusion {
     amounts: [prior_income, valuation],
     gains: [],
-    facts: [acres_hundredths],
+    facts: [acres],
 });
 
 crate::community::divide_record!(FarmIncomeRightValue {

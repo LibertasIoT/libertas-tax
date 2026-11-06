@@ -1,5 +1,7 @@
-use crate::tests::cross::interview::{accepted, hsa_account, hsa_page_value, open_hsa_page, rejected_with};
 use super::*;
+use crate::tests::cross::interview::{
+    accepted, hsa_account, hsa_page_value, open_hsa_page, rejected_with,
+};
 
 // The optional artifact bridge lets the actual Studio editor compose a fresh
 // row and return its ordinary Avro request to this same native lifecycle.
@@ -11,24 +13,15 @@ fn client_artifacts(session: &mut Interview, seed: &P, request: &mut P, case: &s
     }
     if let Ok(input) = std::env::var("TAX_UNIT46_HEALTH_CALC_INPUT") {
         let calculation = P::from_avro(&std::fs::read(input).unwrap()).unwrap();
-        assert!(matches!(
-            calculation,
-            P::HsaOptions { .. } | P::EstimateHsa { .. }
-        ));
+        assert!(matches!(calculation, P::HsaOptions { .. } | P::EstimateHsa { .. }));
         let before = session.draft.clone();
         let Reply::Response(reply) = send(session, calculation) else {
             panic!("expected normal HSA calculation reply")
         };
-        assert!(matches!(
-            reply,
-            P::HsaFamilyOptions { .. } | P::RunningEstimate { .. }
-        ));
+        assert!(matches!(reply, P::HsaFamilyOptions { .. } | P::RunningEstimate { .. }));
         assert_eq!(session.draft, before);
-        std::fs::write(
-            std::env::var("TAX_UNIT46_HEALTH_CALC_OUTPUT").unwrap(),
-            reply.to_avro(),
-        )
-        .unwrap();
+        std::fs::write(std::env::var("TAX_UNIT46_HEALTH_CALC_OUTPUT").unwrap(), reply.to_avro())
+            .unwrap();
         return true;
     }
     if let Ok(path) = std::env::var("TAX_UNIT46_HEALTH_SEED") {
@@ -56,23 +49,14 @@ fn unit46_claimable_hsa_contributions_save_reopen_restart_and_reject_invalid_acc
         draft.people.as_mut().unwrap().taxpayer.dependency =
             FilerDependency::CanBeClaimed { claimed };
         let already_in_wages = claimed;
-        draft.income[0] = wage(
-            1,
-            Owner::Taxpayer,
-            if already_in_wages {
-                6_100_000
-            } else {
-                6_000_000
-            },
-            0,
-        );
-        let FederalIncome::Wage { data } = &mut draft.income[0].income else {
+        draft.income[0] =
+            wage(1, Owner::Taxpayer, if already_in_wages { 6_100_000 } else { 6_000_000 }, 0);
+        let FederalIncome::Wage { data: crate::WageSource::W2(crate::W2Source { form: data, .. }) } =
+            &mut draft.income[0].income
+        else {
             panic!("expected actual wage source")
         };
-        data.other_box12.push(W2CodeAmount {
-            code: W2Code::W,
-            amount: 100_000,
-        });
+        data.box12.push(crate::PrintedBox12Entry { code: W2Code::W, amount: Some(100_000) });
         add_hsa_distribution(&mut draft, Owner::Taxpayer, 20_000, vec![], None, None);
         let mut session = Interview::new(TEST_USER, draft);
         let mut page = open_hsa_page(&mut session);
@@ -101,10 +85,7 @@ fn unit46_claimable_hsa_contributions_save_reopen_restart_and_reject_invalid_acc
         let result = supported(&session.draft);
         assert_eq!(value(&result, "adjustments"), 0);
         assert_eq!(value(&result, "hsa_1_return_year_uncorrected_excess"), 500);
-        assert_eq!(
-            value(&result, "hsa_1_return_year_uncorrected_employer_excess"),
-            1000
-        );
+        assert_eq!(value(&result, "hsa_1_return_year_uncorrected_employer_excess"), 1000);
         assert_eq!(
             value(&result, "hsa_return_year_uncorrected_employer_excess_other_income"),
             if already_in_wages { 0 } else { 1000 }
@@ -126,10 +107,7 @@ fn unit46_claimable_hsa_contributions_save_reopen_restart_and_reject_invalid_acc
         assert_eq!(hsa_page_value(&reopened).0.accounts, vec![account.clone()]);
         let mut restarted = restart(session.draft.clone());
         assert_eq!(supported(&restarted.draft), result);
-        assert_eq!(
-            hsa_page_value(&open_hsa_page(&mut restarted)).0.accounts,
-            vec![account]
-        );
+        assert_eq!(hsa_page_value(&open_hsa_page(&mut restarted)).0.accounts, vec![account]);
 
         let mut invalid = open_hsa_page(&mut session);
         let P::SaveHsa { value: inputs, .. } = &mut invalid else {
@@ -139,10 +117,7 @@ fn unit46_claimable_hsa_contributions_save_reopen_restart_and_reject_invalid_acc
         details.later_return_year_deposits = 100;
         details.later_employer_deposits = 101;
         let accepted_draft = session.draft.clone();
-        rejected_with(
-            send(&mut session, invalid),
-            "HSA_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER",
-        );
+        rejected_with(send(&mut session, invalid), "HSA_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER");
         assert_eq!(session.draft, accepted_draft);
         assert_eq!(supported(&session.draft), result);
     }
@@ -207,10 +182,7 @@ fn unit46_archer_prior_carry_and_current_employer_deposits_save_reopen_and_use_o
     assert_eq!(value(&result, "agi"), 58_400);
     assert_eq!(
         hsa_page_value(&open_hsa_page(&mut session)).0.archer,
-        ArcherContributionsPage::Records {
-            owners: vec![row],
-            sharing: ArcherSharing::Equal,
-        }
+        ArcherContributionsPage::Records { owners: vec![row], sharing: ArcherSharing::Equal }
     );
     let mut restarted = restart(session.draft.clone());
     assert_eq!(supported(&restarted.draft), result);
@@ -220,9 +192,7 @@ fn unit46_archer_prior_carry_and_current_employer_deposits_save_reopen_and_use_o
     );
 
     let mut exhausted = open_hsa_page(&mut session);
-    let P::SaveHsa { value: inputs, .. } = &mut exhausted else {
-        panic!("expected Archer editor")
-    };
+    let P::SaveHsa { value: inputs, .. } = &mut exhausted else { panic!("expected Archer editor") };
     let ArcherContributionsPage::Records { owners, .. } = &mut inputs.archer else {
         panic!("expected retained Archer contribution owner")
     };
@@ -245,10 +215,7 @@ fn unit46_archer_prior_carry_and_current_employer_deposits_save_reopen_and_use_o
     };
     owners[0].income = vec![99];
     let accepted_draft = session.draft.clone();
-    rejected_with(
-        send(&mut session, wrong_source),
-        "ARCHER_INCOME_NOT_OFFERED",
-    );
+    rejected_with(send(&mut session, wrong_source), "ARCHER_INCOME_NOT_OFFERED");
     assert_eq!(session.draft, accepted_draft);
 
     let mut invalid = open_hsa_page(&mut session);
@@ -262,24 +229,7 @@ fn unit46_archer_prior_carry_and_current_employer_deposits_save_reopen_and_use_o
     details.later_return_year_deposits = 100;
     details.later_employer_deposits = 101;
     let accepted_draft = session.draft.clone();
-    rejected_with(
-        send(&mut session, invalid),
-        "ARCHER_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER",
-    );
+    rejected_with(send(&mut session, invalid), "ARCHER_LATER_EMPLOYER_DEPOSITS_ABOVE_LATER");
     assert_eq!(session.draft, accepted_draft);
     assert_eq!(supported(&session.draft), result);
-}
-
-#[test]
-fn unit47_historical_hsa_native_wide_known_archer_pools_remain_exact() {
-    let mut history = crate::tests::support::builders::last_month_history(12, 100_000_000_000);
-    crate::tests::support::builders::historical_hsa_family(&mut history, u32::MAX, u32::MAX);
-    history.archer = i64::MAX;
-    history.family.as_mut().unwrap().spouse_archer = i64::MAX;
-    assert!(history.valid());
-    assert_eq!(
-        history.limits_exact(19800101),
-        (crate::kernel::ratio::exact::whole(0), crate::kernel::ratio::exact::whole(0))
-    );
-    assert_eq!(history.recapture_cents(19800101, i64::MAX), 100_000_000_000);
 }

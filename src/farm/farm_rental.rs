@@ -1,4 +1,4 @@
-// Coverage: Form 4835 — Supported (unit B2, 2026-10-09; 2026 drafts f4835 of 5/28/26 and i4835 of
+// Coverage: Form 4835 — Supported (2026-10-09; 2026 drafts f4835 of 5/28/26 and i4835 of
 //   9/21/26, Schedule E 2026 draft Part V, i8582 (2025), Pub 225 (2025)).
 //   Lines: Part I 1 (crop and livestock shares converted to money, with the net of a redeemed CCC
 //   crop's sale), 2a/2b (Form 1099-PATR routed by the document's chosen farm), 3a/3b (program
@@ -15,7 +15,10 @@
 //   QBI answer; the farmer estimated-tax test (underpayment.rs two_thirds_return_year) and the farming
 //   NOL test (farm.rs check_nol). No self-employment tax, earned income or optional method
 //   (section 1402(a)(1)). Land sales and asset sales reuse the Farm page records; their gain is
-//   nonpassive property income (WARN_FARM_RENTAL_GAIN_NOT_PASSIVE when a loss is suspended).
+//   passive income only with actual exclusive-rental use, tenant and development records,
+//   zero prior losses, no professional/divided treatment, and current post-risk operating
+//   loss plus positive property gain netting to zero or less in both REG and AMT.
+//   Other property gains remain outside PAL with a property-specific source notice.
 //   The former whole-rental special switch is removed. Actual named source limits
 //   preserve known rental receipts; detailed farm_specials records own their income,
 //   election and mandatory-basis boundaries. Remaining independent risk policy:
@@ -30,15 +33,224 @@
 //   farm.rs (FarmForm, sources), farm_ccc.rs, farm_insurance.rs, farm_conservation.rs,
 //   debt.rs (crop_forfeiture); src/tests/farm/farm_rental.rs.
 use crate::farm::FarmForm;
-use crate::federal_rules::{farm_cooperative, farm_routed_income};
-use crate::kernel::lines::push_line;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+pub use crate::farm_rental_source::{
+    FarmRentalPropertyUse, FarmRentalTenantConnection, FarmRentalValueEnhancement,
+};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::ratio::{dollars, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::push_line;
 use crate::{
     BusinessAsset, BusinessMileage, FederalBusinessExpense, FederalDraft, FederalFarmRental,
     FederalIncome, FederalIncomeEntry, FederalResult, FormLine, Owner, TaxForm,
 };
 use alloc::format;
+
+impl FarmRentalPropertyUse {
+    fn admitted(value: &Option<Self>) -> bool {
+        use crate::kernel::source_fact::SourceFact;
+        let use_fact = value.as_ref().map_or(SourceFact::Unavailable, SourceFact::Reported);
+        let SourceFact::Reported(Self::OnlyThisRental { tenant_connection, value_enhancement }) =
+            use_fact
+        else {
+            return false;
+        };
+        let tenant =
+            tenant_connection.as_ref().map_or(SourceFact::Unavailable, SourceFact::Reported);
+        let enhancement =
+            value_enhancement.as_ref().map_or(SourceFact::Unavailable, SourceFact::Reported);
+        matches!(tenant, SourceFact::Reported(FarmRentalTenantConnection::NoOwnershipOrServices))
+            && matches!(
+                enhancement,
+                SourceFact::Reported(FarmRentalValueEnhancement::NoParticipation)
+            )
+    }
+}
+
+fn sold(disposal: &crate::AssetDisposal) -> bool {
+    matches!(disposal, crate::AssetDisposal::Disposed { how: crate::DisposalKind::Sold { .. }, .. })
+}
+fn choices(applicable: bool) -> alloc::vec::Vec<i32> {
+    if applicable { alloc::vec![0, 1] } else { alloc::vec::Vec::new() }
+}
+// Rebuild applicability from the owning activity and actual sold property.
+// Posted choice lists are never evidence. A new applicable question returns
+// the complete unaccepted editor through the ordinary Save correction path.
+pub(crate) fn refresh_property_questions(page: &mut crate::IncomeRecord) -> bool {
+    let crate::IncomeRecord::FarmRental(page) = page else {
+        return false;
+    };
+    let mut changed = false;
+    for asset in &mut page.assets {
+        let next = choices(sold(&asset.disposal));
+        changed |= asset.farm_rental_use.is_none()
+            && !next.is_empty()
+            && next != asset.allowed_farm_rental_use;
+        asset.allowed_farm_rental_use = next;
+        if !sold(&asset.disposal) {
+            asset.farm_rental_use = None;
+        }
+    }
+    for sale in &mut page.more.land_sales {
+        let applicable = page
+            .more
+            .land_basis
+            .iter()
+            .any(|parcel| parcel.id > 0 && parcel.id == sale.basis_property);
+        let next = choices(applicable);
+        changed |= sale.farm_rental_use.is_none()
+            && !next.is_empty()
+            && next != sale.allowed_farm_rental_use;
+        sale.allowed_farm_rental_use = next;
+        if !applicable {
+            sale.farm_rental_use = None;
+        }
+    }
+    changed
+}
+
+pub(crate) fn retain_inapplicable_property_facts(
+    next: &mut FederalIncomeEntry,
+    previous: &[FederalIncomeEntry],
+) {
+    let Some(previous) = previous.iter().find(|entry| entry.id > 0 && entry.id == next.id) else {
+        return;
+    };
+    let (FederalIncome::FarmRental { data: next }, FederalIncome::FarmRental { data: previous }) =
+        (&mut next.income, &previous.income)
+    else {
+        return;
+    };
+    for asset in &mut next.assets {
+        if !sold(&asset.disposal)
+            && asset.farm_rental_use.is_none()
+            && let Some(old) = previous.assets.iter().find(|old| old.id > 0 && old.id == asset.id)
+        {
+            asset.farm_rental_use = old.farm_rental_use.clone();
+        }
+    }
+    for sale in &mut next.farm.land_sales {
+        if !next
+            .farm
+            .land_basis
+            .iter()
+            .any(|parcel| parcel.id > 0 && parcel.id == sale.basis_property)
+            && sale.farm_rental_use.is_none()
+            && let Some(old) =
+                previous.farm.land_sales.iter().find(|old| old.id > 0 && old.id == sale.id)
+        {
+            sale.farm_rental_use = old.farm_rental_use.clone();
+        }
+    }
+}
+
+// Reg.1.469-2(c)(2)(iii),(f)(5),(f)(6): use and tenant/development
+// records establish this property's class; its form name cannot do so.
+fn property_use_complete(v: &FederalFarmRental) -> bool {
+    v.farm.land_sales.iter().all(|sale| {
+        FarmRentalPropertyUse::admitted(&sale.farm_rental_use)
+            && sale.situation.direct()
+            && !sale.deferral
+            && matches!(sale.payment, crate::SalePayment::InFull)
+    }) && v.assets.iter().all(|asset| {
+        asset.partial.is_none()
+            && (matches!(asset.disposal, crate::AssetDisposal::No)
+                || (FarmRentalPropertyUse::admitted(&asset.farm_rental_use)
+                    && matches!(
+                        asset.disposal,
+                        crate::AssetDisposal::Disposed {
+                            how: crate::DisposalKind::Sold {
+                                payment: crate::SalePayment::InFull,
+                                buyer: crate::Buyer::Unrelated,
+                                ..
+                            },
+                            ..
+                        }
+                    )))
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // forwards the native activity and selected-system owner context
+pub(crate) fn passive_property_gain(
+    context: crate::related_forms::RelatedFormContext<'_>,
+    id: i64,
+    v: &FederalFarmRental,
+    owner: usize,
+    mid_quarter: bool,
+    projection: &RiskSource,
+    amt: bool,
+) -> Result<bool, crate::activity_risk::SourceIssue> {
+    let d = context.draft;
+    let Some(entry) = d.income.iter().find(|entry| entry.id == id) else {
+        return Ok(false);
+    };
+    let clean = !d.any_professional()
+        && !v.history.any()
+        && v.at_risk.as_ref().is_some_and(|risk| {
+            risk.prior(false) == 0
+                && risk.prior(true) == 0
+                && risk.prior_sale(false) == 0
+                && risk.prior_sale(true) == 0
+        })
+        && v.qbi_aggregation_group.is_none()
+        && d.setup
+            .as_ref()
+            .and_then(|setup| {
+                crate::community::share(setup, entry.owner.owned(), entry.community, &entry.income)
+            })
+            .is_none()
+        && property_use_complete(v);
+    if !clean {
+        return Ok(false);
+    }
+    let admitted = |source: &RiskSource| -> Result<bool, crate::activity_risk::SourceIssue> {
+        let gain = source.property.as_ref().map_or(0, |value| value.gain);
+        let gain = crate::extended_rules::annual_dollars_to_working_cents(gain)
+            .map_err(|error| crate::activity_risk::SourceIssue::new(id, error.into()))?;
+        let net = source.operating.checked_add(gain).ok_or_else(|| {
+            crate::activity_risk::SourceIssue::new(
+                id,
+                crate::kernel::loss_limits::LossLimitError::Overflow.into(),
+            )
+        })?;
+        // Reg.1.469-2T(f)(3): nondepreciable rental property recharacterizes
+        // only positive net income. These are native post-risk, pre-PAL inputs.
+        Ok(source.operating < 0 && gain > 0 && net <= 0)
+    };
+    if !admitted(projection)? {
+        return Ok(false);
+    }
+    let other = risk_source_with_claims(context, id, v, owner, mid_quarter, !amt, None)?;
+    admitted(&other)
+}
+
+pub(crate) fn property_boundary_notes(
+    d: &FederalDraft,
+    id: i64,
+    v: &FederalFarmRental,
+    r: &mut FederalResult,
+) {
+    let Some(entry) = d.income.iter().find(|entry| entry.id == id) else {
+        return;
+    };
+    let context = crate::interview::income_issue_context(entry);
+    for (index, sale) in v.farm.land_sales.iter().enumerate() {
+        let context = context.item("land_sales", index).named(&sale.label);
+        crate::federal_rules::note_once_scoped(
+            r,
+            crate::Message::new("WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE", alloc::vec![]),
+            context,
+        );
+    }
+    for (index, asset) in v.assets.iter().enumerate().filter(|(_, asset)| sold(&asset.disposal)) {
+        let context = context.item("assets", index).named(&asset.description);
+        crate::federal_rules::note_once_scoped(
+            r,
+            crate::Message::new("WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE", alloc::vec![]),
+            context,
+        );
+    }
+}
 
 impl FederalFarmRental {
     pub(crate) fn valid(&self) -> bool {
@@ -60,48 +272,67 @@ impl FederalFarmRental {
     // Form 4835 line 7 in cents: the rental's own gross income plus the Form
     // 1099-G box 7 payments and taxable Form 1099-PATR distributions routed
     // to it.
-    pub(crate) fn gross(
+
+    pub(crate) fn gross_with_claims(
         &self,
         d: &FederalDraft,
         owner: usize,
         id: i64,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
     ) -> Result<i64, crate::Section179PreparedIssue> {
         self.farm
             .gross()
-            .checked_add(farm_routed_income(d, owner, id)?)
+            .checked_add(crate::federal_rules::farm_routed_income_with_claims(
+                d,
+                owner,
+                id,
+                source_claims,
+            )?)
             .ok_or(crate::Section179PreparedIssue::AmountOverflow(id))
     }
     // Form 4835 line 12 in cents: depreciation, regular or alternative minimum
     // tax. Section 179 is never taken (it is zeroed before the rules run).
     pub(crate) fn depreciation(&self, mid_quarter: bool, amt: bool) -> i64 {
-        self.assets.iter().map(|asset| asset.deduction_for(mid_quarter, amt)).sum()
+        crate::nonmacrs::asset_depreciation_amounts(&self.assets, mid_quarter, amt)
+            .expense_cents(0)
+            .expect("non-MACRS financial availability checked before legacy consumers")
     }
     // Form 4835 line 31 in cents.
-    pub(crate) fn expenses_total(
+
+    pub(crate) fn expenses_total_with_claims(
         &self,
         d: &FederalDraft,
         id: i64,
         mid_quarter: bool,
         amt: bool,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
     ) -> i64 {
-        self.expenses_with_recovery(
+        self.expenses_with_recovery_with_claims(
             d,
             id,
             amt,
             self.depreciation(mid_quarter, amt),
             BusinessMileage::total(&self.vehicles),
+            source_claims,
         )
     }
-    fn expenses_with_recovery(
+
+    fn expenses_with_recovery_with_claims(
         &self,
         d: &FederalDraft,
         id: i64,
         amt: bool,
         depreciation: i64,
         mileage: i64,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
     ) -> i64 {
-        crate::farm_conservation::rental_deduction(d, id, &self.farm, amt)
-            + self.farm.ccc.as_ref().map_or(0, crate::FarmCcc::deficiency)
+        crate::farm_conservation::rental_deduction_with_claims(
+            d,
+            id,
+            &self.farm,
+            amt,
+            source_claims,
+        ) + self.farm.ccc.as_ref().map_or(0, crate::FarmCcc::deficiency)
             + self.farm.specials.fertilizer_deduction()
             + self.farm.specials.production_deduction(true, amt)
             + FederalBusinessExpense::total(&self.expenses)
@@ -113,46 +344,82 @@ impl FederalFarmRental {
                 .sum::<i64>()
             + depreciation
     }
-    pub(crate) fn return_depreciation(
+
+    pub(crate) fn return_depreciation_with_claims(
         &self,
         d: &FederalDraft,
         id: i64,
         mid_quarter: bool,
         amt: bool,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
+        macrs: Option<&crate::macrs_source::MacrsElectionView>,
     ) -> Result<i64, crate::Section179PreparedIssue> {
         let whole = d.income.iter().find_map(|entry| match &entry.income {
             FederalIncome::FarmRental { data } if entry.id == id => Some(data),
             _ => None,
         });
         if let Some(whole) = whole {
-            let amount =
-                crate::cooperative_basis::depreciation(d, id, &whole.assets, mid_quarter, amt)?;
+            let amount = crate::cooperative_basis::depreciation_with_claims(
+                d,
+                id,
+                &whole.assets,
+                mid_quarter,
+                amt,
+                source_claims,
+                macrs,
+            )?;
             if let Some(amount) = crate::community::farm_rental_amount(d, id, |_| amount) {
                 return Ok(amount);
             }
         }
-        crate::cooperative_basis::depreciation(d, id, &self.assets, mid_quarter, amt)
+        crate::cooperative_basis::depreciation_with_claims(
+            d,
+            id,
+            &self.assets,
+            mid_quarter,
+            amt,
+            source_claims,
+            macrs,
+        )
     }
     pub(crate) fn return_mileage(&self, d: &FederalDraft, id: i64) -> i64 {
         crate::community::farm_rental_amount(d, id, |whole| BusinessMileage::total(&whole.vehicles))
             .unwrap_or_else(|| BusinessMileage::total(&self.vehicles))
     }
-    pub(crate) fn net_on_return(
+
+    #[allow(clippy::too_many_arguments)] // forwards the existing return source context
+    pub(crate) fn net_on_return_with_claims(
         &self,
         d: &FederalDraft,
         owner: usize,
         id: i64,
         mid_quarter: bool,
         amt: bool,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
+        macrs: Option<&crate::macrs_source::MacrsElectionView>,
     ) -> Result<i64, crate::Section179PreparedIssue> {
-        let routed = crate::federal_rules::farm_routed_income_with_refunds(d, owner, id, amt)?;
+        let routed = crate::federal_rules::farm_routed_income_with_refunds_with_claims(
+            d,
+            owner,
+            id,
+            amt,
+            source_claims,
+        )?;
         Ok(self.farm.gross() + crate::community::income_amount(d, id, routed)
-            - self.expenses_with_recovery(
+            - self.expenses_with_recovery_with_claims(
                 d,
                 id,
                 amt,
-                self.return_depreciation(d, id, mid_quarter, amt)?,
+                self.return_depreciation_with_claims(
+                    d,
+                    id,
+                    mid_quarter,
+                    amt,
+                    source_claims,
+                    macrs,
+                )?,
                 self.return_mileage(d, id),
+                source_claims,
             ))
     }
     // Line 7 less line 31 in cents, before prior-year unallowed losses.
@@ -164,7 +431,54 @@ impl FederalFarmRental {
         mid_quarter: bool,
         amt: bool,
     ) -> Result<i64, crate::Section179PreparedIssue> {
-        Ok(self.gross(d, owner, id)? - self.expenses_total(d, id, mid_quarter, amt))
+        let source_claims = crate::related_forms::effective_claimants(d);
+        self.net_with_claims(d, owner, id, mid_quarter, amt, &source_claims)
+    }
+
+    pub(crate) fn net_with_claims(
+        &self,
+        d: &FederalDraft,
+        owner: usize,
+        id: i64,
+        mid_quarter: bool,
+        amt: bool,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    ) -> Result<i64, crate::Section179PreparedIssue> {
+        self.net_in_context(d, owner, id, mid_quarter, amt, source_claims, None)
+    }
+    #[allow(clippy::too_many_arguments)] // forwards the existing return source context
+    pub(crate) fn net_in_context(
+        &self,
+        d: &FederalDraft,
+        owner: usize,
+        id: i64,
+        mid_quarter: bool,
+        amt: bool,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
+        macrs: Option<&crate::macrs_source::MacrsElectionView>,
+    ) -> Result<i64, crate::Section179PreparedIssue> {
+        let fallback = macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(d));
+        // This source net precedes community allocation. Keep the whole native
+        // schedule and its annual category rounding, with the actual ADS context.
+        let depreciation = crate::nonmacrs::asset_depreciation_amounts_for_view(
+            if owner == 0 { Owner::Taxpayer } else { Owner::Spouse },
+            Some(id),
+            &self.assets,
+            mid_quarter,
+            amt,
+            macrs.or(fallback.as_ref()).unwrap(),
+        )
+        .expense_cents(0)
+        .ok_or(crate::Section179PreparedIssue::AmountOverflow(id))?;
+        Ok(self.gross_with_claims(d, owner, id, source_claims)?
+            - self.expenses_with_recovery_with_claims(
+                d,
+                id,
+                amt,
+                depreciation,
+                BusinessMileage::total(&self.vehicles),
+                source_claims,
+            ))
     }
 }
 
@@ -175,13 +489,15 @@ pub(crate) struct RiskSource {
     pub operating: i64,
     pub property: Option<crate::farm_land::LandGain>,
     pub property_rows: crate::asset_sale::FarmRentalPropertyRows,
+    pub property_source: crate::asset_sale::FarmRentalPropertySource,
 }
 
 // Form6198 uses the operating source's cents and the property owner's already
 // recognized Form4797 dollars. The checked scale change is only the shared
 // settlement unit; it does not reconstruct unrounded property recognition.
-pub(crate) fn risk_source(
-    d: &FederalDraft,
+
+pub(crate) fn risk_source_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     id: i64,
     v: &FederalFarmRental,
     owner: usize,
@@ -189,6 +505,8 @@ pub(crate) fn risk_source(
     amt: bool,
     r: Option<&mut FederalResult>,
 ) -> Result<RiskSource, crate::activity_risk::SourceIssue> {
+    let crate::related_forms::RelatedFormContext { draft: d, claims: source_claims, .. } =
+        form_context;
     use crate::activity_risk::{Part1Line, ProjectionIssue, SourceIssue};
     let issue = |error| SourceIssue::new(id, error);
     let arithmetic =
@@ -200,10 +518,25 @@ pub(crate) fn risk_source(
         .at_risk
         .as_ref()
         .ok_or_else(|| issue(ProjectionIssue::Source("ACTIVITY_GROUP_INDIVIDUAL_RISK_REQUIRED")))?;
-    let source = crate::asset_sale::farm_rental_property_source(d, id, amt)?;
+    let source = crate::asset_sale::farm_rental_property_source_with_claims(
+        d,
+        id,
+        amt,
+        source_claims,
+        Some(form_context.macrs().as_ref()),
+    )?;
     let mut property = source.value;
-    let current_operating =
-        v.net_on_return(d, owner, id, mid_quarter, amt).map_err(|source| match source {
+    let current_operating = v
+        .net_on_return_with_claims(
+            d,
+            owner,
+            id,
+            mid_quarter,
+            amt,
+            source_claims,
+            Some(form_context.macrs().as_ref()),
+        )
+        .map_err(|source| match source {
             crate::Section179PreparedIssue::SourceBoundaryUnavailable(_, key) => {
                 issue(ProjectionIssue::Source(key))
             }
@@ -253,6 +586,7 @@ pub(crate) fn risk_source(
                 )
                 .map_err(issue)?,
             property,
+            property_source: source,
         });
     };
     let ordinary = property
@@ -320,6 +654,7 @@ pub(crate) fn risk_source(
         operating,
         property,
         property_rows,
+        property_source: source,
     })
 }
 
@@ -408,14 +743,17 @@ const EXPENSE_LINES: [Option<ExpenseLine>; crate::BusinessExpenseCategory::COUNT
 
 // One rental's Form 4835 lines 1–7, Part II and the notes and refusals of its
 // shared records. Lines 32 and 34c come from the passive pool (extended_rules.rs).
-pub(crate) fn report(
+
+pub(crate) fn report_with_claims(
     d: &FederalDraft,
     e: &FederalIncomeEntry,
     v: &FederalFarmRental,
     r: &mut FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
 ) {
     let id = e.id;
-    let owner = usize::from(e.owner == Owner::Spouse);
+    let owner = usize::from(e.owner == crate::DocumentOwner::Spouses);
     let mq = crate::depreciation::mid_quarter(d);
     let farm = &v.farm;
     let death = crate::farm::owner_death_date(d, id);
@@ -434,12 +772,21 @@ pub(crate) fn report(
             "ISSUE_A_SALE_AFTER_THIS_FARM_OWNER_S_DEATH_DOES_NOT_BELONG_TO_THE_OWNER_S_E146F4F3",
             "A sale after this farm owner's death does not belong to the owner's final individual return. Resolve the estate or beneficiary's ownership and reporting; a surviving spouse's own farm follows that spouse's dates.",
         );
-        sale.report(d, &property.farm, id, index, FarmForm::Form4835, r);
+        sale.report_with_claims(
+            crate::related_forms::RelatedFormContext::original(d, source_claims),
+            &property.farm,
+            id,
+            index,
+            FarmForm::Form4835,
+            r,
+        );
     }
     if let Some(conservation) = &farm.conservation {
-        conservation.report(farm.gross(), d, id, FarmForm::Form4835, r);
+        conservation.report_with_claims(farm.gross(), d, id, FarmForm::Form4835, r, source_claims);
     }
-    farm.insurance.report(true, id, FarmForm::Form4835, r);
+    if let Some(insurance) = crate::farm_insurance_paper::report_value(d, id, source_claims) {
+        insurance.report(true, id, FarmForm::Form4835, r);
+    }
     if let Some(ccc) = &farm.ccc {
         ccc.report(true, id, FarmForm::Form4835, r);
     }
@@ -450,15 +797,16 @@ pub(crate) fn report(
         crate::interview::income_issue_context(e),
         r,
     );
-    farm.report_parcels(d, id, FarmForm::Form4835, r);
+    farm.report_parcels_with_claims(d, id, FarmForm::Form4835, r, source_claims);
     farm.report_property_history(&v.assets, crate::interview::income_issue_context(e), r);
-    let mut cooperative = match farm_cooperative(d, owner, id) {
-        Ok(amounts) => amounts,
-        Err(issue) => {
-            crate::section179_return::Issue::Prepared(issue).report(r);
-            return;
-        }
-    };
+    let mut cooperative =
+        match crate::federal_rules::farm_cooperative_with_claims(d, owner, id, source_claims) {
+            Ok(amounts) => amounts,
+            Err(issue) => {
+                crate::section179_return::Issue::Prepared(issue).report(r);
+                return;
+            }
+        };
     cooperative.distributions = crate::community::income_amount(d, id, cooperative.distributions);
     cooperative.taxable = crate::community::income_amount(d, id, cooperative.taxable);
     cooperative.nonqualified = crate::community::income_amount(d, id, cooperative.nonqualified);
@@ -468,7 +816,7 @@ pub(crate) fn report(
     let program_1099g = crate::community::income_amount(
         d,
         id,
-        crate::federal_rules::farm_1099g_program(d, owner, id),
+        crate::federal_rules::farm_1099g_program(d, owner, id, source_claims),
     );
     let (market, taxable_market, sale_net, surplus) =
         farm.ccc.as_ref().map_or((0, 0, 0, 0), crate::FarmCcc::cash_parts);
@@ -485,16 +833,35 @@ pub(crate) fn report(
     let production = receipts(|r| matches!(r, crate::FarmReceipt::Raised { .. }));
     let program = receipts(|r| matches!(r, crate::FarmReceipt::Program { .. }));
     let other = receipts(|r| matches!(r, crate::FarmReceipt::Other { .. }));
-    let routed = program_1099g + cooperative.taxable;
-    let gross = farm.gross() + routed;
-    let depreciation = match v.return_depreciation(d, id, mq, false) {
-        Ok(amount) => amount,
-        Err(issue) => {
-            crate::section179_return::Issue::Prepared(issue).report(r);
-            return;
-        }
-    };
-    let expenses = v.expenses_with_recovery(d, id, false, depreciation, v.return_mileage(d, id));
+    let grants = crate::community::income_amount(
+        d,
+        id,
+        crate::information_returns::farm_grants_with_claims(d, id, source_claims),
+    );
+    let routed = program_1099g + cooperative.taxable + grants;
+    let gross = farm.gross()
+        + routed
+        + crate::community::income_amount(
+            d,
+            id,
+            crate::farm_insurance_paper::income_delta(d, id, source_claims),
+        );
+    let depreciation =
+        match v.return_depreciation_with_claims(d, id, mq, false, source_claims, macrs) {
+            Ok(amount) => amount,
+            Err(issue) => {
+                crate::section179_return::Issue::Prepared(issue).report(r);
+                return;
+            }
+        };
+    let expenses = v.expenses_with_recovery_with_claims(
+        d,
+        id,
+        false,
+        depreciation,
+        v.return_mileage(d, id),
+        source_claims,
+    );
     let path = |tail: &str| FarmForm::Form4835.input(tail);
     emit_lines(
         r,
@@ -532,7 +899,7 @@ pub(crate) fn report(
             ),
             (
                 "other_income",
-                other + surplus + farm.specials.other_income(),
+                other + grants + surplus + farm.specials.other_income(),
                 Some("6"),
                 msg!("EXPLAIN_FARM_RENTAL_N_OTHER_INCOME"),
             ),
@@ -626,6 +993,9 @@ pub(crate) fn report(
 pub(crate) fn qbi_activity(
     v: &FederalFarmRental,
     income: i64,
+    owner: crate::Owner,
+    activity: i64,
+    macrs: &crate::macrs_source::MacrsElectionView,
 ) -> Option<crate::business_rules::QbiActivity> {
     let crate::RentalBusiness::Yes { material_participation } = &v.qbi_business else {
         return None;
@@ -633,7 +1003,7 @@ pub(crate) fn qbi_activity(
     let property = v
         .assets
         .iter()
-        .filter(|asset| asset.qbi_property())
+        .filter(|asset| asset.qbi_property_in_context(macrs.context(owner, Some(activity), asset)))
         .map(BusinessAsset::business_basis)
         .sum();
     Some(crate::business_rules::QbiActivity {
@@ -654,8 +1024,9 @@ pub(crate) fn qbi_activity(
 // rental. `net` is the rental's amount after prior-year unallowed losses (the
 // Form 8582 entry), `allowed_net` the income or negative allowed loss that
 // reaches Schedule E line 40.
-pub(crate) fn report_pool(
-    d: &FederalDraft,
+
+pub(crate) fn report_pool_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     r: &mut FederalResult,
     id: i64,
     net: i64,
@@ -663,6 +1034,7 @@ pub(crate) fn report_pool(
     suspended: i64,
     real_estate_professional: bool,
 ) {
+    let crate::related_forms::RelatedFormContext { draft: d, .. } = form_context;
     let Some(entry) = d.income.iter().find(|entry| entry.id == id) else {
         return;
     };
@@ -676,7 +1048,7 @@ pub(crate) fn report_pool(
     // Form 8582 entry and line 34c.
     let line_32 = positive(net);
     let path = FarmForm::Form4835.root();
-    crate::kernel::lines::form_line(
+    crate::line_emission::form_line(
         r,
         FormLine::new(TaxForm::Form4835, "32"),
         &format!("farm_rental_{id}_net_income"),
@@ -686,7 +1058,7 @@ pub(crate) fn report_pool(
         msg!("EXPLAIN_FARM_RENTAL_N_NET_INCOME"),
     );
     if net < 0 {
-        crate::kernel::lines::form_line(
+        crate::line_emission::form_line(
             r,
             FormLine::new(TaxForm::Form4835, "34c"),
             &format!("farm_rental_{id}_line34c_allowed_loss"),
@@ -706,29 +1078,29 @@ pub(crate) fn report_pool(
                 context.clone(),
             );
         }
-        let gain = crate::asset_sale::direct_sources(d, false)
-            .into_iter()
-            .any(|(source, value)| source == id && value.gain != 0);
-        if gain {
-            crate::federal_rules::note_once_scoped(
-                r,
-                crate::Message::new("WARN_FARM_RENTAL_GAIN_NOT_PASSIVE", alloc::vec![name]),
-                context,
-            );
-        }
     }
 }
 
 // The taxable Form 1099-PATR distributions routed to a rental that its box 8
 // qualified items do not cover, in whole dollars: not qualified business income.
-pub(crate) fn nonqualified_cooperative(
+
+pub(crate) fn nonqualified_cooperative_with_claims(
     d: &FederalDraft,
     id: i64,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
     let entry = d
         .income
         .iter()
         .find(|entry| entry.id == id)
         .ok_or(crate::Section179PreparedIssue::UnknownSource(id))?;
-    Ok(dollars(farm_cooperative(d, usize::from(entry.owner == Owner::Spouse), id)?.nonqualified))
+    Ok(dollars(
+        crate::federal_rules::farm_cooperative_with_claims(
+            d,
+            usize::from(entry.owner == crate::DocumentOwner::Spouses),
+            id,
+            source_claims,
+        )?
+        .nonqualified,
+    ))
 }

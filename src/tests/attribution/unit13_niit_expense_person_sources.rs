@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::{accepted, open_document_center};
 
 #[test]
 fn canonical_expense_person_exclusive_owners_public_save_restart_and_correction() {
@@ -19,10 +19,9 @@ fn canonical_expense_person_exclusive_owners_public_save_restart_and_correction(
                     let mut ids: Vec<_> = draft.income.iter().map(|v| v.id).collect();
                     ids.sort_unstable();
                     let mut session = restart(draft);
-                    for topic in [TaxSection::Wages, TaxSection::InterestDividends] {
-                        let request = open_topic(&mut session, topic);
-                        accepted(&send(&mut session, request));
-                    }
+                    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+                    let request = open_document_center(&mut session);
+                    accepted(&send(&mut session, request));
                     let mut request = niit_person_editor(&mut session, source);
                     source.supply(&mut request, Some(deduction_owner_fact(owner)));
                     accepted(&send(&mut session, request));
@@ -385,6 +384,7 @@ fn canonical_unrelated_4952_records_do_not_supply_niit_tax_or_turn_withheld_amou
                     component: "INJURED_COMPONENT_ITEMIZED".into(),
                     injured: 100000,
                 });
+                claimed.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
                 claimed.injured_spouse = Some(answer);
             }
             let attributed = supported(&claimed);

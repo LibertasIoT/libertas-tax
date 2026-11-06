@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 893000, "rule": {"select": "^<TrumpAccountView>.owner", "when_single_choice": "hide"}}
+  ]
+}

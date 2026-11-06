@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 101000, "rule": {"select": "^<EstateForeignPortfolioAllocation>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_FTC_INCOME", "fields": ["country", "withholding", "tax"]}, {"title": "DISPLAY_CARRYOVER_REGULAR", "fields": ["regular"]}, {"title": "DISPLAY_CARRYOVER_AMT", "fields": ["alternative"]}]}},
+    {"order": 102000, "rule": {"select": "^<EstateForeignPortfolioAllocation>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_FTC_INCOME", "fields": ["country", "withholding", "tax"]}, {"title": "DISPLAY_CARRYOVER_REGULAR", "fields": ["regular"]}, {"title": "DISPLAY_CARRYOVER_AMT", "fields": ["alternative"]}]}}
+  ]
+}

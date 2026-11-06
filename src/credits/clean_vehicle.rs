@@ -1,64 +1,18 @@
-// Coverage: Form 8936 and Schedule A — Supported (audited 2026-10-18).
-//   Lines: Personal-use new (Part III, ≤$7,500 seller-report tentative) and used (Part IV: model
-//   year, ≤$25,000 price, 3-year history) credits; MAGI line 2 with 2025 prior-year alternative;
-//   Required kept/returned/resold 30-day disposition; returns nullify dealer transfers without buyer repayment.
-//   dealer-transfer reconciliation and Schedule 2 lines 1b/1c repayment. Refused explicitly:
-//   spouse's vehicle on separate return, dependents; no commercial-vehicle (Part V) line.
-//   New vehicle business split: accepted owned-vehicle identity, exact credit-use fraction,
-//   personal residual, Form3800 line1y/passive carry owner, full tentative basis correction.
-//   Part II line 6 is own schedules; federal aggregation adds current K-1 line 7 for line 8.
-//   Credit-use source fractions retain conversion-month, employee and lessor semantics
-//   separately from property mileage. Business dealer transfers retain the reconciliation boundary.
-//   Property sources are the existing owned C/F records; no standalone investment/lessor supplier.
-//   Evidence: M/clean_vehicle.rs, federal_model.rs FederalCleanVehicleClaim; src/tests/credits/credits.rs
-//   clean_vehicle_credits_follow_used_then_new_form_8936_limits,
-//   clean_vehicle_used_price_model_year_and_transfer_are_explicit; src/tests/credits/family.rs
-//   clean_vehicle_credit_precedes_mortgage_and_child_credits; IRS draft f8936, f8936sa.
-
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+pub(crate) use crate::clean_vehicle_source::valid;
+pub use crate::clean_vehicle_source::{CleanVehicleActivity, CleanVehicleBusinessUse};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
+use crate::line_emission::emit as emit_lines;
 use crate::{
-    FederalCleanVehicle, FederalCleanVehicleClaim, FederalCleanVehicleDetails, FederalPeople,
-    FederalResult, FederalStatus, Owner,
+    FederalCleanVehicle, FederalCleanVehicleClaim, FederalPeople, FederalResult, FederalStatus,
+    Owner,
 };
 
-use crate::federal_rules::valid_date;
-use crate::kernel::lines::line;
 use crate::kernel::ratio::{dollars, exact, fraction};
+use crate::line_emission::line;
 use alloc::vec::Vec;
-use libertas_macros::*;
 
-/// Saved business or farm using a new clean vehicle
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum CleanVehicleActivity {
-    /// A business on Self-employment
-    Business {
-        /// Saved business
-        business: i64,
-    },
-    /// A farm on Farming
-    Farm {
-        /// Saved farm
-        farm: i64,
-    },
-}
-
-/// Credit-use fraction and the saved owned vehicle supplying basis and activity identity
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct CleanVehicleBusinessUse {
-    /// Business or farm that owns this vehicle
-    pub activity: CleanVehicleActivity,
-    /// Same saved owned vehicle on that activity
-    /// Select the same saved owned vehicle. Correct an actual-expense vehicle's credit basis reduction in its saved property record on Self-employment or Farming.
-    pub property: i64,
-    /// Business/investment use fraction for Schedule A (Form 8936) line 10
-    /// From your actual use records, enter business or income-producing miles over all miles, excluding commuting. For a personal-to-business conversion or its reverse, use the business-use period's fraction multiplied by its business-use months over 12. Employee personal use included in wages or reimbursed by employees, and a vehicle you own and lease to others, count as 100%. This credit-use fraction can differ from the annual depreciation-use fraction of the selected property; do not round it to a whole percent.
-    pub credit_use: crate::UseFraction,
-}
 impl CleanVehicleBusinessUse {
-    fn fraction_valid(&self) -> bool {
-        self.credit_use.total > 0 && self.credit_use.used <= self.credit_use.total
-    }
     fn entry<'a>(&self, draft: &'a crate::FederalDraft) -> Option<&'a crate::FederalIncomeEntry> {
         let source = match self.activity {
             CleanVehicleActivity::Business { business } => {
@@ -127,7 +81,7 @@ pub(crate) fn source_issue(
                     .at_field(if use_.credit_use.total == 0 { "total" } else { "used" }).in_field("credit_use").in_field("business_use").in_list("vehicles", index));
             }
             let source = use_.entry(draft);
-            if !use_.source_valid(draft) || source.is_none_or(|entry| entry.owner != details.buyer) {
+            if !use_.source_valid(draft) || source.is_none_or(|entry| entry.owner != crate::DocumentOwner::from(details.buyer)) {
                 return Some(crate::validation::ValidationIssue::new("CLEAN_VEHICLE_PROPERTY_INVALID")
                     .at_field("property").in_field("business_use").in_list("vehicles", index));
             }
@@ -144,7 +98,6 @@ pub(crate) fn source_issue(
 // The acquisition deadline in the issue key is the statutory credit termination date.
 const FORM: &str = "https://www.irs.gov/pub/irs-dft/f8936--dft.pdf";
 const SCHEDULE: &str = "https://www.irs.gov/pub/irs-dft/f8936sa--dft.pdf";
-const MAX_CENTS: i64 = 100_000_000_000;
 
 #[derive(Default)]
 pub(crate) struct PersonalCredits {
@@ -155,55 +108,6 @@ pub(crate) struct PersonalCredits {
     pub business: Vec<crate::general_business_credit::CreditEntry>,
     // Runtime projection of the existing final repayment, in whole dollars.
     pub repayment_by_owner: [i64; 2],
-}
-
-impl FederalCleanVehicle {
-    fn details(&self) -> &FederalCleanVehicleDetails {
-        match self {
-            Self::New { details, .. } | Self::PreviouslyOwned { details, .. } => details,
-        }
-    }
-}
-
-pub(crate) fn valid(claim: &FederalCleanVehicleClaim) -> bool {
-    if !(0..=MAX_CENTS).contains(&claim.current_territory_addbacks)
-        || claim.prior_year.as_ref().is_some_and(|prior| !(0..=MAX_CENTS).contains(&prior.magi))
-    {
-        return false;
-    }
-    for (index, vehicle) in claim.vehicles.iter().enumerate() {
-        let details = vehicle.details();
-        if details.vin.len() != 17
-            || !details.vin.bytes().all(|byte| {
-                byte.is_ascii_digit()
-                    || (byte.is_ascii_alphabetic()
-                        && !matches!(byte.to_ascii_uppercase(), b'I' | b'O' | b'Q'))
-            })
-            || !valid_date(details.acquired)
-            || !valid_date(details.placed_in_service)
-            || details.dealer_transfer.is_some_and(|amount| !(1..=750_000).contains(&amount))
-            || claim.vehicles[..index]
-                .iter()
-                .any(|earlier| earlier.details().vin.eq_ignore_ascii_case(&details.vin))
-        {
-            return false;
-        }
-        match vehicle {
-            FederalCleanVehicle::New { seller_credit, business_use, .. } => {
-                if !(0..=750_000).contains(seller_credit)
-                    || business_use.as_ref().is_some_and(|use_| !use_.fraction_valid())
-                {
-                    return false;
-                }
-            }
-            FederalCleanVehicle::PreviouslyOwned { model_year, sales_price, .. } => {
-                if !(1900..=2023).contains(model_year) || !(0..=MAX_CENTS).contains(sales_price) {
-                    return false;
-                }
-            }
-        }
-    }
-    true
 }
 
 fn threshold(status: FederalStatus, used: bool) -> i64 {
@@ -223,13 +127,15 @@ pub(crate) fn magi_eligible(status: FederalStatus, magi: i64, used: bool) -> boo
 }
 
 pub(crate) fn calculate(
-    draft: &crate::FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     claim: Option<&FederalCleanVehicleClaim>,
     people: &FederalPeople,
     status: FederalStatus,
     current_magi: i64,
     result: &mut FederalResult,
 ) -> PersonalCredits {
+    let draft = form_context.draft;
+    let direct_participation = form_context.participation();
     let Some(claim) = claim else {
         return PersonalCredits::default();
     };
@@ -452,6 +358,20 @@ pub(crate) fn calculate(
             if let Some(entry) =
                 use_.entry(draft).filter(|_| use_.source_valid(draft) && use_.fraction_valid())
             {
+                if matches!(entry.income, crate::FederalIncome::Business { .. })
+                    && direct_participation.get(entry.id)
+                        == crate::participation::Participation::Unavailable
+                {
+                    crate::require_localized!(
+                        result,
+                        false,
+                        &crate::IssueContext::Section(crate::TaxSection::MoreCredits),
+                        "Material participation",
+                        "DIRECT_PARTICIPATION_OTHER_ACTIVITY_SOURCE_REQUIRED",
+                        "Establish the qualifying hours and legal activity grouping of the other trades or businesses before applying the combined significant-participation test."
+                    );
+                    continue;
+                }
                 let total_cents = exact::whole(*seller_credit);
                 let business_cents = &total_cents
                     * exact::ratio(
@@ -488,8 +408,9 @@ pub(crate) fn calculate(
                         year: 2026,
                         amount: business_amount,
                         passive: match &entry.income {
-                            crate::FederalIncome::Business { data }
-                                if data.material_participation =>
+                            crate::FederalIncome::Business { .. }
+                                if (direct_participation.get(entry.id)
+                                    == crate::participation::Participation::Yes) =>
                             {
                                 None
                             }
@@ -498,7 +419,7 @@ pub(crate) fn calculate(
                         transfer: 0,
                         elective: 0,
                         activity: Some(entry.id),
-                        source_owner: Some(entry.owner),
+                        source_owner: Some(entry.owner.owned()),
                         filer: crate::CarryFiler::SameFilers,
                     });
                 }
@@ -565,7 +486,7 @@ pub(crate) fn calculate(
         .iter()
         .any(|vehicle| matches!(vehicle, FederalCleanVehicle::New { business_use: Some(_), .. }))
     {
-        crate::kernel::lines::form_line(
+        crate::line_emission::form_line(
             result,
             crate::FormLine::new(crate::TaxForm::Form8936, "6"),
             "form_8936_own_business_part",

@@ -7,6 +7,8 @@ fn farm(production: i64, expenses: i64) -> FederalFarmRental {
     let BusinessActivity::Farming { data: mut farm } = data.activity else { panic!() };
     farm.header = None;
     FederalFarmRental {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
         farm,
         expenses: data.expenses,
         assets: vec![],
@@ -24,7 +26,7 @@ fn fixture() -> FederalDraft {
     let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     add(&mut d, income(FederalIncome::FarmRental { data: farm(11_000, 1000) }));
     let mut second = income(FederalIncome::FarmRental { data: farm(20_000, 5000) });
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     d
 }
@@ -103,7 +105,7 @@ fn unit13_farm_rental_niit_uses_the_existing_native_annual_boundary() {
         let FarmReceipt::Raised { amount } = &mut receipts[0] else { panic!() };
         *amount += 49;
         let mut entry = income(FederalIncome::FarmRental { data });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     for injured in [Owner::Taxpayer, Owner::Spouse] {
@@ -129,7 +131,7 @@ fn unit13_farm_rental_signed_niit_keeps_the_named_unavailable_boundary() {
     add(
         &mut d,
         income(FederalIncome::Interest {
-            data: FederalInterest { taxable: 500_000, ..Default::default() },
+            data: interest_source(FederalInterest { taxable: 500_000, ..Default::default() }),
         }),
     );
     let r = supported(&d);
@@ -170,6 +172,7 @@ fn unit13_farm_rental_source_is_shared_with_changed_filer_credit_without_a_claim
         // This is a coupled-source availability/claim-independence control,
         // not an independent numerical oracle for the complete R4 credit cap.
         assert!((1..=10_000).contains(&value(&ordinary, "general_business_credit")));
+        d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
         d.injured_spouse = Some(allocation());
         let claimed = supported(&d);
         assert_injured_ordinary_unchanged(&d, &claimed, supported);
@@ -206,7 +209,7 @@ fn unit13_farm_rental_actual_client_save_reopen_restart() {
             let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
             let row = &mut documents.documents[if profile == "receipt" { 0 } else { 1 }];
             row.owner = if profile == "receipt" { Owner::Spouse } else { Owner::Taxpayer };
-            let IncomeDocument::FarmRental(value) = &mut row.document else { panic!() };
+            let crate::IncomeRecord::FarmRental(value) = &mut row.document else { panic!() };
             if profile == "receipt" {
                 value.production = 1_200_000;
             } else {

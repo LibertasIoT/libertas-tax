@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 898000, "rule": {"select": "^<MinimumTaxHistory>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_MTH_RETURN", "fields": ["return_form", "status", "base", "exclusions"]}, {"title": "DISPLAY_MTH_AMT", "fields": ["regular", "amt", "carry", "regular_nol", "mtcnol"]}, {"title": "DISPLAY_MTH_FOREIGN", "fields": ["foreign_earned", "foreign_credit", "gains", "old_vehicle_credit"]}]}},
+    {"order": 899000, "rule": {"select": "^<MinimumTaxHistory>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_MTH_RETURN", "fields": ["return_form", "status", "base", "exclusions"]}, {"title": "DISPLAY_MTH_AMT", "fields": ["regular", "amt", "carry", "regular_nol", "mtcnol"]}, {"title": "DISPLAY_MTH_FOREIGN", "fields": ["foreign_earned", "foreign_credit", "gains", "old_vehicle_credit"]}]}}
+  ]
+}

@@ -5,9 +5,14 @@ use super::*;
 // A W-2 with box 1 wages and box 12 deferrals; the cents are whole dollars times 100.
 fn deferral_wage(id: i64, owner: Owner, wages: i64, codes: &[(W2Code, i64)]) -> FederalIncomeEntry {
     let mut e = wage(id, owner, wages, 0);
-    let FederalIncome::Wage { data } = &mut e.income else { unreachable!() };
-    data.retirement_plan = true;
-    data.other_box12 = codes.iter().map(|&(code, amount)| W2CodeAmount { code, amount }).collect();
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut e.income else {
+        unreachable!()
+    };
+    data.form.retirement_plan = true;
+    data.form.box12 = codes
+        .iter()
+        .map(|&(code, amount)| crate::PrintedBox12Entry { code, amount: Some(amount) })
+        .collect();
     e
 }
 
@@ -70,15 +75,19 @@ fn artist_with_benefits(benefits: i64) -> FederalDraft {
     for (id, amount, code_l) in [(1, 900_000, 30_000), (2, 650_000, 0)] {
         let mut e = wage(id, Owner::Taxpayer, amount, 0);
         if code_l > 0
-            && let FederalIncome::Wage { data } = &mut e.income
+            && let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut e.income
         {
-            data.other_box12.push(W2CodeAmount { code: W2Code::L, amount: code_l });
+            data.form
+                .box12
+                .push(crate::PrintedBox12Entry { code: W2Code::L, amount: Some(code_l) });
         }
         d.income.push(e);
     }
     d.next_id = 3;
     add(&mut d, income(social_security_net(benefits, 0)));
     d.adjustments.as_mut().unwrap().employee_expenses = vec![EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         leased_vehicles: vec![],
         owner: Owner::Taxpayer,
@@ -395,7 +404,7 @@ pub(in crate::tests) fn assert_schedule_1_foots(r: &FederalResult) {
 }
 
 // Form 8582 Parts IV and V foot the way the form does (F14, merge review D3): each part's
-// column totals (a), (b) and (c) give its line (1d, 2d), the two give line 3, and, with a net
+// column totals (a), b and (c) give its line (1d, 2d), the two give line 3, and, with a net
 // loss, line 10 is the income on lines 1a and 2a. A row that enters a column twice (a
 // publicly traded partnership's prior loss in both (a) and (c)) shows as a difference.
 pub(in crate::tests) fn assert_form_8582_foots(r: &FederalResult) {
@@ -427,17 +436,9 @@ pub(in crate::tests) fn assert_form_8582_foots(r: &FederalResult) {
     }
 }
 
-// Form 8958 lists each item of income once (F14, merge review D2): on a return made only of
-// the documents below, the income this return reports in the rows (`this_return`) is Form 1040
-// line 9, so a Form 1099 that became business income is not also a row of its own.
+// Form 8958 retains source cents. Form 1040 sums rounded reported categories;
+// a routed Form 1099 must not become a second item of business income.
 pub(in crate::tests) fn assert_form_8958_foots(d: &FederalDraft, r: &FederalResult) {
-    let rows: i64 = r
-        .lines
-        .iter()
-        .filter(|l| l.id.starts_with("form8958_") && l.id.ends_with("_this_return"))
-        .filter(|l| !l.id.starts_with("form8958_withholding_"))
-        .map(|l| l.amount)
-        .sum();
     let plain = d.income.iter().all(|e| {
         matches!(
             e.income,
@@ -450,10 +451,92 @@ pub(in crate::tests) fn assert_form_8958_foots(d: &FederalDraft, r: &FederalResu
     });
     // Tax credit bond interest is income the credits page holds, not a row of the form.
     let bonds = d.credits.as_ref().is_some_and(|credits| !credits.tax_credit_bonds.is_empty());
-    if rows == 0 || !plain || bonds {
+    if !plain || bonds {
         return;
     }
-    assert_eq!(rows, return_line(r, "9"), "Form 8958 income rows against Form 1040 line 9");
+    let mut categories = [0_i64; 6];
+    let mut income_rows = 0;
+    let mut count = 0;
+    let mut gains = alloc::collections::BTreeMap::new();
+    let mut details = alloc::collections::BTreeMap::<i64, [Option<i64>; 2]>::new();
+    for row in r
+        .lines
+        .iter()
+        .filter(|row| row.id.starts_with("form8958_") && row.id.ends_with("_this_return"))
+    {
+        if row.id.starts_with("form8958_withholding_") {
+            continue;
+        }
+        if let Some(gain) = row.id.strip_prefix("form8958_gain_") {
+            let detail = ["_ordinary_this_return", "_section1231_this_return"]
+                .iter()
+                .enumerate()
+                .find_map(|(axis, suffix)| gain.strip_suffix(*suffix).map(|id| (axis, id)));
+            if let Some((axis, id)) = detail {
+                let id = id.parse::<i64>().expect("property detail source identity");
+                assert!(details.entry(id).or_default()[axis].replace(row.amount).is_none());
+                continue;
+            }
+            let id = gain
+                .strip_suffix("_this_return")
+                .unwrap()
+                .parse::<i64>()
+                .expect("property income source identity");
+            assert!(gains.insert(id, row.amount).is_none());
+        } else {
+            let id = row
+                .id
+                .strip_prefix("form8958_")
+                .unwrap()
+                .strip_suffix("_this_return")
+                .unwrap()
+                .parse::<i64>()
+                .unwrap_or_else(|_| panic!("unclassified Form 8958 income row {}", row.id));
+            let source = d
+                .income
+                .iter()
+                .find(|source| source.id == id)
+                .expect("Form 8958 income has an accepted source");
+            let category = match &source.income {
+                FederalIncome::Wage { .. } => 0,
+                FederalIncome::Business { data } => {
+                    if matches!(data.activity, BusinessActivity::Farming { .. }) { 2 } else { 1 }
+                }
+                FederalIncome::Nec1099 { .. }
+                | FederalIncome::Misc1099 { .. }
+                | FederalIncome::K1099 { .. } => 3,
+                _ => unreachable!("plain source scope checked above"),
+            };
+            categories[category] += row.amount;
+        }
+        income_rows += row.amount;
+        count += 1;
+    }
+    if count == 0 {
+        assert!(details.is_empty(), "property subsets need an income row");
+        return;
+    }
+    assert_eq!(gains.len(), details.len(), "every property source has both category subsets");
+    let mut section1231 = 0;
+    for (id, gain) in gains {
+        let [ordinary, property] = details.remove(&id).expect("property category subsets");
+        let ordinary = ordinary.expect("ordinary property subset");
+        let property = property.expect("section 1231 property subset");
+        assert_eq!(ordinary + property, gain, "source {id}: property subsets conserve gain cents");
+        categories[4] += ordinary;
+        section1231 += property;
+    }
+    // This source scope has no lookback-history or other capital records.
+    // A net section 1231 loss is ordinary; a positive net is long-term gain.
+    categories[if section1231 <= 0 { 4 } else { 5 }] += section1231;
+    assert_eq!(
+        categories.iter().sum::<i64>(),
+        income_rows,
+        "every income row belongs to one category"
+    );
+    let reported: i64 =
+        categories.into_iter().map(|amount| crate::kernel::ratio::dollars(amount) * 100).sum();
+    assert_eq!(reported, return_line(r, "9"), "Form 8958 categories against Form 1040 line 9");
 }
 
 // Independently calculate the other separate return from the same whole
@@ -465,7 +548,11 @@ pub(in crate::tests) fn assert_form_8958_divided_sources_conserve(
 ) {
     let mut mirror = d.clone();
     for entry in &mut mirror.income {
-        entry.owner = if entry.owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+        entry.owner = if entry.owner == crate::DocumentOwner::Yours {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
     }
     let mirror = estimate(&mirror);
     assert_eq!(mirror.state, ResultState::EstimatedForSupportedScope, "{:?}", mirror.issues);
@@ -893,7 +980,9 @@ pub(in crate::tests) fn assert_form_5329_health_foots(r: &FederalResult) {
                     row.form_line,
                     Some(FormLine::new(TaxForm::Form5329, &alloc::format!("{number}")))
                 );
-                *projected.entry(alloc::format!("{number}")).or_default() += row.amount;
+                // The printed copy rounds each row to whole dollars (D-2026-10-19-01).
+                *projected.entry(alloc::format!("{number}")).or_default() +=
+                    crate::kernel::ratio::dollars(row.amount) * 100;
             }
             assert_eq!(at(start + 3), at(start + 1) + at(start + 2));
             assert_eq!(at(start + 4), (at(start) - at(start + 3)).max(0));
@@ -938,7 +1027,8 @@ pub(in crate::tests) fn assert_form_5329_rmd_foots(r: &FederalResult) {
             let row = rows[number];
             assert_eq!(row.kind, LineKind::Money);
             assert_eq!(row.form_line, Some(FormLine::new(TaxForm::Form5329, number)));
-            *expected.entry(number.into()).or_default() += row.amount;
+            *expected.entry(number.into()).or_default() +=
+                crate::kernel::ratio::dollars(row.amount) * 100;
         }
         for (suffix, minimum, distributed, tax, rate) in
             [("a", "52a", "53a", "54a", 10), ("b", "52b", "53b", "54b", 25)]
@@ -1094,8 +1184,8 @@ pub(in crate::tests) fn assert_form_8606_roth_foots(d: &FederalDraft, r: &Federa
             .income
             .iter()
              .filter(|e| {
-                e.owner == owner
-                    && matches!(&e.income, FederalIncome::Roth { data } if data.inherited == crate::InheritedLink::No)
+                e.owner == crate::DocumentOwner::from(owner)
+                    && matches!(&e.income, FederalIncome::Roth { data } if crate::RothWithdrawal::from(data).inherited == crate::InheritedLink::No)
             })
             .filter_map(|e| {
                 r.lines
@@ -1111,7 +1201,8 @@ pub(in crate::tests) fn assert_form_8606_roth_foots(d: &FederalDraft, r: &Federa
         for (number, row) in rows {
             assert_eq!(row.kind, LineKind::Money);
             assert_eq!(row.form_line, Some(FormLine::new(TaxForm::Form8606, number)));
-            *projected.entry(number.into()).or_default() += row.amount;
+            *projected.entry(number.into()).or_default() +=
+                crate::kernel::ratio::dollars(row.amount) * 100;
         }
     }
     let actual = shown(r, TaxForm::Form8606);
@@ -1238,7 +1329,8 @@ pub(in crate::tests) fn assert_form_8606_traditional_foots(r: &FederalResult) {
             assert_eq!(row.form_line, Some(FormLine::new(TaxForm::Form8606, number)));
             if number != "10" {
                 assert_eq!(row.kind, LineKind::Money);
-                *projected.entry(number.into()).or_default() += row.amount;
+                *projected.entry(number.into()).or_default() +=
+                    crate::kernel::ratio::dollars(row.amount) * 100;
             }
         }
     }
@@ -1249,7 +1341,8 @@ pub(in crate::tests) fn assert_form_8606_traditional_foots(r: &FederalResult) {
         if row.id.ends_with("_nondeductible_ira")
             && row.form_line.as_ref() == Some(&FormLine::new(TaxForm::Form8606, "1"))
         {
-            *projected.entry("1".into()).or_default() += row.amount;
+            *projected.entry("1".into()).or_default() +=
+                crate::kernel::ratio::dollars(row.amount) * 100;
         }
     }
     let actual = shown(r, TaxForm::Form8606);
@@ -1372,7 +1465,9 @@ pub(in crate::tests) fn assert_form_8915_foots(d: &FederalDraft, r: &FederalResu
         }
         for (number, value) in rows {
             if !matches!(*number, "A" | "B") {
-                *expected_projection.entry((*number).into()).or_default() += value;
+                // The printed copy rounds each row to whole dollars (D-2026-10-19-01).
+                *expected_projection.entry((*number).into()).or_default() +=
+                    crate::kernel::ratio::dollars(*value) * 100;
             }
         }
     }
@@ -1393,11 +1488,12 @@ pub(in crate::tests) fn assert_form_8915_foots(d: &FederalDraft, r: &FederalResu
         let owner = if who == "taxpayer" { Owner::Taxpayer } else { Owner::Spouse };
         let mut gross = [0; 3];
         for entry in &d.income {
-            if entry.owner != owner {
+            if entry.owner != crate::DocumentOwner::from(owner) {
                 continue;
             }
             match &entry.income {
                 FederalIncome::Retirement { data } => {
+                    let data = FederalRetirement::from(data);
                     gross[usize::from(data.kind.ira())] += data.gross
                 }
                 FederalIncome::Roth { data } => gross[2] += data.gross,
@@ -1426,7 +1522,9 @@ pub(in crate::tests) fn assert_form_8915_foots(d: &FederalDraft, r: &FederalResu
                     };
                     number == form_number
                         && id.parse::<i64>().ok().is_some_and(|id| {
-                            d.income.iter().any(|entry| entry.id == id && entry.owner == owner)
+                            d.income.iter().any(|entry| {
+                                entry.id == id && entry.owner == crate::DocumentOwner::from(owner)
+                            })
                         })
                 })
                 .map(|line| line.amount)
@@ -1490,11 +1588,14 @@ pub(in crate::tests) fn assert_schedule_d_summary_foots(d: &FederalDraft, r: &Fe
         .lines
         .iter()
         .filter_map(|row| {
-            row.id.strip_prefix("schedule_d_line_").map(|number| {
-                assert_eq!(row.kind, LineKind::Money);
-                assert_eq!(row.form_line, Some(FormLine::new(TaxForm::ScheduleD, number)));
-                (number, row.amount)
-            })
+            let number = row.id.strip_prefix("schedule_d_line_")?;
+            assert_eq!(row.kind, LineKind::Money);
+            if let Some(number) = number.strip_suffix("_unrounded") {
+                assert_eq!(row.form_line, Some(FormLine::subrow(TaxForm::ScheduleD, number)));
+                return None;
+            }
+            assert_eq!(row.form_line, Some(FormLine::new(TaxForm::ScheduleD, number)));
+            Some((number, row.amount))
         })
         .collect();
     if rows.is_empty() {
@@ -1550,7 +1651,7 @@ pub(in crate::tests) fn assert_schedule_d_summary_foots(d: &FederalDraft, r: &Fe
             exact_cell(number),
             exact_cell(&alloc::format!("{number}(d)")) - exact_cell(&alloc::format!("{number}(e)"))
                 + exact_cell(&alloc::format!("{number}(g)")),
-            "ScheduleD source{number} columns(d)-(e)+(g)=(h)"
+            "ScheduleD source{number} columns(d)-(e)+(g)=h"
         );
     }
     for (target, numbers) in [

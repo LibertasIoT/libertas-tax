@@ -1,19 +1,181 @@
 use super::*;
 use crate::federal_model::{NoteIdentity, ReviewNote};
-use crate::tests::support::client::survey::survey_preview_document;
+use alloc::string::{String, ToString};
+
+#[test]
+fn pending_household_issues_open_the_page_that_holds_the_answer() {
+    let draft = estimate_issue_household();
+    let result = estimate(&draft);
+    let items = crate::interview::remaining_items(&draft, &result, TaxSection::Review);
+    assert!(!items.is_empty());
+    assert!(items.iter().any(|row| row.section == TaxSection::Education));
+    assert!(items.iter().any(|row| row.section == TaxSection::Mortgage));
+    for issue in &result.issues {
+        for section in
+            crate::interview::issue_pages(&draft, &issue.context, Some(&issue.display.key))
+        {
+            assert!(matches!(section, TaxSection::Education | TaxSection::Mortgage), "{issue:?}");
+        }
+    }
+    let mut session = Interview::new(TEST_USER, draft);
+    let accepted = session.draft.clone();
+    for item in items {
+        let path =
+            item.field.as_deref().expect("a Review Fix names its answer on the destination page");
+        let expected: Vec<String> = match item.section {
+            TaxSection::Education => {
+                let student = accepted.credits.as_ref().unwrap().students[0].student;
+                let base =
+                    libertas::SchemaPath::root().field("value").field("students").key(student);
+                vec![
+                    base.clone().field("method").into(),
+                    base.field("more").field("american_opportunity_used_up").into(),
+                ]
+            }
+            TaxSection::Mortgage => {
+                let loan = accepted.deductions.as_ref().unwrap().mortgage[0].id;
+                let base = libertas::SchemaPath::root().field("value").field("loans").key(loan);
+                let asked = libertas::SchemaPath::root()
+                    .field("questions")
+                    .key(alloc::format!("mortgage/{loan}").as_str())
+                    .field("answer");
+                vec![base.field("points").into(), asked.into()]
+            }
+            other => panic!("fixture has no pending question on {other:?}"),
+        };
+        assert!(expected.iter().any(|expected| expected == path), "{item:?}");
+        let request = P::OpenSection {
+            user: TEST_USER,
+            cookie: session.draft.cookie.clone(),
+            revision: session.draft.revision,
+            from: TaxSection::Review as i32,
+            section: item.section,
+            reveal_path: item.field.clone(),
+        };
+        match (item.section, send(&mut session, request)) {
+            (TaxSection::Education, Reply::Edit(P::SaveEducation { value, .. })) => {
+                let student = value.students.iter().find(|student| student.student == -1).unwrap();
+                assert!(
+                    student.method.is_none() || student.more.american_opportunity_used_up.is_none()
+                );
+            }
+            (TaxSection::Mortgage, Reply::Edit(P::SaveMortgages { value, .. })) => {
+                assert!(value.loans.iter().any(|loan| loan.refund_origin.is_none()));
+            }
+            (section, reply) => panic!("{section:?} has no answer row: {reply:?}"),
+        }
+        assert_eq!(session.draft, accepted);
+        assert!(!session.dirty);
+    }
+}
+
+#[test]
+fn estimate_pages_show_local_fixes_and_one_review_count_without_changing_the_return() {
+    let mut session = Interview::new(TEST_USER, estimate_issue_household());
+    let accepted = session.draft.clone();
+    let result = estimate(&accepted);
+    let full = crate::tests::cross::interview::review_state(&mut session).0;
+    let full: Vec<_> = full
+        .into_iter()
+        .filter(|row| status_message(&row.status).key != "REVIEW_CONTINUE_FROM")
+        .collect();
+    for section in [TaxSection::Education, TaxSection::Mortgage, TaxSection::People] {
+        let reply = crate::tests::cross::interview::from_review(&mut session, section);
+        let shown = match reply {
+            Reply::Edit(P::SaveEducation { estimate: Some(estimate), .. })
+            | Reply::Edit(P::SaveMortgages { estimate: Some(estimate), .. })
+            | Reply::Edit(P::SavePeople { estimate: Some(estimate), .. }) => estimate,
+            other => panic!("{section:?}: {other:?}"),
+        };
+        let local = full.iter().filter(|row| row.section == section).count();
+        let other = full.len() - local;
+        assert_eq!(shown.remaining_items.len(), local + usize::from(other != 0));
+        for row in shown.remaining_items.iter().take(local) {
+            assert_eq!(row.section, section);
+            assert_eq!(status_message(&row.status).key, "DOCUMENT_PENDING_FIX");
+            let path = row.field.as_deref().expect("a local Fix locates its answer");
+            match section {
+                TaxSection::Education => {
+                    let student = accepted.credits.as_ref().unwrap().students[0].student;
+                    let base =
+                        libertas::SchemaPath::root().field("value").field("students").key(student);
+                    assert!(
+                        [
+                            base.clone().field("method").to_string(),
+                            base.field("more").field("american_opportunity_used_up").to_string()
+                        ]
+                        .iter()
+                        .any(|value| value == path)
+                    );
+                }
+                TaxSection::Mortgage => {
+                    let loan = accepted.deductions.as_ref().unwrap().mortgage[0].id;
+                    let base = libertas::SchemaPath::root().field("value").field("loans").key(loan);
+                    let asked = libertas::SchemaPath::root()
+                        .field("questions")
+                        .key(alloc::format!("mortgage/{loan}").as_str())
+                        .field("answer");
+                    assert!(
+                        [base.field("points").to_string(), asked.to_string()]
+                            .iter()
+                            .any(|value| value == path)
+                    );
+                }
+                _ => panic!("fixture has no local issue on {section:?}"),
+            }
+
+            assert!(full.iter().any(|source| source.section == section
+                && (source.item == row.item || source.status == row.item)));
+        }
+        if other != 0 {
+            let row = shown.remaining_items.last().unwrap();
+            assert_eq!(row.section, TaxSection::Review);
+            assert_eq!(row.field, None);
+            assert_eq!(
+                status_text(&row.status),
+                alloc::format!(
+                    "{other} more {} in later sections",
+                    if other == 1 { "item" } else { "items" }
+                )
+            );
+        }
+        assert_eq!(session.draft, accepted);
+        assert_eq!(estimate(&session.draft), result);
+    }
+    assert_eq!(
+        crate::tests::cross::interview::review_state(&mut session)
+            .0
+            .into_iter()
+            .filter(|row| status_message(&row.status).key != "REVIEW_CONTINUE_FROM")
+            .collect::<Vec<_>>(),
+        full
+    );
+
+    let mut only_education = accepted;
+    only_education.deductions.as_mut().unwrap().mortgage.clear();
+    let mut session = Interview::new(TEST_USER, only_education);
+    let Reply::Edit(P::SaveEducation { estimate: Some(shown), .. }) =
+        crate::tests::cross::interview::from_review(&mut session, TaxSection::Education)
+    else {
+        panic!()
+    };
+    assert!(!shown.remaining_items.is_empty());
+    assert!(shown.remaining_items.iter().all(|row| row.section == TaxSection::Education
+        && status_message(&row.status).key == "DOCUMENT_PENDING_FIX"));
+}
 
 #[test]
 fn omitted_equal_name_records_keep_distinct_nonblocking_correction_links() {
     let mut d = complete(FederalStatus::Single);
     for id in [2, 3] {
         let mut entry = income(FederalIncome::Gambling {
-            data: FederalGambling {
+            data: gambling_source(FederalGambling {
                 winnings: 100_000,
                 losses: 0,
                 withholding: 0,
                 own_records: false,
                 ordinary: false,
-            },
+            }),
         });
         entry.id = id;
         entry.label = "Same name".into();
@@ -50,12 +212,9 @@ fn omitted_equal_name_records_keep_distinct_nonblocking_correction_links() {
     };
     assert!(remaining_items.is_empty());
     assert_eq!(correction_notes.len(), 2);
-    assert!(
-        correction_notes
-            .iter()
-            .all(|n| n.section == TaxSection::Gambling
-                && status_text(&n.status).contains("Same name"))
-    );
+    assert!(correction_notes.iter().all(
+        |n| n.section == TaxSection::Documents && status_text(&n.status).contains("Same name")
+    ));
     assert!(allowed_actions.contains(&(libertas_macros::variant_index!(P::StartFinish) as i32)));
     assert!(
         !result
@@ -149,7 +308,7 @@ fn correction_overrides_keep_identity_and_offer_each_actual_owner() {
 }
 
 #[test]
-fn all_correction_rows_survive_above_64_and_ownerless_issues_have_no_self_link() {
+fn all_correction_rows_survive_above_64_and_issues_without_an_editor_open_their_source() {
     let mut d = complete(FederalStatus::Single);
     d.income = (1..=100).map(|id| wage(id, Owner::Taxpayer, 100_000, 0)).collect();
     let mut result = estimate(&d);
@@ -165,20 +324,17 @@ fn all_correction_rows_survive_above_64_and_ownerless_issues_have_no_self_link()
     }
     let items = crate::interview::remaining_items(&d, &result, TaxSection::Review);
     assert_eq!(items.len(), 100);
-    assert!(items.iter().all(|i| i.section == TaxSection::Wages));
+    assert!(items.iter().all(|i| i.section == TaxSection::Documents));
     result.issues.clear();
-    for context in [IssueContext::Review, IssueContext::income_id(999)] {
-        crate::federal_rules::issue_localized(
-            &mut result,
-            &context,
-            "No owner",
-            "REVIEW_NOT_ANSWERED",
-            "A readable issue",
-        );
-    }
-    assert!(crate::interview::remaining_items(&d, &result, TaxSection::Review).is_empty());
-    let displayed = FederalEstimate::from(result);
-    assert_eq!(displayed.issues.len(), 2, "no correction link must not remove the issue");
+    crate::federal_rules::issue_localized(
+        &mut result,
+        &crate::interview::income_issue_context(&d.income[0]).manual(),
+        "No editor",
+        "REVIEW_NOT_ANSWERED",
+        "A readable issue",
+    );
+    let items = crate::interview::remaining_items(&d, &result, TaxSection::Review);
+    assert_eq!(items.iter().map(|i| i.section).collect::<Vec<_>>(), [TaxSection::Documents]);
 }
 
 #[test]
@@ -186,24 +342,18 @@ fn excluded_w2g_previews_zero_inclusion_without_mutating_accepted_answers() {
     let d = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, d.clone());
     for (special, expected) in [(false, 100_000), (true, 0)] {
-        let reply = send(&mut session, {
-            let mut request = survey_preview_document(IncomeDocument::W2g(W2g {
+        let amount = crate::tests::support::client::income_pages::saved_document_amount(
+            &mut session,
+            IncomeSource::Gambling(w2g_document(W2g {
+                payer: Default::default(),
+                winner: Default::default(),
                 winnings: 100_000,
                 withholding: 0,
                 special,
                 state_details: Default::default(),
-            }));
-            let P::PreviewDocument { foreign_countries: request_countries, .. } = &mut request
-            else {
-                unreachable!()
-            };
-            *request_countries = crate::foreign_accounts::countries();
-            request
-        });
-        assert!(
-            matches!(reply, Reply::Response(P::IncomePreview { preview: Some(amount), .. }) if amount == expected),
-            "{reply:?}"
+            })),
         );
+        assert_eq!(amount, Some(expected));
         assert_eq!(session.draft, d);
     }
 }
@@ -222,7 +372,8 @@ fn completed_review_can_reopen_accepted_review_for_correction_notes() {
                 page: TaxSection::Review as i32,
                 previous: TaxSection::Review as i32,
                 review: true,
-                progress: vec![]
+                progress: vec![],
+                refund: crate::tests::cross::interview::whole_refund(),
             }
         ),
         Reply::Response(P::Finished { .. })
@@ -285,7 +436,14 @@ fn omitted_amt_loss_history_opens_its_actual_self_employment_editor() {
     assert!(result.issues.is_empty());
     let reply = send(
         &mut session,
-        P::OpenSection { user: TEST_USER, cookie, revision, from: page, section: note.section },
+        P::OpenSection {
+            user: TEST_USER,
+            cookie,
+            revision,
+            from: page,
+            section: note.section,
+            reveal_path: note.field.clone(),
+        },
     );
     assert!(
         matches!(reply, Reply::Edit(P::SaveIncomes { topic: TaxSection::SelfEmployment, .. })),
@@ -331,9 +489,11 @@ fn raw_only_hsa_funding_omissions_stay_distinct_and_readable_without_false_links
 #[test]
 fn readonly_coverage_projection_preserves_omitted_ira_records() {
     let mut d = complete(FederalStatus::Single);
-    let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.wages = 8_500_000;
-    data.retirement_plan = true;
+    let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut d.income[0].income else {
+        panic!()
+    };
+    data.form.wages = Some(8_500_000);
+    data.form.retirement_plan = true;
     let iras = ira_facts(600_000, 0, Answer::No);
     let mut rollover = qtp_roth_rollover();
     rollover.rollover.confirmed = false;
@@ -438,4 +598,134 @@ fn ltc_omission_keeps_the_accepted_insured_child() {
         source.item("long_term_care", 0).identity()
     );
     assert_eq!(draft, accepted);
+}
+
+// Native protocol values for the actual Studio preview; no production App hook.
+#[test]
+fn estimate_issue_client_fixture() {
+    extern crate std;
+    let mut session = Interview::new(TEST_USER, estimate_issue_household());
+    let Reply::Response(actions) = send(&mut session, P::Enter { user: TEST_USER }) else {
+        unreachable!()
+    };
+    if let Ok(directory) = std::env::var("TAX_ESTIMATE_CLIENT_FIXTURE_DIR") {
+        std::fs::write(std::path::Path::new(&directory).join("actions.avro"), actions.to_avro())
+            .unwrap();
+    }
+    for (section, name) in [
+        (TaxSection::Education, "education"),
+        (TaxSection::Mortgage, "mortgage"),
+        (TaxSection::Review, "review"),
+    ] {
+        let reply = crate::tests::cross::interview::from_review(&mut session, section);
+        let value = match reply {
+            Reply::Edit(value) | Reply::Response(value) => value,
+        };
+        assert!(matches!(
+            value,
+            P::SaveEducation { .. } | P::SaveMortgages { .. } | P::Review { .. }
+        ));
+        if let Ok(directory) = std::env::var("TAX_ESTIMATE_CLIENT_FIXTURE_DIR") {
+            std::fs::write(
+                std::path::Path::new(&directory).join(alloc::format!("{name}.avro")),
+                value.to_avro(),
+            )
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+fn mortgage_average_issue_opens_the_mortgage_answers_and_reveals_the_loan_list() {
+    let mut draft = estimate_issue_household();
+    let loan = &mut draft.deductions.as_mut().unwrap().mortgage[0];
+    loan.form.box_2 = 90_000_000;
+    loan.form.box_4 = 0;
+    loan.form.box_5 = 0;
+    loan.form.box_6 = 0;
+    let mut session = Interview::new(TEST_USER, draft);
+    let full = crate::tests::cross::interview::review_state(&mut session).0;
+    let row = full
+        .iter()
+        .find(|row| status_message(&row.status).key == "MORTGAGE_AVERAGE_NEEDED")
+        .unwrap();
+    assert_eq!(row.section, TaxSection::Mortgage);
+    let Reply::Edit(P::SaveMortgages { estimate: Some(estimate), .. }) =
+        crate::tests::cross::interview::from_review(&mut session, row.section)
+    else {
+        unreachable!()
+    };
+    let row = estimate
+        .remaining_items
+        .iter()
+        .find(|row| status_message(&row.item).key == "MORTGAGE_AVERAGE_NEEDED")
+        .unwrap();
+    assert_eq!(row.field.as_deref(), Some("[value/loans]"));
+    assert_eq!(status_message(&row.status).key, "DOCUMENT_PENDING_FIX");
+}
+
+#[test]
+fn pending_questions_omit_blank_document_names_and_retain_supplied_names() {
+    let mut draft = estimate_issue_household();
+    let mut loan =
+        nol_work_deductions(60_000, 0, 0, 100).deductions.unwrap().vehicle_loans.remove(0);
+    loan.id = draft.next_id;
+    draft.next_id += 1;
+    loan.document.box_5 = Some(100);
+    draft.deductions.as_mut().unwrap().vehicle_loans = vec![loan];
+    draft.credits.as_mut().unwrap().marketplace = marketplace_claim(
+        &mut draft,
+        vec![marketplace_month(1, 500, 600, 200), marketplace_month(2, 500, 600, 200)],
+    );
+    // Keep the required first coverage row; the second printed month still needs its answer.
+    marketplace_facts_mut(&mut draft).forms[0].coverage.pop().unwrap();
+    for name in ["", "   ", "Synthetic source"] {
+        draft.deductions.as_mut().unwrap().mortgage[0].property = name.into();
+        draft.deductions.as_mut().unwrap().vehicle_loans[0].document.lender.name = name.into();
+        // The issuer's schema requires at least one character; whitespace is a valid
+        // blank-rendering boundary. The other two source labels also permit empty text.
+        marketplace_facts_mut(&mut draft).forms[0].form.issuer =
+            if name.is_empty() { " " } else { name }.into();
+        let result = estimate(&draft);
+        let items = crate::interview::remaining_items(&draft, &result, TaxSection::Review);
+        for key in [
+            "DOCUMENT_MORTGAGE_REFUND_ORIGIN",
+            "DOCUMENT_VEHICLE_REFUND_BENEFIT",
+            "DOCUMENT_MARKETPLACE_ANSWERS",
+        ] {
+            if key == "DOCUMENT_MORTGAGE_REFUND_ORIGIN" {
+                // A Form 1098 is named by its printed lender and borrower, so the item names
+                // the document whatever the property label is, and is never blank.
+                assert!(
+                    items.iter().any(|item| {
+                        let message = status_message(&item.item);
+                        message.key == "DOCUMENT_PENDING_ANSWER"
+                            && message.args.first()
+                                == Some(&crate::MessageArg::Resource(key.into()))
+                            && message.args.len() == 2
+                    }),
+                    "{key}: {items:?}"
+                );
+                continue;
+            }
+            let expected = if name.trim().is_empty() {
+                crate::Message::new(key, vec![])
+            } else {
+                crate::Message::new(
+                    "DOCUMENT_PENDING_ANSWER",
+                    vec![
+                        crate::MessageArg::Resource(key.into()),
+                        crate::MessageArg::Nested(Box::new(crate::Message::new(
+                            "TEXT",
+                            vec![crate::MessageArg::Text(name.into())],
+                        ))),
+                    ],
+                )
+            };
+            assert!(
+                items.iter().any(|item| status_message(&item.item) == expected),
+                "{key}: {items:?}"
+            );
+        }
+    }
 }

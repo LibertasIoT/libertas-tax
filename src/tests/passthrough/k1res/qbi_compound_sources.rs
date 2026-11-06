@@ -1,10 +1,9 @@
 use crate::k1_activity::*;
-use crate::tests::cross::interview::{accepted, open_topic};
-use crate::tests::support::builders::k1res::{
-    documents, input, ordinary_multi_retained_qbi_parent,
-};
-use crate::tests::support::client::income_pages::catalog_preview_document;
+use crate::tests::cross::interview::accepted;
+use crate::tests::support::builders::k1res::expected_input;
+use crate::tests::support::builders::k1res::{documents, ordinary_multi_retained_qbi_parent};
 use crate::tests::support::client::k1res::ordinary_multi_retained_qbi_session;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::*;
 
 #[test]
@@ -15,7 +14,7 @@ fn retained_component_qbi_reaches_native_forms_and_corrects_without_changing_tax
     profit.qbi = Some(partner_qbi_statement(10_000));
     add(&mut session.draft, income(FederalIncome::Partnership { data: profit }));
     add(&mut session.draft, wage(0, Owner::Taxpayer, 6_000_000, 0));
-    session = restart(session.draft);
+    session = restart(known_fact_partnership_draft(session.draft));
     let result = supported(&session.draft);
     // Component A supplies $4,000; B releases its actual $1,000 basis and
     // $1,000 risk carries. Their fixed qualified portions are $500 + $800.
@@ -28,17 +27,12 @@ fn retained_component_qbi_reaches_native_forms_and_corrects_without_changing_tax
     }));
     let saved = session.draft.clone();
     let dirty = session.dirty;
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    let mut preview = catalog_preview_document(documents(&mut request)[0].document.clone());
-    let P::PreviewDocument { id: preview_id, .. } = &mut preview else { unreachable!() };
-    *preview_id = id;
-    assert!(matches!(
-        send(&mut session, preview),
-        Reply::Response(P::IncomePreview { preview: Some(200_000), .. })
-    ));
+    let mut request =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+
     assert_eq!(session.draft, saved);
     assert_eq!(session.dirty, dirty);
-    let IncomeDocument::K1PartnershipActivities(page) = &mut documents(&mut request)[0].document
+    let crate::K1Document::K1PartnershipActivities(page) = &mut documents(&mut request)[0].document
     else {
         unreachable!()
     };
@@ -53,11 +47,13 @@ fn retained_component_qbi_reaches_native_forms_and_corrects_without_changing_tax
     let risk = &mut records.history.as_mut().unwrap().risk[0];
     risk.qualified = 60_000;
     risk.remaining_qualified = 60_000;
-    let running =
-        send(&mut session, crate::tests::support::client::estimate_documents_from_save(&request));
-    assert!(matches!(running, Reply::Response(P::IncomeRunningEstimate { .. })));
+    let running = crate::tests::support::client::income_pages::candidate_save_review(
+        &mut session,
+        crate::tests::support::client::estimate_documents_from_save(&request),
+    );
+    assert!(matches!(running, Reply::Response(P::Review { .. })));
     assert_eq!(session.draft, saved);
-    accepted(&send(&mut session, request));
+    accepted(&send_fixture(&mut session, request));
     let corrected = supported(&session.draft);
     assert_eq!(value(&corrected, "agi"), 72_000);
     assert_eq!(value(&corrected, "qbi_deduction"), 1_780);
@@ -65,11 +61,11 @@ fn retained_component_qbi_reaches_native_forms_and_corrects_without_changing_tax
         line.form_line.as_ref().is_some_and(|f| f.form == TaxForm::Form8995 && f.line == "3")
             && line.amount == -110_000
     }));
-    let accepted_source = input(&session.draft.income[0].income);
+    let accepted_source = expected_input(&session.draft, &session.draft.income[0]);
     let mut cold = restart(session.draft.clone());
-    let mut reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let mut reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     assert_eq!(documents(&mut reopened)[0].document, accepted_source);
-    accepted(&send(&mut cold, reopened));
+    accepted(&send_fixture(&mut cold, reopened));
     assert_eq!(supported(&cold.draft), corrected);
 }
 

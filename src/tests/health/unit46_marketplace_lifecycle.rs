@@ -1,27 +1,26 @@
 use super::*;
+use crate::tests::support::client::income_pages::open_documents;
 use alloc::string::ToString;
 
-fn one_month(premium: i64, benchmark: i64, advance: i64) -> MarketplacePolicyRecordPage {
+fn one_month(premium: i64, benchmark: i64, advance: i64) -> MarketplaceDocumentView {
     let mut form = all_year("Actual January source", premium, benchmark, advance);
-    form.amounts = PolicyAmounts::ByMonth {
-        months: vec![PolicyMonth {
-            month: 1,
-            premium,
-            benchmark: Some(benchmark),
-            advance,
-        }],
-    };
-    form.coverage.retain(|row| row.month == 1);
+    form.value.set_amounts(PolicyAmounts::ByMonth {
+        months: vec![PolicyMonth { month: 1, premium, benchmark: Some(benchmark), advance }],
+    });
+    form.coverage.retain(|month| month.month == 1);
     form
 }
 fn single() -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 3_130_000, 0);
+    name_accepted_income_documents(&mut d);
     d
 }
 fn reopen(s: &mut Interview, value: MarketplaceFactsPage) -> MarketplaceFactsPage {
     let expected = value.clone();
-    let saved = save_marketplace_and_reopen(s, value);
+    let mut saved = save_marketplace_and_reopen(s, value);
+    let topic = open_credits_topic(s, TaxSection::Marketplace);
+    saved.forms = marketplace_page_of(&topic).forms.clone();
     // Only newly created accepted identities may change on Save.
     let mut normalized = saved.clone();
     for (row, expected) in normalized.forms.iter_mut().zip(&expected.forms) {
@@ -30,11 +29,7 @@ fn reopen(s: &mut Interview, value: MarketplaceFactsPage) -> MarketplaceFactsPag
     for (row, expected) in normalized.qsehra.iter_mut().zip(&expected.qsehra) {
         row.id = expected.id;
     }
-    for (row, expected) in normalized
-        .other_families
-        .iter_mut()
-        .zip(&expected.other_families)
-    {
+    for (row, expected) in normalized.other_families.iter_mut().zip(&expected.other_families) {
         row.id = expected.id;
     }
     for (row, expected) in normalized.covered.iter_mut().zip(&expected.covered) {
@@ -56,9 +51,33 @@ fn area(people: Vec<i64>, amount: i64) -> MarketplaceBenchmarkMonthPage {
         }],
     }
 }
+fn marketplace_request(s: &mut Interview, mut value: MarketplaceFactsPage) -> P {
+    let topic_forms = core::mem::take(&mut value.forms);
+    let forms: Vec<_> = topic_forms
+        .iter()
+        .map(|form| crate::Form1095ADocument { id: form.id, value: form.value.clone() })
+        .collect();
+    let mut source_page = open_documents(s);
+    let P::SaveDocuments { documents, .. } = &mut source_page else { unreachable!() };
+    if documents.common.marketplace.documents != forms {
+        let topic = open_credits_topic(s, TaxSection::Marketplace);
+        let mut accepted_facts = marketplace_page_of(&topic).clone();
+        accepted_facts.forms.clear();
+        assert_eq!(
+            value, accepted_facts,
+            "a source refusal must not also submit edited topic facts"
+        );
+        documents.common.marketplace.documents = forms;
+        source_page
+    } else {
+        value.forms = topic_forms;
+        save_marketplace(s, value)
+    }
+}
 fn invalid(s: &mut Interview, value: MarketplaceFactsPage) {
     let before = s.draft.clone();
-    error(send(s, save_marketplace(&before, value)));
+    let request = marketplace_request(s, value);
+    error(send(s, request));
     assert_eq!(s.draft, before);
 }
 
@@ -68,11 +87,15 @@ fn capture_marketplace(name: &str, session: &Interview, value: &MarketplaceFacts
         // Capture a genuinely delivered editor: its hidden picker catalogs
         // belong to the server and are never synthesized by the client probe.
         let mut reopened = restart(session.draft.clone());
-        let mut page = open_credits_topic(&mut reopened, TaxSection::Marketplace);
-        let P::SaveMarketplace { value: visible, .. } = &mut page else {
-            unreachable!()
-        };
-        *visible = value.clone();
+        let facts = value.clone();
+        let forms = facts
+            .forms
+            .iter()
+            .map(|form| crate::Form1095ADocument { id: form.id, value: form.value.clone() })
+            .collect();
+        let source = save_marketplace_sources(&mut reopened, forms);
+        accepted(&send(&mut reopened, source));
+        let page = save_marketplace(&mut reopened, facts);
         std::fs::write(path, page.to_avro()).unwrap();
     }
 }
@@ -108,10 +131,7 @@ fn unit46_g8962_2_qsehra_actual_sources_save_reopen_and_affordability_controls()
     saved.qsehra[0].months[0].self_only = 40_000;
     reopen(&mut s, saved);
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 0);
-    assert_eq!(
-        value_of(&supported(&s.draft), "premium_credit_repayment"),
-        300
-    );
+    assert_eq!(value_of(&supported(&s.draft), "premium_credit_repayment"), 300);
 }
 
 #[test]
@@ -167,7 +187,13 @@ fn unit46_g8962_2_dependent_notice_identity_saves_reopens_without_inferred_famil
             }
             _ => unreachable!(),
         }
-        rejected_with(send(&mut s, save_marketplace(&before, bad)), key);
+        rejected_with(
+            {
+                let request = marketplace_request(&mut s, bad);
+                send(&mut s, request)
+            },
+            key,
+        );
         assert_eq!(s.draft, before);
     }
     // Plan-covered metadata is not the employee's tax-family relationship
@@ -179,7 +205,7 @@ fn unit46_g8962_2_dependent_notice_identity_saves_reopens_without_inferred_famil
     let mut forged = saved;
     forged.qsehra[0].employee = employee + 100;
     let before = s.draft.clone();
-    let request = save_marketplace(&before, forged);
+    let request = marketplace_request(&mut s, forged);
     error(current_source_refusal(
         "health-context-18",
         &mut s,
@@ -204,14 +230,12 @@ fn unit46_g8962_3_lawful_family_cost_saves_reopens_and_never_guesses_missing_cos
         person: child,
         status: MarketplacePersonEligibility::NotLawfullyPresent,
     });
-    value.forms[0]
-        .lawful_premiums
-        .push(MarketplaceLawfulPremiumMonthPage {
-            month: 1,
-            people: vec![-1],
-            source: MarketplaceLawfulPremiumSource::Marketplace { amount: 80_000 },
-            paid: None,
-        });
+    value.forms[0].lawful_premiums.push(MarketplaceLawfulPremiumMonthPage {
+        month: 1,
+        people: vec![-1],
+        source: MarketplaceLawfulPremiumSource::Marketplace { amount: 80_000 },
+        paid: None,
+    });
     value.benchmarks.push(area(vec![-1], 90_000));
     let mut saved = reopen(&mut s, value);
     // The actual two-person tax family remains; annual contribution$1,252,
@@ -226,10 +250,7 @@ fn external_people(s: &mut Interview, labels: &[&str]) -> MarketplaceFactsPage {
     let value = MarketplaceFactsPage {
         other_families: labels
             .iter()
-            .map(|label| MarketplaceFamilyPage {
-                id: 0,
-                label: (*label).into(),
-            })
+            .map(|label| MarketplaceFamilyPage { id: 0, label: (*label).into() })
             .collect(),
         ..MarketplaceFactsPage::default()
     };
@@ -255,10 +276,7 @@ fn agreed(
     MarketplaceFamilySharePage {
         family,
         agreement: MarketplaceAgreement::Agreed {
-            share: MarketplaceFraction {
-                numerator,
-                denominator,
-            },
+            share: MarketplaceFraction { numerator, denominator },
         },
     }
 }
@@ -279,16 +297,12 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
             families: vec![
                 agreed(MarketplaceFamilyRefPage::ThisReturn, 25, 100),
                 agreed(
-                    MarketplaceFamilyRefPage::Other {
-                        family: value.other_families[0].id,
-                    },
+                    MarketplaceFamilyRefPage::Other { family: value.other_families[0].id },
                     40,
                     100,
                 ),
                 agreed(
-                    MarketplaceFamilyRefPage::Other {
-                        family: value.other_families[1].id,
-                    },
+                    MarketplaceFamilyRefPage::Other { family: value.other_families[1].id },
                     35,
                     100,
                 ),
@@ -308,10 +322,7 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
     let saved = reopen(&mut s, value);
     capture_marketplace("TAX_UNIT46_G4_VALID", &s, &saved);
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 2000);
-    assert_eq!(
-        value_of(&supported(&s.draft), "premium_credit_advance"),
-        1125
-    );
+    assert_eq!(value_of(&supported(&s.draft), "premium_credit_advance"), 1125);
     let mut wrong = saved.clone();
     let MarketplaceAllocationKindPage::OtherShared { families } =
         &mut wrong.forms[0].allocation[0].kind
@@ -319,10 +330,7 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
         unreachable!()
     };
     families[0].agreement = MarketplaceAgreement::Agreed {
-        share: MarketplaceFraction {
-            numerator: 26,
-            denominator: 100,
-        },
+        share: MarketplaceFraction { numerator: 26, denominator: 100 },
     };
     capture_marketplace("TAX_UNIT46_G4_OVER", &s, &wrong);
     invalid(&mut s, wrong);
@@ -333,10 +341,7 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
         unreachable!()
     };
     families[0].agreement = MarketplaceAgreement::Agreed {
-        share: MarketplaceFraction {
-            numerator: 24,
-            denominator: 100,
-        },
+        share: MarketplaceFraction { numerator: 24, denominator: 100 },
     };
     capture_marketplace("TAX_UNIT46_G4_UNDER", &s, &too_small);
     invalid(&mut s, too_small); // Explicit enrolling family cannot contradict its residual.
@@ -348,15 +353,11 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
     };
     families.remove(0);
     reopen(&mut s, omitted);
-    assert_eq!(
-        value_of(&supported(&s.draft), "premium_credit_advance"),
-        1125
-    );
+    assert_eq!(value_of(&supported(&s.draft), "premium_credit_advance"), 1125);
     let mut defaults = saved.clone();
     // Pub974 example2's actual enroller is Erik, not Bill (this return).
-    defaults.forms[0].enrolling = MarketplaceFamilyRefPage::Other {
-        family: defaults.other_families[1].id,
-    };
+    defaults.forms[0].enrolling =
+        MarketplaceFamilyRefPage::Other { family: defaults.other_families[1].id };
     let MarketplaceAllocationKindPage::OtherShared { families } =
         &mut defaults.forms[0].allocation[0].kind
     else {
@@ -374,18 +375,8 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
         let policy = &facts.forms[0];
         let counts = [
             (MarketplaceFamilyRef::ThisReturn, 1),
-            (
-                MarketplaceFamilyRef::Other {
-                    family: facts.other_families[0].id,
-                },
-                1,
-            ),
-            (
-                MarketplaceFamilyRef::Other {
-                    family: facts.other_families[1].id,
-                },
-                1,
-            ),
+            (MarketplaceFamilyRef::Other { family: facts.other_families[0].id }, 1),
+            (MarketplaceFamilyRef::Other { family: facts.other_families[1].id }, 1),
         ];
         let rows = crate::marketplace_allocation::allocate(
             &policy.allocation[0].kind,
@@ -395,17 +386,9 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
         )
         .unwrap();
         for (family, percent, premium, benchmark, advance) in [
+            (MarketplaceFamilyRef::ThisReturn, 33, 264_000, 297_000, 148_500),
             (
-                MarketplaceFamilyRef::ThisReturn,
-                33,
-                264_000,
-                297_000,
-                148_500,
-            ),
-            (
-                MarketplaceFamilyRef::Other {
-                    family: facts.other_families[0].id,
-                },
+                MarketplaceFamilyRef::Other { family: facts.other_families[0].id },
                 33,
                 264_000,
                 297_000,
@@ -414,10 +397,7 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
             (policy.enrolling.clone(), 34, 272_000, 306_000, 153_000),
         ] {
             let row = rows.iter().find(|row| row.family == family).unwrap();
-            assert_eq!(
-                row.premium,
-                crate::kernel::ratio::exact::ratio(percent, 100).unwrap()
-            );
+            assert_eq!(row.premium, crate::kernel::ratio::exact::ratio(percent, 100).unwrap());
             assert_eq!(
                 crate::kernel::ratio::exact::whole(800_000) * &row.premium,
                 crate::kernel::ratio::exact::whole(premium)
@@ -452,16 +432,10 @@ fn unit46_g8962_4_three_family_allocation_saves_reopens_and_rejects_overallocati
         unreachable!()
     };
     families[0].agreement = MarketplaceAgreement::Agreed {
-        share: MarketplaceFraction {
-            numerator: 99,
-            denominator: 100,
-        },
+        share: MarketplaceFraction { numerator: 99, denominator: 100 },
     };
     families[1].agreement = MarketplaceAgreement::Agreed {
-        share: MarketplaceFraction {
-            numerator: 99,
-            denominator: 100,
-        },
+        share: MarketplaceFraction { numerator: 99, denominator: 100 },
     };
     // NoAgreement in one actual family supersedes all partial agreements;
     // their 198% sum is not a selected agreed partition.
@@ -498,18 +472,8 @@ fn unit46_g8962_5_payment_exceptions_save_reopen_at_actual_coverage_and_appeal_b
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 0);
     for (coverage, credit) in [
         (MarketplacePaymentCoverage::FirstGraceMonth, 728),
-        (
-            MarketplacePaymentCoverage::ThresholdMet {
-                issuer_provided: true,
-            },
-            728,
-        ),
-        (
-            MarketplacePaymentCoverage::ThresholdMet {
-                issuer_provided: false,
-            },
-            0,
-        ),
+        (MarketplacePaymentCoverage::ThresholdMet { issuer_provided: true }, 728),
+        (MarketplacePaymentCoverage::ThresholdMet { issuer_provided: false }, 0),
         (
             MarketplacePaymentCoverage::EmergencyOrder {
                 issuer_provided: true,
@@ -547,15 +511,11 @@ fn unit46_g8962_5_payment_exceptions_save_reopen_at_actual_coverage_and_appeal_b
     wrong.forms[0].payments[0].paid += 1;
     invalid(&mut s, wrong);
     value.forms[0].payments[0].appeal = None;
-    value.forms[0].payments[0].coverage = MarketplacePaymentCoverage::NoQualifyingCoverage {
-        issuer_returned_advance: 60_000,
-    };
+    value.forms[0].payments[0].coverage =
+        MarketplacePaymentCoverage::NoQualifyingCoverage { issuer_returned_advance: 60_000 };
     reopen(&mut s, value);
     assert_eq!(value_of(&supported(&s.draft), "premium_credit_advance"), 0);
-    assert_eq!(
-        value_of(&supported(&s.draft), "premium_credit_repayment"),
-        0
-    );
+    assert_eq!(value_of(&supported(&s.draft), "premium_credit_repayment"), 0);
 }
 
 #[test]
@@ -569,9 +529,7 @@ fn unit46_g8962_6_mixed_mec_eligible_benchmark_saves_reopens_and_rejects_wrong_f
     value.eligibility.push(MarketplaceEligibilityMonthPage {
         month: 1,
         person: child,
-        status: MarketplacePersonEligibility::OtherMec {
-            kind: MarketplaceMecKind::Medicare,
-        },
+        status: MarketplacePersonEligibility::OtherMec { kind: MarketplaceMecKind::Medicare },
     });
     value.benchmarks.push(area(vec![-1], 90_000));
     let mut value = reopen(&mut s, value);
@@ -599,11 +557,7 @@ fn unit46_g8962_7_allocated_and_unallocated_benchmark_sources_save_reopen_withou
             ],
         },
     });
-    value.forms = vec![
-        shared,
-        one_month(70_000, 60_000, 0),
-        one_month(70_000, 60_000, 0),
-    ];
+    value.forms = vec![shared, one_month(70_000, 60_000, 0), one_month(70_000, 60_000, 0)];
     value.eligibility = [-1, other]
         .into_iter()
         .map(|person| MarketplaceEligibilityMonthPage {
@@ -617,10 +571,7 @@ fn unit46_g8962_7_allocated_and_unallocated_benchmark_sources_save_reopen_withou
     // Two unallocated statements repeat one actual$600 family benchmark.
     // Allocated$300+$600-$172 contribution=$728, not$1,328.
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 728);
-    assert_eq!(
-        value_of(&supported(&s.draft), "premium_credit_advance"),
-        300
-    );
+    assert_eq!(value_of(&supported(&s.draft), "premium_credit_advance"), 300);
     value.benchmarks.clear();
     reopen(&mut s, value);
     unsupported(&s.draft, "Marketplace source");
@@ -636,30 +587,8 @@ fn unit46_g8962_2_dependent_employee_income_and_person_specific_affordability_li
     let employee = d.dependents[0].id;
     let sibling = d.dependents[1].id;
     let (mut s, _) = at_the_marketplace_page(d);
-    if let Ok(path) = std::env::var("TAX_UNIT46_G2_CALC_INPUT") {
-        let before = s.draft.clone();
-        let request = P::from_avro(&std::fs::read(path).unwrap()).unwrap();
-        assert!(matches!(request, P::EstimateMarketplace { .. }));
-        let Reply::Response(response) = send(&mut s, request) else {
-            panic!("calculation response");
-        };
-        assert!(matches!(response, P::RunningEstimate { .. }));
-        assert_eq!(s.draft, before);
-        std::fs::write(
-            std::env::var("TAX_UNIT46_G2_CALC_OUTPUT").unwrap(),
-            response.to_avro(),
-        )
-        .unwrap();
-        return;
-    }
-    if let Ok(path) = std::env::var("TAX_UNIT46_G2_SEED") {
-        let seed = open_credits_topic(&mut s, TaxSection::Marketplace);
-        std::fs::write(path, seed.to_avro()).unwrap();
-    }
     let mut value = marketplace_fixture_page(vec![one_month(100_000, 90_000, 30_000)]);
-    value.forms[0].coverage[0]
-        .people
-        .extend([employee, sibling]);
+    value.forms[0].coverage[0].people.extend([employee, sibling]);
     for person in [employee, sibling] {
         value.eligibility.push(MarketplaceEligibilityMonthPage {
             month: 1,
@@ -692,16 +621,43 @@ fn unit46_g8962_2_dependent_employee_income_and_person_specific_affordability_li
         }],
         determinations: vec![],
     });
-    value
-        .employee_qsehra_facts
-        .push(MarketplaceQsehraEmployeeFactsPage {
-            employee,
-            income: Some(MarketplaceQsehraIncomeSource::RequiredReturn),
-            household: Some(MarketplaceQsehraEmployeeHouseholdPage::Known {
-                spouse: None,
-                dependents: vec![],
-            }),
-        });
+    value.employee_qsehra_facts.push(MarketplaceQsehraEmployeeFactsPage {
+        employee,
+        income: Some(MarketplaceQsehraIncomeSource::RequiredReturn),
+        household: Some(MarketplaceQsehraEmployeeHouseholdPage::Known {
+            spouse: None,
+            dependents: vec![],
+        }),
+    });
+    // Native-client probes begin after the separately accepted source editor.
+    if std::env::var("TAX_UNIT46_G2_CALC_INPUT").is_ok()
+        || std::env::var("TAX_UNIT46_G2_SEED").is_ok()
+    {
+        let forms = value
+            .forms
+            .iter()
+            .map(|form| crate::Form1095ADocument { id: form.id, value: form.value.clone() })
+            .collect();
+        let source = save_marketplace_sources(&mut s, forms);
+        accepted(&send(&mut s, source));
+    }
+    if let Ok(path) = std::env::var("TAX_UNIT46_G2_CALC_INPUT") {
+        let before = s.draft.clone();
+        let request = P::from_avro(&std::fs::read(path).unwrap()).unwrap();
+        assert!(matches!(request, P::EstimateMarketplace { .. }));
+        let Reply::Response(response) = send(&mut s, request) else {
+            panic!("calculation response");
+        };
+        assert!(matches!(response, P::RunningEstimate { .. }));
+        assert_eq!(s.draft, before);
+        std::fs::write(std::env::var("TAX_UNIT46_G2_CALC_OUTPUT").unwrap(), response.to_avro())
+            .unwrap();
+        return;
+    }
+    if let Ok(path) = std::env::var("TAX_UNIT46_G2_SEED") {
+        let seed = open_credits_topic(&mut s, TaxSection::Marketplace);
+        std::fs::write(path, seed.to_avro()).unwrap();
+    }
     if let Ok(path) = std::env::var("TAX_UNIT46_G2_ANSWERS") {
         // Preserve genuinely delivered hidden catalogs; fresh visible rows still have id0.
         let mut answers = value.clone();
@@ -713,14 +669,18 @@ fn unit46_g8962_2_dependent_employee_income_and_person_specific_affordability_li
         assert!(std::path::Path::new(&path).exists());
     }
     if let Ok(path) = std::env::var("TAX_UNIT46_G2_PAYLOAD") {
+        let forms = value
+            .forms
+            .iter()
+            .map(|form| crate::Form1095ADocument { id: form.id, value: form.value.clone() })
+            .collect();
+        let source = save_marketplace_sources(&mut s, forms);
+        accepted(&send(&mut s, source));
         let request = P::from_avro(&std::fs::read(path).unwrap()).unwrap();
         credits_hub(send_past_less_common(&mut s, request));
         let reopened = open_credits_topic(&mut s, TaxSection::Marketplace);
         let saved = marketplace_page_of(&reopened);
-        assert_eq!(
-            saved.forms[0].coverage[0].people,
-            vec![-1, employee, sibling]
-        );
+        assert_eq!(saved.forms[0].coverage[0].people, vec![-1, employee, sibling]);
         match std::env::var("TAX_UNIT46_G2_CASE").as_deref() {
             Ok("affordable") => {
                 assert_eq!(saved.qsehra[0].months[0].self_benchmark, 19_960);
@@ -753,10 +713,7 @@ fn unit46_g8962_2_dependent_employee_income_and_person_specific_affordability_li
     // 117% ->2.10%, annual$657, monthly$55. Employee own$12,000 gives
     // $99.60 affordability threshold. Required$100 is unaffordable, although
     // substituting claimant income would wrongly call it affordable.
-    assert_eq!(
-        value_of(&supported(&s.draft), "marketplace_household_income"),
-        31_300
-    );
+    assert_eq!(value_of(&supported(&s.draft), "marketplace_household_income"), 31_300);
     assert_eq!(
         crate::marketplace_qsehra::employee_income(stored_marketplace(&s), employee),
         Some(crate::kernel::ratio::exact::whole(1_200_000))
@@ -767,7 +724,10 @@ fn unit46_g8962_2_dependent_employee_income_and_person_specific_affordability_li
     let mut bad = value.clone();
     bad.employee_qsehra_facts[0].household = None;
     rejected_with(
-        send(&mut s, save_marketplace(&before, bad)),
+        {
+            let request = marketplace_request(&mut s, bad);
+            send(&mut s, request)
+        },
         "PTC_DEPENDENT_QSEHRA_RECONCILIATION_REQUIRED",
     );
     assert_eq!(s.draft, before);
@@ -785,7 +745,10 @@ fn unit46_g8962_2_dependent_employee_income_and_person_specific_affordability_li
         },
     });
     rejected_with(
-        send(&mut s, save_marketplace(&before, bad)),
+        {
+            let request = marketplace_request(&mut s, bad);
+            send(&mut s, request)
+        },
         "PTC_QSEHRA_RETURN_CONFLICT",
     );
     assert_eq!(s.draft, before);
@@ -827,8 +790,8 @@ fn unit47_marketplace_native_policy_cohort_survives_save_reopen_and_restart() {
         (0..31)
             .map(|index| {
                 let mut form = one_month(1_000, 100_000, 0);
-                form.issuer = alloc::format!("Synthetic insurer {index}");
-                form.policy_number = alloc::format!("Synthetic policy {index}");
+                form.value.issuer = alloc::format!("Synthetic insurer {index}");
+                form.value.policy_number = alloc::format!("Synthetic policy {index}");
                 form
             })
             .collect(),

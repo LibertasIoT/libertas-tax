@@ -8,12 +8,15 @@ fn capacity(source: &mut FederalIncome, amount: i64) {
     let risk = ScorpRiskStart::Detailed { capacity: amount * 100, profit: 0, loss: 0 };
     match source {
         FederalIncome::Partnership { data } => {
-            data.regular.basis.opening = amount * 100;
+            data.regular.basis.opening = Some(amount * 100);
             data.regular.risk.start = risk;
             data.alternative = Some(data.regular.clone());
         }
         FederalIncome::Scorp { data } => {
-            data.opening = amount * 100;
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
+            data.opening = Some(amount * 100);
             data.risk.start = risk;
             data.amt = Some(amt_records(data));
             for sale in &mut data.section179_sales {
@@ -33,6 +36,8 @@ fn with_wages(source: FederalIncome) -> FederalDraft {
 fn ordinary_source(mut source: FederalIncome, ordinary: i64) -> FederalIncome {
     k1_qbi_statement(&mut source, ordinary, false);
     if let FederalIncome::Scorp { data } = &mut source {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
         data.loss_qbi = sole_qbi_loss(-ordinary, 1_000_000, -ordinary).loss_qbi;
         data.qbi_statement.as_mut().unwrap().income = 0;
     }
@@ -44,7 +49,7 @@ fn property_source(mut source: FederalIncome, amount: i64) -> FederalIncome {
     k1_qbi_statement(&mut source, 0, false);
     let sales = match &mut source {
         FederalIncome::Partnership { data } => &mut data.section179_sales,
-        FederalIncome::Scorp { data } => &mut data.section179_sales,
+        FederalIncome::Scorp { data } => &mut data.statements.section179_sales,
         _ => unreachable!(),
     };
     sales[0].regular.as_mut().unwrap().price = 10_000_000;
@@ -59,6 +64,8 @@ fn k1_property_ebl_ordinary_sale_gain_offsets_operating_loss_in_each_tax_system(
     for mut source in sources(-400_000, 0, 0, 30_000) {
         k1_qbi_statement(&mut source, -400_000, false);
         if let FederalIncome::Scorp { data } = &mut source {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
             data.loss_qbi = sole_qbi_loss(400_000, 1_000_000, 400_000).loss_qbi;
             data.qbi_statement.as_mut().unwrap().income = 0;
         }
@@ -69,6 +76,9 @@ fn k1_property_ebl_ordinary_sale_gain_offsets_operating_loss_in_each_tax_system(
                     600_000
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales[0].alternative.reported_amounts_mut().unwrap().depreciation =
                     600_000
             }
@@ -118,7 +128,11 @@ fn k1_property_ebl_short_sale_loss_increases_disallowance_and_total_nol() {
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales[0].acquired = 20260301;
+                drop(source_edit);
                 capacity(&mut source, 1_000_000);
             }
             _ => unreachable!(),
@@ -181,7 +195,7 @@ fn k1_property_ebl_passive_ordinary_sale_loss_is_not_an_allowed_business_loss() 
         let mut source = ordinary_source(source, -400_000);
         match &mut source {
             FederalIncome::Partnership { data } => {
-                let PartnerParticipation::General { facts } = &mut data.participation else {
+                let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
                     unreachable!()
                 };
                 facts.minutes = 0;
@@ -189,8 +203,12 @@ fn k1_property_ebl_passive_ordinary_sale_loss_is_not_an_allowed_business_loss() 
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.participation.as_mut().unwrap().minutes = 0;
                 data.section179_sales[0].acquired = 20260301;
+                drop(source_edit);
                 capacity(&mut source, 1_000_000);
             }
             _ => unreachable!(),
@@ -206,14 +224,18 @@ fn k1_property_ebl_passive_ordinary_sale_loss_is_not_an_allowed_business_loss() 
 fn k1_property_ebl_shareholder_loan_gain_stays_nonbusiness() {
     let mut source = ordinary_source(sources(-400_000, 0, 0, 30_000)[1].clone(), -400_000);
     let FederalIncome::Scorp { data } = &mut source else { unreachable!() };
-    data.loans.push(ScorpLoan {
-        kind: ScorpLoanKind::OpenAccount,
-        repayment_term: ScorpNoteHolding::NoRepayment,
-        principal: 500_000,
-        basis: 300_000,
-        advances: 0,
-        repayments: 500_000,
-    });
+    {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
+        data.loans.push(ScorpLoan {
+            kind: ScorpLoanKind::OpenAccount,
+            repayment_term: ScorpNoteHolding::NoRepayment,
+            principal: 500_000,
+            basis: 300_000,
+            advances: 0,
+            repayments: 500_000,
+        });
+    }
     capacity(&mut source, 1_000_000);
     let d = with_wages(source);
     let r = supported(&d);

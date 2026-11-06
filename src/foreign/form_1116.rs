@@ -34,10 +34,11 @@
 use crate::foreign_capital::{
     AMT_FACTORS, CapitalInput, Outcome, REGULAR_FACTORS, RateBands, RateFactors,
 };
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{form_line, form_ratio, line};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{form_line, form_ratio, line};
 use crate::{
     FederalDraft, FederalIncome, FederalResult, ForeignAmtLimitation, ForeignCarryback,
     ForeignCreditCategory, ForeignCreditHistory, ForeignInterestAllocation,
@@ -56,8 +57,7 @@ const AMT_SOURCE: &str = "https://www.irs.gov/instructions/i6251";
 // the allocation arrays.
 pub(crate) const GENERAL: usize = 0;
 pub(crate) const PASSIVE_GROUPS: core::ops::Range<usize> = 1..5;
-pub(crate) const BRANCH: usize = 5;
-pub(crate) const SANCTIONED: usize = 6;
+pub(crate) use crate::foreign_source_basics::{BRANCH, SANCTIONED};
 pub(crate) const DOMESTIC: usize = 7;
 pub(crate) const SLOTS: usize = 8;
 const FOREIGN_GROUPS: usize = 7;
@@ -425,17 +425,19 @@ fn gather(
     claim: &Claim<'_>,
     basis: &CreditBasis,
     k3: &crate::schedule_k3::K3Credit,
+    sources: &[crate::estate_foreign::ForeignCatalogSource],
     small_interest: bool,
     r: &mut FederalResult,
-) -> Gathered {
+) -> Option<Gathered> {
     let mut g = Gathered::default();
+    let mut passive_cents = 0_i64;
     // The businesses run abroad of each owner, for the Form 2555 split.
     let abroad: Vec<&BusinessFacts> = basis.businesses.iter().filter(|b| b.abroad).collect();
     g.business_interest = basis.businesses.iter().map(|b| b.interest).sum();
     let mut business_cells: Vec<((usize, String), i64, usize, i64)> = Vec::new();
     // Each employment row by owner: its column, income and tax (cents).
     let mut employment_cells: [Vec<((usize, String), i64, i64)>; 2] = [Vec::new(), Vec::new()];
-    for source in claim.sources {
+    for source in sources {
         // An earlier year's tax counts only when taxes are claimed when paid
         // (FOREIGN_PRIOR_TAX_NEEDS_PAID_BASIS keeps the page from saving one).
         if *claim.basis == ForeignTaxBasis::Accrued
@@ -446,6 +448,20 @@ fn gather(
             )
         {
             continue;
+        }
+        // Check the actual passive pool before updating any country cell.
+        if matches!(source.category, ForeignTaxCategory::Passive { .. }) {
+            let Some(total) = passive_cents.checked_add(source.income) else {
+                crate::issue_localized!(
+                    r,
+                    &section(),
+                    "Foreign passive gross income",
+                    "FOREIGN_PASSIVE_GROSS_UNAVAILABLE",
+                    "The required Form 1116 passive gross income cannot be represented in its native amount. No final tax can be reported.",
+                );
+                return None;
+            };
+            passive_cents = total;
         }
         let group = source.group();
         let key = (group, code_of(&source.country));
@@ -462,23 +478,44 @@ fn gather(
             ForeignTaxCategory::PriorEmployeeWageTax { .. }
             | ForeignTaxCategory::PriorPassiveTax { .. } => {}
             ForeignTaxCategory::Passive { sales, .. } => {
-                g.passive_income += dollars(source.income);
                 for id in sales {
-                    let found = d.income.iter().find_map(|e| match &e.income {
-                        FederalIncome::Sale { data } if e.id == *id => Some(data),
-                        _ => None,
+                    let found = d.income.iter().find(|entry| entry.id == *id).and_then(|entry| {
+                        crate::broker_calculation::sale(&entry.income).map(|sale| (entry, sale))
                     });
-                    let Some(sale) = found else {
+                    let Some((entry, sale)) = found else {
                         g.stale = true;
                         continue;
                     };
-                    let gain = sale.gain();
-                    let term = usize::from(sale.term != crate::GainTerm::Short);
-                    if gain > 0 {
-                        g.cap_gain[group][term] += gain;
-                        g.cells.get_mut(&key).unwrap().gross += gain;
+                    let gain = if matches!(entry.income, FederalIncome::Broker { .. }) {
+                        crate::community::income_amount(d, entry.id, sale.gain())
                     } else {
-                        g.cap_loss[group][term] += -gain;
+                        sale.gain()
+                    };
+                    let term = usize::from(sale.term != crate::GainTerm::Short);
+                    let next = if gain > 0 {
+                        g.cap_gain[group][term]
+                            .checked_add(gain)
+                            .zip(g.cells.get(&key).unwrap().gross.checked_add(gain))
+                    } else {
+                        gain.checked_neg()
+                            .and_then(|loss| g.cap_loss[group][term].checked_add(loss))
+                            .map(|loss| (loss, 0))
+                    };
+                    let Some((amount, gross)) = next else {
+                        crate::issue_localized!(
+                            r,
+                            &section(),
+                            "Foreign passive gross income",
+                            "FOREIGN_PASSIVE_GROSS_UNAVAILABLE",
+                            "The required Form 1116 passive gross income cannot be represented in its native amount. No final tax can be reported.",
+                        );
+                        return None;
+                    };
+                    if gain > 0 {
+                        g.cap_gain[group][term] = amount;
+                        g.cells.get_mut(&key).unwrap().gross = gross;
+                    } else {
+                        g.cap_loss[group][term] = amount;
                     }
                 }
             }
@@ -602,8 +639,9 @@ fn gather(
             }
         }
     }
-    let _ = r;
-    g
+    // Reconcile actual source cents against the income owner before rounding.
+    g.passive_income = dollars(passive_cents);
+    Some(g)
 }
 
 // ---- One tax system's allocation, kickout and limits ----
@@ -675,13 +713,13 @@ fn groups_of(g: &Gathered, first: usize) -> Groups {
 }
 
 struct Ctx<'a> {
-    cells: &'a alloc::collections::BTreeMap<(usize, String), Cell>,
+    cells: [&'a alloc::collections::BTreeMap<(usize, String), Cell>; 2],
     claim: &'a Claim<'a>,
     basis: &'a CreditBasis,
     k3: &'a crate::schedule_k3::K3Credit,
     status: crate::FederalStatus,
     small_interest: bool,
-    groups: Groups,
+    groups: [Groups; 2],
     // Form 2555 excluded gross income of both people.
     excluded_total: i64,
     k3_partner: i64,
@@ -694,7 +732,7 @@ struct Ctx<'a> {
     loan_interest: i64,
     educator: i64,
     amt_rate: i64,
-    foreign_qualified: i64,
+    foreign_qualified: [i64; 2],
     // Form 1116 line 16 adjustment 1: the section 461(l) disallowed loss added
     // back to the category of the business run abroad that lost it.
     excess_loss: [i64; 4],
@@ -751,7 +789,7 @@ impl Ctx<'_> {
         let basis = self.basis;
         let s = usize::from(amt);
         let mut out = SystemOut { amt, ..SystemOut::default() };
-        let groups = &self.groups;
+        let groups = &self.groups[s];
         let system = if amt { "amt" } else { "regular" };
         // ---- Line 3e and the deductions to apportion ----
         let restored = basis.ira_deduction
@@ -869,7 +907,7 @@ impl Ctx<'_> {
         let foreign_net_gain = positive(foreign_long - positive(-foreign_short));
         let excepted = *self.claim.rate_adjustment == ForeignRateAdjustment::Exception
             && line5 <= top_24
-            && foreign_net_gain + self.foreign_qualified
+            && foreign_net_gain + self.foreign_qualified[s]
                 < crate::year_constants::FOREIGN_RATE_ADJUSTMENT_EXCEPTION_DOLLARS;
         regular_bands.adjust &= !excepted;
         amt_bands.adjust &= !(excepted && line17 <= rates.bracket);
@@ -980,7 +1018,7 @@ impl Ctx<'_> {
             r,
             !(amt && simplified)
                 || (!current.created && !self.claim.loss_history.has_amt_activity()),
-            &(crate::IssueContext::Review).manual(),
+            &crate::IssueContext::Section(crate::TaxSection::MoreCredits),
             "Simplified foreign loss accounts",
             "ISSUE_SEPARATE_NEW_OR_RETAINED_AMT_LOSS_ACCOUNTS_WITH_THE_SIMPLIFIED_ELEC_6A3F1F75",
             "Separate new or retained AMT loss accounts with the simplified election require coordinated account worksheets. Regular loss adjustments flow through the elected regular Form 1116 line 17 numerator.",
@@ -1330,7 +1368,10 @@ fn k3_context(d: &FederalDraft, position: usize) -> crate::IssueContext {
         .iter()
         .filter(|entry| match &entry.income {
             FederalIncome::Partnership { data } => data.schedule_k3.is_some(),
-            FederalIncome::Scorp { data } => data.schedule_k3.is_some(),
+            FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                data.schedule_k3.is_some()
+            }
             _ => false,
         })
         .nth(position)
@@ -1378,7 +1419,7 @@ pub(crate) fn ordinary(
                 ) && source.tax > 0
                     && source.income > 0
             }),
-        &(crate::IssueContext::Review).manual(),
+        &crate::IssueContext::Section(crate::TaxSection::MoreCredits),
         "Prior passive foreign tax",
         "ISSUE_THE_TAX_ON_EARLIER_PASSIVE_INCOME_HAS_ZERO_CURRENT_INCOME_AND_BELON_BFDCCCF9",
         "The tax on earlier passive income has zero current income and belongs to the no-withholding/net-basis-tax group. Current income in that same group needs separate source-year coordination; current passive income in the other withholding groups is calculated independently.",
@@ -1387,6 +1428,7 @@ pub(crate) fn ordinary(
         r,
         !claim.sources.is_empty()
             || k3.row_count() > 0
+            || crate::estate_foreign::requested(d)
             || claim.history.present()
             || claim.loss_history.present(),
         &section(),
@@ -1400,7 +1442,7 @@ pub(crate) fn ordinary(
             r,
             // No was taken as the normal method (unknowns::supported).
             claim.amt_limitation.valid() && *confirmed,
-            &crate::IssueContext::Review,
+            &crate::IssueContext::Section(crate::TaxSection::MoreCredits),
             "AMT foreign-credit election",
             "ISSUE_CONFIRM_A_SIMPLIFIED_LIMITATION_ELECTION_MADE_FOR_THE_FIRST_POST_19_ABA00D30",
             "Confirm a simplified limitation election made for the first post-1997 AMT foreign-credit claim year and still in force. A later first election or unconfirmed history cannot be assumed.",
@@ -1431,7 +1473,23 @@ pub(crate) fn ordinary(
         );
     }
     // ---- What the rows and the schedules give ----
-    let gathered = gather(d, claim, basis, &k3, small_interest, r);
+    let estate =
+        [crate::estate_foreign::sources(d, false), crate::estate_foreign::sources(d, true)];
+    let catalogs: [Vec<_>; 2] = core::array::from_fn(|system| {
+        claim
+            .sources
+            .iter()
+            .map(crate::estate_foreign::ForeignCatalogSource::direct)
+            .chain(estate[system].iter().cloned())
+            .collect()
+    });
+    let catalog = &catalogs[0];
+    let Some(gathered) = gather(d, claim, basis, &k3, &catalogs[0], small_interest, r) else {
+        return (0, 0, NativeForeignCreditSources::unavailable(0));
+    };
+    let Some(gathered_amt) = gather(d, claim, basis, &k3, &catalogs[1], small_interest, r) else {
+        return (0, 0, NativeForeignCreditSources::unavailable(0));
+    };
     crate::require_localized!(
         r,
         !gathered.stale,
@@ -1445,7 +1503,14 @@ pub(crate) fn ordinary(
     let groups = groups_of(&gathered, first);
     let foreign_gross: i64 = groups.gross.iter().sum();
     let qualified_rows: i64 = claim.sources.iter().map(|s| s.qualified()).sum();
-    let foreign_qualified = dollars(qualified_rows + k3.qualified.iter().sum::<i64>());
+    let qualified_by_system: [i64; 2] = core::array::from_fn(|system| {
+        dollars(
+            qualified_rows
+                + estate[system].iter().map(|source| source.qualified()).sum::<i64>()
+                + k3.qualified.iter().sum::<i64>(),
+        )
+    });
+    let foreign_qualified = qualified_by_system[0];
     let employment_by_owner = gathered.employment;
     let employment: i64 = employment_by_owner.iter().sum();
     let reconciled = (0..2).all(|i| {
@@ -1516,18 +1581,20 @@ pub(crate) fn ordinary(
         allocated[1][DOMESTIC] = basis.investment[1];
         allocated
     } else {
-        let mut passive_by_group = [0; SLOTS];
-        passive_by_group[..FOREIGN_GROUPS].copy_from_slice(&groups.gross);
+        let mut passive_by_group = [[0; SLOTS]; 2];
+        passive_by_group[0][..FOREIGN_GROUPS].copy_from_slice(&groups.gross);
+        passive_by_group[1][..FOREIGN_GROUPS]
+            .copy_from_slice(&groups_of(&gathered_amt, first).gross);
         claim.investment_assets.allocate(
             basis.investment,
-            claim.sources,
+            [&catalogs[0], &catalogs[1]],
             positive(basis.portfolio - gathered.passive_income),
             passive_by_group,
             r,
         )
     };
     let state_expenses =
-        claim.state_taxes.allocate(basis.state_paid, basis.state_deduction, claim.sources, r);
+        claim.state_taxes.allocate(basis.state_paid, basis.state_deduction, catalog, r);
     let educator = if basis.employee_pay > 0 && basis.educator > 0 {
         fraction(basis.educator, employment, basis.employee_pay)
     } else {
@@ -1556,10 +1623,10 @@ pub(crate) fn ordinary(
         claim,
         basis,
         k3: &k3,
-        cells: &gathered.cells,
+        cells: [&gathered.cells, &gathered_amt.cells],
         status,
         small_interest,
-        groups,
+        groups: [groups, groups_of(&gathered_amt, first)],
         excluded_total,
         k3_partner: dollars(k3.partner_deductions),
         state_expenses,
@@ -1571,7 +1638,7 @@ pub(crate) fn ordinary(
         loan_interest,
         educator,
         amt_rate,
-        foreign_qualified,
+        foreign_qualified: qualified_by_system,
         excess_loss,
     };
     let regular = ctx.system(false, None, simplified, r);
@@ -1702,7 +1769,7 @@ pub(crate) fn ordinary(
 impl Ctx<'_> {
     // Whether the return has a source in the category slot.
     fn slot_present(&self, slot: usize) -> bool {
-        self.cells.keys().any(|(g, _)| slot_of(*g) == slot)
+        self.cells.iter().any(|cells| cells.keys().any(|(g, _)| slot_of(*g) == slot))
     }
 }
 
@@ -1783,7 +1850,7 @@ fn current_credit_sources(
 }
 
 fn build_form(ctx: &Ctx<'_>, out: &SystemOut, slot: usize, opening: i64) -> Option<Form1116> {
-    let groups = &ctx.groups;
+    let groups = &ctx.groups[usize::from(out.amt)];
     let members: Vec<usize> = match slot {
         0 => vec![GENERAL],
         1 => PASSIVE_GROUPS.collect(),
@@ -1800,8 +1867,7 @@ fn build_form(ctx: &Ctx<'_>, out: &SystemOut, slot: usize, opening: i64) -> Opti
         alloc::collections::BTreeMap::new();
     let mut taxes: alloc::collections::BTreeMap<String, i64> = alloc::collections::BTreeMap::new();
     for &g in &members {
-        let cells: Vec<(&String, &Cell)> = ctx
-            .cells
+        let cells: Vec<(&String, &Cell)> = ctx.cells[usize::from(out.amt)]
             .iter()
             .filter(|((group, _), _)| *group == g)
             .map(|((_, country), cell)| (country, cell))
@@ -1978,7 +2044,7 @@ fn emit_components(ctx: &Ctx<'_>, systems: [&SystemOut; 2], r: &mut FederalResul
         );
     }
     if ctx.basis.excluded_income.iter().sum::<i64>() > 0 {
-        let reduction: i64 = ctx.cells.values().map(|c| c.reduction).sum::<i64>()
+        let reduction: i64 = ctx.cells[0].values().map(|c| c.reduction).sum::<i64>()
             - dollars_to_cents(ctx.k3.reductions);
         emit_lines(
             r,
@@ -2156,9 +2222,7 @@ impl ForeignTaxSituation {
 
 // The accepted and Page country fields both declare ordinary String Size2..3.
 // Keep their separate two-codepoint-or-RIC format rule in the source walk.
-pub(crate) fn country_size_valid(country: &str) -> bool {
-    (2..=3).contains(&country.len())
-}
+pub(crate) use crate::foreign_allocation_source::country_size_valid;
 // Native source authority; country failures carry a relative source-row path.
 // `businesses` comes from actual accepted abroad-business identities and owners.
 pub(crate) fn claim_rule(

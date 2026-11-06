@@ -42,34 +42,40 @@ fn listing(original: &FederalIncomeEntry, retained: &FederalIncomeEntry) -> List
         };
     }
     match &original.income {
-        FederalIncome::Interest { data: v } => Listing {
-            gross: v.taxable + v.us_obligations + v.market_discount,
-            nominee: v
-                .nominee
-                .as_ref()
-                .map_or(0, |n| n.taxable + n.us_obligations + n.market_discount),
-            estate: v
-                .after_death
-                .as_ref()
-                .map_or(0, |a| a.taxable + a.us_obligations + a.market_discount),
-            prior: v.adjustments.as_ref().map_or(0, |a| a.previously_reported),
-            accrued: v.accrued_interest
-                - v.nominee.as_ref().map_or(0, |n| n.accrued_interest)
-                - v.after_death.as_ref().map_or(0, |a| a.accrued_interest),
-            net: parts.interest,
-        },
-        FederalIncome::Oid { data: v } => Listing {
-            gross: v.oid + v.other_periodic_interest + v.treasury_oid + v.market_discount,
-            nominee: v.nominee.as_ref().map_or(0, |n| {
-                n.oid + n.other_periodic_interest + n.treasury_oid + n.market_discount
-            }),
-            net: parts.interest,
-            ..Default::default()
-        },
+        FederalIncome::Interest { data: v } => {
+            let v = &crate::FederalInterest::from(v);
+            Listing {
+                gross: v.taxable + v.us_obligations + v.market_discount,
+                nominee: v
+                    .nominee
+                    .as_ref()
+                    .map_or(0, |n| n.taxable + n.us_obligations + n.market_discount),
+                estate: v
+                    .after_death
+                    .as_ref()
+                    .map_or(0, |a| a.taxable + a.us_obligations + a.market_discount),
+                prior: v.adjustments.as_ref().map_or(0, |a| a.previously_reported),
+                accrued: v.accrued_interest
+                    - v.nominee.as_ref().map_or(0, |n| n.accrued_interest)
+                    - v.after_death.as_ref().map_or(0, |a| a.accrued_interest),
+                net: parts.interest,
+            }
+        }
+        FederalIncome::Oid { data: v } => {
+            let v = &crate::FederalOid::from(v);
+            Listing {
+                gross: v.oid + v.other_periodic_interest + v.treasury_oid + v.market_discount,
+                nominee: v.nominee.as_ref().map_or(0, |n| {
+                    n.oid + n.other_periodic_interest + n.treasury_oid + n.market_discount
+                }),
+                net: parts.interest,
+                ..Default::default()
+            }
+        }
         FederalIncome::Dividend { data: v } => Listing {
-            gross: v.ordinary,
+            gross: v.form.ordinary.unwrap_or(0),
             nominee: v.nominee.as_ref().map_or(0, |n| n.ordinary),
-            estate: v.after_death.as_ref().map_or(0, |a| a.ordinary),
+            estate: v.after_death.as_ref().map_or(0, |a| a.record().ordinary),
             net: parts.ordinary_dividends,
             ..Default::default()
         },
@@ -85,7 +91,7 @@ fn emit(
     label: &str,
     kind: &str,
 ) {
-    crate::kernel::lines::push_line(
+    crate::line_emission::push_line(
         r,
         Some(crate::FormLine::subrow(
             crate::TaxForm::ScheduleB,
@@ -143,9 +149,9 @@ pub(crate) fn report(original: &FederalDraft, working: &FederalDraft, r: &mut Fe
             continue;
         };
         let mut row = listing(raw, entry);
-        if let Some(share) = working.setup.as_ref().and_then(|setup| {
-            crate::community::share(setup, entry.owner, entry.community, &entry.income)
-        }) {
+        if let Some(share) =
+            working.setup.as_ref().and_then(|setup| crate::community::entry_share(setup, entry))
+        {
             row.gross = share.filer(row.gross);
             row.nominee = share.filer(row.nominee);
             row.estate = share.filer(row.estate);
@@ -158,11 +164,11 @@ pub(crate) fn report(original: &FederalDraft, working: &FederalDraft, r: &mut Fe
     // Seller-financed home mortgage interest is listed first, as instructed.
     statements.sort_by_key(|(entry, _)| {
         !matches!(&entry.income,
-        FederalIncome::Interest { data } if data.seller_mortgage.is_some())
+        FederalIncome::Interest { data } if crate::FederalInterest::from(data).seller_mortgage.is_some())
     });
     let first_required = interest > 150_000 || exclusion > 0 || statements.iter().any(|(e, row)|
         !matches!(e.income, FederalIncome::Dividend { .. }) && (row.gross != row.net
-            || matches!(&e.income, FederalIncome::Interest { data } if data.seller_mortgage.is_some())));
+            || matches!(&e.income, FederalIncome::Interest { data } if crate::FederalInterest::from(data).seller_mortgage.is_some())));
     let second_required = dividends > 150_000
         || statements.iter().any(|(e, row)| {
             matches!(e.income, FederalIncome::Dividend { .. }) && row.gross != row.net
@@ -181,7 +187,7 @@ pub(crate) fn report(original: &FederalDraft, working: &FederalDraft, r: &mut Fe
         }
         let part = if dividend { "dividend" } else { "interest" };
         let label = if let FederalIncome::Interest { data } = &entry.income
-            && let Some(buyer) = &data.seller_mortgage
+            && let Some(buyer) = &crate::FederalInterest::from(data).seller_mortgage
         {
             alloc::format!("{}; {}; {}", buyer.buyer, buyer.buyer_tin, buyer.buyer_address)
         } else {
@@ -243,7 +249,7 @@ pub(crate) fn report(original: &FederalDraft, working: &FederalDraft, r: &mut Fe
         ),
     ] {
         if required {
-            crate::kernel::lines::push_line(
+            crate::line_emission::push_line(
                 r,
                 Some(crate::FormLine::new(crate::TaxForm::ScheduleB, reference)),
                 id,
@@ -260,7 +266,7 @@ pub(crate) fn report(original: &FederalDraft, working: &FederalDraft, r: &mut Fe
             ("7a(2)", "schedule_b_fbar_required", answer(s.fbar_required)),
             ("8", "schedule_b_foreign_trust", answer(Some(s.foreign_trust))),
         ] {
-            crate::kernel::lines::form_value(
+            crate::line_emission::form_value(
                 r,
                 crate::FormLine::new(crate::TaxForm::ScheduleB, number),
                 id,
@@ -286,7 +292,7 @@ pub(crate) fn report(original: &FederalDraft, working: &FederalDraft, r: &mut Fe
         ));
         for id in &s.fbar_countries {
             if let Some(key) = crate::foreign_accounts::country_key(*id) {
-                crate::kernel::lines::form_value(
+                crate::line_emission::form_value(
                     r,
                     crate::FormLine::subrow(crate::TaxForm::ScheduleB, "7b"),
                     &alloc::format!("schedule_b_country_{id}"),

@@ -7,8 +7,7 @@ fn fixture_g_home_itemizer_and_standard_routes() {
     let mut home = home_fixture();
     link_home_fixture(&mut d, &mut home);
     let id = put(&mut d, home);
-    d.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Itemized { facts: itemized(d.deductions.as_mut().unwrap()).clone() };
+    d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), -5167);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 2000);
@@ -17,7 +16,7 @@ fn fixture_g_home_itemizer_and_standard_routes() {
         crate::extended_rules::home_personal_shares(&d),
         [crate::kernel::ratio::exact::whole(0), crate::kernel::ratio::exact::whole(133333)]
     );
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), 0);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 7167);
@@ -60,20 +59,36 @@ fn linked_property(rent: i64, interest: i64) -> (FederalDraft, i64) {
     link_home_fixture(&mut d, &mut v);
     let id = put(&mut d, v);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     (d, id)
 }
-fn linked_ledger(d: &mut FederalDraft) -> &mut MortgageLedger {
-    match &mut d.deductions.as_mut().unwrap().mortgage[0].details {
-        MortgageLoanDetails::FirstLender(v) => v,
-        _ => unreachable!(),
+struct LedgerEdit<'a>(FixtureEdit<'a, Mortgage1098Source, MortgageLoan>);
+impl core::ops::Deref for LedgerEdit<'_> {
+    type Target = MortgageLedger;
+    fn deref(&self) -> &MortgageLedger {
+        match &self.0.details {
+            MortgageLoanDetails::FirstLender(v) => v,
+            _ => unreachable!(),
+        }
     }
+}
+impl core::ops::DerefMut for LedgerEdit<'_> {
+    fn deref_mut(&mut self) -> &mut MortgageLedger {
+        match &mut self.0.details {
+            MortgageLoanDetails::FirstLender(v) => v,
+            _ => unreachable!(),
+        }
+    }
+}
+fn linked_ledger(d: &mut FederalDraft) -> LedgerEdit<'_> {
+    LedgerEdit(edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]))
 }
 #[test]
 fn linked_home_interest_uses_acquisition_tracing_debt_cap_and_one_personal_share() {
     let (mut d, id) = linked_property(100, 4000);
-    let loan = &mut d.deductions.as_mut().unwrap().mortgage[0];
+    let mut loan = edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]);
     loan.outstanding_principal = 1500000 * 100;
+    drop(loan);
     linked_ledger(&mut d).average =
         MortgageAverageBalance::FirstAndLast { last_balance: 1500000 * 100 };
     linked_ledger(&mut d).purpose = MortgageUse::Partly(MortgageSplit {
@@ -81,21 +96,27 @@ fn linked_home_interest_uses_acquisition_tracing_debt_cap_and_one_personal_share
         improvement_incurred: 20200601,
         other: 500000 * 100,
     });
-    let p = crate::mortgage_limit::loan_allowances(&d.deductions.as_ref().unwrap().mortgage, false)
-        .remove(0);
+    let p = crate::mortgage_limit::loan_allowances(
+        &d.deductions.as_ref().unwrap().mortgage.iter().map(mortgage_loan).collect::<Vec<_>>(),
+        false,
+    )
+    .remove(0);
     assert_eq!(p.qualified_interest_cents, 266667);
     assert_eq!(p.regular_interest_cents, 200000);
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), -900);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 333);
     assert_eq!(value(&r, "mortgage_interest_8a"), 1000);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), 0);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 1233);
     let ded = d.deductions.as_mut().unwrap();
     let facts = itemized(ded).clone();
-    ded.choice = DeductionSelection::Itemized { facts };
+    {
+        ded.itemized = facts;
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
+    };
     linked_ledger(&mut d).home = MortgageHome::NotQualified;
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), 0);
@@ -144,9 +165,10 @@ fn linked_home_points_use_otherwise_allowable_annual_interest_tier() {
         ),
     ] {
         let (mut d, id) = linked_property(0, 0);
-        let loan = &mut d.deductions.as_mut().unwrap().mortgage[0];
+        let mut loan = edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]);
         loan.incurred = incurred;
         loan.points = points;
+        drop(loan);
         let r = supported(&d);
         assert_eq!(
             r.review_notes.iter().any(|n| n.display.key == "WARN_RENTAL_POINTS_STRAIGHT_LINE"),
@@ -157,7 +179,7 @@ fn linked_home_points_use_otherwise_allowable_annual_interest_tier() {
         assert_eq!(amount(&r, id, "line21_income"), -expected_fixed);
         assert_eq!(amount(&r, id, "home_operating_carryover"), 0);
         assert_eq!(value(&r, personal_line), personal_amount);
-        d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+        d.deductions.as_mut().unwrap().itemize_override = None;
         let r = supported(&d);
         assert_eq!(amount(&r, id, "line21_income"), 0);
         assert_eq!(amount(&r, id, "home_operating_carryover"), expected_fixed);
@@ -165,26 +187,55 @@ fn linked_home_points_use_otherwise_allowable_annual_interest_tier() {
 }
 #[test]
 fn linked_home_duplicate_or_dangling_roots_are_refused() {
-    let (mut d, _) = linked_property(0, 0);
-    let loan = &mut d.deductions.as_mut().unwrap().mortgage[0];
-    loan.points = MortgagePoints::Purchase { amount: 600000 };
-    assert_eq!(crate::extended_rules::rental_mortgage_rule(&d), None);
-    let FederalIncome::Rental { data } = d.income.last().unwrap().income.clone() else {
-        unreachable!()
-    };
-    put(&mut d, data);
-    assert_eq!(crate::extended_rules::rental_mortgage_rule(&d), Some("RENTAL_MORTGAGE_ROOT_TWICE"));
-    d.income.pop();
-    d.deductions.as_mut().unwrap().mortgage.clear();
-    assert_eq!(
-        crate::extended_rules::rental_mortgage_rule(&d),
-        Some("MORTGAGE_RENTAL_ROOT_NEEDED")
-    );
+    let (mut corrected, _) = linked_property(0, 0);
+    edit_mortgage(&mut corrected.deductions.as_mut().unwrap().mortgage[0]).points =
+        MortgagePoints::Purchase { amount: 600000 };
+    assert_eq!(crate::extended_rules::rental_mortgage_rule(&corrected), None);
+    let expected = supported(&corrected);
+    for dangling in [false, true] {
+        let mut d = corrected.clone();
+        if dangling {
+            d.deductions.as_mut().unwrap().mortgage.clear();
+        } else {
+            let FederalIncome::Rental { data } = d.income.last().unwrap().income.clone() else {
+                unreachable!()
+            };
+            put(&mut d, data);
+        }
+        assert_eq!(
+            crate::extended_rules::rental_mortgage_rule(&d),
+            Some("PROBLEM_RELATED_FORM_UNAVAILABLE")
+        );
+        let (_, issue) = crate::related_forms::source_issue(&d).expect("invalid related source");
+        assert_eq!(issue.field.unwrap().square(), "[Rental/related/forms/0/key]");
+        assert!(!d.valid_stored());
+        let refused = estimate(&d);
+        assert_eq!(refused.state, ResultState::Unsupported);
+        assert!(refused.tax.is_none());
+        assert!(
+            refused
+                .issues
+                .iter()
+                .any(|issue| issue.display.key == "PROBLEM_RELATED_FORM_UNAVAILABLE")
+        );
+        if dangling {
+            d.deductions = corrected.deductions.clone();
+        } else {
+            let FederalIncome::Rental { data } = &mut d.income.last_mut().unwrap().income else {
+                unreachable!()
+            };
+            data.related.clear();
+        }
+        assert_eq!(crate::related_forms::source_issue(&d), None);
+        assert_eq!(supported(&d).tax, expected.tax);
+    }
 }
+
 #[test]
 fn linked_home_premiums_keep_cents_and_use_final_agi_after_rental_income() {
     let (mut d, id) = linked_property(0, 0);
-    d.deductions.as_mut().unwrap().mortgage[0].mortgage_insurance_premiums = 150;
+    edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]).mortgage_insurance_premiums =
+        150;
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), -1);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 0);
@@ -198,7 +249,8 @@ fn linked_home_premiums_keep_cents_and_use_final_agi_after_rental_income() {
     );
     let (mut d, id) = linked_property(10000, 0);
     d.income[0] = wage(1, Owner::Taxpayer, 95000 * 100, 0);
-    d.deductions.as_mut().unwrap().mortgage[0].mortgage_insurance_premiums = 2000 * 100;
+    edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]).mortgage_insurance_premiums =
+        2000 * 100;
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 104000);
     assert_eq!(value(&r, "mortgage_insurance_premiums_8d"), 600);
@@ -216,7 +268,8 @@ fn linked_home_accepts_more_than_one_hundred_authored_expense_rows() {
             })
             .collect();
     }
-    d.deductions.as_mut().unwrap().mortgage[0].mortgage_insurance_premiums = 100;
+    edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]).mortgage_insurance_premiums =
+        100;
     let d = save_reopen_native_sources(d, &[TaxSection::Rentals], &[TaxSection::Rentals]);
     let r = supported(&d);
     assert_eq!(amount(&r, id, "line21_income"), 950);
@@ -224,7 +277,8 @@ fn linked_home_accepts_more_than_one_hundred_authored_expense_rows() {
 #[test]
 fn linked_home_premium_phaseout_uses_actual_agi_with_foreign_exclusion() {
     let (mut d, id) = linked_property(0, 0);
-    d.deductions.as_mut().unwrap().mortgage[0].mortgage_insurance_premiums = 2000 * 100;
+    edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]).mortgage_insurance_premiums =
+        2000 * 100;
     entry(&mut d, foreign_pay(120000));
     set_claim(&mut d, foreign_claim(Owner::Taxpayer));
     let r = supported(&d);
@@ -235,10 +289,11 @@ fn linked_home_premium_phaseout_uses_actual_agi_with_foreign_exclusion() {
 #[test]
 fn linked_home_purchase_points_annual_tier_obeys_shared_debt_cap() {
     let (mut d, id) = linked_property(0, 0);
-    let loan = &mut d.deductions.as_mut().unwrap().mortgage[0];
+    let mut loan = edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]);
     loan.incurred = 20260101;
     loan.outstanding_principal = 1500000 * 100;
     loan.points = MortgagePoints::Purchase { amount: 600000 };
+    drop(loan);
     linked_ledger(&mut d).average =
         MortgageAverageBalance::Statements { average_balance: 1500000 * 100 };
     // Rental share 3,000 of the year-paid points; 1,500 of it is personally
@@ -249,23 +304,28 @@ fn linked_home_purchase_points_annual_tier_obeys_shared_debt_cap() {
     assert_eq!(value(&r, "mortgage_interest_8a"), 1500);
 }
 #[test]
-fn linked_home_standard_uses_same_regular_magi_for_amt_passive_allowance() {
+fn linked_home_automatic_uses_same_regular_magi_for_amt_passive_allowance() {
     let (mut d, _) = linked_property(0, 40000);
     d.income[0] = wage(1, Owner::Taxpayer, 130000 * 100, 0);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let id = put(&mut d, rental(18000, 38000));
     let r = supported(&d);
-    assert_eq!(value(&r, "agi"), 120000);
-    assert_eq!(amount(&r, id, "suspended_loss"), 20000);
-    assert_eq!(value(&r, &alloc::format!("amt_rental_{id}_suspended_loss")), 20000);
+    // 2026-11-02: automatic itemizing allows the home's20,000 interest
+    // share before the passive MAGI allowance for the other30,000 loss.
+    assert_eq!(value(&r, "agi"), 90000);
+    assert_eq!(value(&r, "rental_magi"), 110000);
+    assert_eq!(value(&r, "form8582_line_9"), 20000);
+    assert_eq!(amount(&r, id, "suspended_loss"), 10000);
+    assert_eq!(value(&r, &alloc::format!("amt_rental_{id}_suspended_loss")), 10000);
 }
 #[test]
 fn linked_home_personal_interest_and_points_round_after_removing_rental_cents() {
     let (mut d, id) = linked_property(0, 0);
-    let loan = &mut d.deductions.as_mut().unwrap().mortgage[0];
+    let mut loan = edit_mortgage(&mut d.deductions.as_mut().unwrap().mortgage[0]);
     loan.interest = 100;
     loan.incurred = 20260101;
     loan.points = MortgagePoints::Purchase { amount: 100 };
+    drop(loan);
     let r = supported(&d);
     // The two personal half-dollar components join one line before its one rounding.
     assert_eq!(value(&r, "mortgage_interest_8a"), 1);
@@ -291,7 +351,7 @@ fn linked_home_mortgage_credit_reduces_the_certified_loan_in_both_shares() {
     assert_eq!(value(&r, "mortgage_interest_8a"), 4000);
     assert_eq!(amount(&r, id, "line21_income"), -2000);
     // Non-itemizer: the reduced rental share is limited by the rent (line 4b).
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
     assert_eq!(amount(&r, id, "expense_line12_mortgage_interest"), 2000);
     assert_eq!(amount(&r, id, "home_operating_carryover"), 2000);
@@ -329,4 +389,29 @@ fn second_home_failing_the_residence_test_has_no_personal_interest_share() {
     days(&mut d, 10);
     linked_ledger(&mut d).home = MortgageHome::Main;
     assert_eq!(value(&supported(&d), "mortgage_interest_8a"), 571);
+}
+// Pub. 527 Worksheet 5-1 line 2c: the dwelling's Form 4684 line 17 uses the
+// estimate's own AGI figured without this dwelling's rental income and
+// expenses, with the route that invocation takes.
+#[test]
+fn home_use_dwelling_receives_the_estimate_agi_without_its_own_rental_income() {
+    let mut d = wages(60000);
+    let mut home = home_fixture();
+    link_home_fixture(&mut d, &mut home);
+    let id = put(&mut d, home);
+    for (override_value, route) in [(Some(ItemizeOverride::Itemize), true), (None, false)] {
+        d.deductions.as_mut().unwrap().itemize_override = override_value;
+        crate::extended_rules::HOME_USE_SEEN.with(|seen| seen.borrow_mut().clear());
+        let r = supported(&d);
+        let (_, home_use) = crate::extended_rules::HOME_USE_SEEN
+            .with(|seen| seen.borrow().iter().rfind(|(seen, _)| *seen == id).cloned())
+            .unwrap();
+        let agi = value(&r, "agi");
+        assert_eq!(home_use.agi[0], agi);
+        assert_eq!(home_use.itemizes, Some(route));
+        assert_eq!(
+            home_use.dwelling_agi_cents(id),
+            Some((agi - amount(&r, id, "line21_income")) * 100)
+        );
+    }
 }

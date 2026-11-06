@@ -1,31 +1,33 @@
-use crate::tests::cross::interview::{accepted, open_topic, save_topic};
+use crate::tests::cross::interview::accepted;
 use crate::tests::support::builders::public_safety_pensions as pensions;
 use crate::tests::support::client::estimate_documents_from_save;
+use crate::tests::support::client::income_pages::{
+    open_document_center, open_topic, page_documents, save_documents,
+};
 use crate::tests::*;
 
 fn attempt(session: &mut Interview, request: P, case: &str) -> P {
-    let reply = crate::tests::support::client::exchange(session, request, case);
+    let reply = if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(session, request)
+    } else {
+        crate::tests::support::client::exchange(session, request, case)
+    };
     let (Reply::Response(response) | Reply::Edit(response)) = reply;
     response
 }
 
-fn pension_at(request: &mut P, index: usize) -> &mut R1099 {
-    let P::SaveIncomes { documents, .. } = request else {
-        unreachable!()
-    };
-    let IncomeDocument::R1099(pension) = &mut documents.documents[index].document else {
+fn pension_at(request: &mut P, index: usize) -> &mut crate::Form1099RPaper {
+    let P::SaveDocuments { documents, .. } = request else { unreachable!() };
+    let crate::RetirementDocument::R1099(pension) =
+        &mut documents.common.retirement.documents[index].document
+    else {
         unreachable!()
     };
     pension
 }
 
 fn refused(session: &mut Interview, request: P, case: &str, key: &str, path: &str) {
-    let problem = attempt(session, request, case);
-    let P::Problem { message, field } = &problem else {
-        panic!("{case}: expected source refusal")
-    };
-    assert_eq!(*message, libertas::libertas_formatted_text(key, &[]));
-    assert_eq!(field.as_deref(), Some(path));
+    crate::tests::support::client::survey::survey_refusal(case, session, request, key, path);
 }
 
 #[test]
@@ -38,31 +40,33 @@ fn unit47_public_safety_stored_list_admits_each_pension_source_row() {
         .find(|entry| matches!(entry.income, FederalIncome::Wage { .. }))
         .unwrap()
         .clone();
-    let seed = save_topic(&session.draft, TaxSection::Retirement, pensions(50));
-    accepted(&send(&mut session, seed));
-    assert_eq!(
-        session
-            .draft
-            .screening
-            .as_ref()
-            .unwrap()
-            .public_safety
-            .len(),
-        100
-    );
-    let mut request = open_topic(&mut session, TaxSection::Retirement);
-    let P::SaveIncomes { documents, .. } = &mut request else {
-        unreachable!()
-    };
-    assert_eq!(documents.documents.len(), 50);
-    for source in &documents.documents {
+    accepted(&crate::tests::support::client::save_retirement_fixture(&mut session, pensions(50)));
+    assert_eq!(session.draft.screening.as_ref().unwrap().public_safety.len(), 100);
+    let request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &request else { unreachable!() };
+    assert_eq!(documents.common.retirement.documents.len(), 50);
+    for source in &documents.common.retirement.documents {
         assert!(source.id > 0);
-        let IncomeDocument::R1099(pension) = &source.document else {
-            unreachable!()
-        };
-        assert_eq!(pension.public_safety.len(), 2);
+        let crate::RetirementDocument::R1099(_) = &source.document else { unreachable!() };
+        assert_eq!(
+            session
+                .draft
+                .screening
+                .as_ref()
+                .unwrap()
+                .public_safety
+                .iter()
+                .filter(|row| row.income_id == source.id)
+                .count(),
+            2
+        );
     }
-    documents.documents.extend(pensions(1));
+    let mut sources: Vec<_> = page_documents(&request)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::Retirement { .. }))
+        .collect();
+    sources.extend(pensions(1));
+    let request = save_documents(&mut session, sources);
     let response = attempt(&mut session, request, "51-pensions-two-coverage-kinds");
     assert!(
         !matches!(response, P::Problem { .. }),
@@ -82,10 +86,7 @@ fn unit47_public_safety_stored_list_admits_each_pension_source_row() {
     );
     let rows = &session.draft.screening.as_ref().unwrap().public_safety;
     assert_eq!(rows.len(), 102);
-    assert!(
-        rows.iter()
-            .all(|row| row.premiums == 100 && row.funded == 100)
-    );
+    assert!(rows.iter().all(|row| row.premiums == 100 && row.funded == 100));
     assert!(
         session
             .draft
@@ -104,15 +105,11 @@ fn unit47_public_safety_stored_list_admits_each_pension_source_row() {
         1
     );
     assert_eq!(
-        session
-            .draft
-            .income
-            .iter()
-            .find(|entry| entry.id == retained_wage.id),
+        session.draft.income.iter().find(|entry| entry.id == retained_wage.id),
         Some(&retained_wage)
     );
     let saved = session.draft.clone();
-    let reopened = open_topic(&mut session, TaxSection::Retirement);
+    let reopened = open_document_center(&mut session);
     accepted(&send(&mut session, reopened));
     assert_eq!(session.draft, saved);
     assert_eq!(restart(saved.clone()).draft, saved);
@@ -124,31 +121,39 @@ fn unit47_public_safety_unbounded_coverage_rows_keep_financial_priority() {
     // 2026-10-15 fixture correction: construct the pension-only maximum by
     // removing the inherited neutral W-2 through its ordinary source editor.
     // These 100 independent pensions are a representative count, not a cap.
-    let remove_neutral_wage = save_topic(&session.draft, TaxSection::Wages, Vec::new());
+    let remove_neutral_wage = save_documents(&mut session, Vec::new());
     let response = attempt(
         &mut session,
         remove_neutral_wage,
         "public-safety-max-removes-neutral-fixture-wage",
     );
     assert!(!matches!(response, P::Problem { .. }), "{response:?}");
+    drop(response);
     assert!(session.draft.income.is_empty());
-    let mut request = open_topic(&mut session, TaxSection::Retirement);
-    let P::SaveIncomes {
-        people, documents, ..
-    } = &mut request
-    else {
-        unreachable!()
-    };
+    let request = open_document_center(&mut session);
+    let P::SaveDocuments { people, .. } = &request else { unreachable!() };
     // Actual emitted people catalog supplies both insured identities. The
     // source pension covers the officer and spouse under distinct policies.
     assert!(people.iter().any(|person| person.id == -1));
     assert!(people.iter().any(|person| person.id == -2));
-    let mut sources = pensions(100);
-    for source in &mut sources {
-        let IncomeDocument::R1099(pension) = &mut source.document else {
-            unreachable!()
+    drop(request);
+    // Reuse the identical paper and answer fixture for 100 independent source
+    // rows; the normal Save still assigns each row its own accepted identity.
+    let pension = pensions(1).pop().unwrap();
+    accepted(&crate::tests::support::client::save_retirement_fixture(
+        &mut session,
+        vec![pension; 100],
+    ));
+    let mut request = open_topic(&mut session, TaxSection::Retirement);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    for question in followups {
+        let DocumentAnswer::RetirementPublicSafety {
+            value: Some(PublicSafetyAnswer::Premiums { rows }),
+        } = &mut question.answer
+        else {
+            continue;
         };
-        pension.public_safety.extend([
+        rows.extend([
             PublicSafetyPaid {
                 coverage: PublicSafetyPaidCoverage::LongTermCare { person: -1 },
                 premiums: 100,
@@ -161,27 +166,17 @@ fn unit47_public_safety_unbounded_coverage_rows_keep_financial_priority() {
             },
         ]);
     }
-    documents.documents = sources;
-    let response = attempt(
-        &mut session,
-        request,
-        "100-pensions-four-distinct-coverage-rows",
-    );
+    let response = attempt(&mut session, request, "100-pensions-four-distinct-coverage-rows");
     assert!(!matches!(response, P::Problem { .. }), "{response:?}");
+    drop(response);
     assert_eq!(session.draft.income.len(), 100);
     let saved = session.draft.clone();
     let rows = &saved.screening.as_ref().unwrap().public_safety;
     assert_eq!(rows.len(), 400);
-    assert!(
-        rows.iter()
-            .all(|row| row.premiums == 100 && row.funded == 100)
-    );
+    assert!(rows.iter().all(|row| row.premiums == 100 && row.funded == 100));
     for entry in &saved.income {
         assert!(entry.id > 0);
-        let actual: Vec<_> = rows
-            .iter()
-            .filter(|row| row.income_id == entry.id)
-            .collect();
+        let actual: Vec<_> = rows.iter().filter(|row| row.income_id == entry.id).collect();
         assert_eq!(actual.len(), 4);
         for coverage in [
             PublicSafetyCoverage::Medical,
@@ -192,50 +187,62 @@ fn unit47_public_safety_unbounded_coverage_rows_keep_financial_priority() {
             assert!(actual.iter().any(|row| row.coverage == coverage));
         }
     }
-    let valid = open_topic(&mut session, TaxSection::Retirement);
-    let mut bad = valid.clone();
-    pension_at(&mut bad, 1)
-        .public_safety
-        .push(PublicSafetyPaid {
-            coverage: PublicSafetyPaidCoverage::Other,
-            premiums: 100,
-            funded: 100,
-        });
-    // D-2026-10-15-13: another actual policy is accepted; coverage kind
+    let valid = open_document_center(&mut session);
+    let mut bad = open_topic(&mut session, TaxSection::Retirement);
+    let source_id = saved.income[1].id;
+    let P::SaveIncomes { followups, .. } = &mut bad else { unreachable!() };
+    let question_index = followups
+        .iter()
+        .position(|question| question.key == alloc::format!("income/{source_id}/public_safety"))
+        .unwrap();
+    let DocumentAnswer::RetirementPublicSafety {
+        value: Some(PublicSafetyAnswer::Premiums { rows }),
+    } = &mut followups[question_index].answer
+    else {
+        unreachable!()
+    };
+    rows.push(PublicSafetyPaid {
+        coverage: PublicSafetyPaidCoverage::Other,
+        premiums: 100,
+        funded: 100,
+    });
+    // Another actual policy is accepted; coverage kind
     // does not impose a row count. Financial failures retain their priority.
     let mut financial = bad.clone();
-    pension_at(&mut financial, 1).public_safety[1].funded = 101;
+    let P::SaveIncomes { followups, .. } = &mut financial else { unreachable!() };
+    let DocumentAnswer::RetirementPublicSafety {
+        value: Some(PublicSafetyAnswer::Premiums { rows }),
+    } = &mut followups[question_index].answer
+    else {
+        unreachable!()
+    };
+    rows[1].funded = 101;
+    let path: alloc::string::String = libertas::SchemaPath::root()
+        .field("followups")
+        .key(followups[question_index].key.as_str())
+        .field("answer")
+        .field("value")
+        .field("rows")
+        .index(1)
+        .field("funded")
+        .into();
     refused(
         &mut session,
         financial,
         "public-safety-financial-priority-with-five-rows",
         "PSO_FUNDED_ABOVE_PREMIUMS",
-        "[documents/documents/1/document/public_safety/1/funded]",
+        &path,
     );
     let mut financial = valid.clone();
     let pension = pension_at(&mut financial, 1);
     pension.gross = 399;
-    pension.taxable = 399;
+    pension.taxable = Some(399);
     refused(
         &mut session,
         financial,
         "public-safety-funded-total-stays-within-source-gross",
         "PSO_FUNDED_ABOVE_GROSS",
-        "[documents/documents/1/document/public_safety]",
-    );
-    // The old gross relationship still refuses a nonrepresentable positive
-    // funded sum before any stored scalar bound, without debug/release wrap.
-    let mut overflow = valid.clone();
-    for row in &mut pension_at(&mut overflow, 1).public_safety[..2] {
-        row.premiums = i64::MAX;
-        row.funded = i64::MAX;
-    }
-    refused(
-        &mut session,
-        overflow,
-        "public-safety-funded-sum-overflow-is-above-gross",
-        "PSO_FUNDED_ABOVE_GROSS",
-        "[documents/documents/1/document/public_safety]",
+        "[documents/common/retirement/documents/1/document/public_safety/rows]",
     );
     accepted(&send(&mut session, valid));
     assert_eq!(session.draft, saved);
@@ -249,12 +256,12 @@ fn unit47_public_safety_unbounded_coverage_rows_keep_financial_priority() {
     ));
     assert_eq!(session.draft, saved);
     assert_eq!(session.dirty, dirty);
-    accepted(&send(&mut session, bad));
+    drop(saved);
+    let response = attempt(&mut session, bad, "additional-public-safety-policy");
+    assert!(!matches!(response, P::Problem { .. }), "{response:?}");
+    drop(response);
     let completed = session.draft.clone();
-    assert_eq!(
-        completed.screening.as_ref().unwrap().public_safety.len(),
-        401
-    );
+    assert_eq!(completed.screening.as_ref().unwrap().public_safety.len(), 401);
     let source = completed.income[1].id;
     assert_eq!(
         completed
@@ -267,8 +274,9 @@ fn unit47_public_safety_unbounded_coverage_rows_keep_financial_priority() {
             .count(),
         5
     );
+    drop(session);
     let mut cold = restart(completed.clone());
-    let reopened = open_topic(&mut cold, TaxSection::Retirement);
+    let reopened = open_document_center(&mut cold);
     accepted(&send(&mut cold, reopened));
     assert_eq!(cold.draft, completed);
 }

@@ -9,14 +9,8 @@ pub(crate) fn export_unit47_rule_case(case: &str, request: &P, problem: &P) {
         return;
     };
     assert!(!case.is_empty());
-    assert!(
-        case.bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-    );
-    let P::Problem {
-        field: Some(field), ..
-    } = problem
-    else {
+    assert!(case.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
+    let P::Problem { field: Some(field), .. } = problem else {
         panic!("a former rule must identify its field")
     };
     let request = request.to_avro();
@@ -50,11 +44,8 @@ fn write_avro_case(
     std::fs::create_dir(&directory).unwrap();
     std::fs::write(directory.join("request.avro"), request).unwrap();
     std::fs::write(directory.join(response_file), response).unwrap();
-    std::fs::write(
-        directory.join("case.json"),
-        serde_json::to_vec_pretty(&metadata).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(directory.join("case.json"), serde_json::to_vec_pretty(&metadata).unwrap())
+        .unwrap();
     directory
 }
 
@@ -74,7 +65,8 @@ fn observed_save_kind(request: &P) -> Option<&'static str> {
         P::SavePeople { .. } => "SavePeople",
         P::SaveSpouse { .. } => "SaveSpouse",
         P::SaveDeductions { .. } => "SaveDeductions",
-        P::SaveSituations { .. } => "SaveSituations",
+        P::SaveOftenMissed { .. } => "SaveOftenMissed",
+        P::SaveIncomeWithoutForm { .. } => "SaveIncomeWithoutForm",
         P::SaveChecklist { .. } => "SaveChecklist",
         P::SaveChildren { .. } => "SaveChildren",
         P::SaveIncomes { .. } => "SaveIncomes",
@@ -174,11 +166,7 @@ pub(crate) fn finish_observed_save(observed: ObservedSave, session: &Interview, 
         &observed.directory,
         &case,
         &observed.request,
-        if rejected {
-            "problem.avro"
-        } else {
-            "response.avro"
-        },
+        if rejected { "problem.avro" } else { "response.avro" },
         &encoded_response,
         serde_json::json!({
             "case": case,
@@ -216,15 +204,7 @@ pub(crate) fn finish_observed_save(observed: ObservedSave, session: &Interview, 
         std::fs::write(directory.join("draft-after.avro"), &after).unwrap();
         // Preserve both actual states and metadata before surfacing any real
         // rejected-Save mutation; observation must never silently waive it.
-        assert_eq!(
-            draft_unchanged,
-            Some(true),
-            "{case}: rejected Save changed accepted Draft"
-        );
-        assert_eq!(
-            dirty_unchanged,
-            Some(true),
-            "{case}: rejected Save changed dirty state"
-        );
+        assert_eq!(draft_unchanged, Some(true), "{case}: rejected Save changed accepted Draft");
+        assert_eq!(dirty_unchanged, Some(true), "{case}: rejected Save changed dirty state");
     }
 }

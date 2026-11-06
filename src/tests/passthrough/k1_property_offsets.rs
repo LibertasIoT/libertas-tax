@@ -7,7 +7,7 @@ use super::*;
 fn source(ordinary: i64, property: i64, qualified: i64, property_qualified: i64) -> PartnerK1 {
     let mut p = ordinary_partner_source(ordinary, true);
     p.regular.section1231 = Some(k1_section1231(property, 0));
-    p.regular.basis.opening = 100_000_000;
+    p.regular.basis.opening = Some(100_000_000);
     p.regular.risk.start = ScorpRiskStart::Detailed { capacity: 100_000_000, profit: 0, loss: 0 };
     p.alternative = Some(p.regular.clone());
     p.qbi = Some(PartnerQbiStatement {
@@ -157,7 +157,7 @@ fn k1_property_offsets_partner_current_sstb_phase_does_not_rephase_retained_prop
     let mut d = draft(p);
     let entry =
         d.income.iter_mut().find(|v| matches!(v.income, FederalIncome::Wage { .. })).unwrap();
-    *entry = wage(entry.id, entry.owner, 90_000_000, 0);
+    *entry = wage(entry.id, entry.owner.owned(), 90_000_000, 0);
     let r = supported(&d);
     // Current income/loss is phased out. Listed retained property100 stays
     // qualified and defers44/400 of that loss, leaving historical QBI89.
@@ -425,7 +425,7 @@ fn k1_property_offsets_pya_guard_uses_actual_source_and_existing_report_endpoint
         } else {
             let mut owner = complete_ordinary_scorp(0, true);
             owner.ordinary = -50;
-            owner.opening = 100_000_000;
+            owner.opening = Some(100_000_000);
             owner.prior_loss = 50;
             owner.risk.start =
                 ScorpRiskStart::Detailed { capacity: 100_000_000, profit: 0, loss: 0 };
@@ -433,7 +433,7 @@ fn k1_property_offsets_pya_guard_uses_actual_source_and_existing_report_endpoint
             owner.section1231.as_mut().unwrap().net = 50;
             owner.qbi_statement = None;
             owner.amt = Some(amt_records(&owner));
-            FederalIncome::Scorp { data: owner }
+            FederalIncome::Scorp { data: crate::tests::support::builders::scorp_source(owner) }
         };
         let (mut d, id) = crate::tests::passthrough::k1_sale_return::draft(income);
         d.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));

@@ -1,0 +1,43 @@
+{
+ "source": {
+  "title": "IRS MeF ATS Test Scenario 13, TY2026 Form 1040 (William and Nancy Birch, married filing jointly: Schedules 1, 1-A, 2, 3, F, SE; Forms 4136 with two Schedules A, 1062 with Schedule A; W-2)",
+  "edition": "TREASURY/IRS DRAFT Version A, Cycle 4 (Form 1040 and Schedules 1-3, F, SE created 2026-04; Schedule 1-A 2026-05-29; Form 4136 2026-05-28; Form 1062 2026-07-16)",
+  "scenario": 13,
+  "url": "https://www.irs.gov/pub/irs-efile/ty26-1040-ats-scenario-13.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "b5160868f1b46ad83a49c9018f5452f02b0cd3596c731ee359e958b916feafdd"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "William born 1980-06-15; Nancy born 1960-06-15",
+   "reason": "see scenario-13.json"
+  }
+ ],
+ "filing": "MarriedJointly",
+ "birth": 19800615,
+ "spouse_birth": 19600615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 125000,
+     "withholding": 20000,
+     "social_wages": 125000,
+     "social_tax": 7738,
+     "medicare_wages": 125000,
+     "medicare_tax": 1810,
+     "overtime": 5000
+    }
+   ]
+  }
+ ],
+ "expected": [],
+ "expected_state": "Unsupported",
+ "expected_issues": [
+  "ISSUE_MEDICARE_WITHHOLDING_BELOW_ORDINARY_PAYROLL_TAX_REQUIRES_SPECIAL_PA_3993480B"
+ ],
+ "expected_note": "The W-2 as printed: box 6 1,810 is 2.50 below 1.45% of box 5 (1,812.50) and box 4 7,738 is 12 below 6.2% of box 3 (7,750), more than the whole-dollar rounding of a printed W-2, so the App refuses it for special payroll review (triage C-13a). scenario-13.json enters the statutory amounts instead."
+}

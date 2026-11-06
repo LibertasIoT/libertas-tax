@@ -1,0 +1,3290 @@
+pub(crate) const FEDERAL_STRINGS: &[(&str, &str)] = &[
+    ("DOCUMENT_CENTER_EDIT_DOCUMENT", "Edit document"),
+    ("SAVING_KIND_FORM_8818", "Form 8818"),
+    ("SAVING_KIND_FORM_8818_ONE", "Form 8818"),
+    ("SAVING_KIND_FORM_8818_MANY", "Forms 8818"),
+    ("LABEL_ENTRY_FORM_8818", "Bond redemption record"),
+    ("DOCUMENT_BOND_REDEMPTION_FORM_8815", "Education exclusion supported by this bond redemption"),
+    (
+        "BOND_REDEMPTION_FORM_8815_INVALID",
+        "Select this owner's accepted Form 8815, or leave this redemption record unlinked.",
+    ),
+    (
+        "BROKER_SALE_TOTALS_ARITHMETIC_UNAVAILABLE",
+        "The actual combined sale totals cannot be represented in this estimate. Keep the source records for review.",
+    ),
+    ("DOCUMENT_ANSWER_BROKERSALE", "Your capital-sale records"),
+    ("DOCUMENT_ANSWER_BROKERCONTRACTS", "Your section 1256 contract treatment"),
+    ("SAVING_KIND_FORM1099B_ONE", "Form 1099-B"),
+    ("SAVING_KIND_FORM1099B_MANY", "Forms 1099-B"),
+    ("LABEL_ENTRY_FORM1099B", "Form 1099-B"),
+    ("SAVING_KIND_FORM1099DA_ONE", "Form 1099-DA"),
+    ("SAVING_KIND_FORM1099DA_MANY", "Forms 1099-DA"),
+    ("LABEL_ENTRY_FORM1099DA", "Form 1099-DA"),
+    ("FORM_FORM5498SA", "Form 5498-SA"),
+    ("DOCUMENT_K1_K3_WITHHOLDING", "Your foreign withholding treatment for this K-3"),
+    (
+        "DOCUMENT_SOCIAL_PRIOR_YEAR_FACTS",
+        "Complete the prior-return facts for the earlier years printed on your benefit statements to compare the optional lump-sum election.",
+    ),
+    (
+        "DOCUMENT_REPORTED_TIPS_FACTS",
+        "Confirm eligibility and the nonduplicated qualified portion of this activity’s printed cash tips.",
+    ),
+    (
+        "DOCUMENT_REPORTED_OVERTIME_FACTS",
+        "Confirm FLSA eligibility and the nonduplicated qualified portion of this activity’s printed overtime.",
+    ),
+    ("DOCUMENT_PENDING_ANSWER", "{0} ({1})"),
+    ("DOCUMENT_MARKETPLACE_ANSWERS", "Coverage and payment details for this policy"),
+    ("DOCUMENT_PENDING_FIX", "Fix"),
+    ("DOCUMENT_SOURCE_NUMBER", "Document {0}"),
+    ("DOCUMENT_MORTGAGE_REFUND_ORIGIN", "What does the refunded interest repay?"),
+    ("DOCUMENT_WAGE_ANSWERS", "Your answers about this W-2"),
+    ("DOCUMENT_LTC_BENEFIT_ORIGIN", "Where did these long-term care benefits come from?"),
+    ("DOCUMENT_LTC_ACCELERATED_ORIGIN", "Where did these accelerated death benefits come from?"),
+    ("DOCUMENT_LTC_CONTRACT", "What is the actual contract qualification and treatment?"),
+    ("DOCUMENT_LTC_INSURED", "Whose long-term care periods apply to this document?"),
+    ("DOCUMENT_RAILROAD_RECIPIENT", "Whose railroad annuity is this?"),
+    ("DOCUMENT_RAILROAD_REPAYMENTS", "Which years were the repaid railroad benefits paid?"),
+    ("DOCUMENT_K1_SCORP_RECORDS", "Your S-corporation records"),
+    ("DOCUMENT_ESTATE_ACTIVITY_RECORDS", "Your participation and retained activity losses"),
+    ("DOCUMENT_ESTATE_QBI_HISTORY", "Activities and qualified income on this statement"),
+    ("DOCUMENT_ESTATE_AMT_TREATMENT", "Treatment of this AMT statement amount"),
+    ("DOCUMENT_ESTATE_AMT_AMOUNT", "Box 12 code {0}: {1,number,currency}"),
+    ("DOCUMENT_ESTATE_NOL_RECORDS", "The inherited net operating loss records"),
+    (
+        "DOCUMENT_ESTATE_NIIT_ALLOCATION",
+        "The fiduciary's modified adjusted gross income allocation",
+    ),
+    ("DOCUMENT_ESTATE_FINAL_RECORDS", "Your final-year mortgage records"),
+    ("DOCUMENT_ESTATE_FINAL_SUCCESSOR", "Whether you succeed to the terminated estate or trust"),
+    (
+        "DEBT_ACQUISITION_PROPERTY_NEEDED",
+        "What property does this acquisition or abandonment report?",
+    ),
+    (
+        "DOCUMENT_ESTATE_REIT_ELIGIBILITY",
+        "Holding-period eligibility of the section 199A dividends",
+    ),
+    (
+        "ESTATE_SUCCESSOR_NEEDED",
+        "Establish whether you succeed to the terminated entity before claiming its final-year deductions.",
+    ),
+    (
+        "ESTATE_QBI_APPORTIONMENT_NEEDED",
+        "Apportion this beneficiary QBI statement among its linked activities, with each activity's prior-loss history.",
+    ),
+    (
+        "ESTATE_AMT_TREATMENT_NEEDED",
+        "Identify the treatment of this fiduciary AMT statement amount.",
+    ),
+    ("DOCUMENT_K1_SECTION179_RECORDS", "Your section 179 carryover records"),
+    ("DOCUMENT_K1_SECTION179_AMT", "Your AMT section 179 carryover history"),
+    ("DOCUMENT_K1_CREDIT_CONFIRMATIONS", "Your credit eligibility confirmations"),
+    ("DOCUMENT_K1_OWN_INVESTMENT_CREDIT", "Your investment-credit records"),
+    ("DOCUMENT_K1_CREDIT_ORIGINS", "Supporting origin details for this credit"),
+    ("DOCUMENT_ANSWER_RETIREMENTDISASTER", "Disaster distribution treatment"),
+    ("DOCUMENT_ANSWER_RETIREMENTPUBLICSAFETY", "Public safety pension premiums"),
+    ("DOCUMENT_ANSWER_RETIREMENTAFTERDEATH", "Payments made after death"),
+    ("DOCUMENT_ANSWER_INTERESTNOMINEE", "Interest reported for someone else"),
+    ("DOCUMENT_ANSWER_INTERESTAFTERDEATH", "Interest received after death"),
+    ("DOCUMENT_ANSWER_INTERESTADJUSTMENT", "Personal interest reporting records"),
+    ("DOCUMENT_ANSWER_INTERESTACCRUED", "Accrued interest paid on purchase"),
+    ("DOCUMENT_ANSWER_INTERESTTREATMENT", "Other interest circumstances"),
+    ("DOCUMENT_ANSWER_OIDNOMINEE", "Original issue discount reported for someone else"),
+    ("DOCUMENT_ANSWER_OIDPREMIUM", "Tax-exempt bond premium"),
+    ("DOCUMENT_ANSWER_OIDPRIVATEACTIVITY", "Private activity bond interest"),
+    ("DOCUMENT_ANSWER_OIDTREATMENT", "Other original issue discount circumstances"),
+    ("DOCUMENT_ANSWER_DIVIDENDNOMINEE", "Dividends reported for someone else"),
+    ("DOCUMENT_ANSWER_DIVIDENDELIGIBILITY", "Eligibility of section 199A dividends"),
+    ("DOCUMENT_ANSWER_DIVIDENDAFTERDEATH", "Dividends received after death"),
+    ("DOCUMENT_ANSWER_DIVIDENDFUNDEXCLUSION", "Fund section 1202 exclusion"),
+    (
+        "DOCUMENT_ANSWER_DIVIDENDCAPITALRETURNS",
+        "Share lots receiving nondividend or liquidation distributions",
+    ),
+    ("DOCUMENT_ANSWER_DIVIDENDTREATMENT", "Other dividend circumstances"),
+    ("DOCUMENT_ANSWER_SALEADJUSTMENT", "Adjustments to the reported sale"),
+    ("DOCUMENT_ANSWER_SALETREATMENT", "Personal sale circumstances"),
+    ("DOCUMENT_ANSWER_UNDISTRIBUTEDGAINSPECIAL", "Other undistributed capital gain circumstances"),
+    ("DOCUMENT_ANSWER_CONTRACTSSPECIAL", "Other futures and section 1256 option circumstances"),
+    ("DOCUMENT_ANSWER_OPPORTUNITYFUNDEVENT", "What happened to this investment in 2026?"),
+    ("DOCUMENT_ANSWER_OPPORTUNITYFUNDSPECIAL", "Other opportunity fund investment circumstances"),
+    ("DOCUMENT_ANSWER_ISOEXERCISEFACTS", "Shares from this incentive stock option exercise"),
+    ("DOCUMENT_ANSWER_GOVERNMENTGRANTUSE", "Use of the taxable grant"),
+    ("DOCUMENT_ANSWER_GOVERNMENTMEDICALLEAVE", "Paid medical leave included in family leave"),
+    ("DOCUMENT_ANSWER_GOVERNMENTREPAYMENTS", "Benefits repaid during the year"),
+    ("DOCUMENT_ANSWER_GOVERNMENTSPECIAL", "Other benefit circumstances"),
+    ("DOCUMENT_ANSWER_GAMBLINGSPECIAL", "Other gambling circumstances"),
+    ("DOCUMENT_ANSWER_REFUNDDEDUCTION", "How the refunded tax was deducted"),
+    (
+        "DOCUMENT_ANSWER_RENTALSECTION179BUSINESS",
+        "For the section 179 income limit, do you actively conduct this rental as a trade or business?",
+    ),
+    (
+        "DOCUMENT_ANSWER_RENTALHOMECARRIES",
+        "What did your 2025 home-use worksheet carry into 2026 for this rental?",
+    ),
+    ("DOCUMENT_ANSWER_HOMESALE", "What you sold"),
+    (
+        "HOME_SALE_ANSWERS_NEEDED",
+        "Answer what you sold, your main home or other real estate, and its facts, so the sale can be figured.",
+    ),
+    (
+        "ISSUE_REAL_ESTATE_SALE_PRICE",
+        "Form 1099-S: enter this business, farm or rental property's 2026 sale on its own page with {0,number,currency} (box 2a) as the sale price.",
+    ),
+    (
+        "ISSUE_REAL_ESTATE_SALE_BOX_6_OR_7",
+        "Form 1099-S box 6 or box 7 is checked: the property or services received, or the foreign seller's withholding, are not figured for this sale, so it is left out of this estimate.",
+    ),
+    (
+        "EXPLAIN_REAL_ESTATE_N_GAIN",
+        "Form 8949 box C or F: the Form 1099-S box 2a proceeds less the adjusted basis and the selling expenses (code E). A loss on real estate you used yourself is not deductible.",
+    ),
+    ("DOCUMENT_ANSWER_COOPERATIVEALLOCATIONS", "Recipient allocations and cooperative records"),
+    ("DOCUMENT_ANSWER_COOPERATIVECREDITRECORDS", "Cooperative credit records"),
+    ("DOCUMENT_ANSWER_COOPERATIVEOTHERRECORDS", "How this statement item applies"),
+    ("DOCUMENT_COOPERATIVE_OTHER_SOURCE", "{0} — {1,number,currency}"),
+    ("DOCUMENT_TOPIC_SOURCE_ITEM", "{0} — {1}"),
+    ("DOCUMENT_ANSWER_NONEMPLOYEEUSE", "Where the nonemployee compensation belongs"),
+    ("DOCUMENT_ANSWER_MISCELLANEOUSUSE", "Where the box 3 other income belongs"),
+    ("DOCUMENT_ANSWER_ATTORNEYCLIENTFUNDS", "Attorney proceeds paid on to clients or others"),
+    ("DOCUMENT_ANSWER_PAYMENTPARTS", "Where the payment-card and network payments belong"),
+    ("DOCUMENT_RETIREMENT_TREATMENT", "What the distribution codes mean for you"),
+    ("DOCUMENT_RETIREMENT_METHOD", "How to figure the taxable distribution"),
+    ("DOCUMENT_RETIREMENT_DISABILITY", "Disability retirement income"),
+    (
+        "DIRECT_PARTICIPATION_FACTS_INVALID",
+        "Review this activity's qualifying hours, selected participation test and actual historical years.",
+    ),
+    (
+        "RENTAL_HOME_PRIOR_CASUALTY_QBI_UNAVAILABLE",
+        "The prior casualty carry needs its original qualified-business-income history before its QBI treatment is available.",
+    ),
+    (
+        "RENTAL_HOME_PRIOR_CASUALTY_ACTIVITY_UNAVAILABLE",
+        "This former home needs its original casualty activity character before the prior casualty carry can be deducted.",
+    ),
+    (
+        "NOTE_K1_ENTITY_NONDEDUCTIBLE_USED",
+        "Tax year {2,number,integer}: K-1 {0} entity-only nondeductible expenses reducing basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_K1_ENTITY_NONDEDUCTIBLE_USED",
+        "Tax year {2,number,integer}: AMT K-1 {0} entity-only nondeductible expenses reducing basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_K1_ENTITY_NONDEDUCTIBLE_CARRY",
+        "Tax year {2,number,integer}: K-1 {0} entity-only nondeductible expense worksheet carry: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_K1_ENTITY_NONDEDUCTIBLE_CARRY",
+        "Tax year {2,number,integer}: AMT K-1 {0} entity-only nondeductible expense worksheet carry: {1,number,currency}. {3}",
+    ),
+    (
+        "ISSUE_AMORTIZATION_AMT_SOURCE_NEEDED",
+        "This cohort needs its separate AMT recovery and basis before the complete estimate can be calculated.",
+    ),
+    (
+        "QBI_WAGE_PART_SOURCE",
+        "Check the employee statement labels and amounts. Documented qualified wages cannot exceed either total box 1 wages or total box 5 Medicare wages.",
+    ),
+    (
+        "QBI_AGGREGATION_PARENT_NOT_BUSINESS",
+        "Choose only an actual eligible business for this aggregation. Publicly traded partnership items stay separate.",
+    ),
+    (
+        "ISSUE_CHARITY_NOL_FTC_COORDINATION",
+        "Property gifts or charitable carryovers together with a prior net operating loss or foreign tax credit need the coordinated limitation worksheets.",
+    ),
+    ("CARRY_FILER_YOU", "your credit"),
+    ("CARRY_FILER_SPOUSE", "your spouse's credit"),
+    ("CARRY_FILER_SAME", "same filers"),
+    (
+        "SAVING_REMOVES_RENTAL_SECTION179_BUSINESS",
+        "The return no longer has a section 179 deduction, so the rental's trade-or-business answer for its income limit is removed.",
+    ),
+    (
+        "SAVING_REMOVES_INVESTMENT_K1_ORIGIN",
+        "The removed K-1 no longer identifies the retained investment-interest balance. Its deduction destination and balance stay recorded.",
+    ),
+    (
+        "SAVING_REMOVES_RESEARCH_CREDIT_BUSINESS",
+        "The removed business no longer supplies taxable income for this research-credit history. The credit balance stays recorded.",
+    ),
+    (
+        "SAVING_REMOVES_ENTERED_CREDIT_SOURCE",
+        "The entered credit belonging to the removed business or property is removed.",
+    ),
+    (
+        "SAVING_REMOVES_W2_SCORP_EMPLOYER",
+        "Saving removes the W-2 employer link to an S-corporation K-1 that is no longer on this return.",
+    ),
+    ("SAVING_KIND_FARM_EXTERNAL_SOURCE_ONE", "farm source row"),
+    ("SAVING_KIND_FARM_EXTERNAL_SOURCE_MANY", "farm source rows"),
+    (
+        "SAVING_REMOVES_MINIMUM_TAX_HISTORY",
+        "Saving removes minimum-tax histories for a filer or joint couple no longer on this return.",
+    ),
+    (
+        "SAVING_REMOVES_CARE_SOURCE_ANSWERS",
+        "Saving removes care answers whose employee, income source or filer situation no longer applies.",
+    ),
+    (
+        "ISSUE_CARE_DEDUCTION_COORDINATION",
+        "The source deductions and Form 2441 earned-income limit did not stabilize; no final tax can be reported.",
+    ),
+    (
+        "ANNUITY_REMAINING_BASIS_UNAVAILABLE",
+        "The combined annuity's remaining basis cannot be represented in the required amount field.",
+    ),
+    (
+        "WARN_FOREIGN_ELECTION_BARRED",
+        "The earlier revocation bars the foreign earned income exclusion for2026 without IRS consent. No earned income exclusion is taken.",
+    ),
+    (
+        "WARN_FOREIGN_HOUSING_ELECTION_BARRED",
+        "The earlier revocation bars the employee housing exclusion for2026 without IRS consent. The self-employment housing deduction is unaffected.",
+    ),
+    ("CLERGY_TWICE", "Enter one clergy or approved religious exemption record for each person."),
+    ("CLERGY_OWNER_INVALID", "Enter a spouse clergy record only on a joint return."),
+    (
+        "CLERGY_AMOUNT_INVALID",
+        "Enter clergy housing and employee expense amounts within the displayed ranges.",
+    ),
+    ("NONFARM_OPTIONAL_TWICE", "Enter one nonfarm optional-method record for each person."),
+    (
+        "NONFARM_OPTIONAL_OWNER_INVALID",
+        "Enter a spouse optional-method election only on a joint return.",
+    ),
+    ("ISSUE_NOTARY_PROFIT_ABOVE_NET", "Notary profit cannot exceed this business's net profit."),
+    (
+        "ISSUE_SITUATION_CHAPTER_11_DEBTOR",
+        "Chapter 11 debtor with self-employment income is not calculated yet.",
+    ),
+    ("SITUATION_NAME_CHAPTER_11_DEBTOR", "Chapter 11 debtor with self-employment income"),
+    ("SAVING_KIND_CLERGY_RECORD", "clergy or religious exemption record"),
+    ("SAVING_KIND_CLERGY_RECORD_ONE", "clergy or religious exemption record"),
+    ("SAVING_KIND_CLERGY_RECORD_MANY", "clergy or religious exemption records"),
+    (
+        "RENTAL_EXPENSE_AMOUNT_UNAVAILABLE",
+        "A required rental or royalty expense output cannot be represented in its native amount. No final tax can be reported.",
+    ),
+    (
+        "SALT_AMOUNT_UNAVAILABLE",
+        "The required Schedule A state and local tax subtotal cannot be represented in its native amount. No final tax can be reported.",
+    ),
+    (
+        "MARKETPLACE_CALCULATION_INCOME_UNAVAILABLE",
+        "The required income for the Marketplace and self-employed health insurance calculation cannot be represented in its native amount. No final tax can be reported.",
+    ),
+    (
+        "FOREIGN_GROSS_CORRECTION_UNAVAILABLE",
+        "The required Form 1116 gross-income correction for royalties and nonbusiness property cannot be represented in its native amount. No final tax can be reported.",
+    ),
+    (
+        "SCHEDULE_A_MEDICAL_SUBTOTAL_UNAVAILABLE",
+        "The required Schedule A medical expense subtotal cannot be represented in its native amount. No final tax can be reported.",
+    ),
+    (
+        "SCHEDULE_A_ITEMIZED_TOTAL_UNAVAILABLE",
+        "The required Schedule A itemized deduction total cannot be represented in its native amount. No final tax can be reported.",
+    ),
+    (
+        "RENTAL_HOME_AGI_UNRESOLVED",
+        "The home-use worksheet and final AGI did not stabilize. No final tax can be reported.",
+    ),
+    (
+        "WARN_RENTAL_POINTS_STRAIGHT_LINE",
+        "{0}: the rental share of the linked loan's points is spread evenly over the loan term (Pub. 527). A lender's original issue discount schedule can give a different annual amount.",
+    ),
+    (
+        "BUSINESS_PASSIVE_OPERATING_SOURCE_REQUIRED",
+        "This passive business needs its actual selected operating source, after its deductions and at-risk limit, before the common passive loss limit can be calculated.",
+    ),
+    (
+        "ISSUE_SHORT_TERM_RENTAL_IS_A_BUSINESS",
+        "Substantial services for guests belong on Schedule C. Enter this property in Self-employment as a business, and remove it from Rentals.",
+    ),
+    (
+        "ISSUE_PROFESSIONAL_ELECTION_ALL_RENTALS",
+        "With the election to treat your rentals as one activity, choose Professional for every rental real estate activity or for none.",
+    ),
+    (
+        "ISSUE_SITUATION_REMIC_RESIDUAL",
+        "REMIC residual interest (Schedule Q; Schedule E lines 38 and 39) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_REMIC_RESIDUAL",
+        "REMIC residual interest (Schedule Q; Schedule E lines 38 and 39)",
+    ),
+    (
+        "ISSUE_TAX_CREDIT_BOND_INCOME_UNKNOWN",
+        "The direct bond's required income source or tax character is unresolved; credit omission alone does not establish ordinary federal tax.",
+    ),
+    ("INCOME_SOURCE_NAME_REQUIRED", "Enter the employer or borrower name from your records."),
+    (
+        "ISSUE_DEBT_NET_GROSS_INCOME_UNKNOWN",
+        "Taxable-premium amortization is not elected, and this net statement does not establish gross taxable income. Enter the actual premium offset already applied to retained income after nominee and after-death allocations, including a documented zero if applicable. Total amortization is not necessarily the applied offset.",
+    ),
+    (
+        "TAXABLE_PREMIUM_ELECTION_TWICE",
+        "Enter the taxable-bond premium election once for the whole return.",
+    ),
+    (
+        "SAVING_COVERDELL_CONTRIBUTOR",
+        "Saving keeps the actual Coverdell deposits but asks for the former filer’s contributor facts.",
+    ),
+    (
+        "SAVING_COVERDELL_CORRECTION_SOURCE",
+        "Saving unlinks a Coverdell correction from a source no longer present. The actual correction earnings remain recorded directly; review its source.",
+    ),
+    (
+        "SAVING_COVERDELL_BENEFICIARY",
+        "Saving removes a Coverdell beneficiary who is no longer a filer on this return.",
+    ),
+    (
+        "WARN_SALE_BASIS_ASSUMED_ZERO",
+        "{0}: no cost basis was entered, so the whole sale amount is counted as gain. If your records show what you paid, enter it; your tax may be lower.",
+    ),
+    (
+        "WARN_QOF_VALUE_ASSUMED",
+        "{0}: the investment's value on December 31, 2026 wasn't entered, so the whole deferred gain is taxed; if it was worth less, your tax may be lower.",
+    ),
+    (
+        "ISSUE_QOF_DEFERRAL_ABOVE_GAINS",
+        "{0}: the gain deferred is more than your 2026 {1} capital gains on this page.",
+    ),
+    ("TERM_SHORT_TERM", "short-term"),
+    ("TERM_LONG_TERM", "long-term"),
+    ("SALE_AMT_BASIS_NEEDS_BASIS", "Enter the sale's basis to use a different AMT basis."),
+    (
+        "FORM_2439_SECTION_1202_NEEDS_EXCLUSION",
+        "Form 2439: choose the section 1202 exclusion for the box 1c gain.",
+    ),
+    ("LABEL_ENTRY_QOF", "Opportunity fund investment {0,number,0}"),
+    ("LABEL_ENTRY_QOF_DEFERRAL", "Opportunity fund deferral {0,number,0}"),
+    ("SAVING_KIND_QOF_ONE", "opportunity fund investment"),
+    ("SAVING_KIND_QOF_MANY", "opportunity fund investments"),
+    ("SAVING_KIND_QOF_DEFERRAL_ONE", "opportunity fund deferral"),
+    ("SAVING_KIND_QOF_DEFERRAL_MANY", "opportunity fund deferrals"),
+    (
+        "NOTE_AMT_EARNED_BENEFIT_SOURCE",
+        "This changed AMT activity has no complete earned-income source projection for its SEP or self-employed health limit. Those AMT benefits, including medical amounts needing that source coordination, are left out. Regular deductions and accepted source facts remain; other supported AMT sources are calculated.",
+    ),
+    (
+        "NOTE_AMT_IRA_COMPENSATION_SOURCE",
+        "The changed AMT activity does not establish its IRA compensation. The AMT IRA deduction uses independently established compensation only; any remaining deduction benefit is left out. The regular deduction, actual contribution, basis and excess-contribution calculation remain unchanged.",
+    ),
+    ("MORTGAGE_SAVED_LOAN", "Loan {0}: {1} · originated {2}"),
+    ("MORTGAGE_PROPERTY_UNNAMED", "Unnamed property"),
+    ("SAVING_KIND_ABLE_CONTRIBUTIONS_ONE", "ABLE contributions record"),
+    ("SAVING_KIND_ABLE_CONTRIBUTIONS_MANY", "ABLE contributions records"),
+    (
+        "MESSAGE_ABLE_CONTRIBUTIONS_YOUR_SPOUSE_S_GO_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_JOINTLY",
+        "ABLE contributions: your spouse's go on this return only when you file jointly.",
+    ),
+    ("ABLE_CONTRIBUTIONS_TWICE", "Enter the ABLE contributions only once for each beneficiary."),
+    (
+        "ABLE_CONTRIBUTIONS_INVALID",
+        "Check the ABLE contributions: each amount must be zero or more.",
+    ),
+    ("LABEL_ENTRY_1099_SA", "1099-SA {0,number,0}"),
+    ("LABEL_ENTRY_1099_LTC", "1099-LTC {0,number,0}"),
+    ("LABEL_ENTRY_LTC_INSURED", "Long-term care periods {0,number,0}"),
+    ("LABEL_ENTRY_1099_QA", "1099-QA {0,number,0}"),
+    ("LABEL_ENTRY_1099_S", "1099-S {0,number,0}"),
+    ("SAVING_KIND_1099_S_ONE", "1099-S"),
+    ("SAVING_KIND_1099_S_MANY", "1099-Ss"),
+    ("SAVING_KIND_1099_SA_ONE", "1099-SA"),
+    ("SAVING_KIND_1099_SA_MANY", "1099-SAs"),
+    ("LABEL_ENTRY_HSA_TRUSTEE_STATEMENT", "HSA/MSA trustee statement {0,number,0}"),
+    ("SAVING_KIND_HSA_TRUSTEE_STATEMENT_ONE", "HSA/MSA trustee statement"),
+    ("SAVING_KIND_HSA_TRUSTEE_STATEMENT_MANY", "HSA/MSA trustee statements"),
+    ("SAVING_KIND_1099_LTC_ONE", "1099-LTC"),
+    ("SAVING_KIND_1099_LTC_MANY", "1099-LTCs"),
+    ("SAVING_KIND_LTC_INSURED_ONE", "Long-term care periods record"),
+    ("SAVING_KIND_LTC_INSURED_MANY", "Long-term care periods records"),
+    ("SAVING_KIND_LTC_PERIODS_CHOICE_ONE", "Long-term care periods choice"),
+    ("SAVING_KIND_LTC_PERIODS_CHOICE_MANY", "Long-term care periods choices"),
+    ("SAVING_KIND_MARKETPLACE_DEPENDENT_RETURN_ONE", "Marketplace dependent return"),
+    ("SAVING_KIND_MARKETPLACE_DEPENDENT_RETURN_MANY", "Marketplace dependent returns"),
+    ("SAVING_KIND_1099_QA_ONE", "1099-QA"),
+    ("SAVING_KIND_1099_QA_MANY", "1099-QAs"),
+    ("LTC_INSURED_CHOICE", "{0}"),
+    ("DOCUMENT_ANSWER_ABLETREATMENT", "What the ABLE payment was"),
+    ("DOCUMENT_ANSWER_MEDICALPAYMENT", "Your medical-account payment records"),
+    (
+        "DOCUMENT_ANSWER_EMPLOYERYEAR_HSA",
+        "The year your employer designated this W-2 HSA contribution (box 12 code W) for",
+    ),
+    (
+        "DOCUMENT_ANSWER_EMPLOYERYEAR_ARCHER",
+        "The year your employer designated this W-2 Archer MSA contribution (box 12 code R) for",
+    ),
+    ("DOCUMENT_ANSWER_MORTGAGEREFUNDORIGIN", "What the box 4 refund repays"),
+    ("DOCUMENT_ANSWER_OTHERHSAELIGIBILITY_SPOUSE", "Your spouse's HSA eligibility in 2026"),
+    ("DOCUMENT_ANSWER_OTHERHSAELIGIBILITY_YOU", "Your HSA eligibility in 2026"),
+    ("DOCUMENT_ANSWER_MEDICARESPOUSAL", "Whether your spouse's Medicare MSA became your own"),
+    (
+        "DOCUMENT_ANSWER_MEDICAREPRIOR",
+        "Prior-year records for your own Medicare MSA; not needed for one inherited from your spouse",
+    ),
+    ("DOCUMENT_ANSWER_EDUCATIONBENEFICIARY", "The student for this education-account distribution"),
+    ("DOCUMENT_ANSWER_COVERDELLRECORDS", "Your Coverdell basis and late-rollover records"),
+    ("DOCUMENT_ANSWER_EDUCATIONREDEPOSITED", "Education-account money put back within 60 days"),
+    (
+        "DOCUMENT_ANSWER_EDUCATIONTAXABLETRANSFER",
+        "Nonqualifying part of the education-account transfer",
+    ),
+    ("DOCUMENT_ANSWER_EDUCATIONROTHRECORDS", "Your 529-to-Roth transfer records"),
+    (
+        "ISSUE_LTC_PERIODS_OTHER_OWNER",
+        "This 1099-LTC names a Long-term care periods record that belongs to the other filer. Choose one of this filer's own.",
+    ),
+    (
+        "ISSUE_LTC_PERIOD_PAYMENTS_DIFFER",
+        "The payments of the periods do not total the per diem payments on the 1099-LTCs that name this record. Make each period's payments add up to them.",
+    ),
+    (
+        "WARN_LTC_ANNUITY_EXCLUSION_UNAVAILABLE",
+        "The linked annuity source retains its established taxable income. A separate unverified LTC exclusion is unavailable; the receipt is not counted as another distribution.",
+    ),
+    (
+        "NOTE_INHERITED_MEDICAL_DECLINE",
+        "Inherited medical account — {0}: the account paid out less than its value at the death. No deduction is available for the decline; only earnings above that value would be income.",
+    ),
+    ("LABEL_ENTRY_1099_NEC", "1099-NEC {0,number,0}"),
+    ("SAVING_KIND_1099_NEC_ONE", "1099-NEC"),
+    ("SAVING_KIND_1099_NEC_MANY", "1099-NECs"),
+    ("LABEL_ENTRY_1099_MISC", "1099-MISC {0,number,0}"),
+    ("SAVING_KIND_1099_MISC_ONE", "1099-MISC"),
+    ("SAVING_KIND_1099_MISC_MANY", "1099-MISCs"),
+    ("LABEL_ENTRY_1099_K", "1099-K {0,number,0}"),
+    ("SAVING_KIND_1099_K_ONE", "1099-K"),
+    ("SAVING_KIND_1099_K_MANY", "1099-Ks"),
+    ("LABEL_ENTRY_OTHER_INCOME", "Other income {0,number,0}"),
+    ("SAVING_KIND_OTHER_INCOME_ONE", "other income item"),
+    ("SAVING_KIND_OTHER_INCOME_MANY", "other income items"),
+    ("LABEL_ENTRY_ROYALTIES", "Royalties {0,number,0}"),
+    (
+        "INVESTMENT_AMT_PARTS_REQUIRED",
+        "Supply separate investment-loss portions when the AMT carryover differs.",
+    ),
+    (
+        "INVESTMENT_ST_ABOVE_CARRY",
+        "The investment short-term portion cannot exceed the calculated short-term carryover.",
+    ),
+    (
+        "INVESTMENT_LT_ABOVE_CARRY",
+        "The investment long-term portion cannot exceed the calculated long-term carryover.",
+    ),
+    (
+        "INVESTMENT_AMT_ST_ABOVE_CARRY",
+        "The AMT investment short-term portion cannot exceed the AMT carryover.",
+    ),
+    (
+        "INVESTMENT_AMT_LT_ABOVE_CARRY",
+        "The AMT investment long-term portion cannot exceed the AMT carryover.",
+    ),
+    (
+        "INVESTMENT_CAPITAL_SOURCE",
+        "Check the prior-return source amounts before calculating the carryover bounds.",
+    ),
+    (
+        "NOTE_INVESTMENT_DESTINATION_UNAVAILABLE",
+        "Investment borrowing has a royalty destination whose final income, expenses or limited-source allocation is not established. The Form 4952 deduction and election benefit are left out; reported income, ordinary expenses and borrowing records remain. No computed carryforward is claimed for this omitted worksheet.",
+    ),
+    (
+        "NOTE_INVESTMENT_PREMIUM_CHARACTER",
+        "The bond-premium deduction does not establish its investment-expense or interest character. The Form 4952 deduction and election benefit are left out until that source character is available; the ordinary bond-premium deduction and borrowing records remain.",
+    ),
+    (
+        "NOTE_INVESTMENT_CAPITAL_PARTS",
+        "Investment loss-source portions are unavailable. Investment interest uses the greatest possible investment losses; its deduction, election and carryforward may change when the source portions are supplied.",
+    ),
+    (
+        "NOTE_INVESTMENT_TAX_ALLOCATION",
+        "The allowed investment part of the capped income-tax deduction is not established. Investment interest uses the greatest possible connected expense; the deduction and carryforward may change when its allocation is supplied.",
+    ),
+    ("SAVING_KIND_ROYALTIES_ONE", "royalty entry"),
+    ("SAVING_KIND_ROYALTIES_MANY", "royalty entries"),
+    ("LABEL_ENTRY_EQUIPMENT_RENTAL", "Equipment rental {0,number,0}"),
+    ("SAVING_KIND_EQUIPMENT_RENTAL_ONE", "equipment rental"),
+    ("SAVING_KIND_EQUIPMENT_RENTAL_MANY", "equipment rentals"),
+    ("OTHER_INCOME_INVALID", "Review the amounts of this Other income item."),
+    (
+        "ISSUE_FORM_1099_MISC_BOX_15_SECTION_409A",
+        "Form 1099-MISC box 15 nonqualified deferred compensation that fails section 409A carries a 20% additional tax and premium interest (Schedule 2 line 13h) that are not calculated; the deferral history they need is not kept.",
+    ),
+    (
+        "NOTE_1099K_GAIN_NEEDS_SALE",
+        "{0}: a part of this form is personal items sold for more than you paid, which is a capital gain. Enter each sale on Investment sales (no 1099-B), or your tax may be higher.",
+    ),
+    // Answers and unknowns: assumption warnings and per-item
+    // notices, review notes that never refuse the estimate.
+    (
+        "WARN_CASUALTY_LOSS_LEFT_OUT",
+        "{0}: this event's records or treatment aren't supported, so its loss is left out of this estimate; a gain from reimbursement above basis is still included.",
+    ),
+    (
+        "WARN_SCHOLARSHIP_SPECIAL_LEFT_OUT",
+        "{0}: special scholarship exclusions aren't supported, so this award is taxed under the ordinary rules.",
+    ),
+    ("DOCUMENT_TAX_CREDIT_BOND_ANSWERS", "Complete the bond records not shown on Form 1097-BTC"),
+    (
+        "WARN_KIDDIE_SOURCE_ASSUMED_CAPITAL",
+        "{0}: assumed capital, not your own work, produces this business's income, because it isn't known, so its profit doesn't count as earned income for the tax on a child's unearned income; if your work produced it, your tax may be lower.",
+    ),
+    (
+        "WARN_NIIT_STATE_TAX_NOT_ALLOCATED",
+        "Assumed none of your state and local income tax relates to investment income, because its allocation isn't resolved, so it doesn't reduce net investment income; if part of it does, your tax may be lower.",
+    ),
+    (
+        "WARN_CARE_COSTS_NEED_TIN",
+        "{0}: has no Social Security number, ITIN or ATIN issued by the return's due date, so no care credit is allowed for them (a child who was born and died in 2026 is the only exception); the care costs entered for them are left out of this estimate. Once they have a number, your tax may be lower.",
+    ),
+    (
+        "WARN_HEALTH_LOAN_ASSISTANCE_ASSUMED_TAXABLE",
+        "{0}: this health-service loan repayment assistance isn't confirmed as a qualifying program, so it is taxed as canceled debt; if it qualifies, your tax may be lower.",
+    ),
+    (
+        "FARM_RENTAL_PROPERTY_QUESTIONS_UPDATED",
+        "Review the property-use records for the farm rental property you sold, then save again. None of these edits has been saved yet.",
+    ),
+    (
+        "NOTE_SCHOLARSHIP_MAY_BE_TAXABLE",
+        "A Form 1098-T box 5 amount is more than the tuition and books entered, and no scholarship is entered under Other income. The part of a scholarship or grant not spent on qualified education expenses is taxable (Schedule 1 line 8r); enter the award, or your tax may be higher.",
+    ),
+    (
+        "NOTE_SCHOLARSHIP_INCLUDED_BY_STUDENT",
+        "{0} includes {1,number,currency} of the scholarship in income on their own 2026 return (Schedule 1 line 8r); this return's credit treats that part as paying living costs (Pub. 970 chapter 2). If {0} has other income, compare the family's total tax before filing.",
+    ),
+    (
+        "WARN_FINAL_RETURN_ADJUSTMENTS_LEFT_OUT",
+        "Special death-related adjustments on a final return (released passive losses, suspended S corporation losses, tax forgiven for a combat-zone, terrorist-action or astronaut death, a deduction for estate tax on income from an earlier decedent, self-employment from a partnership through the month of death, or deductible payments the estate made after the death that a Form 1098, 1098-E or 1098-T in the person's name includes) aren't calculated, so they are left out of this estimate; your tax may be higher or lower.",
+    ),
+    (
+        "NOTE_FINAL_RETURN_CARRYOVERS_END",
+        "A decedent's unused loss carryovers end with the final return; they are not transferred to the estate or a beneficiary (Pub. 559). The carryforward lines shown are what this return computes. On a joint return the decedent's part ends here and the survivor's own part carries forward, which this estimate doesn't divide.",
+    ),
+    (
+        "ISSUE_PRIOR_REGULAR_NOL_WITH_YOUNG_FILER_OR_FORM_1116_REQUIRES_FURTHER_NOL_WORKSHEETS",
+        "Prior regular NOL with a young filer or Form 1116 requires further coordinated NOL and carryforward worksheets.",
+    ),
+    (
+        "ISSUE_A_DECEASED_SHAREHOLDER_WITH_SUSPENDED_LOSSES_NEEDS_THE_DEATH_ADJUSTMENT_ANSWER",
+        "A deceased shareholder's K-1 with suspended losses can't also have no other death-related adjustment: say that an adjustment applies on the person's page, and the suspended losses are left out of this final return.",
+    ),
+    ("FORM_FORM1098VLI", "Form 1098-VLI"),
+    ("FORM_FORM1097BTC", "Form 1097-BTC"),
+    ("FORM_FORM8986", "Form 8986"),
+    ("FORM_FORM3921", "Form 3921"),
+    ("FORM_FORM3922", "Form 3922"),
+    ("FORM_RRB1099", "RRB-1099"),
+    ("LABEL_ENTRY_RRB1099", "RRB-1099 {0,number,0}"),
+    (
+        "ESPP_SALE_ADJUSTMENTS",
+        "Enter any actual purchase commissions, selling fees, wash-sale adjustment or special treatment for this ESPP sale.",
+    ),
+    (
+        "ISSUE_WHOSE_DOCUMENT_IS_THIS",
+        "{0}: whose document is this? Add it to its owner in this section.",
+    ),
+    ("DOCUMENT_FROM", "{0} from {1}"),
+    ("DOCUMENT_CHOICE", "{0} from {1}, printed for {2}"),
+    ("DOCUMENT_PRINTED_FOR", "{0}, printed for {1}"),
+    ("DOCUMENT_REFERENCE_OWNER", "{0} · Owner: {1}"),
+    ("DOCUMENT_OWNER_UNASSIGNED", "Not assigned"),
+    ("DOCUMENT_RETURN_AMOUNT", "Amount on the return: {0,number,currency}"),
+    ("DOCUMENT_PRINTED_BOX", "Box {0}: {1,number,currency}"),
+    ("DOCUMENT_PRINTED_ADJUSTMENT", "Part V column (g), interest adjustment: {0,number,currency}"),
+    (
+        "DOCUMENT_PRINTED_ORIGINAL_INTEREST",
+        "Part V column (d), interest originally reported: {0,number,currency}",
+    ),
+    (
+        "DOCUMENT_NOT_AVAILABLE_TO_ADD",
+        "This document can't be added to this person here. Reopen this page and choose from the documents without an owner.",
+    ),
+    ("DOCUMENT_ADDED_TWICE", "This document is already added. Keep one row for it."),
+    (
+        "DOCUMENT_JOINT_NOT_AVAILABLE",
+        "Joint is available only on a married couple's return, for a document both spouses can own, such as a bank or brokerage account.",
+    ),
+    ("DOCUMENT_JOINT_SHARE_OUT_OF_RANGE", "Enter this spouse's share from 0 to 100 percent."),
+    (
+        "DOCUMENT_JOINT_SHARES_DIFFER",
+        "The spouses' shares of this joint document must add up to 100%. Change it in one section only.",
+    ),
+    (
+        "ISSUE_COMMUNITY_ANSWER_NEEDED",
+        "{0}: say whether this is community or separate income; a community-property separate return divides every item.",
+    ),
+    (
+        "ISSUE_COMMUNITY_FILING_SCOPE",
+        "A community-property answer applies only to a married-filing-separately return.",
+    ),
+    (
+        "ISSUE_SPOUSE_OWNED_INCOME_NEEDS_A_JOINT_OR_COMMUNITY_PROPERTY_RETURN",
+        "Spouse-owned income requires a joint return or a community-property separate return.",
+    ),
+    (
+        "NOTE_DEPENDENT_FILER_HAS_NO_DEPENDENTS",
+        "Because someone else can claim you as a dependent, you are treated as having no dependents (section 152(b)(1)): the people you listed give no dependency, child tax credit, credit for other dependents or dependent care credit, and no head of household status through a relative. Head of household through an unmarried qualifying child and the earned income credit through a qualifying child follow their own tests.",
+    ),
+    (
+        "NOTE_COMPETING_CLAIM_OTHER_PERSON_CLAIMS",
+        "{0}: the other person claims this person, so you take none of the dependency, child tax credit, head of household, dependent care or earned income credit benefits for them (section 152(c)(4)).",
+    ),
+    (
+        "NOTE_ANOTHERS_QUALIFYING_CHILD",
+        "{0} is the qualifying child of someone else who files, so {0} cannot be your qualifying relative (section 152(d)(1)(D)): no credit for other dependents or other dependency benefit. If that person need not file and files only for a refund, untick it.",
+    ),
+    (
+        "WARN_TIEBREAKER_NOT_MET",
+        "{0}: none of the tiebreaker rules gives you this person, so the other person is assumed to claim them and you take none of their benefits; if you may claim them, your tax may be lower.",
+    ),
+    (
+        "WARN_FAMILY_LEAVE_TAXED_IN_FULL",
+        "Paid family leave in Form 1099-G box 10 that includes, or may include, a medical-leave share is taxed in full; an excludable medical-leave share isn't calculated, so your tax may be lower.",
+    ),
+    (
+        "WARN_CASUALTY_LIVING_PAYMENTS_TAXED",
+        "{0}: the casualty, insurer and expense facts aren't confirmed, so every 2026 insurer living-expense payment is counted as taxable; your tax may be lower.",
+    ),
+    (
+        "WARN_SAVER_CREDIT_NOT_CLAIMED",
+        "Your IRA or workplace retirement contributions may qualify for the Saver’s Credit, but its facts weren't entered, so no credit is figured; if you qualify, your tax may be lower.",
+    ),
+    (
+        "WARN_SAVER_2027_JOINT_ASSUMED",
+        "Assumed you will file jointly for 2027, so a 2027 distribution also reduces your spouse's saver's credit; if you won't, your tax may be lower.",
+    ),
+    (
+        "WARN_REFUELING_PROPERTY_LEFT_OUT",
+        "{0}: refueling property with business or investment use needs Form 3800, which isn't supported, so its credit is left out of this estimate; your tax may be lower.",
+    ),
+    (
+        "WARN_HOME_KEROSENE_LEFT_OUT",
+        "Home kerosene without complete purchase, tax and use records isn't supported, so its fuel tax credit is left out of this estimate; your tax may be lower.",
+    ),
+    (
+        "STATE_SOURCE_INVALID",
+        "Check the state and local information: use the printed jurisdiction and names, keep IDs as text, and enter nonnegative amounts within the field limits.",
+    ),
+    ("LABEL_ENTRY_1099_A", "1099-A {0,number,0}"),
+    ("LABEL_ENTRY_1099_B", "1099-B or 1099-DA sale {0,number,0}"),
+    ("LABEL_ENTRY_1099_B_CONTRACTS", "1099-B section 1256 contracts {0,number,0}"),
+    ("LABEL_ENTRY_1099_C", "1099-C {0,number,0}"),
+    ("LABEL_ENTRY_1099_DIV", "1099-DIV {0,number,0}"),
+    ("LABEL_ENTRY_1099_G", "1099-G {0,number,0}"),
+    ("LABEL_ENTRY_1099_G_REFUND", "1099-G refund {0,number,0}"),
+    ("LABEL_ENTRY_1099_INT", "1099-INT {0,number,0}"),
+    ("LABEL_ENTRY_1099_OID", "1099-OID {0,number,0}"),
+    ("LABEL_ENTRY_1099_PATR", "1099-PATR {0,number,0}"),
+    ("LABEL_ENTRY_1099_Q", "1099-Q {0,number,0}"),
+    ("LABEL_ENTRY_1099_R", "1099-R {0,number,0}"),
+    ("LABEL_ENTRY_RRB_1099_R", "RRB-1099-R {0,number,0}"),
+    ("LABEL_ENTRY_INHERITED_IRA", "Inherited IRA {0,number,0}"),
+    ("LABEL_ENTRY_ALIMONY_AGREEMENT", "Alimony agreement {0,number,0}"),
+    ("LABEL_ENTRY_BUSINESS", "Business {0,number,0}"),
+    ("LABEL_ENTRY_EDUCATION_ACCOUNT_EXPENSES", "529 and Coverdell expenses {0,number,0}"),
+    ("LABEL_ENTRY_FARM", "Farm {0,number,0}"),
+    ("LABEL_ENTRY_FARM_RENTAL", "Farm rental {0,number,0}"),
+    ("LABEL_ENTRY_FORM_1041_K1", "Form 1041 Schedule K-1 {0,number,0}"),
+    ("LABEL_ENTRY_FORM_1065_K1", "Form 1065 Schedule K-1 {0,number,0}"),
+    ("LABEL_ENTRY_FORM_1120_S_K1", "Form 1120-S Schedule K-1 {0,number,0}"),
+    ("LABEL_ENTRY_FORM_8814", "Form 8814 {0,number,0}"),
+    ("LABEL_ENTRY_GAMBLING_LOSSES_ENTRY", "Gambling losses and other winnings {0,number,0}"),
+    ("LABEL_ENTRY_HOME_SALE", "Sale of your main home {0,number,0}"),
+    ("LABEL_ENTRY_ISO_SALE", "ISO shares sold {0,number,0}"),
+    ("LABEL_ENTRY_EMPLOYEE_SALE", "Employee shares sold {0,number,0}"),
+    ("LABEL_ENTRY_ESPP_SALE", "ESPP shares sold {0,number,0}"),
+    ("LABEL_ENTRY_NUA_SALE", "NUA shares sold {0,number,0}"),
+    ("LABEL_ENTRY_QSBS_SALE", "Qualified small business stock sold {0,number,0}"),
+    ("LABEL_ENTRY_SECTION_1244_LOSS", "Section 1244 stock loss {0,number,0}"),
+    ("LABEL_ENTRY_WORTHLESS_SECURITY", "Worthless security {0,number,0}"),
+    ("LABEL_ENTRY_BAD_DEBT", "Bad debt {0,number,0}"),
+    ("LABEL_ENTRY_CAPITAL_RETURN", "1099-DIV return of capital {0,number,0}"),
+    ("LABEL_ENTRY_FORM_2439", "Form 2439 {0,number,0}"),
+    ("LABEL_ENTRY_FORM_8919", "Employee pay without W-2 {0,number,0}"),
+    ("LABEL_ENTRY_HEALTH_LOAN_REPAYMENT", "Health-service loan repayment {0,number,0}"),
+    ("LABEL_ENTRY_SCHOLARSHIP", "Scholarship {0,number,0}"),
+    ("LABEL_ENTRY_JURY_PAY", "Jury duty pay {0,number,0}"),
+    ("LABEL_ENTRY_FOREIGN_PAY", "Foreign employer pay {0,number,0}"),
+    ("LABEL_ENTRY_HOBBY_SALES", "Hobby sales {0,number,0}"),
+    ("LABEL_ENTRY_WILDFIRE_RELIEF", "Wildfire relief payment {0,number,0}"),
+    ("LABEL_ENTRY_DISASTER_RELIEF", "Disaster relief payment {0,number,0}"),
+    ("LABEL_ENTRY_CASUALTY_LIVING_INSURANCE", "Living-expense insurance {0,number,0}"),
+    ("LABEL_ENTRY_DISASTER_MITIGATION", "Hazard mitigation grant {0,number,0}"),
+    ("LABEL_ENTRY_RENTAL", "Rental {0,number,0}"),
+    ("LABEL_ENTRY_SAVINGS_BONDS", "Savings bonds for education {0,number,0}"),
+    ("LABEL_ENTRY_SSA_1099", "SSA-1099 {0,number,0}"),
+    ("LABEL_ENTRY_CASH_TIP_RECORD", "Cash tip record {0,number,0}"),
+    ("LABEL_ENTRY_PRIVATE_LOAN_INTEREST", "Private loan interest {0,number,0}"),
+    ("LABEL_ENTRY_W2", "W-2 {0,number,0}"),
+    ("LABEL_ENTRY_W2G", "W-2G {0,number,0}"),
+    (
+        "NOTE_FORM_8332_ATTACH",
+        "{0}: attach the signed Form 8332, or the qualifying pages of a 1985–2008 decree or agreement, to your return. The child tax credit or credit for other dependents for {0} is included here; head of household, the earned income credit and the dependent care credit for {0} stay with the other parent. This App does not prepare or attach the form.",
+    ),
+    (
+        "NOTE_FORM_2120_ATTACH",
+        "{0}: attach Form 2120 naming each other person who paid more than 10% of {0}'s support, and keep their signed statements. The credit for other dependents for {0} is included here; {0} does not qualify you for head of household. This App does not prepare the form.",
+    ),
+    (
+        "NOTE_HOSTED_STUDENT_RECORDS",
+        "Hosted student {0}: retain the written sponsor agreement, actual monthly expenses and a statement of joining date {1,date}, full-time school attendance {2,date}–{3,date}, and school {4} in {5}. An itemized claim requires these attachments; the App calculates the on-screen amount but does not prepare them.",
+    ),
+    (
+        "WARN_QBI_GROSS_ALLOCATION_LEFT_OUT",
+        "The QBI deduction was left out because {0} has no gross self-employment income allocation. Enter the source's gross-income records to include this deduction; your tax may be lower.",
+    ),
+    (
+        "WARN_PARTNERSHIP_QBI_HISTORY_LEFT_OUT",
+        "{0}: this partnership's QBI is left out because its retained suspended-loss QBI history is unknown. Enter the history to account for qualified losses when allowed; your tax may be higher or lower.",
+    ),
+    ("REVIEW_CHILD_CARE_LABEL", "Child and dependent care"),
+    ("CHECKLIST_A_HOUSEHOLD_EMPLOYEE", "A household employee"),
+    ("CHECKLIST_A_BUSINESS_OF_YOUR_OWN", "A business or side work of your own"),
+    (
+        "CHECKLIST_INCOME_A_JOB_OR_ACCOUNTS_OUTSIDE_THE_U_S",
+        "Income, a job or accounts outside the U.S.",
+    ),
+    ("CHECKLIST_A_CAPITAL_LOSS_CARRYOVER", "A capital loss carryover"),
+    ("CHECKLIST_A_NET_OPERATING_LOSS", "A net operating loss"),
+    ("CHECKLIST_A_QBI_LOSS_CARRYFORWARD", "A QBI loss carryforward"),
+    ("CHECKLIST_A_CHARITABLE_CONTRIBUTION_CARRYOVER", "A charitable contribution carryover"),
+    (
+        "CHECKLIST_HOME_USE_RENTAL_CARRY",
+        "Home-use rental expenses carried from your 2025 Form 1040 Schedule E worksheet (vacation home or rented home)",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_HOME_USE_RENTAL_CARRY",
+        "Your 2025 return no longer carries home-use rental expenses, so each rental's home-use worksheet carries are removed.",
+    ),
+    ("CHECKLIST_A_MINIMUM_TAX_CREDIT", "A minimum tax credit (Form 8801)"),
+    (
+        "CHECKLIST_BASIS_IN_NONDEDUCTIBLE_IRA_CONTRIBUTIONS",
+        "Basis in nondeductible IRA contributions (Form 8606)",
+    ),
+    ("CHECKLIST_ESTIMATED_TAX_PAYMENTS", "Estimated or extension payments"),
+    ("CHECKLIST_FARMING", "Farming"),
+    ("CHECKLIST_GIFTS_TO_CHARITY", "Gifts to charity"),
+    ("CHECKLIST_HEALTH_SAVINGS_ACCOUNT", "Health and medical savings accounts"),
+    ("CHECKLIST_IRA_CONTRIBUTIONS", "IRA contributions"),
+    ("CHECKLIST_RENTAL_PROPERTY", "Rental property"),
+    ("CHECKLIST_STATE_LOCAL_OR_PROPERTY_TAXES", "State, local or property taxes"),
+    ("TOPIC_RARE_FORM4255_NET_EPE", "Form 4255 net elective-payment recapture"),
+    ("NAME_RARE_FORM4255_NET_EPE", "Sections 6417/6418; Schedule 2 lines 1d and 10"),
+    (
+        "ISSUE_RARE_FORM4255_NET_EPE",
+        "Form 4255 net elective-payment recapture: the App does not calculate the required source history (Sections 6417/6418; Schedule 2 lines 1d and 10). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_FORM4255_EXCESSIVE_PAYMENT", "Form 4255 excessive payment and penalty"),
+    (
+        "NAME_RARE_FORM4255_EXCESSIVE_PAYMENT",
+        "Sections 6417/6418; Schedule 2 lines 1e and 1f (separate penalty)",
+    ),
+    (
+        "ISSUE_RARE_FORM4255_EXCESSIVE_PAYMENT",
+        "Form 4255 excessive payment and penalty: the App does not calculate the required source history (Sections 6417/6418; Schedule 2 lines 1e and 1f (separate penalty)). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_CREDIT_RECAPTURE_OTHER", "Other credit recapture"),
+    (
+        "NAME_RARE_CREDIT_RECAPTURE_OTHER",
+        "Credit-specific source histories; Schedule 2 lines 1y/13a",
+    ),
+    (
+        "ISSUE_RARE_CREDIT_RECAPTURE_OTHER",
+        "Other credit recapture: the App does not calculate the required source history (Credit-specific source histories; Schedule 2 lines 1y/13a). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_INSTALLMENT_LOTS_TIMESHARES", "Lots or timeshares installment-sale interest"),
+    ("NAME_RARE_INSTALLMENT_LOTS_TIMESHARES", "Section 453(l)(3); Schedule 2 line 7"),
+    (
+        "ISSUE_RARE_INSTALLMENT_LOTS_TIMESHARES",
+        "Lots or timeshares installment-sale interest: the App does not calculate the required source history (Section 453(l)(3); Schedule 2 line 7). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    (
+        "TOPIC_RARE_INSTALLMENT_INTEREST_HISTORY",
+        "Earlier installment obligations subject to interest",
+    ),
+    ("NAME_RARE_INSTALLMENT_INTEREST_HISTORY", "Section 453A(c); Schedule 2 line 8"),
+    (
+        "ISSUE_RARE_INSTALLMENT_INTEREST_HISTORY",
+        "Earlier installment obligations subject to interest: the App does not calculate the required source history (Section 453A(c); Schedule 2 line 8). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    (
+        "TOPIC_RARE_HOUSING_DIRECT_OR_ORDINARY_PARTNER",
+        "Direct-building or ordinary partnership housing-credit recapture",
+    ),
+    ("NAME_RARE_HOUSING_DIRECT_OR_ORDINARY_PARTNER", "Section 42(j); Schedule 2 line 9"),
+    (
+        "ISSUE_RARE_HOUSING_DIRECT_OR_ORDINARY_PARTNER",
+        "Direct-building or ordinary partnership housing-credit recapture: the App does not calculate the required source history (Section 42(j); Schedule 2 line 9). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_FRACTIONAL_CHARITABLE_RECAPTURE", "Fractional charitable-interest recapture"),
+    ("NAME_RARE_FRACTIONAL_CHARITABLE_RECAPTURE", "Section 170(o); Schedule 2 line 13g"),
+    (
+        "ISSUE_RARE_FRACTIONAL_CHARITABLE_RECAPTURE",
+        "Fractional charitable-interest recapture: the App does not calculate the required source history (Section 170(o); Schedule 2 line 13g). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    (
+        "TOPIC_RARE_DEFERRED_COMPENSATION409_A",
+        "Nonqualified deferred-compensation additional tax and premium interest",
+    ),
+    ("NAME_RARE_DEFERRED_COMPENSATION409_A", "Section 409A(a)(1)(B); Schedule 2 line 13h"),
+    (
+        "ISSUE_RARE_DEFERRED_COMPENSATION409_A",
+        "Nonqualified deferred-compensation additional tax and premium interest: the App does not calculate the required source history (Section 409A(a)(1)(B); Schedule 2 line 13h). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    (
+        "TOPIC_RARE_DEFERRED_COMPENSATION457_A",
+        "Offshore deferred-compensation additional tax and interest",
+    ),
+    ("NAME_RARE_DEFERRED_COMPENSATION457_A", "Section 457A(c); Schedule 2 line 13i"),
+    (
+        "ISSUE_RARE_DEFERRED_COMPENSATION457_A",
+        "Offshore deferred-compensation additional tax and interest: the App does not calculate the required source history (Section 457A(c); Schedule 2 line 13i). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_EXCESS_BENEFITS72M5", "Excess-benefits tax for an owner-employee"),
+    ("NAME_RARE_EXCESS_BENEFITS72M5", "Section 72(m)(5); Schedule 2 line 13j"),
+    (
+        "ISSUE_RARE_EXCESS_BENEFITS72M5",
+        "Excess-benefits tax for an owner-employee: the App does not calculate the required source history (Section 72(m)(5); Schedule 2 line 13j). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_TRUST_ACCUMULATION4970", "Trust accumulation-distribution tax"),
+    ("NAME_RARE_TRUST_ACCUMULATION4970", "Sections 665–668; Form 4970; Schedule 2 line 13l"),
+    (
+        "ISSUE_RARE_TRUST_ACCUMULATION4970",
+        "Trust accumulation-distribution tax: the App does not calculate the required source history (Sections 665–668; Form 4970; Schedule 2 line 13l). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_INSIDER_STOCK4985", "Insider-stock excise tax"),
+    ("NAME_RARE_INSIDER_STOCK4985", "Section 4985; Schedule 2 line 13m"),
+    (
+        "ISSUE_RARE_INSIDER_STOCK4985",
+        "Insider-stock excise tax: the App does not calculate the required source history (Section 4985; Schedule 2 line 13m). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_LOOK_BACK8697", "Long-term-contract look-back interest"),
+    ("NAME_RARE_LOOK_BACK8697", "Section 460; Form 8697; Schedule 2 line 13n"),
+    (
+        "ISSUE_RARE_LOOK_BACK8697",
+        "Long-term-contract look-back interest: the App does not calculate the required source history (Section 460; Form 8697; Schedule 2 line 13n). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_LOOK_BACK8866", "Income-forecast look-back interest"),
+    ("NAME_RARE_LOOK_BACK8866", "Section 167(g); Form 8866; Schedule 2 line 13n"),
+    (
+        "ISSUE_RARE_LOOK_BACK8866",
+        "Income-forecast look-back interest: the App does not calculate the required source history (Section 167(g); Form 8866; Schedule 2 line 13n). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_PFIC8621_INTEREST", "PFIC tax and interest"),
+    (
+        "NAME_RARE_PFIC8621_INTEREST",
+        "Section 1291; Form 8621; Schedule 2 lines 19a–19c and related income tax",
+    ),
+    (
+        "ISSUE_RARE_PFIC8621_INTEREST",
+        "PFIC tax and interest: the App does not calculate the required source history (Section 1291; Form 8621; Schedule 2 lines 19a–19c and related income tax). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    ("TOPIC_RARE_ANOTHER_IDENTIFIED_ADDED_TAX", "Another identified additional tax"),
+    (
+        "NAME_RARE_ANOTHER_IDENTIFIED_ADDED_TAX",
+        "An additional federal tax whose computation is outside the App scope",
+    ),
+    (
+        "ISSUE_RARE_ANOTHER_IDENTIFIED_ADDED_TAX",
+        "Another identified additional tax: the App does not calculate the required source history (An additional federal tax whose computation is outside the App scope). This additional tax must be resolved before a federal estimate can be completed.",
+    ),
+    (
+        "NOTARY_GROSS_BELOW_NET",
+        "Notary gross income cannot be less than the entered net notary profit.",
+    ),
+    (
+        "ISSUE_NOTARY_GROSS_ABOVE_INCOME",
+        "Notary gross income cannot exceed this business’s gross income after cost of goods.",
+    ),
+    ("PROGRESS_DONE_INCOME", "You're done with income"),
+    ("PROGRESS_DONE_ADJUSTMENTS", "You're done with adjustments to income"),
+    ("PROGRESS_DONE_ITEMIZED", "You're done with itemized deductions"),
+    ("PROGRESS_DONE_CREDITS", "You're done with credits"),
+    ("PROGRESS_SECTION", "2026 federal · section {0} of {1}"),
+    ("PROGRESS_SECTION_WITH_TOPIC", "2026 federal · section {0} of {1} · {2}"),
+    ("SUMMARY_LIST_PAIR", "{0}, {1}"),
+    ("SUMMARY_DOCUMENT_COUNT", "{0,plural,one {# {1}} other {# {2}}}"),
+    ("SUMMARY_DOCUMENTS_MORE_KINDS", "{0,plural,one {and # more kind} other {and # more kinds}}"),
+    ("SUMMARY_DOCUMENTS_WITH_AMOUNT", "{0} · {1,number,currency}"),
+    (
+        "ISSUE_FEDERAL_RULES_AMT_SALE_AMOUNTS_MUST_BE_WITHIN_BBFF1988",
+        "AMT sale amounts must be within the supported nonnegative money range.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_AMT_WASH_SALE_LOSS_MUST_NOT_EXCEED_B24A0E6B",
+        "AMT wash-sale loss must not exceed the AMT investment loss; personal property has no wash-sale adjustment.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_A_DISALLOWED_WASH_SALE_LOSS_CANNOT_EXCEED_BD3C925B",
+        "A disallowed wash-sale loss cannot exceed this sale's loss.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_BOTH_YOU_AND_THIS_PERSON_CANNOT_56C06D31",
+        "Both you and this person cannot each provide more than half the same total support.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_ENTER_A_VALID_BIRTH_DATE_ON_E3FCDFD3",
+        "Enter a valid birth date on or before December 31, 2026.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_QUALIFIED_AND_SECTION_199A_DIVIDENDS_MUST_94CFB1A7",
+        "Qualified and section 199A dividends must be separate parts of ordinary dividends; their sum cannot exceed box 1a.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_RESIDENCE_DAYS_CANNOT_EXCEED_DAYS_ALIVE_1A7BB934",
+        "Residence days cannot exceed days alive in 2026. Use the qualifying residency exception when the newborn rule applies.",
+    ),
+    ("DEPENDENT_NAME_DAYS_OR_AMOUNTS", "Review this person's name, residency days and amounts."),
+    (
+        "ISSUE_FEDERAL_RULES_SECTION_1250_AND_COLLECTIBLE_COMPONENTS_IN_AF75329A",
+        "Section 1250 and collectible components in boxes 2b and 2d cannot exceed total capital gain distributions in box 2a.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_SPECIFIED_PRIVATE_ACTIVITY_BOND_INTEREST_DIVIDENDS_IN_AAA9238B",
+        "Specified private-activity bond interest dividends in box 13 cannot exceed exempt-interest dividends in box 12.",
+    ),
+    (
+        "ISSUE_FEDERAL_RULES_TAXABLE_RETIREMENT_INCOME_CANNOT_EXCEED_ITS_D4BD4F9F",
+        "Taxable retirement income cannot exceed its gross distribution in this supported path.",
+    ),
+    (
+        "ISSUE_INTERVIEW_A_RECORD_IDENTITY_IS_REPEATED_IN_EE6DC425",
+        "A record identity is repeated in this section.",
+    ),
+    (
+        "ISSUE_INTERVIEW_A_RECORD_NO_LONGER_BELONGS_TO_51E52C2C",
+        "A record no longer belongs to this section. Reopen the section.",
+    ),
+    (
+        "ISSUE_INTERVIEW_THIS_RETURN_HAS_REACHED_THE_SUPPORTED_E3B1364A",
+        "This return has reached the supported revision limit.",
+    ),
+    (
+        "ISSUE_EXTENDED_RULES_COMPLETE_SEPARATE_AMT_PARTNERSHIP_ACTIVITY_RECORDS_ABC340B8",
+        "Complete separate AMT partnership activity records; missing data is not a zero adjustment.",
+    ),
+    (
+        "ISSUE_EXTENDED_RULES_CONFIRM_THE_CASH_METHOD_2025_PARTNER_FUEL_F5415DDF",
+        "A prior-year partner fuel credit recovery requires a continuing nonpassive ordinary U.S. partnership with no retained basis, at-risk or passive losses; other histories need a separate recovery worksheet.",
+    ),
+    (
+        "ISSUE_PARTNER_LONG_TERM_PARTS_LIMITED",
+        "Schedule K-1 (1065) box 9b collectibles or box 9c amounts with a box 9a long-term loss that your basis or amount at risk limits, or with a long-term loss carried from 2025, need the parts of the allowed loss, which the partner basis worksheet does not give.",
+    ),
+    (
+        "ISSUE_K1_AMT_LIMIT_DIFFERS",
+        "Your AMT basis allows a different section 179 deduction, contribution, other-income loss or other deduction than your regular basis, and this App does not calculate those differing allowances.",
+    ),
+    (
+        "ISSUE_SCORP_AMT_INVESTMENT_INTEREST_RECORDS",
+        "Complete separate AMT trading records for the investment-interest limit.",
+    ),
+    (
+        "ISSUE_MULTIPLE_BUSINESS_EXCESS_LOSS_ALLOCATION",
+        "Excess-loss allocation across multiple businesses remains incomplete.",
+    ),
+    (
+        "ISSUE_SCORP_AMT_BASIS_AND_LOSS_RECORDS",
+        "Complete separate AMT K-1 basis and loss records; absence is not a zero adjustment.",
+    ),
+    (
+        "ISSUE_PARTNERSHIP_QBI_ESTABLISH_POSITIVE_GROSS_INCOME_ALLOCATION_WEIGHTS_FOR_010B86AC",
+        "Establish positive gross-income allocation weights for the owner's half-SE deduction.",
+    ),
+    (
+        "ISSUE_PARTNERSHIP_QBI_QUALIFIED_PARTNERSHIP_GROSS_SE_INCOME_MUST_AB4370A9",
+        "Qualified partnership gross SE income must fit total gross SE income.",
+    ),
+    (
+        "NOTE_SCORP_ORDINARY_QBI_SOURCE",
+        "S-corporation document {0,number,integer}, ordinary QBI source after shared activity limits: current {1,number,currency}; released historical qualified loss {2,number,currency}. Property QBI is separate. Current amounts precede SSTB eligibility and remaining return limits; this is not a final QBI deduction.",
+    ),
+    (
+        "NOTE_SCORP_REGULAR_PASSIVE_CHARACTER",
+        "S-corporation document {0,number,integer}, regular passive character worksheet: ordinary net {1,number,currency}, ordinary suspended loss {2,number,currency}; section 1231 net {3,number,currency}, section 1231 suspended loss {4,number,currency}. Nonpassive ordinary net {5,number,currency}; nonpassive section 1231 net {6,number,currency}; prior loss absorbed by own income: ordinary {7,number,currency}, section 1231 {8,number,currency}. Intermediate allocation using resolved pool inputs; unresolved inputs may change these amounts. Section 1231 character and return-level limits are not final.",
+    ),
+    (
+        "NOTE_PARTNER_REGULAR_PASSIVE_CHARACTER",
+        "Partnership document {0,number,integer}, regular passive character worksheet: ordinary net {1,number,currency}, ordinary suspended loss {2,number,currency}; section 1231 net {3,number,currency}, section 1231 suspended loss {4,number,currency}. Nonpassive ordinary net {5,number,currency}; nonpassive section 1231 net {6,number,currency}; prior loss absorbed by own income: ordinary {7,number,currency}, section 1231 {8,number,currency}. Intermediate allocation using resolved pool inputs; unresolved inputs may change these amounts. Section 1231 character and return-level limits are not final.",
+    ),
+    (
+        "NOTE_SCORP_AMT_PASSIVE_CHARACTER",
+        "S-corporation document {0,number,integer}, AMT passive character worksheet: ordinary net {1,number,currency}, ordinary suspended loss {2,number,currency}; section 1231 net {3,number,currency}, section 1231 suspended loss {4,number,currency}. Nonpassive ordinary net {5,number,currency}; nonpassive section 1231 net {6,number,currency}; prior loss absorbed by own income: ordinary {7,number,currency}, section 1231 {8,number,currency}. Intermediate allocation using resolved pool inputs; unresolved inputs may change these amounts. Section 1231 character and return-level limits are not final.",
+    ),
+    (
+        "NOTE_PARTNER_AMT_PASSIVE_CHARACTER",
+        "Partnership document {0,number,integer}, AMT passive character worksheet: ordinary net {1,number,currency}, ordinary suspended loss {2,number,currency}; section 1231 net {3,number,currency}, section 1231 suspended loss {4,number,currency}. Nonpassive ordinary net {5,number,currency}; nonpassive section 1231 net {6,number,currency}; prior loss absorbed by own income: ordinary {7,number,currency}, section 1231 {8,number,currency}. Intermediate allocation using resolved pool inputs; unresolved inputs may change these amounts. Section 1231 character and return-level limits are not final.",
+    ),
+    (
+        "NOTE_SCORP_INVESTMENT_INCOME",
+        "S-corporation document {0,number,integer}, investment income after activity limits: {1,number,currency}; Form 8960 adjustment: {2,number,currency}. Ordinary nonpassive business net is excluded; financial-trading net remains included. Additional return-level limits remain separate.",
+    ),
+    (
+        "NOTE_SCORP_REGULAR_NONPASSIVE_NET",
+        "S-corporation document {0,number,integer}, nonpassive net after own prior passive loss: {1,number,currency}; prior passive loss absorbed by own income: {2,number,currency}. Nonpassive amounts do not offset other passive losses; the allowance uses regular-tax MAGI.",
+    ),
+    (
+        "NOTE_SCORP_AMT_NONPASSIVE_NET",
+        "AMT S-corporation document {0,number,integer}, nonpassive net after own prior passive loss: {1,number,currency}; prior passive loss absorbed by own income: {2,number,currency}. Nonpassive amounts do not offset other passive losses; the allowance uses regular-tax MAGI.",
+    ),
+    (
+        "NOTE_REGULAR_PASSIVE_ACTIVITY_NET",
+        "Passive activity {0,number,integer}, net after passive limits: {1,number,currency}; remaining passive loss: {2,number,currency}. Amount after activity limits; return-level limits apply separately.",
+    ),
+    (
+        "NOTE_AMT_PASSIVE_ACTIVITY_NET",
+        "AMT passive activity {0,number,integer}, net after passive limits: {1,number,currency}; remaining passive loss: {2,number,currency}. Amount after activity limits; return-level limits apply separately.",
+    ),
+    (
+        "NOTE_AMT_SCORP_ENDING_STOCK_BASIS",
+        "AMT S-corporation document {0,number,integer}, ending stock basis: {1,number,currency}. Separate AMT balance before later loss limits.",
+    ),
+    (
+        "NOTE_AMT_SCORP_BASIS_SUSPENDED_LOSS",
+        "AMT S-corporation document {0,number,integer}, basis suspended loss: {1,number,currency}. Separate AMT balance before later loss limits.",
+    ),
+    (
+        "NOTE_AMT_SCORP_LOAN_ENDING_BASIS",
+        "AMT S-corporation document {0,number,integer}, loan {1,number,integer} ending basis: {2,number,currency}.",
+    ),
+    (
+        "NOTE_AMT_SCORP_LOAN_RESTORATION",
+        "AMT S-corporation document {0,number,integer}, loan {1,number,integer} basis restoration: {2,number,currency}. Income used to restore this previously reduced debt basis.",
+    ),
+    (
+        "NOTE_AMT_SCORP_RISK_SUSPENDED",
+        "AMT S-corporation document {0,number,integer}, at-risk suspended loss: {1,number,currency}. Separate from basis and passive carryforwards.",
+    ),
+    (
+        "NOTE_AMT_SCORP_NONDEDUCTIBLE_WITH_END",
+        "AMT S-corporation document {0,number,integer}, nondeductible expenses absorbed: {1,number,currency}; still suspended by at-risk: {2,number,currency}; ending at-risk investment: {3,number,currency}. These expenses are not tax deductions or QBI losses.",
+    ),
+    (
+        "NOTE_AMT_SCORP_NONDEDUCTIBLE_NO_END",
+        "AMT S-corporation document {0,number,integer}, nondeductible expenses absorbed: {1,number,currency}; still suspended by at-risk: {2,number,currency}; ending at-risk investment: not figured (no Form 6198 needed). These expenses are not tax deductions or QBI losses.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_SE_SOURCE",
+        "Partnership document {0,number,integer}, SE source including taxable guaranteed payments after regular activity limits: {1,number,currency}; SE-character suspended losses: basis {2,number,currency}, at-risk {3,number,currency}, passive {4,number,currency}. Intermediate attribution before Schedule SE and other return-level coordination, not additional Schedule E income.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_INVESTMENT_INCOME",
+        "Partnership document {0,number,integer}, investment income after activity limits: {1,number,currency}; Form 8960 adjustment: {2,number,currency}. Additional return-level limits remain separate.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_EXCESS_LOSS_CHARACTER",
+        "Partnership excess-loss character: NOL carryforward {0,number,currency}; qualified portion {1,number,currency}; nonqualified portion {2,number,currency}. Qualified suspension is excluded from current QBI loss and retained for the year deducted; these portions are not additional NOL amounts.",
+    ),
+    (
+        "NOTE_K1_EXCESS_LOSS_CHARACTER",
+        "K-1 excess-loss character: NOL carryforward {0,number,currency}; qualified portion {1,number,currency}. This portion is excluded from current QBI and retained for the year the NOL is deducted; current QBI loss carryforward is separate.",
+    ),
+    (
+        "NOTE_K1_INVESTMENT_INTEREST",
+        "K-1 investment-interest worksheet: regular allowed {0,number,currency}; carryforward {1,number,currency}; AMT allowed {2,number,currency}; carryforward {3,number,currency}. These are Form 4952 limits before the itemized-deduction election and section 68; other return eligibility checks remain separate.",
+    ),
+    (
+        "NOTE_K1_AMT_ACTIVITY",
+        "K-1 AMT activity worksheet: AMT ordinary net {0,number,currency}; regular ordinary net {1,number,currency}; income adjustment {2,number,currency}. Each amount uses its own basis, at-risk and passive balances. QBI remains the regular-tax deduction.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_AMT_EXCESS_BUSINESS_LOSS",
+        "Partnership-inclusive AMT excess-business-loss worksheet: ordinary pass-through business net {0,number,currency}; excess business loss {1,number,currency}. Separate AMT basis, risk and passive amounts determine this adjustment.",
+    ),
+    (
+        "NOTE_K1_EIC_INVESTMENT_INCOME",
+        "K-1 earned-income-credit worksheet: investment income {0,number,currency}. Nonpassive ordinary K-1 business income and losses are excluded from this investment-income test; other return eligibility checks remain separate.",
+    ),
+    (
+        "NOTE_K1_INVESTMENT_TAX",
+        "K-1 investment-tax worksheet: net investment income {0,number,currency}; net investment income tax {1,number,currency}. Other return calculations and missing-source checks remain separate.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_BASIS_LOSS_CARRY",
+        "Partnership document {0}, {1,number,integer} basis-loss carryforward: {2,number,currency}; QBI portion {3,number,currency}; original loss {4,number,currency}; original qualified portion {5,number,currency}. Separate from other loss-limit balances.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_AT_RISK_LOSS_CARRY",
+        "Partnership document {0}, {1,number,integer} at-risk-loss carryforward: {2,number,currency}; QBI portion {3,number,currency}; original loss {4,number,currency}; original qualified portion {5,number,currency}. Separate from other loss-limit balances.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_PASSIVE_LOSS_CARRY",
+        "Partnership document {0}, {1,number,integer} passive-loss carryforward: {2,number,currency}; QBI portion {3,number,currency}; original loss {4,number,currency}; original qualified portion {5,number,currency}. Separate from other loss-limit balances.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_HISTORICAL_QBI_RELEASE",
+        "Partnership document {0}, released historical qualified loss: {1,number,currency}. Retains loss-year eligibility and enters the QBI engine separately.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_PTP_QBI",
+        "Partnership document {0,number,integer}, qualified publicly traded partnership income or loss: {1,number,currency}. Combines with qualified REIT dividends without a wage/UBIA limit or aggregation (Form 8995 line 6 / Form 8995-A line 28); a net loss carries forward with that combined balance, not the ordinary QBI business-loss carryforward.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_CURRENT_QBI",
+        "Partnership document {0,number,integer}, current QBI after allocated half-SE deduction {1,number,currency} and SSTB eligibility: {2,number,currency}; allocated wages {3,number,currency}; qualified-property basis {4,number,currency}. Health-insurance deduction {5,number,currency} and retirement deduction {6,number,currency} contribute a combined qualified deduction of {7,number,currency} before SSTB eligibility. Enters the shared QBI deduction engine; other return limits remain separate.",
+    ),
+    (
+        "NOTE_SCORP_QBI_AFTER_HISTORICAL",
+        "S-corporation document {0,number,integer}, QBI income less released historical QBI losses: {1,number,currency}. Current business income reflects current SSTB eligibility; historical qualified losses retain their loss-year character. They enter the QBI deduction engine separately; other return limits apply separately.",
+    ),
+    (
+        "NOTE_SCORP_COMBINED_BUSINESS_QBI",
+        "S-corporation document {0,number,integer}, combined business QBI after eligibility: current {1,number,currency}; historical qualified losses {2,number,currency}; allocated wages {3,number,currency}; qualified-property basis {4,number,currency}. One business wage/property limit applies using taxable income before QBI {5,number,currency}. Final totals require all applicable return checks.",
+    ),
+    (
+        "NOTE_HOME_SALE_LIKE_KIND_NO_EXCLUSION",
+        "{0}: you got this home in a like-kind exchange less than 5 years before the sale, so none of its gain is excluded (section 121(d)(10)).",
+    ),
+    (
+        "NOTE_HOME_SALE_GAIN_EXCLUDED",
+        "{0}: the whole gain is excluded and no Form 1099-S was received, so the sale is not reported on Form 8949 or Schedule D.",
+    ),
+    (
+        "NOTE_ABLE_CORRECTION_PRIOR_RETURN",
+        "ABLE correction — {0}: the returned contribution's earnings belong on the contributor's {1,number,integer} return, not the 2026 return. Review that return for an amendment.",
+    ),
+    (
+        "NOTE_INHERITED_MEDICAL_PRIOR_YEAR",
+        "Inherited medical account — {0}: death-date value and qualifying medical offsets belong to the {1,number,integer} return, including any required amendment. They are not included or deducted again in 2026. Linked 2026 earnings are calculated in their own entries.",
+    ),
+    (
+        "NOTE_INHERITED_MEDICAL_DEATH_RECORDS",
+        "Inherited medical account — {0}: retain an account-specific death statement and medical payment records. Payments within one year may change this death-year calculation; linked post-death earnings are calculated in their separate income entries, not added again here.",
+    ),
+    (
+        "NOTE_FORM_8978_DECREASE",
+        "Form 8978 is based on a 2026-furnished Form 8986 and the published 2025 Tax Table. Schedule 3 line 6l uses {0,number,currency}; 2026 draft Schedule 2 line 13z uses {1,number,currency} of the remaining decrease, leaving {2,number,currency} unused. The published 2025 worksheet names that second line 17z; reconcile final 2026 instructions before filing.",
+    ),
+    (
+        "NOTE_FORM_8978_ADDITIONAL_TAX_AND_INTEREST",
+        "Form 8978 adds {0,number,currency} of tax to Form 1040 line 16. The separate Form 8978 interest computation adds {1,number,currency} to the reporting-year net payment, leaving {2,number,currency} due or {3,number,currency} of refund after interest. Form 1040 lines 34 and 37 exclude this interest; attach its calculation and reconcile with final 2026 instructions.",
+    ),
+    (
+        "NOTE_REPAYMENT_DEDUCTION_SELECTED",
+        "Repayment comparison: deduction-method tax less refundable credits {0,number,currency}; credit-method tax less refundable credits {1,number,currency}. Selected deduction. Withholding and estimated payments are unchanged between methods.",
+    ),
+    (
+        "NOTE_REPAYMENT_CREDIT_SELECTED",
+        "Repayment comparison: deduction-method tax less refundable credits {0,number,currency}; credit-method tax less refundable credits {1,number,currency}. Selected credit. Withholding and estimated payments are unchanged between methods.",
+    ),
+    (
+        "NOTE_K1_REGULAR_LOSS_CARRYFORWARD",
+        "K-1 regular loss carryforward worksheet: current operating loss {0,number,currency}; excess business loss {1,number,currency}; debt reduction {2,number,currency}; total carryforward {3,number,currency}. The excess loss is included once. Basis, at-risk and passive suspended losses remain separate. Other return eligibility checks remain separate.",
+    ),
+    (
+        "NOTE_K1_AMT_LOSS_CARRYFORWARD",
+        "K-1 AMT loss carryforward worksheet: current operating loss {0,number,currency}; excess business loss {1,number,currency}; debt reduction {2,number,currency}; total carryforward {3,number,currency}. The excess loss is included once. Basis, at-risk and passive suspended losses remain separate. Other return eligibility checks remain separate.",
+    ),
+    (
+        "NOTE_FARMING_LOSS_CARRYBACK_WAIVER",
+        "2026 farming-loss carryback waiver selected. Total current loss carryforwards after debt reductions: regular {0,number,currency}; AMT {1,number,currency}. These totals include nonfarm operating and Form 461 losses once. Attach the required section 172(b) statement within the applicable election deadline; the generally irrevocable election is not filed by this App.",
+    ),
+    (
+        "NOTE_FARMING_LOSS_CARRYBACK_KEPT",
+        "2026 farming-loss carryback kept. The 2024 and 2025 refund is not in this estimate; claim it on Form 1045 or Form 1040-X. The current loss carryforwards shown, regular {0,number,currency}; AMT {1,number,currency}, are before the carryback: the carryforward is the loss less the amount the two earlier years absorb (section 172(b)(1)(B), Form 172 instructions), which this estimate does not compute, so the next-year carryover may be lower.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_SE_COORDINATION",
+        "Partnership SE coordination stabilized: return-stage SE tax {0,number,currency}; half-SE deduction {1,number,currency}; health deduction {2,number,currency}; retirement plan deduction {3,number,currency}; rental MAGI base {4,number,currency}. The regular passive result agrees with the source amounts used by the earlier earnings calculation. Additional partnership items require their own source records and review.",
+    ),
+    (
+        "NOTE_HEALTH_PTC_SIMPLIFIED_FALLBACK",
+        "The health deduction and premium tax credit did not converge under the Iterative method. The estimate uses a fresh Simplified calculation of both amounts.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_SE_ACTUAL_TAXPAYER",
+        "Partnership-inclusive actual-method SE projection for taxpayer: combined profit {0,number,currency}; net earnings {1,number,currency}; SE tax {2,number,currency}; half-SE deduction {3,number,currency}. The wage base is shared across this owner's businesses and partnerships. This shows the actual-method alternative; an elected optional method replaces it in the coordinated calculation. Additional partnership items require their own source records and review.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_SE_ACTUAL_SPOUSE",
+        "Partnership-inclusive actual-method SE projection for spouse: combined profit {0,number,currency}; net earnings {1,number,currency}; SE tax {2,number,currency}; half-SE deduction {3,number,currency}. The wage base is shared across this owner's businesses and partnerships. This shows the actual-method alternative; an elected optional method replaces it in the coordinated calculation. Additional partnership items require their own source records and review.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_SE_OPTIONAL_TAXPAYER",
+        "Partnership-inclusive elected optional-method SE projection for taxpayer: net earnings {0,number,currency}; SE tax {1,number,currency}; half-SE deduction {2,number,currency}. EIC earned-income adjustment {3,number,currency}; child-credit earned-income adjustment {4,number,currency}. Actual Schedule E income is unchanged. Intermediate only; final return coordination remains incomplete.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_SE_OPTIONAL_SPOUSE",
+        "Partnership-inclusive elected optional-method SE projection for spouse: net earnings {0,number,currency}; SE tax {1,number,currency}; half-SE deduction {2,number,currency}. EIC earned-income adjustment {3,number,currency}; child-credit earned-income adjustment {4,number,currency}. Actual Schedule E income is unchanged. Intermediate only; final return coordination remains incomplete.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_REGULAR_EXCESS_BUSINESS_LOSS",
+        "Partnership-inclusive regular excess-business-loss worksheet: ordinary pass-through business net {0,number,currency}; excess business loss {1,number,currency}. Uses amounts after activity limits; wages do not offset these business losses. Additional partnership items require their own source records and review.",
+    ),
+    (
+        "NOTE_K1_EXCESS_BUSINESS_LOSS_WORKSHEET",
+        "K-1 excess-business-loss worksheet: ordinary K-1 net after activity limits {0,number,currency}; return excess business loss {1,number,currency}. Employee wages do not absorb business losses; QBI qualification does not determine this business-income amount.",
+    ),
+    (
+        "NOTE_WHALING_CAPTAIN_TAXPAYER",
+        "Whaling captain (taxpayer): retain AEWC recognition, copies of reports submitted to the AEWC, contemporaneous trip departure/return and area logs, expense reports with date/amount/nature, receipts for expenses of at least $75, and evidence of any qualifying involuntary record loss and reconstruction. The App calculates the on-screen deduction but does not prepare attachments.",
+    ),
+    (
+        "NOTE_WHALING_CAPTAIN_SPOUSE",
+        "Whaling captain (spouse): retain AEWC recognition, copies of reports submitted to the AEWC, contemporaneous trip departure/return and area logs, expense reports with date/amount/nature, receipts for expenses of at least $75, and evidence of any qualifying involuntary record loss and reconstruction. The App calculates the on-screen deduction but does not prepare attachments.",
+    ),
+    (
+        "NOTE_PARTNERSHIP_YOUNG_FILER_EARNED",
+        "Partnership document {0,number,integer}, young-filer earned income: {1,number,currency}; net self-employment loss addback: {2,number,currency}. Personal-service classification for Form 8615 is separate from Schedule SE and passive participation. Dependent standard-deduction earnings use the same source facts and a separate half-SE adjustment.",
+    ),
+    (
+        "NOTE_DEPENDENT_PARTNERSHIP_STANDARD_DEDUCTION",
+        "Dependent standard-deduction earned income from partnership sources: {0,number,currency}; total earned income after the shared half-SE deduction: {1,number,currency}; standard deduction: {2,number,currency}. The source amount follows personal services rather than K-1 box 14 classification.",
+    ),
+    (
+        "NOTE_CARD_ISSUER_RETAINED_FUEL_CREDIT",
+        "2026 registered card issuer {0,number,integer}: {1,number,currency} retained buyer-funded Form 4136 line 13 credit is a 2026 refundable payment on Schedule 3 line 12, not 2026 Schedule C income. Buyer payment and vendor settlement are card-principal flows. Review the separate section 61 business gain as Schedule C line 6 income in the year the benefit is actually or constructively received or applied as a credit, often 2027. Filing the claim alone does not establish receipt when a refund is delayed. This App does not compute a later return. No 2026 claim payment, credit application, or constructive receipt is assumed. Section 61 and Schedule C line 6 support the gain; Publication 510's filing-year rule is directly for deducted-tax recovery, not the authority for this no-deduction claim.",
+    ),
+    (
+        "NOTE_PARTIAL_FUEL_TAX_BENEFIT",
+        "Partial 2025 fuel-tax benefit for business {0,number,integer}: retain {1} with the filed Form 1040 and refigured comparison. The 2026 Schedule C recovery equals the increase in 2025 taxable income after removing only this fuel-tax deduction, including its half-SE and QBI effects; original taxable income was zero. The refigured regular tax confirms a benefit but is not the recovery amount. No 2025 AMT, NIIT, passive limitation, NOL, credit or increased carryover is assumed.",
+    ),
+    (
+        "NOTE_NEXT_YEAR_IRA_DEPOSITS_TAXPAYER",
+        "2026-designated IRA deposits paid in 2027 (taxpayer): reconcile the custodian's 2026 Form 5498, box 1 for traditional and box 10 for Roth, with the actual deposits. These amounts enter the 2026 contribution limit, deduction or basis, and any 2026 Saver's Credit once. Do not reuse them for a 2027 Saver's Match. The custodian, not this App, files Form 5498.",
+    ),
+    (
+        "NOTE_NEXT_YEAR_IRA_DEPOSITS_SPOUSE",
+        "2026-designated IRA deposits paid in 2027 (spouse): reconcile the custodian's 2026 Form 5498, box 1 for traditional and box 10 for Roth, with the actual deposits. These amounts enter the 2026 contribution limit, deduction or basis, and any 2026 Saver's Credit once. Do not reuse them for a 2027 Saver's Match. The custodian, not this App, files Form 5498.",
+    ),
+    (
+        "NOTE_QTP_ROTH_ROLLOVERS_TAXPAYER",
+        "529-to-Roth IRA rollovers (taxpayer): reconcile every direct transfer on its 2026 Form 1099-Q (including box 4b and its contribution/earnings split) and the sum of all receiving custodians' 2026 Form 5498 box 10 entries. These qualified transfers are excluded from federal income and the Saver's Credit base. Their source 529 contribution portions add Roth basis, but they are not regular IRA deposits and must not also appear in Income. The custodians, not this App, file the information returns.",
+    ),
+    (
+        "NOTE_QTP_ROTH_ROLLOVERS_SPOUSE",
+        "529-to-Roth IRA rollovers (spouse): reconcile every direct transfer on its 2026 Form 1099-Q (including box 4b and its contribution/earnings split) and the sum of all receiving custodians' 2026 Form 5498 box 10 entries. These qualified transfers are excluded from federal income and the Saver's Credit base. Their source 529 contribution portions add Roth basis, but they are not regular IRA deposits and must not also appear in Income. The custodians, not this App, file the information returns.",
+    ),
+    (
+        "NOTE_YOUNG_FILER_SERVICE_BUSINESS",
+        "Business {0} is treated as income from your own work for Form 8615. If equipment, inventory or other capital earns a material part of its income, open More → Something else and change it.",
+    ),
+    (
+        "NOTE_RETURNED_TRADITIONAL_IRA_TAXPAYER",
+        "Timely returned traditional IRA contribution (taxpayer, account {0}): attach a statement to the 2026 return explaining the original contribution, allocated gain or loss, actual distribution, and receipt date. This App does not prepare or file the statement.",
+    ),
+    (
+        "NOTE_RETURNED_TRADITIONAL_IRA_SPOUSE",
+        "Timely returned traditional IRA contribution (spouse, account {0}): attach a statement to the 2026 return explaining the original contribution, allocated gain or loss, actual distribution, and receipt date. This App does not prepare or file the statement.",
+    ),
+    (
+        "NOTE_RETURNED_ROTH_IRA_TAXPAYER",
+        "Timely returned Roth IRA contribution (taxpayer, account {0}): attach a statement to the 2026 return explaining the original contribution, allocated gain or loss, actual distribution, and receipt date. This App does not prepare or file the statement.",
+    ),
+    (
+        "NOTE_RETURNED_ROTH_IRA_SPOUSE",
+        "Timely returned Roth IRA contribution (spouse, account {0}): attach a statement to the 2026 return explaining the original contribution, allocated gain or loss, actual distribution, and receipt date. This App does not prepare or file the statement.",
+    ),
+    (
+        "NOTE_STATE_REFUND_CURRENT_INCOME_TAX",
+        "State/local income-tax refund document {0,number,integer}: allocated by tax paid in each year, including {1,number,currency} to 2026. Prior-year taxable shares total {2,number,currency} on Schedule 1 line 1. The 2026 share has already reduced the net state-income-tax payment entered for Schedule A; the normal election and SALT cap determine the allowed deduction. Retain the state payment ledger and each prior federal Schedule A.",
+    ),
+    (
+        "NOTE_STATE_REFUND_CURRENT_STANDARD",
+        "State/local income-tax refund document {0,number,integer}: allocated by tax paid in each year, including {1,number,currency} to 2026. Prior-year taxable shares total {2,number,currency} on Schedule 1 line 1. The net 2026 state-income-tax payment is not deducted because the standard deduction is selected. Retain the state payment ledger and each prior federal Schedule A.",
+    ),
+    (
+        "NOTE_STATE_REFUND_CURRENT_SALES_TAX",
+        "State/local income-tax refund document {0,number,integer}: allocated by tax paid in each year, including {1,number,currency} to 2026. Prior-year taxable shares total {2,number,currency} on Schedule 1 line 1. The net 2026 state-income-tax payment is not deducted because general sales tax is elected. Retain the state payment ledger and each prior federal Schedule A.",
+    ),
+    (
+        "NOTE_STATE_REFUND_CURRENT_NO_ELECTION",
+        "State/local income-tax refund document {0,number,integer}: allocated by tax paid in each year, including {1,number,currency} to 2026. Prior-year taxable shares total {2,number,currency} on Schedule 1 line 1. No state-income-tax deduction is elected; the retained payment ledger does not create a deduction. Retain the state payment ledger and each prior federal Schedule A.",
+    ),
+    (
+        "NOTE_STATE_REFUND_PRIOR_ONLY",
+        "State/local income-tax refund document {0,number,integer}: allocated by tax paid in each year. Taxable shares total {1,number,currency} on Schedule 1 line 1. Retain the state payment ledger and each federal year's Schedule A records; no 2026 payment is included.",
+    ),
+    (
+        "NOTE_STATE_REFUND_PRIOR_ALLOCATION",
+        "State/local income-tax refund document {0,number,integer}: {1,number,currency} allocated to {2,number,integer}, of which {3,number,currency} is taxable.",
+    ),
+    (
+        "ISSUE_FOREIGN_PRESENCE_PERIOD_INVALID",
+        "Choose a valid 12-month presence period overlapping 2026.",
+    ),
+    (
+        "ISSUE_SAVER_SPOUSE_REQUIRES_JOINT_RETURN",
+        "Spouse contributions and distributions belong only on a joint return. Revisit Saver’s Credit after a filing-status change.",
+    ),
+    (
+        "ISSUE_FORM_2555_LINE_44_EMPLOYEE_EXPENSES",
+        "Form 2555 line 44: job expenses on Form 2106 are allocable to excluded foreign earned income in part. Not calculated; remove the Form 2106 or the Form 2555.",
+    ),
+    (
+        "ISSUE_FORM_2555_COMMUNITY_SPLIT",
+        "A separate return that splits community wages cannot also claim the foreign earned income exclusion: Form 2555 figures the exclusion as if the income were not community income.",
+    ),
+    (
+        "ISSUE_FOREIGN_RESIDENCE_PERIOD_INVALID",
+        "Enter valid dates for the bona fide residence, ending after it began.",
+    ),
+    (
+        "ISSUE_RENTAL_BUILDINGS_OR_EXPENSES_OUT_OF_LIMITS",
+        "Enter the rental's building records and ordinary expenses within the supported limits.",
+    ),
+    (
+        "DIVIDEND_LIQUIDATION_STAGE_NEEDED",
+        "Identify whether the liquidation is interim or final from the issuer's statement.",
+    ),
+    (
+        "NOTE_2026_AMT_USES_THE_ORDINARY_FILING_STATUS_EXEMPTION_SECTION_55_D_47C729E6",
+        "2026 AMT uses the ordinary filing-status exemption: section 55(d)(4)(A)(iii), extended by P.L. 119-21 section 70107, disapplies the child earned-income cap. Rev. Proc. 2025-32 section 4.11 still lists that cap; this estimate follows the statute pending final IRS reconciliation.",
+    ),
+    (
+        "NOTE_AUTOMATIC_DEDUCTION_SELECTION_COMPARED_SUPPORTED_ROUTES_ONLY_ONE_D549B510",
+        "Automatic deduction selection compared supported routes only. One route was unavailable; review its inputs and coverage before assuming this is the lowest possible tax.",
+    ),
+    (
+        "NOTE_CURRENT_CARRYOVER_INPUTS_REUSE_COMPLETE_ORIGINAL_2025_REPAYMENT_2F25B188",
+        "Current carryover inputs reuse complete original 2025 repayment worksheets; duplicate entry is unnecessary. Additional investment-loss source details may still be required.",
+    ),
+    (
+        "NOTE_FINAL_YEAR_K_1_GENERAL_SALES_TAX_WAS_NOT_DEDUCTED_BECAUSE_THE_RE_60B8F2C2",
+        "Final-year K-1 general sales tax was not deducted because the return did not elect state/local general sales taxes on Schedule A line 5a. Select the sales-tax branch to compare it with an income-tax election.",
+    ),
+    (
+        "NOTE_FINAL_YEAR_K_1_STATE_INCOME_TAX_WAS_NOT_DEDUCTED_BECAUSE_THE_RET_83F83D7C",
+        "Final-year K-1 state income tax was not deducted because the return did not elect state/local income taxes on Schedule A line 5a. Select the income-tax branch to compare it with a sales-tax election.",
+    ),
+    (
+        "NOTE_FINCEN_114_FORM_3520_MAY_BE_REQUIRED_4D35C150",
+        "FinCEN 114 / Form 3520 may be required",
+    ),
+    (
+        "NOTE_FORM_8919_CODE_G_RETAIN_THE_SEPARATELY_FILED_FORM_SS_8_AND_ITS_F_74675BA7",
+        "Form 8919 code G: retain the separately filed Form SS-8 and its filing date. IRS review of employee status remains pending; the App does not submit that request or guarantee its outcome.",
+    ),
+    (
+        "NOTE_REVIEW_ANY_APPLICABLE_FOREIGN_ACCOUNT_AND_INFORMATION_REPORTING_BB6EA0B4",
+        "Review any applicable foreign-account and information-reporting obligations separately; this estimate prepares no filing forms.",
+    ),
+    (
+        "NOTE_REVIEW_REQUIRED_BEFORE_FILING_THIS_REFUND_INCLUDES_REFUNDABLE_CR_33EE1376",
+        "Review required before filing: this refund includes refundable credits exceeding your calculated tax. Proposed 2026 Schedule 3-A rules may reduce that portion depending on eligibility. This prototype has not applied the proposed reduction or verified that eligibility. Check the final IRS rules before relying on this refund.",
+    ),
+    (
+        "NOTE_THE_2026_FORM_5695_CARRYFORWARD_USES_THE_LATEST_PUBLISHED_RESIDE_62320D62",
+        "The 2026 Form 5695 carryforward uses the latest published residential-energy credit-limit worksheet. Reconcile its ordering with the final 2026 instructions before filing.",
+    ),
+    (
+        "NOTE_TRUMP_ACCOUNT_DEATH_DISTRIBUTION_VERIFY_THE_FINAL_2026_FORM_1040_5BA96871",
+        "Trump-account death distribution: verify the final 2026 Form 1040 line placement before filing. This calculation includes the section 530A(d)(6) taxable value once as other income.",
+    ),
+    (
+        "ISSUE_RENTAL_PROFESSIONAL_NEEDS_STATUS",
+        "A rental marked as one in which a real estate professional materially participated needs that owner's Real estate professional answer on About you or About your spouse.",
+    ),
+    (
+        "SITUATION_NAME_STRADDLES",
+        "Straddles and offsetting positions (Form 6781 Part II, boxes A–C, Schedule D lines 4 and 11)",
+    ),
+    (
+        "ISSUE_SITUATION_STRADDLES",
+        "Straddles and offsetting positions (Form 6781 Part II, boxes A–C, Schedule D lines 4 and 11) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_SPECIAL_DEPRECIATION",
+        "Form 4562 lines 14b, 14c, 14d, 19g, 19h and 19k (specified plants, reuse and recycling, qualified production, water utility and railroad property)",
+    ),
+    (
+        "ISSUE_SITUATION_SPECIAL_DEPRECIATION",
+        "Form 4562 lines 14b, 14c, 14d, 19g, 19h and 19k (specified plants, reuse and recycling, qualified production, water utility and railroad property) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_ASSET_DISPOSED",
+        "Sales of purchased goodwill or another section 197 intangible, and of section 1254 or 1255 property (Form 4797)",
+    ),
+    (
+        "ISSUE_SITUATION_ASSET_DISPOSED",
+        "Sales of purchased goodwill or another section 197 intangible, and of section 1254 or 1255 property (Form 4797) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_LIKE_KIND_EXCHANGE",
+        "Like-kind exchanges of business, farm or investment real property that is not a rental, and conflict-of-interest sales (Form 8824)",
+    ),
+    (
+        "ISSUE_SITUATION_LIKE_KIND_EXCHANGE",
+        "Like-kind exchanges of business, farm or investment real property that is not a rental, and conflict-of-interest sales (Form 8824) is not calculated yet.",
+    ),
+    ("SITUATION_NAME_TAX_TREATY", "Tax treaty positions (Form 8833)"),
+    ("ISSUE_SITUATION_TAX_TREATY", "Tax treaty positions (Form 8833) is not calculated yet."),
+    (
+        "SITUATION_NAME_FOREIGN_CORPORATION",
+        "Schedule 1 lines 8n and 8o (Forms 5471 and 8992), Form 8960 line 6 (controlled foreign corporation and PFIC adjustments) and line 10 (additional modifications)",
+    ),
+    (
+        "ISSUE_SITUATION_FOREIGN_CORPORATION",
+        "Schedule 1 lines 8n and 8o (Forms 5471 and 8992), Form 8960 line 6 (controlled foreign corporation and PFIC adjustments) and line 10 (additional modifications) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_OTHER_ADJUSTMENTS",
+        "Other adjustments to income, including section 501(c)(18)(D) pension contributions (Schedule 1 lines 24a–24z)",
+    ),
+    (
+        "ISSUE_SITUATION_OTHER_ADJUSTMENTS",
+        "Other adjustments to income, including section 501(c)(18)(D) pension contributions (Schedule 1 lines 24a–24z) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_CASUALTY",
+        "Casualty and theft losses of business, rental or income-producing property and Ponzi-type or other investment theft losses (Form 4684 Sections B, C and D, Schedule A line 17d)",
+    ),
+    (
+        "ISSUE_SITUATION_CASUALTY",
+        "Casualty and theft losses of business, rental or income-producing property and Ponzi-type or other investment theft losses (Form 4684 Sections B, C and D, Schedule A line 17d) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_ALTERNATIVE_MINIMUM_TAX",
+        "Alternative minimum tax adjustments and preferences (Form 6251)",
+    ),
+    (
+        "ISSUE_SITUATION_ALTERNATIVE_MINIMUM_TAX",
+        "Alternative minimum tax adjustments and preferences (Form 6251) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_HOUSING_CREDIT_RECAPTURE",
+        "Schedule 2 line 9 (Form 8611 recapture) and line 13n (Forms 8697/8866 look-back interest)",
+    ),
+    (
+        "ISSUE_SITUATION_HOUSING_CREDIT_RECAPTURE",
+        "Schedule 2 line 9 (Form 8611 recapture) and line 13n (Forms 8697/8866 look-back interest) is not calculated yet.",
+    ),
+    ("SITUATION_NAME_SECTION965", "Schedule 3 line 13d (deferred section 965 tax liability)"),
+    (
+        "ISSUE_SITUATION_SECTION965",
+        "Schedule 3 line 13d (deferred section 965 tax liability) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_DUAL_STATUS",
+        "Part-year residency, dual-status and U.S. territory returns (Form 1040 line 12c, Form 1040-NR, Forms 4563 and 8689)",
+    ),
+    (
+        "ISSUE_SITUATION_DUAL_STATUS",
+        "Part-year residency, dual-status and U.S. territory returns (Form 1040 line 12c, Form 1040-NR, Forms 4563 and 8689) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_COMMUNITY_PROPERTY",
+        "Community property shared with a registered domestic partner (Form 8958)",
+    ),
+    (
+        "ISSUE_SITUATION_COMMUNITY_PROPERTY",
+        "Community property shared with a registered domestic partner (Form 8958) is not calculated yet.",
+    ),
+    (
+        "NOTE_LABEL_USED_AS_A_HOME_AND_RENTED_FEWER_THAN_15_DAYS_THE_R_1B4E3107",
+        "{0}: used as a home and rented fewer than 15 days. The rent is not income and no rental expenses or depreciation are deducted.",
+    ),
+    (
+        "ISSUE_BOND_ALLOCATION_SUMMARY",
+        "Form 8912 line 12 is {0,number,currency} and line 4 is {1,number,currency}. {2}",
+    ),
+    (
+        "ISSUE_W2_BOX12_H_UNSUPPORTED",
+        "W-2 box 12 code H (section 501(c)(18)(D) plan contributions, Schedule 1 line 24f) is not yet connected from this page.",
+    ),
+    (
+        "ISSUE_W2_BOX12_Z_UNSUPPORTED",
+        "W-2 box 12 code Z (section 409A deferred compensation income, additional tax) is not yet supported.",
+    ),
+    (
+        "ESTIMATE_METHOD_AND_LIMITATIONS",
+        "2026 federal estimate using the September 2026 draft Tax Table for applicable taxable amounts below $100,000 and the tax computation worksheet for applicable amounts of $100,000 or more. Draft EIC, special worksheets, penalties, interest, offsets, forms and e-filing remain subject to final instructions. Synthetic data only.",
+    ),
+    ("CHOICE_CCC_LOAN", "{0}: loan {1}, {2,number,currency} forfeited in 2026"),
+    (
+        "NOTE_RENTAL_MAGI_PROPERTY_ADJUSTMENT",
+        "Rental-allowance property-income adjustment: {0,number,currency}. Replaces raw nonpassive property income with its regular-tax effect after section 1231 lookback and capital-loss coordination. The same MAGI projection applies to the AMT allowance.",
+    ),
+    (
+        "NOTE_SE_ACTUAL_ATTRIBUTION",
+        "Actual-method SE deduction attribution, document {0}: {1,number,currency}. Do not deduct this again in Schedule E income.",
+    ),
+    (
+        "NOTE_SE_OPTIONAL_ATTRIBUTION",
+        "Elected optional-method SE deduction attribution, document {0}: {1,number,currency}. This replaces, rather than adds to, the actual-method attribution.",
+    ),
+    (
+        "NOTE_PROPERTY_RETURN_INCOME_STAGE",
+        "Property return-income stage: regular ordinary {0,number,currency}; regular capital income after all netting {1,number,currency}; AMT ordinary {2,number,currency}; AMT capital income {3,number,currency}. These amounts feed the income calculation; final totals require complete source records and all applicable return checks.",
+    ),
+    (
+        "ISSUE_SECTION179_PERCENTAGE_DEPLETION",
+        "Percentage depletion with section 179 allocation is not supported yet. Retain the original depletion and section 179 source records.",
+    ),
+    (
+        "ISSUE_ACCEPTED_DATA_IS_INVALID_NO_CALCULATION_WAS_PERFORMED_7A345C87",
+        "Accepted data is invalid; no calculation was performed.",
+    ),
+    (
+        "ISSUE_ANNUITY_LOSSES_INHERITED_ESTATE_TAX_DEDUCTIONS_PREFERENTIAL_INCOME_58601C46",
+        "Annuity losses, inherited estate-tax deductions, your own preferential-income election, unresolved investment-interest attribution (including limited mixed expenses) and your own foreign exclusion need additional Form 8615 worksheets.",
+    ),
+    (
+        "ISSUE_AN_NOL_WITH_EXCESS_PERSONAL_DEDUCTIONS_AND_ITEMIZED_STATE_INCOME_TA_414E8FA6",
+        "An NOL with excess personal deductions and itemized state income tax needs business/personal state-tax allocation.",
+    ),
+    (
+        "ISSUE_AN_UNREVIEWED_CERTIFICATE_NEEDS_ITS_ORIGINAL_SCHEDULE_REFINANCE_DAT_81C9C3D6",
+        "An unreviewed certificate needs its original schedule, refinance date, and reissue facts before the Form 8396 credit can be calculated.",
+    ),
+    (
+        "ISSUE_A_2025_PUBLIC_STOCK_CARRYOVER_ALONGSIDE_A_2026_REGULAR_OR_AMT_OPERA_145BA6A2",
+        "A charitable carryover alongside a 2026 regular or AMT operating loss requires coordinated Form 172 and charitable-carryover worksheets, even if this return takes the standard deduction.",
+    ),
+    (
+        "ISSUE_A_BENEFICIARY_S_CURRENT_REGULAR_OR_AMT_OPERATING_LOSS_NEEDS_A_COMBI_ABC9E203",
+        "A beneficiary's current regular or AMT operating loss needs a combined loss-year and source allocation with the final estate/trust K-1 carryover.",
+    ),
+    (
+        "ISSUE_A_CLAIMED_CASUALTY_LOSS_WITH_FORM_1116_A_PRIOR_AMT_OPERATING_LOSS_O_AD243AFA",
+        "A claimed casualty loss with Form 1116, a prior AMT operating loss or an inherited estate/trust NOL needs coordinated source and loss-absorption worksheets.",
+    ),
+    (
+        "ISSUE_A_CURRENT_REGULAR_OR_AMT_OPERATING_LOSS_WITH_A_NONCASH_CHARITABLE_D_0630C082",
+        "A current regular or AMT operating loss with a noncash charitable deduction needs coordinated Form 172 and charitable-carryover worksheets.",
+    ),
+    (
+        "ISSUE_A_DIFFERENT_JOINT_FILING_UNIT_BETWEEN_2025_AND_2026_NEEDS_A_COMPLET_59BF671E",
+        "A different joint-filing unit between 2025 and 2026 needs a complete prior-return recapture and ownership review.",
+    ),
+    (
+        "ISSUE_A_FILER_CLAIMED_AS_A_DEPENDENT_DOES_NOT_SHARE_MARKETPLACE_PREMIUMS_8CEE604B",
+        "A filer claimed as a dependent does not share Marketplace premiums with the premium tax credit (Pub. 974 specified premiums).",
+    ),
+    (
+        "ISSUE_A_FORM_3800_CURRENT_OR_CARRIED_CREDIT_WITH_A_SECTION_1341_REPAYMENT_A267A4E8",
+        "A Form 3800 current or carried credit with a section 1341 repayment needs a combined tax comparison.",
+    ),
+    (
+        "ISSUE_A_K_1_BOX_12_CODE_A_ADJUSTMENT_WITH_A_CURRENT_OR_PRIOR_REGULAR_AMT_E802F7A6",
+        "A K-1 box 12 code A adjustment with a current or prior regular/AMT net operating loss needs its source-character and loss-absorption worksheets.",
+    ),
+    (
+        "ISSUE_A_K_1_BOX_12_CODE_B_QUALIFIED_DIVIDEND_ADJUSTMENT_WITH_A_FORM_4952_6794A37F",
+        "A K-1 box 12 code B qualified-dividend adjustment with a Form 4952 investment-interest election or Form 2555 exclusion needs coordinated AMT preferential-rate worksheets.",
+    ),
+    (
+        "ISSUE_A_K_1_BOX_12_CODE_C_SHORT_TERM_GAIN_ADJUSTMENT_WITH_FORM_4952_INVES_9532A78C",
+        "A K-1 box 12 code C short-term gain adjustment with Form 4952 investment interest or Form 2555 exclusion needs coordinated AMT rate worksheets.",
+    ),
+    (
+        "ISSUE_A_K_1_BOX_12_CODE_D_LONG_TERM_GAIN_ADJUSTMENT_WITH_FORM_4952_INVEST_E7A6C7A9",
+        "A K-1 box 12 code D long-term gain adjustment with Form 4952 investment interest or Form 2555 exclusion needs coordinated AMT rate worksheets.",
+    ),
+    (
+        "ISSUE_A_K_1_BOX_12_CODE_E_SECTION_1250_ADJUSTMENT_WITH_FORM_4952_INVESTME_29856F5A",
+        "A K-1 box 12 code E section 1250 adjustment with Form 4952 investment interest or Form 2555 exclusion needs coordinated AMT special-rate worksheets.",
+    ),
+    (
+        "ISSUE_A_NONQUALIFIED_ANNUITY_NEEDS_A_PAYER_DETERMINED_AMOUNT_OR_SUPPORTED_F9E3034E",
+        "A nonqualified annuity needs a payer-determined amount or supported annuity calculation, and ordinary, early-without-exception, death, permanent-disability or immediate-annuity treatment. Other basis methods, exchanges outside the direct-exchange calculation, repayments and other section 72(q) exceptions need additional worksheets.",
+    ),
+    (
+        "ISSUE_A_PRIOR_REGULAR_NOL_AND_SECTION_1202_EXCLUSION_NEED_FURTHER_FORM_17_B3F898C0",
+        "A prior regular NOL and section 1202 exclusion need further Form 172 Part II line 6 worksheets when a changed traditional IRA deduction also affects a same-year IRA distribution or QCD, an employer adoption-benefit exclusion changes, or the passive activity result changes under restored gain.",
+    ),
+    (
+        "ISSUE_A_PRIOR_REGULAR_NOL_AND_SECTION_1202_EXCLUSION_WITH_PRIOR_CHARITABL_CB8CB26B",
+        "A prior regular NOL and section 1202 exclusion with prior charitable carryovers, noncash, hosted-student or whaling expenses needs further Form 172 Part II modified-income worksheets. Current cash gifts, including percentage-limit excess, are supported.",
+    ),
+    (
+        "ISSUE_A_SIGNED_FORM_8978_ADJUSTMENT_COMBINED_WITH_A_SECTION_1341_REPAYMEN_4272DD73",
+        "A signed Form 8978 adjustment combined with a section 1341 repayment comparison needs a combined tax refigure.",
+    ),
+    (
+        "ISSUE_A_SIGNED_FORM_8978_ADJUSTMENT_COMBINED_WITH_FORM_1062_FARMLAND_TAX_6C431405",
+        "A signed Form 8978 adjustment combined with Form 1062 farmland tax installments needs a combined tax worksheet.",
+    ),
+    (
+        "ISSUE_BOX_11_CODES_C_D_MUST_RETAIN_THE_SAME_REGULAR_AMT_INVESTMENT_PROPER_536D3126",
+        "Box 11 codes C/D must retain the same regular, AMT, investment-property and net-investment-income tax character; differences need separate worksheets.",
+    ),
+    (
+        "ISSUE_COMBINED_EARLIER_YEAR_UNEMPLOYMENT_RAILROAD_AND_NET_SOCIAL_SECURITY_4FCE0321",
+        "Combined earlier-year unemployment, railroad and net Social Security repayments exceed $3,000. Prior taxable-income records and deduction-versus-credit eligibility must be evaluated; do not subtract them from current unemployment benefits.",
+    ),
+    (
+        "ISSUE_COMBINE_INCOME_TAX_REFUNDS_DEDUCTED_ON_THE_SAME_PRIOR_FEDERAL_RETUR_38ED09DD",
+        "Combine income-tax refunds deducted on the same prior federal return before calculating its tax benefit.",
+    ),
+    (
+        "ISSUE_COMPLETE_THE_REMAINING_APPLICABLE_PAGES_TO_CALCULATE_THE_FEDERAL_ES_CAC8B62D",
+        "Complete the remaining applicable pages to calculate the federal estimate.",
+    ),
+    (
+        "ISSUE_CONFIRM_ACTIVE_OPERATION_FULL_AT_RISK_EXPOSURE_AND_THE_PERMITTED_AC_DFECB6C3",
+        "Confirm active operation, full at-risk exposure and the permitted accounting/inventory method; unlisted business treatments require their own worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_ALL_INCLUDED_REGULAR_IRA_DEPOSITS_WERE_RECEIVED_BY_APRIL_15_3676602F",
+        "Confirm all included regular IRA deposits were received by April 15, 2027 and designated for 2026 with their custodians. Their principal must be included once in the retained 2026 traditional or Roth contribution totals.",
+    ),
+    (
+        "ISSUE_CONFIRM_AN_ELIGIBLE_ROLLOVER_AND_RECONCILE_ITS_SOURCE_IRA_AFTER_TAX_B39A03E6",
+        "Confirm an eligible rollover and reconcile its source. IRA after-tax basis requires the owner worksheet; employer-plan calculated basis permits after-tax amounts into a traditional IRA by year-end with its basis record, or a confirmed direct employer-plan transfer with separate basis accounting. A payer-reported zero-tax direct rollover must transfer the full distribution.",
+    ),
+    (
+        "ISSUE_CONFIRM_AN_ELIGIBLE_TRADITIONAL_TO_ROTH_IRA_CONVERSION_COMPLETED_BY_ABF78E0D",
+        "Confirm an eligible traditional-to-Roth IRA conversion completed by year-end. Use the basis worksheet for after-tax contributions; inherited, employer-plan, RMD and other special conversions require another worksheet.",
+    ),
+    (
+        "ISSUE_CONFIRM_AN_ORDINARY_QUALIFIED_EMPLOYER_PLAN_DISTRIBUTION_WITH_CORRE_987E0E35",
+        "Confirm an ordinary qualified employer-plan distribution with correctly allocated nonforfeitable balance and investment. Roth, IRA, unsupported after-tax rollover, repayment, NUA, legacy contribution-first treatment, full-discharge loss and special lump-sum elections need separate calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_A_COMMERCIAL_ANNUITY_WITHDRAWAL_OR_NEWLY_TAXABLE_LOAN_PLEDG_4505AB3B",
+        "Confirm a commercial annuity withdrawal or newly taxable loan/pledge before annuity payments begin, with ordinary earnings-first treatment and complete pre-withdrawal contract records. Include all required related contracts with reconciled balances before this payment. Full surrender, exchange, legacy investment and unresolved grouping need separate calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_A_COMPLETE_CASH_DISCHARGE_OF_THIS_PENSION_OR_COMMERCIAL_ANN_27AF5A7B",
+        "Confirm a complete cash discharge of this pension or commercial annuity contract with remaining investment reconciled. Partial payments, IRA/Roth, exchange, NUA, special elections and final-annuitant death deductions use other treatments.",
+    ),
+    (
+        "ISSUE_CONFIRM_A_DIRECT_TRANSFER_FROM_AN_EMPLOYER_PLAN_TO_A_QUALIFIED_EMPL_11495C83",
+        "Confirm a direct transfer from an employer plan to a qualified employee plan or 403(b) with separate taxable and after-tax accounting. IRA sources and indirect transfers cannot use this destination.",
+    ),
+    (
+        "ISSUE_CONFIRM_A_FINAL_2026_FORM_1041_AND_THAT_THIS_BENEFICIARY_SUCCEEDS_T_5C3A8A61",
+        "Confirm a final 2026 Form 1041 and that this beneficiary succeeds to the estate's or trust's property before claiming box 11 codes A through F.",
+    ),
+    (
+        "ISSUE_CONFIRM_A_FIRST_REISSUE_THE_ORIGINAL_CERTIFICATE_AND_ITS_2026_LIMIT_71828D94",
+        "Confirm a first reissue, the original certificate and its 2026 limit interest, and that the reissue went to the same holders for the same home, replaced the original entirely, and retained no old certified debt. A variable-rate original needs a retained scheduled- or hypothetical-interest worksheet with confirmed consistent use of that method; multiple refinancings need separate history.",
+    ),
+    (
+        "ISSUE_CONFIRM_A_FULL_DIRECT_TRANSFER_OF_THIS_17_YEAR_OLD_BENEFICIARY_S_OW_33BA2D11",
+        "Confirm a full direct transfer of this 17-year-old beneficiary's own Trump account to their eligible ABLE account in 2026, and resolve any excess contributions before transfer. Partial, indirect or mismatched transfers require separate treatment.",
+    ),
+    (
+        "ISSUE_CONFIRM_BOX_12_CODE_A_EITHER_STANDS_ALONE_OR_EXACTLY_EQUALS_THE_SUM_6EA75E82",
+        "Confirm box 12 code A either stands alone or exactly equals the sum of its signed code B qualified-dividend, C short-term and D long-term components. Every nonzero component must have A's sign; confirmed codes E/F are disjoint same-sign portions of D, not additional AMTI. Other box 12 codes, missing or contradictory fiduciary attribution, related AMT items and Form 1116 foreign tax credits need separate worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_EACH_CLAIMANT_IS_ON_THIS_RETURN_WITH_CURRENT_AEWC_RECOGNITI_EB3950A0",
+        "Whaling captain expenses can be claimed only by a captain on this return: your spouse's expenses need a joint return. A whaling expense can be claimed only as an itemized contribution.",
+    ),
+    (
+        "ISSUE_CONFIRM_EVERY_DIRECT_2026_TRUSTEE_TRANSFER_FOR_THE_SAME_BENEFICIARY_E404803A",
+        "Confirm every direct 2026 trustee transfer for the same beneficiary, each 529 account's 15-year history and administrator-reconciled five-year seasoned source amount after earlier distributions, and $35,000 lifetime room across all 529 accounts.",
+    ),
+    (
+        "ISSUE_CONFIRM_FLSA_REQUIRED_OVERTIME_ABOVE_THE_REGULAR_RATE_SEPARATELY_RE_DE584C59",
+        "Confirm FLSA-required overtime above the regular rate, separately reported on a 2026 Form 1099-NEC or 1099-MISC and included once in this U.S. Schedule C business's ordinary receipts. Other payment and source cases require their own worksheet.",
+    ),
+    (
+        "ISSUE_CONFIRM_ORDINARY_AGE_60_OR_LATER_RRB_PENSION_TREATMENT_OR_DOCUMENTE_15AB4CB8",
+        "Confirm ordinary age-60-or-later RRB pension treatment or documented survivor payments after death. Unresolved repayments, disability-wage routing, unresolved shared employee contributions and other adjustments require additional worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_ORDINARY_WHOLLY_FOREIGN_SERVICES_SUBJECT_TO_U_S_SE_TAX_WITH_70B32FC6",
+        "Confirm ordinary wholly foreign services subject to U.S. SE tax, without special foreign treatment. Mixed sources, capital-producing activities and foreign property/vehicle/home-office deductions need their additional source and depreciation worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_POST_JULY_1_1986_ANNUITIZATION_DEATH_OF_THE_LINKED_FINAL_AN_6DE6B545",
+        "Confirm post-July 1, 1986 annuitization, death of the linked final annuitant, ordinary or inherited periodic pension/annuity treatment and complete nonduplicated investment recovery. Payments must cease because of death, not expiration of a fixed period independent of life. Starting date, original net investment and prior recovery must agree with the linked worksheet. A temporary child annuity must end in the death month and agree with the deduction records.",
+    ),
+    (
+        "ISSUE_CONFIRM_PRE_AUGUST_14_1982_CONTRACT_ISSUANCE_AND_THE_INSURER_S_SEPA_99B832D6",
+        "Confirm pre-August 14, 1982 contract issuance and the insurer's separate old/new investment and earnings records. Loans, pledges, surrenders, exchanges, losses within a portion and unresolved allocations require further calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_PROFESSIONAL_GAMBLING_MIXED_CASUAL_PROFESSIONAL_OR_MULTIPLE_C88656A0",
+        "Confirm professional gambling. Mixed casual/professional or multiple wagering activities, inventory, home-office and owner health/retirement coordination need additional worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_QUALIFIED_CUSTOMER_TIPS_SEPARATELY_STATED_ON_2026_INFORMATI_23ADE78E",
+        "Confirm qualified customer tips separately stated on 2026 information returns furnished to this individual, included once in U.S. Schedule C ordinary receipts or Schedule F other farm operating receipts. Partnership and unresolved source cases require their own worksheet.",
+    ),
+    (
+        "ISSUE_CONFIRM_QUALIFYING_PURCHASED_RENTAL_EQUIPMENT_100_INCOME_PRODUCING_65B44F46",
+        "Confirm qualifying purchased rental equipment, 100% income-producing use, no section 179 election or carryforward, and complete depreciation records. Listed property, vehicles, ADS, changed use and other basis treatment need separate worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_ALLOCATED_BOX_11_CODE_A_SECTION_67_E_DEDUCTION_HAS_NO_N_30B57AA3",
+        "Confirm the allocated box 11 code A section 67(e) deduction has no net-investment-income share, or enter that share in the final-year source character.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_BOX_14_CODE_I_STATEMENT_ALLOCATES_ONLY_QUALIFIED_SECTIO_E9402562",
+        "Confirm the box 14 code I statement allocates only qualified section 199A REIT/RIC dividends to this beneficiary. Business, PTP, cooperative or other section 199A items need separate worksheets; an amount marked ineligible needs a corrected fiduciary statement.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_CASH_METHOD_ORIGINAL_PRIOR_YEAR_FORM_4136_RETURN_WAS_FI_DAD735AB",
+        "Confirm the cash-method original prior-year Form 4136 return was filed in 2026, or the amended-return credit or fuel-tax refund was received in 2026. For full benefit, the fuel-tax deduction reduced prior income tax in full. The narrow partial 2025 case needs the filed return and retained refigured regular-tax comparison, negative taxable-income exclusion, active deduction, and no AMT, NIIT, credit, carryover or duplicate recovery. Other partial-benefit, passive, NOL and distinct AMT/NIIT histories need separate review.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_COMPLETE_NONEMPLOYER_STOCK_SALE_NO_AFTER_TAX_BASIS_OR_S_B0466E40",
+        "Distributed property sold for a rollover needs a pension source rolled over by its proceeds. NUA and mixed-property allocations require separate calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_COMPLETE_ORDINARY_CSRS_FERS_DEATH_BENEFIT_LUMP_SUM_TO_T_0DC2F9CD",
+        "Confirm the complete ordinary CSRS/FERS death-benefit lump sum to this individual and documented death treatment. Split payments, rollovers, special elections, estate/trust returns and final-annuitant deductions require separate treatment.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_ELIGIBLE_NUA_DISTRIBUTION_AND_LOT_HISTORY_INHERITED_SHA_9B0E8900",
+        "Confirm the eligible NUA distribution and lot history. Inherited shares require a reconciled estate valuation at least equal to deferred NUA and no allocable estate or generation-skipping tax; unresolved estate allocations require further calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_ENTIRE_FINAL_YEAR_BOX_11_CODE_B_AMOUNT_IS_ALLOCATED_STA_C1AF69AE",
+        "Confirm the entire final-year box 11 code B amount is allocated state/local income or general sales tax without a Form 8960 share, noninvestment real-estate tax or nonbusiness personal-property tax. With a Form 1116 credit, an elected state income tax from the fiduciary needs the income it was paid on, which your state-tax records do not show.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_ENTIRE_K_1_BOX_10_ESTATE_TAX_DEDUCTION_IS_ALLOCATED_BY_311E89D1",
+        "Confirm the entire K-1 box 10 estate-tax deduction is allocated by the fiduciary to taxable IRD interest included in this K-1's box 1, without a box 14 code H adjustment that may already include it or a Form 1116 foreign-tax-credit claim. Mixed, noninvestment or capital-gain IRD needs a separate allocation and rate worksheet.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_ENTIRE_K_1_BOX_5_AMOUNT_IS_ORDINARY_DOMESTIC_NONBUSINES_49D1F6DD",
+        "Confirm the entire K-1 box 5 amount is ordinary domestic nonbusiness royalties, with no unentered net-investment-income adjustment. Any limited box 9 code A depreciation, B cost depletion or C amortization below must belong to the same activity; annuities, income in respect of a decedent and other box 5 items need their own calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_FIDUCIARY_S_COMPLETE_BOX_9_CODE_A_ALLOCATION_IS_SECTION_796AF61F",
+        "Confirm the fiduciary's complete box 9 code A allocation is section 167 straight-line depreciation of one master sound recording licensed for box 5 domestic nonbusiness royalties, held by the fiduciary throughout 2026. Retain the per-asset basis, service-date, useful-life and beneficiary-allocation statement. The schedule began before 2026, with no section 181 expense, section 168(k) bonus, section 197 amortization or income-forecast look-back. The deduction must remain fully allowable and nonloss with identical regular, AMT and NIIT treatment, no box 9 B/C, box 12 code G or box 14 code H overlap. Other assets, methods, property succession or separate beneficiary limits need their own worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_FIDUCIARY_S_COMPLETE_BOX_9_CODE_B_ALLOCATION_IS_COST_DE_735381DF",
+        "Confirm the fiduciary's complete box 9 code B allocation is cost depletion from one domestic nonbusiness mineral royalty property in box 5, held by the fiduciary throughout 2026. Retain its per-property section 611 basis, recoverable/sold-unit calculation and beneficiary allocation statement. Cost must be the allowable depletion method. The amount must remain fully allowable and nonloss for this beneficiary, with identical regular, AMT and NIIT treatment and no box 9 code C, box 12 code H or box 14 code H overlap. Percentage depletion, property succession or a separate beneficiary-level limit needs its own worksheet.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_FIDUCIARY_S_COMPLETE_BOX_9_CODE_C_ALLOCATION_IS_SECTION_0753B936",
+        "Confirm the fiduciary's complete box 9 code C allocation is section 197 amortization from the same single domestic nonbusiness royalty activity in box 5, on a straight-line schedule begun before 2026. The amount must remain fully allowable and nonloss for this beneficiary, have identical regular, AMT and NIIT treatment, and not appear in box 5 or box 14 code H again. Other box 9 items, box 12 code I or a separate beneficiary limit need their own worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_FIXED_PERIOD_OR_LIFETIME_GENERAL_RULE_FACTS_AND_RETAINE_6D9431CB",
+        "Confirm the fixed-period or lifetime General Rule facts and retained table/method elections. A qualified-plan start on or after November 19, 1996 needs original age at least 75 and at least five years of guaranteed payments. Otherwise use the required Simplified Method or the applicable additional worksheet. Variable payments, refund features other than entered single-life guaranteed installments, exchanges and special ownership cases need additional calculations.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_K_1_BOX_20_CODE_C_FUEL_QUANTITIES_USE_APPLICABLE_RATE_P_8AB09713",
+        "Confirm the K-1 box 20 code C fuel quantities, use, applicable rate, partner-share cost and no earlier Form 8849/8864/720 claim. Farm-operator fuel lines require an established farm activity; a custom aerial applicator may claim its own farm-use aviation gasoline or kerosene without operating the farm, with an unwaived kerosene claim; public-bus diesel/kerosene and foreign-trade aviation kerosene need unwaived claims; foreign-trade aviation gasoline needs civil-aircraft trade and reciprocity for foreign registry; exports need retained proof, and a blender claim needs the partnership's M registration and certification. Registered-vendor government diesel line 6a and nonaviation-kerosene line 7a require distinct seller UV registration, buyer certificates, sale records, tax relief and no government-issued credit card. Blocked-pump kerosene line 7b requires the partnership seller's UP registration, qualifying fixed and marked pump, nontaxable buyer use, and buyer records for locked-pump sales over five gallons. Registered-vendor bus lines 6b and 7c require the partnership seller's UB registration, current buyer waivers, qualifying public-bus service and distinct sale records. Commercial-aviation kerosene vendor lines 8a and 8b require the partnership seller's UA registration, current signed Model Waiver L, separate original-tax-rate sales, and buyer and cost records. Nonexempt noncommercial aviation line 8c requires its separate UA vendor claim, 24.4-cent original tax, current signed Model Certificate Q, distinct sale and cost records, and no duplicated gallons. Nontaxable noncommercial aviation lines 8d/8e need the original tax rate, eligible use, current Model Waiver L with UA registration or Model Certificate P with UV registration for government sales, and distinct sale and cost records; foreign-trade gallons also generate line 8f LUST credit. A registered card issuer on line 13 needs its own active CC registration, government-issued credit-card purchase, current signed Model Certificate R, buyer tax relief, vendor settlement, actual cost, and no duplicate Form 720/8849 claim; only the partner share from box 20 code C belongs here. Retained buyer tax requires partnership-level income and K-1 accounting and is not supported on this partner path. A prior-year credit producing current Schedule E income belongs in the separate prior-credit field.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_QUALIFIED_PENSION_SIMPLIFIED_METHOD_FACTS_IRA_ROLLOVER_924A685D",
+        "The Simplified Method applies to a qualified pension; IRA, rollover, conversion and special allocation cases require their own worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_SINGLE_CHILD_CSRS_FERS_TEMPORARY_ANNUITY_AND_DEATH_EXCE_A6A0D1A2",
+        "Confirm the single-child CSRS/FERS temporary annuity and death exception. Spouse/lifetime/multiple-child benefits and changed entitlement periods need their own worksheets.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_TRUSTEE_S_DEATH_DATE_VALUE_AND_BASIS_THE_QUALIFIED_ACCO_5D336F75",
+        "Confirm the trustee's death-date value and basis, the qualified account and complete distributions. The beneficiary's estate acquisition belongs on that beneficiary's final return; another acquirer reports it on their own return. Unentered excess or other distributions need separate treatment.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_U_S_SCHEDULE_C_OR_FARM_ACTIVITY_TAX_PAID_QUALIFIED_USE_5EDA324A",
+        "Confirm the U.S. Schedule C or farm activity, tax-paid qualified use, purchase/equipment records, no prior Form 8849/8864/720 claim, and whether the credited tax was deducted or removed from expenses. Farm-operator fuel lines require a farm activity; a Schedule C custom aerial applicator may claim its own farm-use aviation gasoline or kerosene, with an unwaived kerosene claim; public-bus diesel/kerosene and foreign-trade aviation kerosene need unwaived claims; foreign-trade aviation gasoline needs civil-aircraft trade and reciprocity for foreign registry; exports need retained proof, and a blender claim needs M registration and certification. Registered-vendor government diesel line 6a and nonaviation-kerosene line 7a require an ordinary Schedule C seller, active UV registration, government-buyer certificate and records, tax-excluded sale, tax repayment or buyer consent, and no government-issued credit card. Blocked-pump kerosene line 7b requires an ordinary Schedule C seller, active UP registration, qualifying fixed and marked pump, nontaxable buyer use, and buyer records for locked-pump sales over five gallons. Registered-vendor bus lines 6b and 7c require an ordinary Schedule C seller, active UB registration, current buyer waivers, qualifying public-bus service and distinct sale records. Commercial-aviation kerosene vendor lines 8a and 8b require an ordinary Schedule C seller, active UA registration, current signed Model Waiver L, and separate original-tax-rate sale and cost records. Nonexempt noncommercial aviation line 8c requires an ordinary Schedule C seller, active UA registration, 24.4-cent original tax, current signed Model Certificate Q, distinct sale and cost records, and no duplicated gallons. Nontaxable noncommercial aviation lines 8d/8e require an ordinary Schedule C seller, active UA registration and current Model Waiver L, or UV registration and Model Certificate P for government sales, eligible use, original tax rate, and distinct sale and cost records; foreign-trade gallons also generate line 8f LUST credit. A registered card issuer on line 13 needs an ordinary Schedule C business, active CC registration, government-issued credit-card purchase, current signed Model Certificate R, buyer tax relief, vendor settlement, actual cost, and no duplicate Form 720/8849 claim. Retained buyer tax additionally requires a direct active issuer, exact line-13 reconciliation, no buyer/vendor profit-and-loss entries, no tax-cost deduction or duplicated credit income, and no separate cash-recovery history. An accrual issuer includes the retained benefit as 2026 Schedule C other income; a cash issuer with no 2026 receipt reviews that separate income in its actual or constructive receipt or credit-application year. Both claim the 2026 Form 4136 refundable payment once. Other fuel uses need their own worksheet.",
+    ),
+    (
+        "ISSUE_CONFIRM_THE_VARIABLE_COMMERCIAL_ANNUITY_PAYMENT_SCHEDULE_AND_HISTOR_BFD4FEBA",
+        "Confirm the variable commercial annuity payment schedule and history; reduced survivor benefits, split recipients and other special adjustments need further calculation.",
+    ),
+    (
+        "ISSUE_DE_MINIMIS_ELECTION_REQUIRES_CONFIRMED_ELIGIBLE_BOOK_EXPENSING_THE_20E65A9C",
+        "De minimis election requires confirmed eligible book expensing, the annual election for all qualifying purchases, and invoice/item costs at most $2,500 without an applicable financial statement or $5,000 with one. Reclassify ineligible purchases under their ordinary rules; an over-limit item is not a partially deductible safe-harbor purchase.",
+    ),
+    (
+        "ISSUE_EARLIER_VARIABLE_PAYMENTS_REQUIRE_A_DESIGNATED_SURVIVOR_AFTER_A_202_C4019F88",
+        "Earlier variable payments require a designated survivor after a 2026 death and the same annual exclusion for both recipients. A new shortfall election during the transition requires separate allocation.",
+    ),
+    (
+        "ISSUE_ELECTED_GAINS_AND_DIVIDENDS_CANNOT_EXCEED_THE_CORRESPONDING_INVESTM_2D32B42A",
+        "Elected gains and dividends cannot exceed the corresponding investment income available for election.",
+    ),
+    (
+        "ISSUE_ENTER_THE_COMPLETE_2026_VARIABLE_ANNUITY_SCHEDULE_THROUGH_DEATH_OR_60B5DF1C",
+        "Enter the complete 2026 variable-annuity schedule through death or contract expiration, including earlier-recipient installments where applicable. Zero installments require zero gross receipts and the owner's final return. Keep beneficiary and estate payments separate.",
+    ),
+    (
+        "ISSUE_ENTER_THE_RETAINED_FORM_8960_EXCLUDED_LOSS_DIFFERENCE_INCLUDING_CON_A89352C6",
+        "Enter the retained Form 8960 excluded-loss difference, including confirmed zero; Schedule D alone does not establish the investment-tax balance.",
+    ),
+    (
+        "ISSUE_ESTABLISH_K_1_BOX_14_CODE_A_FROM_THE_REPORTED_RECORDS_MISSING_EARNI_6EA55DAB",
+        "Establish K-1 box 14 code A from the reported records. Missing earnings are not zero and cannot be inferred from box 1 or participation.",
+    ),
+    (
+        "ISSUE_EVERY_REQUIRED_TO_FILE_HOUSEHOLD_INCOME_RECORD_MUST_REFER_TO_A_QUAL_EBA6B226",
+        "Every required-to-file household income record must refer to a qualifying dependent on this return.",
+    ),
+    (
+        "NOTE_RENTAL_PERSONAL_EXPENSE_SHARE",
+        "{0}: eligible personal mortgage interest, points, insurance and property taxes flow to Schedule A automatically when you itemize. Do not enter them again.",
+    ),
+    (
+        "NOTE_SCORP_BACKUP_WITHHOLDING",
+        "S-corporation document {0}, backup withholding: retain the K-1 for attachment to a filed return, or provide the corporation's name, address, EIN and withholding amount in the required statement. This App does not submit the return.",
+    ),
+    (
+        "NOTE_ESTATE_BOX_9A_RECORDS",
+        "Estate/trust document {0}, box 9 code A: retain the fiduciary's per-asset sound-recording basis, service-date, useful-life and beneficiary-allocation statement. The fiduciary continues the depreciation schedule; this App does not compute or transfer that basis.",
+    ),
+    (
+        "NOTE_ESTATE_BOX_9B_RECORDS",
+        "Estate/trust document {0}, box 9 code B: retain the fiduciary's per-property depletion basis, recoverable/sold-unit calculation and beneficiary allocation statement with this return. The fiduciary continues the property-basis account; this App does not compute depletion or transfer that basis.",
+    ),
+    (
+        "NOTE_ESTATE_BACKUP_WITHHOLDING",
+        "Estate/trust document {0}, backup withholding: retain the K-1 for attachment to a filed return. This App does not submit the return.",
+    ),
+    (
+        "NOTE_ABLE_EXPENSE_ELECTION_RECORDS",
+        "ABLE expense election — {0}: retain the first-60-days payment records and do not count the elected expenses again in 2027.",
+    ),
+    (
+        "ISSUE_FORM_1062_TAX_DEFERRAL_ELECTION_WITH_A_BUSINESS_MORTGAGE_DC_HOMEBUY_129E38EF",
+        "Form 1062 tax-deferral election with a business, mortgage, DC homebuyer, residential energy, clean vehicle, legacy EV or refueling credit, or with prior education-credit recapture, needs a combined tax worksheet.",
+    ),
+    (
+        "ISSUE_FORM_1099_G_BOX_7_AGRICULTURE_PAYMENTS_NEED_AN_EXISTING_FARM_ACTIVI_99130ACC",
+        "Form 1099-G box 7 agriculture payments need an existing farm or farm rental on this return for the same owner before they can reach Schedule F line 4a/4b or Form 4835 line 3.",
+    ),
+    (
+        "ISSUE_FORM_1099_G_BOX_7_AGRICULTURE_PAYMENTS_NEED_A_CHOSEN_FARM",
+        "Form 1099-G box 7 agriculture payments need the farm or farm rental that receives them: choose one of this owner's farms on the form.",
+    ),
+    (
+        "ISSUE_FORM_1099_G_BOX_9_MARKET_GAIN_CANNOT_BE_RECONCILED_TO_THIS_RETURN_S_165FF0EF",
+        "Form 1099-G box 9 market gain cannot be reconciled to this return's own Commodity Credit Corporation loan calculation.",
+    ),
+    (
+        "ISSUE_FORM_8941_NEEDS_AN_ACTIVE_U_S_SCHEDULE_C_EMPLOYER_WITH_MATCHING_W2S",
+        "Form 8941 needs an active U.S. Schedule C employer whose listed employees each match one of its W-2s, with the premiums you paid included in its employee benefit programs expense, and one Form 8941 per owner. Other businesses, household or leased employees, controlled groups and several rating areas are not calculated. For a completed source form outside this computation, use More credits → General business credits (Form 3800), its Form 8941 amount on line 4h.",
+    ),
+    (
+        "ISSUE_FORM_8994_NEEDS_AN_ACTIVE_U_S_SCHEDULE_C_EMPLOYER_WITH_MATCHING_W2S",
+        "Form 8994 needs an active U.S. Schedule C employer whose listed employees each match one of its W-2s, with each employee's leave wages (and any work opportunity credit wages) within that W-2's Medicare wages, the leave wages included in its wages expense and the insurance premiums in its employee benefit programs expense, and one Form 8994 per owner. For a completed source form outside this computation, use More credits → General business credits (Form 3800), its Form 8994 amount on line 4j.",
+    ),
+    (
+        "ISSUE_FORM_5884_LINES_1A_1C_NEED_AN_ACTIVE_U_S_SCHEDULE_C_EMPLOYER_WHOSE_F7748056",
+        "Form 5884 lines 1a–1c need an active U.S. Schedule C employer whose certified employees each match one of its W-2s, with the 2026 credit wages within that W-2's Medicare wages and included in full on Schedule C line 26, a start date after January 1, 2025 for first-year wages (after January 1, 2024 for second-year wages) and before 2026, and 2025 wages within each targeted group's limit. Successor employers, controlled groups, summer youth employees, designated community residents, passive activities and unconfirmed certifications are not calculated. For a completed source form outside this computation, use More credits → General business credits (Form 3800), its Form 5884 amount on line 4b.",
+    ),
+    (
+        "ISSUE_FORM_8615_LINES_9_AND_15_WITH_SCHEDULE_J_ON_THE_PARENT_S_RETURN",
+        "Form 8615 lines 9 and 15 with Schedule J on your parent's or a brother's or sister's return (on your parent's return page) are not calculated yet.",
+    ),
+    (
+        "ISSUE_FORM_8615_LINES_6_TO_8_ENTER_YOUR_PARENT_S_RETURN_AND_ANY_BROTHER_S_6F06ED02",
+        "Form 8615 lines 6 to 8: enter your parent's return, and any brother's or sister's Form 8615 that uses it, on your parent's return page.",
+    ),
+    (
+        "ISSUE_FORM_8615_LINES_A_C_6_AND_7_WHICH_PARENT_S_RETURN_TO_USE_OR_A_BROTH_AE8D3F1B",
+        "Form 8615 lines A–C, 6 and 7: which parent's return to use, or a brother's or sister's Form 8615, is not settled on your parent's return page; the tax at your parent's rate waits for it.",
+    ),
+    (
+        "ISSUE_FORM_8881_PART_I_SECTION_1_AND_PART_II_NEED_AN_ACTIVE_U_S_SCHEDULE_76108B89",
+        "Form 8881 Part I Section 1 and Part II need an active U.S. Schedule C employer with employee W-2s, an eligible small employer (no more than 100 employees paid $5,000 in the prior year, no plan for substantially the same employees in the prior three years, no controlled or affiliated service group), and start-up costs included in Business expenses. The employer contributions credit (Form 8881 lines 6a–6g, which needs Schedule C line 19) and the military spouse participation credit (Part III lines 12–13) are not calculated for a business's own plan. For a completed source form outside this computation, use More credits → General business credits (Form 3800), Form 8881 lines 1j,1dd and1ee.",
+    ),
+    (
+        "ISSUE_FORM_8912_REQUIRES_A_PRE_2018_QUALIFIED_TAX_CREDIT_OR_HOLDER_CREDIT_57C707E1",
+        "Form 8912 requires a pre-2018 qualified tax-credit or holder-credit Build America bond owned directly by a filer throughout 2026 and separately reported on its own Form 1097-BTC. Original CREBs, older QZABs, pass-throughs, nominees, combined reports, partial-year holdings and direct-pay issuer bonds need a separate review.",
+    ),
+    (
+        "ISSUE_HEALTH_SERVICE_PROGRAM_PAID_INTEREST_AND_INTEREST_YOUR_EMPLOYER_PAI_CDAF5E31",
+        "Health-service program-paid interest and interest your employer paid under an educational assistance program together cannot exceed the student loan interest entered. Reconcile the entries so no payment is subtracted twice.",
+    ),
+    (
+        "ISSUE_INCOME_TAX_EXPENSE_ATTRIBUTION_COULD_CHANGE_THE_FORM_4952_DEDUCTION_E4F6979E",
+        "Income-tax expense attribution could change the Form 4952 deduction or carryforward and needs additional coordination.",
+    ),
+    (
+        "ISSUE_LOSSES_EXCEEDING_THE_ORDINARY_ALLOWANCE_WITH_BOTH_SHORT_AND_LONG_TE_82324EBC",
+        "Losses exceeding the ordinary allowance with both short- and long-term lots need a verified allocation of the annual allowance.",
+    ),
+    (
+        "ISSUE_LOSS_ORIGIN_WORKSHEET_BALANCES_MUST_RECONCILE_SEPARATELY_TO_THE_CAL_CA991D60",
+        "Loss-origin worksheet balances must reconcile separately to the calculated short- and long-term carryovers after 2025 use. Supply all surviving years or leave the optional history empty when unavailable.",
+    ),
+    (
+        "ISSUE_HEALTH_PTC_INITIAL_PASSIVE_ALLOCATION",
+        "The initial health-insurance and premium-credit calculation must omit rental real estate losses before completing Form 8582. The source-supported interim treatment is not verified for competing non-rental passive losses, concurrent nonpassive rental losses, or disposed/former-passive loss releases. No complete estimate can be reported from a guessed allocation.",
+    ),
+    (
+        "ISSUE_MIXED_QUALIFIED_NONQUALIFIED_LOSSES_COMBINED_WITH_PROFITABLE_ACTIVI_843F0E1E",
+        "Mixed qualified/nonqualified losses combined with profitable activities, or special entity/property character, need further suspended-loss allocation. Loss-only ordinary sources preserve their qualified proportions.",
+    ),
+    (
+        "ISSUE_MULTIPLE_EXCLUDED_HOME_SALES_IN_ONE_YEAR_REQUIRE_COORDINATED_SPOUSE_287D0D61",
+        "Multiple excluded home sales in one year require coordinated spouse and prior-sale allocation.",
+    ),
+    (
+        "ISSUE_NONDEDUCTIBLE_CONTRIBUTIONS_AND_IRA_DISTRIBUTIONS_FOR_THE_SAME_OWNE_7AC2F41E",
+        "Nondeductible contributions and IRA distributions for the same owner require a complete basis worksheet in Adjustments.",
+    ),
+    (
+        "ISSUE_PARTNERSHIP_EARNINGS_AND_INCOME_DEPENDENT_DEDUCTIONS_DID_NOT_STABIL_F1B9D70E",
+        "Partnership earnings and income-dependent deductions did not stabilize to one consistent calculation. No final tax can be reported from these intermediate amounts.",
+    ),
+    (
+        "ISSUE_PERSONAL_USE_REFUELING_PROPERTY_MUST_BE_PLACED_IN_SERVICE_DURING_20_B3682C42",
+        "Personal-use refueling property must be placed in service during 2026 and no later than June 30.",
+    ),
+    (
+        "ISSUE_PRIOR_AMT_CAPITAL_LOSSES_NEED_THEIR_BUSINESS_NONBUSINESS_SOURCE_ALL_680A28E5",
+        "Prior AMT capital losses need their business/nonbusiness source allocation when property gains enter an ATNOL; the regular Form 8960 difference is not that source.",
+    ),
+    (
+        "ISSUE_PRIOR_ATNOL_WITH_FORM_1116_ALLOCATION_REQUIRES_THE_FOREIGN_LOSS_ALL_E8CEA4D5",
+        "Prior ATNOL with Form 1116 allocation requires the foreign loss-allocation worksheet. The eligible payee-statement election uses the existing shared regular/AMT credit.",
+    ),
+    (
+        "ISSUE_PRIOR_CAPITAL_LOSSES_NOT_ESTABLISHED_AS_INVESTMENT_LOSSES_NEED_BUSI_1755E978",
+        "Prior capital losses not established as investment losses need business/nonbusiness source allocation when current property gains enter an NOL. A Form 8960 difference alone does not establish that allocation.",
+    ),
+    (
+        "ISSUE_PROGRAM_PAID_INTEREST_OVERLAP_CANNOT_EXCEED_THE_TOTAL_INTEREST_ENTE_F86D91E8",
+        "Program-paid interest overlap cannot exceed the total interest entered in Adjustments. Reconcile the servicer and program entries without double subtraction.",
+    ),
+    (
+        "ISSUE_PROPERTY_DISTRIBUTIONS_REQUIRE_THE_TAXABLE_LIQUIDATION_PATH_ORDINAR_AAB4FBFE",
+        "Property distributions require the taxable liquidation path; ordinary noncash corporate distributions need separate treatment.",
+    ),
+    (
+        "ISSUE_PROVIDE_SPOUSE_FACTS_FOR_A_JOINT_RETURN_ONLY_2AB656E0",
+        "Provide spouse facts for a joint return only.",
+    ),
+    (
+        "ISSUE_RECONCILE_THE_RETAINED_GROSS_2026_STATE_INCOME_TAX_PAYMENT_LEDGER_T_FBABDEAF",
+        "Reconcile the retained gross 2026 state-income-tax payment ledger with the net state income tax paid when income tax is elected. Under the selected standard-deduction or general-sales-tax route, retain the ledger without a state-income-tax deduction; confirm the deduction route and tax election.",
+    ),
+    (
+        "ISSUE_RECONCILE_THE_TAXABLE_PART_OF_PRE_2026_INSURER_PAYMENTS_AGAINST_RET_197CBF4B",
+        "Reconcile the taxable part of pre-2026 insurer payments against retained prior returns. No amount is taxable before the main home becomes usable again; after that, prior payments above the whole temporary expense increase must already have been reported. Resolve an inconsistent prior return before computing 2026 inclusion.",
+    ),
+    (
+        "ISSUE_REPAYMENT_COMPARISON_WITH_A_FARMLAND_TAX_DEFERRAL_ELECTION_REQUIRES_C1EF8D22",
+        "Repayment comparison with a farmland tax-deferral election requires coordination of the two complete tax methods.",
+    ),
+    (
+        "ISSUE_REPAYMENT_METHODS_INVOLVING_PRIOR_NOLS_OR_POTENTIAL_CURRENT_LOSSES_6AE75F10",
+        "Repayment methods involving prior NOLs or potential current losses require the section 1341 loss carryback/carryover computation.",
+    ),
+    (
+        "ISSUE_RESOLVE_HOBBY_VERSUS_BUSINESS_ASSET_CLASSIFICATION_AND_INVENTORY_AC_5BD6F771",
+        "Resolve the inventory accounting before reporting these hobby sales.",
+    ),
+    (
+        "ISSUE_RESOLVE_THE_PARTNERSHIP_SELF_EMPLOYMENT_RESULT_BEFORE_APPLYING_THE_D0F267FA",
+        "Resolve the partnership self-employment result before applying the Form 8615 alternate worksheet.",
+    ),
+    (
+        "ISSUE_RETIREMENT_INCOME_NEEDS_A_PAYER_DETERMINED_AMOUNT_OR_SUPPORTED_PENS_EA370F3F",
+        "Retirement income needs a payer-determined amount or supported pension/IRA basis worksheet and a supported distribution treatment; unlisted exceptions need another worksheet.",
+    ),
+    (
+        "ISSUE_REVIEW_PRIOR_RETURN_OWNERSHIP_FILING_STATUS_AND_SPECIAL_LOSS_ADJUST_5C27A4B6",
+        "Review prior-return ownership, filing status and special loss adjustments; do not duplicate a return or allocate a former spouse's loss here.",
+    ),
+    (
+        "ISSUE_REVIEW_THE_OWNER_SHARE_COUNT_EXERCISE_PRICES_AND_SPECIAL_STOCK_REST_EE383591",
+        "Review the owner, share count, exercise prices and special stock restrictions.",
+    ),
+    (
+        "ISSUE_SAME_YEAR_UNEMPLOYMENT_REPAYMENTS_CANNOT_EXCEED_THIS_SOURCE_S_GROSS_BC0A30D5",
+        "Same-year unemployment repayments cannot exceed this source's gross 2026 benefits. Reconcile the receipt years and payment records.",
+    ),
+    (
+        "ISSUE_SCHEDULE_R_DISABILITY_INCOME_MUST_BE_A_QUALIFYING_EMPLOYER_PENSION_4173D621",
+        "Schedule R disability income must be a qualifying employer pension, within its taxable amount, with the required disability and mandatory-retirement-age facts.",
+    ),
+    (
+        "ISSUE_SELECT_THE_RETIREMENT_INCOME_ENTRY_FOR_THE_ENDED_CONTRACT_6F15745F",
+        "Select the retirement income entry for the ended contract.",
+    ),
+    (
+        "ISSUE_SPOUSE_EDUCATOR_EXPENSES_REQUIRE_A_JOINT_RETURN_71AF9B36",
+        "Spouse educator expenses require a joint return.",
+    ),
+    (
+        "ISSUE_SPOUSE_PAID_ALIMONY_REQUIRES_A_JOINT_RETURN_7AD721BB",
+        "Spouse-paid alimony requires a joint return.",
+    ),
+    (
+        "ISSUE_TAXABLE_DISABILITY_RETIREMENT_INCOME_REQUIRES_CONSISTENT_PERMANENT_7B8EE958",
+        "Taxable disability retirement income requires consistent permanent-and-total-disability facts in People.",
+    ),
+    (
+        "ISSUE_THE_BOX_12_CODE_E_PATH_REQUIRES_NONNEGATIVE_AMT_UNRECAPTURED_SECTIO_91F4EE61",
+        "The box 12 code E path requires nonnegative AMT unrecaptured section 1250 gain after adjustment, with both adjusted special-rate pools within adjusted code D long-term gain.",
+    ),
+    (
+        "ISSUE_THE_BOX_12_CODE_F_PATH_REQUIRES_NONNEGATIVE_AMT_28_RATE_GAIN_AFTER_17658F8F",
+        "The box 12 code F path requires nonnegative AMT 28%-rate gain after adjustment, with both adjusted special-rate pools within adjusted code D long-term gain. Unrecaptured section 1250 gain also needs confirmed code E.",
+    ),
+    (
+        "ISSUE_THE_ELECTED_CAPITAL_GAIN_EXCEEDS_THE_AVAILABLE_AMT_INVESTMENT_CAPIT_6CBAA2D7",
+        "The elected capital gain or dividends exceeds its available AMT pool; review the actual election and AMT records.",
+    ),
+    (
+        "ISSUE_THE_EXCLUDED_LOSS_DIFFERENCE_MUST_FIT_THE_REGULAR_CAPITAL_CARRYOVER_C50F91A2",
+        "The Form 8960 excluded-loss difference must fit the regular capital carryover; it is independent of Form 4952 investment-property attribution.",
+    ),
+    (
+        "ISSUE_THE_EXCLUSION_AND_INCOME_DEPENDENT_DEDUCTIONS_NEED_FURTHER_COORDINA_1C26D484",
+        "The exclusion and income-dependent deductions need further coordinated worksheets; the provisional exclusion does not agree with the final income calculation.",
+    ),
+    (
+        "ISSUE_THE_HOUSEHOLD_FACTS_DO_NOT_ESTABLISH_ELIGIBILITY_FOR_THE_SELECTED_F_D1351812",
+        "The household facts do not establish eligibility for the selected filing status; special dependency exceptions are not yet supported.",
+    ),
+    (
+        "ISSUE_THE_IRA_DEDUCTION_AND_QCD_EXCLUSION_REQUIRE_FURTHER_COORDINATION_TH_115808A3",
+        "The IRA deduction and QCD exclusion require further coordination; the verified worksheet candidate does not agree with the recalculated deduction.",
+    ),
+    (
+        "ISSUE_THE_NARROW_BOX_12_CODE_C_PATH_REQUIRES_A_NONNEGATIVE_BENEFICIARY_AM_18D09457",
+        "The narrow box 12 code C path requires a nonnegative beneficiary AMT short-term gain after applying the signed adjustment to box 3. A fiduciary AMT short-term loss needs its own allocation and carryover statement.",
+    ),
+    (
+        "ISSUE_THE_NARROW_BOX_12_CODE_D_PATH_REQUIRES_A_NONNEGATIVE_BENEFICIARY_AM_D8813A7E",
+        "The narrow box 12 code D path requires a nonnegative beneficiary AMT long-term gain after applying the signed adjustment to box 4a. A 28%-rate gain needs matching code F; section 1250 gain needs matching code E. Other capital-character allocations need separate worksheets.",
+    ),
+    (
+        "ISSUE_THE_PAYEE_STATEMENT_ELECTION_REQUIRES_ONLY_STATEMENT_REPORTED_PASSI_61D2975F",
+        "The payee-statement election requires only statement-reported passive foreign income and taxes at or below $300 ($600 jointly); other claims require Form 1116.",
+    ),
+    (
+        "ISSUE_THE_PERSON_WHO_RECEIVED_QUALIFIED_OVERTIME_NEEDS_A_SOCIAL_SECURITY_A0D851C0",
+        "The person who received qualified overtime needs a Social Security number valid for employment.",
+    ),
+    (
+        "ISSUE_THE_PERSON_WHO_RECEIVED_QUALIFIED_TIPS_NEEDS_A_SOCIAL_SECURITY_NUMB_36F061FF",
+        "The person who received qualified tips needs a Social Security number valid for employment.",
+    ),
+    (
+        "ISSUE_THE_PRIOR_AMT_SCHEDULE_D_NET_GAINS_LOSSES_AND_LINE_21_DEDUCTION_MUS_AE0A8857",
+        "The prior AMT Schedule D net gains/losses and line 21 deduction must reconcile independently from regular tax.",
+    ),
+    (
+        "ISSUE_THE_PRIOR_ENHANCED_SENIOR_DEDUCTION_MUST_BE_INCLUDED_IN_TOTAL_DEDUC_A4F69A67",
+        "The prior enhanced senior deduction must be included in total deductions and respect that return's filing-status limit. Do not enter the additional standard deduction here.",
+    ),
+    (
+        "ISSUE_THE_SECTION_1256_PART_OF_THE_PRIOR_CARRYOVER_EXCEEDS_THE_CARRYOVER",
+        "The part of the 2025 carryover from section 1256 contracts cannot be more than the short- and long-term carryovers calculated from that return.",
+    ),
+    (
+        "ISSUE_THE_PRIOR_SCHEDULE_D_NET_AMOUNTS_AND_LINE_21_LOSS_MUST_RECONCILE_11918C45",
+        "The prior Schedule D net amounts and line 21 loss must reconcile.",
+    ),
+    (
+        "ISSUE_THE_PUBLISHED_FORM_8834_LINE_3B_AND_FORM_8936_PREDECESSOR_LISTS_DO_6E3815EB",
+        "The published Form 8834 line-3b and Form 8936 predecessor lists do not resolve their combined ordering. Review a return claiming both credits before using either tax limit.",
+    ),
+    (
+        "ISSUE_THE_SAME_FIDUCIARY_S_FINAL_YEAR_EXCESS_DEDUCTION_CANNOT_CONTAIN_BOT_34D28E4D",
+        "The same fiduciary's final-year excess deduction cannot contain both state/local income tax and the elected general sales tax. Obtain a corrected source classification.",
+    ),
+    (
+        "ISSUE_THE_TOTAL_EXERCISE_SPREAD_EXCEEDS_THIS_PROTOTYPE_S_SUPPORTED_AMOUNT_173AE371",
+        "The total exercise spread exceeds this prototype's supported amount range.",
+    ),
+    (
+        "ISSUE_THIS_NARROW_CURRENT_YEAR_PAYMENT_ROUTE_SUPPORTS_ONE_RECONCILED_REFU_9C1CE48E",
+        "This narrow current-year payment route supports one reconciled refund only; combine or separately review other 2026 state-tax refunds before calculating the deduction.",
+    ),
+    (
+        "ISSUE_UNRECOVERED_ANNUITY_COST_MUST_LINK_TO_RETIREMENT_INCOME_42116AC6",
+        "Unrecovered annuity cost must link to retirement income.",
+    ),
+    (
+        "ISSUE_USE_CONSISTENT_APPLICABLE_FINANCIAL_STATEMENT_FACTS_FOR_THIS_ACTIVI_5F5D61F3",
+        "Use consistent applicable-financial-statement facts for this activity's de minimis purchases.",
+    ),
+    (
+        "ISSUE_USE_CONSISTENT_BONUS_AND_GDS_METHOD_ELECTIONS_FOR_EACH_RECOVERY_CLA_1A530B8D",
+        "Use consistent bonus and GDS method elections for each recovery class across businesses and nonbusiness rentals.",
+    ),
+    (
+        "ISSUE_USE_ONE_ACTIVE_U_S_FOOD_BEVERAGE_OR_QUALIFYING_BEAUTY_SERVICE_SCHED_60A01969",
+        "Use one active U.S. food/beverage or qualifying beauty-service Schedule C employer with complete monthly employee records and matching W-2 box 5 payroll. Beauty service must identify barbering/hair care, nail care, esthetics, or body/spa treatment; other tipped services are unsupported. Confirm customary customer tipping, employer FICA payment, all employee wage-base limits, and the separate 2025 carryback. Ordinary expenses must omit employer FICA on these tips while including the other payroll costs once. Multiple credit sources, pass-through, passive, service-charge, over-wage-base or incomplete payroll cases need separate Form 8846/3800 review.",
+    ),
+    (
+        "ISSUE_USE_ONE_CREDIT_ENTRY_PER_STUDENT_DO_NOT_DUPLICATE_EXPENSES_ACROSS_C_D52B32DA",
+        "Use one credit entry per student; do not duplicate expenses across credits.",
+    ),
+    (
+        "ISSUE_YOUR_FILING_STATUS_NEEDS_A_PERSON_WHO_QUALIFIES_YOU_FOR_IT_ADD_THEM_5994559A",
+        "Your filing status needs a person who qualifies you for it: add them on this page, or choose another filing status on Your 2026 return.",
+    ),
+    (
+        "ISSUE_YOU_MUST_ITEMIZE_WHEN_A_SEPARATELY_FILING_SPOUSE_ITEMIZES_09394849",
+        "You must itemize when a separately filing spouse itemizes.",
+    ),
+    (
+        "FARM_ONLY_EXPENSE_IN_BUSINESS",
+        "Farm-only expense line in a business that is not a farm ({0}). Only a farm reports on Schedule F; enter this expense on its Schedule C line 8-27b, or as a described other expense on line 27b.",
+    ),
+    ("MESSAGE_2026_FEDERAL_ANYTHING_ELSE", "2026 federal · anything else"),
+    (
+        "MESSAGE_ALIMONY_RECEIVED_ENTER_THE_AGREEMENT_DATE_BEFORE_2027_AND_AMOUNTS_WITH_THIS",
+        "Alimony received: enter the agreement date (before 2027) and amounts, with this year's excluded part no larger than this year's alimony.",
+    ),
+    (
+        "MESSAGE_ALIMONY_YOUR_SPOUSE_RECEIVED_GOES_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_JOINTLY",
+        "Alimony your spouse received goes on this return only when you file jointly.",
+    ),
+    (
+        "MESSAGE_A_PERSON_IS_NOT_ON_THIS_RETURN_CHOOSE_THE_PERSON_AGAIN",
+        "A person is not on this return. Choose the person again.",
+    ),
+    ("DISPLAY_MARKETPLACE_PAYMENTS", "Payment and appeal facts"),
+    (
+        "ISSUE_HEALTH_MARKETPLACE_SOURCE_OVERALLOCATION",
+        "The selected health deduction and retained premium subsidy exceed a linked plan's available source expenses, or its subsidy allocation exceeds the actual enrollment source. No complete estimate can be reported from an overallocated source.",
+    ),
+    (
+        "SAVING_REMOVES_INVALID_MARKETPLACE_MARRIAGE_ELECTION",
+        "Saving removes the optional marriage election because its filing status or assigned dependent family changed, and reopens Marketplace. The original policy amounts and advances are kept.",
+    ),
+    (
+        "PTC_APPEAL_DATE_INVALID",
+        "Enter a valid appeal decision date whose payment deadline is within the supported calendar.",
+    ),
+    (
+        "MESSAGE_COMPLETE_THE_PROTOTYPE_REVIEW_NOTHING_IS_SIGNED_OR_FILED",
+        "Complete the prototype review. Nothing is signed or filed.",
+    ),
+    ("MESSAGE_ENTER_AT_MOST_20_ALIMONY_AGREEMENTS", "Enter at most 20 alimony agreements."),
+    (
+        "MESSAGE_SECTION_1256_ENTER_A_CARRYBACK_AMOUNT_WITHIN_THE_SUPPORTED_RANGE",
+        "Enter a section 1256 loss carryback amount within the supported range.",
+    ),
+    (
+        "MESSAGE_ENTER_EACH_LOSS_YEAR_FROM_2021_THROUGH_2025_ONCE_WITH_A_REMAINING_BALANCE_NO",
+        "Enter each loss year from 2021 through 2025 once, with a remaining balance no larger than the original loss.",
+    ),
+    (
+        "MESSAGE_FORM_3921_CHECK_THE_SHARE_COUNTS_UP_TO_SIX_DECIMAL_PLACES_AND_THE_NAMES",
+        "Form 3921: check the share counts (up to six decimal places) and the names.",
+    ),
+    (
+        "MESSAGE_FORM_3921_THESE_SHARES_ENTER_ALTERNATIVE_MINIMUM_TAXABLE_INCOME_FORM_6251_LI",
+        "Form 3921: these shares enter alternative minimum taxable income (Form 6251 line 2i) in 2026 only when you exercised in 2026, or when restricted shares vested in 2026. Enter a Form 3921 for an earlier year only for shares that vested in 2026.",
+    ),
+    (
+        "MESSAGE_FORM_3921_YOUR_SPOUSE_S_STOCK_OPTIONS_GO_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_J",
+        "Form 3921: your spouse's stock options go on this return only when you file jointly.",
+    ),
+    (
+        "MESSAGE_INSTALLMENT_PAYMENTS_ENTER_THE_PROPERTY_A_SALE_DATE_BEFORE_2026_AND_THE_AMOU",
+        "Installment payments: enter the property, a sale date before 2026 and the amounts from the Form 6252 for the year of the sale.",
+    ),
+    (
+        "MESSAGE_INSTALLMENT_PAYMENTS_YOUR_SPOUSE_S_SALES_GO_ON_THIS_RETURN_ONLY_WHEN_YOU_FIL",
+        "Installment payments: your spouse's sales go on this return only when you file jointly.",
+    ),
+    (
+        "MESSAGE_NAME_EACH_VEHICLE_LOAN_S_LENDER_UP_TO_80_CHARACTERS",
+        "Name each vehicle loan's lender.",
+    ),
+    (
+        "MESSAGE_NET_OPERATING_LOSS_ENTER_LOSS_YEARS_FROM_1900_THROUGH_2025_WITH_AMOUNTS_IN_T",
+        "Net operating loss: enter loss years from 1900 through 2025 with amounts in the supported range.",
+    ),
+    (
+        "MESSAGE_PROTOTYPE_REVIEW_COMPLETED_NO_TAX_RETURN_HAS_BEEN_SIGNED_OR_FILED",
+        "Prototype review completed. No tax return has been signed or filed.",
+    ),
+    (
+        "MESSAGE_FORM_2555_YOUR_SPOUSE_S_GOES_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_JOINTLY",
+        "Form 2555: your spouse's goes on this return only when you file jointly.",
+    ),
+    (
+        "MESSAGE_THIS_DOCUMENT_BELONGS_TO_ANOTHER_INCOME_TOPIC",
+        "This document belongs to another income topic.",
+    ),
+    (
+        "PROBLEM_ACCEPTED_ANSWERS_CHANGED",
+        "Accepted answers changed. Reopen the editor before trying again.",
+    ),
+    (
+        "PROBLEM_EARLIER_SECTION_REQUIRED",
+        "Complete the earlier required section before opening this page.",
+    ),
+    ("PROBLEM_INTERVIEW_NOT_STARTED", "Start the interview before reviewing accepted answers."),
+    (
+        "PROBLEM_RETURN_IDENTITY_UNAVAILABLE",
+        "This return identity is not available. Reopen the endpoint.",
+    ),
+    (
+        "PROBLEM_REVIEW_ISSUES_REMAIN",
+        "Resolve the remaining answers or coverage issues before completing the prototype review.",
+    ),
+    ("PROBLEM_REVIEW_NOT_READY", "The return is not ready to finish reviewing."),
+    ("PROBLEM_REVISION_LIMIT", "This return has reached the supported revision limit."),
+    ("PROBLEM_SECTION_UNAVAILABLE_HERE", "This section is not available from here."),
+    ("RELATED_FORM_COMPONENT_BOX", "{0} — box {1}"),
+    ("RELATED_PART_BOX", "Box {0,number,0}"),
+    ("RELATED_PART_NEC", "Nonemployee compensation"),
+    ("RELATED_PART_PATR", "Patronage distributions"),
+    ("RELATED_PART_AMOUNT", "Payment part: {0,number,currency}"),
+    ("RELATED_PART_ALLOCATION", "Allocation: {0,number,currency}"),
+    ("RELATED_FORM_COMPONENT_PART", "{0} — payment part: {1,number,currency}"),
+    ("RELATED_FORM_COMPONENT_ALLOCATION", "{0} — allocation: {1,number,currency}"),
+    (
+        "PROBLEM_RELATED_FORM_UNAVAILABLE",
+        "This form is no longer available. Reopen the activity to refresh its related forms.",
+    ),
+    (
+        "PROBLEM_STORED_DATA_INVALID",
+        "Stored accepted data is invalid. It has not been changed; use a fresh development task.",
+    ),
+    (
+        "PROBLEM_UNDISPLAYABLE_ANSWER",
+        "This return holds an answer this page cannot show yet. Use a fresh development task.",
+    ),
+    (
+        "PROBLEM_UNDISPLAYABLE_INCOME_RECORD",
+        "This return holds an income record this page cannot show yet. Use a fresh development task.",
+    ),
+    (
+        "PROBLEM_UNDISPLAYABLE_PERSON_RECORD",
+        "This return holds a person record this page cannot show yet. Use a fresh development task.",
+    ),
+    ("ESTIMATE_UNAVAILABLE", "Estimate so far: not available yet"),
+    (
+        "ESTIMATE_OUTSIDE_COVERAGE",
+        "No estimate: this return is outside what the App calculates. The item below says why.",
+    ),
+    ("ESTIMATED_REFUND", "Estimated federal refund {0,number,currency}"),
+    ("ESTIMATED_BALANCE", "Estimated federal balance due {0,number,currency}"),
+    ("ESTIMATE_ZERO_BALANCE", "No federal refund or balance due"),
+    ("SAVINGS_BONDS_TWICE", "Enter savings bonds cashed for education once for the whole return."),
+    (
+        "SAVING_REMOVES_COUNT",
+        "{0,plural,one {Saving removes # {1}.} other {Saving removes # {2}.}}",
+    ),
+    ("SAVING_REMOVES_ONE_NAMED", "Saving removes {0} {1} ({2})."),
+    ("SAVING_REMOVES_NAMED", "Affected {0}: {1}."),
+    ("SAVING_REOPENS", "Saving reopens {0,LibertasEnum,TaxSection}."),
+    (
+        "SAVING_REMOVES_SOME_OF_YOUR_FORM_1095_A_ANSWERS",
+        "Saving removes some of your Form 1095-A answers.",
+    ),
+    ("SAVING_REMOVES_YOUR_SPOUSE", "Saving removes your spouse."),
+    (
+        "SAVING_REMOVES_YOUR_PARENT_S_RETURN_FORM_8615",
+        "Saving removes your parent's return (Form 8615).",
+    ),
+    (
+        "SAVING_REMOVES_YOUR_INJURED_SPOUSE_ALLOCATION_FORM_8379",
+        "Saving removes your injured spouse allocation (Form 8379).",
+    ),
+    (
+        "SAVING_REMOVES_YOUR_SPOUSE_S_EDUCATOR_EXPENSES",
+        "Saving removes your spouse's educator expenses.",
+    ),
+    ("SAVING_REMOVES_THE_HSA_FAMILY_SPLIT", "Saving removes the HSA family split."),
+    (
+        "SAVING_REMOVES_YOUR_SECTION_501_C_18_D_CONTRIBUTIONS",
+        "Saving removes your section 501(c)(18)(D) contributions.",
+    ),
+    ("SAVING_REMOVES_YOUR_SPOUSE_S_IRA_FACTS", "Saving removes your spouse's IRA facts."),
+    (
+        "SAVING_REMOVES_YOUR_EARLIER_YEAR_REPAYMENT_COMPARISON",
+        "Saving removes your earlier-year repayment comparison.",
+    ),
+    (
+        "SAVING_REMOVES_YOUR_UNRECOVERED_ANNUITY_COST",
+        "Saving removes your unrecovered annuity cost.",
+    ),
+    (
+        "SAVING_REMOVES_YOUR_GIFTS_OF_PROPERTY_AND_CARRYOVERS",
+        "Saving removes your gifts of property and carryovers.",
+    ),
+    (
+        "SAVING_REMOVES_YOUR_SPOUSE_S_SAVER_S_CREDIT_CONTRIBUTIONS",
+        "Saving removes your spouse's Saver’s Credit contributions.",
+    ),
+    (
+        "SAVING_REMOVES_YOUR_PUBLIC_SAFETY_OFFICER_PREMIUMS",
+        "Saving removes your public safety officer premiums.",
+    ),
+    ("SAVING_REMOVES_YOUR_FEDERAL_PAYMENTS", "Saving removes your federal payments."),
+    ("SAVING_REMOVES_YOUR_INCOME_BY_PERIOD", "Saving removes your income by period."),
+    (
+        "SAVING_REMOVES_TOPIC_SELF_EMPLOYMENT_OR_GIG_WORK",
+        "Saving removes your answers for self-employment or gig work.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_A_RENTAL_PROPERTY",
+        "Saving removes your answers for a rental property.",
+    ),
+    ("SAVING_REMOVES_TOPIC_FARMING", "Saving removes your answers for farming."),
+    (
+        "SAVING_REMOVES_TOPIC_CHILD_OR_DEPENDENT_CARE",
+        "Saving removes your answers for child or dependent care.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_A_CAPITAL_LOSS_CARRYOVER",
+        "Saving removes your capital loss carryover.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_A_NET_OPERATING_LOSS",
+        "Saving removes your net operating loss carryforward.",
+    ),
+    ("SAVING_REMOVES_TOPIC_A_QBI_LOSS_CARRYFORWARD", "Saving removes your QBI loss carryforward."),
+    (
+        "SAVING_REMOVES_TOPIC_A_CHARITABLE_CONTRIBUTION_CARRYOVER",
+        "Saving removes your charitable contribution carryovers.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_A_MINIMUM_TAX_CREDIT",
+        "Saving removes your minimum tax credit (Form 8801).",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_BASIS_IN_NONDEDUCTIBLE_IRA_CONTRIBUTIONS",
+        "Saving removes your IRA basis (Form 8606).",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_WORK_ABROAD_FOREIGN_EARNED_INCOME_OR_PAY_FROM_A_FOREIGN_EMPLOYER",
+        "Saving removes your answers for work abroad: your Form 2555 and pay from a foreign employer.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_A_HEALTH_SAVINGS_ACCOUNT",
+        "Saving removes your answers for a health savings account.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_IRA_CONTRIBUTIONS",
+        "Saving removes your answers for IRA contributions.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_STATE_LOCAL_OR_PROPERTY_TAXES",
+        "Saving removes your answers for state, local or property taxes.",
+    ),
+    ("SAVING_REMOVES_TOPIC_GIFTS_TO_CHARITY", "Saving removes your answers for gifts to charity."),
+    (
+        "SAVING_REMOVES_TOPIC_GIFTS_OF_PROPERTY_OR_CHARITY_CARRIED_OVER",
+        "Saving removes your answers for gifts of property or charity carried over.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_A_HOUSEHOLD_EMPLOYEE",
+        "Saving removes your answers for a household employee.",
+    ),
+    (
+        "SAVING_REMOVES_TOPIC_ESTIMATED_TAX_PAYMENTS_FOR_2026",
+        "Saving removes your answers for estimated tax payments for 2026.",
+    ),
+    ("SAVING_KIND_1099_A_ONE", "1099-A"),
+    ("SAVING_KIND_1099_A_MANY", "1099-As"),
+    ("SAVING_KIND_1099_B_ONE", "1099-B or 1099-DA sale"),
+    ("SAVING_KIND_1099_B_MANY", "1099-B or 1099-DA sales"),
+    ("SAVING_KIND_1099_B_CONTRACTS_ONE", "1099-B for futures and section 1256 options"),
+    ("SAVING_KIND_1099_B_CONTRACTS_MANY", "1099-Bs for futures and section 1256 options"),
+    ("SAVING_KIND_1099_C_ONE", "1099-C"),
+    ("SAVING_KIND_1099_C_MANY", "1099-Cs"),
+    ("SAVING_KIND_1099_DIV_ONE", "1099-DIV"),
+    ("SAVING_KIND_1099_DIV_MANY", "1099-DIVs"),
+    ("SAVING_KIND_1099_G_REFUND_ONE", "1099-G refund"),
+    ("SAVING_KIND_1099_G_REFUND_MANY", "1099-G refunds"),
+    ("SAVING_KIND_1099_G_ONE", "Form 1099-G"),
+    ("SAVING_KIND_1099_G_MANY", "Forms 1099-G"),
+    ("SAVING_KIND_1099_INT_ONE", "1099-INT"),
+    ("SAVING_KIND_1099_INT_MANY", "1099-INTs"),
+    ("SAVING_KIND_1099_OID_ONE", "1099-OID"),
+    ("SAVING_KIND_1099_OID_MANY", "1099-OIDs"),
+    ("SAVING_KIND_1099_PATR_ONE", "1099-PATR"),
+    ("SAVING_KIND_1099_PATR_MANY", "1099-PATRs"),
+    ("SAVING_KIND_1099_R_ONE", "1099-R"),
+    ("SAVING_KIND_1099_R_MANY", "1099-Rs"),
+    ("SAVING_KIND_RRB_1099_R_ONE", "RRB-1099-R"),
+    ("SAVING_KIND_RRB_1099_R_MANY", "RRB-1099-Rs"),
+    ("SAVING_KIND_INHERITED_IRA_ONE", "Inherited IRA"),
+    ("SAVING_KIND_INHERITED_IRA_MANY", "Inherited IRAs"),
+    ("SAVING_KIND_ALIMONY_AGREEMENT_ONE", "alimony agreement"),
+    ("SAVING_KIND_ALIMONY_AGREEMENT_MANY", "alimony agreements"),
+    ("SAVING_KIND_FORM_8919_ONE", "Employee pay source"),
+    ("SAVING_KIND_FORM_8919_MANY", "Employee pay sources"),
+    ("SAVING_KIND_HEALTH_LOAN_REPAYMENT_ONE", "health-service loan repayment"),
+    ("SAVING_KIND_HEALTH_LOAN_REPAYMENT_MANY", "health-service loan repayments"),
+    ("SAVING_KIND_SCHOLARSHIP_ONE", "scholarship"),
+    ("SAVING_KIND_SCHOLARSHIP_MANY", "scholarships"),
+    ("SAVING_KIND_JURY_PAY_ONE", "jury duty pay record"),
+    ("SAVING_KIND_JURY_PAY_MANY", "jury duty pay records"),
+    ("SAVING_KIND_FOREIGN_PAY_ONE", "foreign employer pay record"),
+    ("SAVING_KIND_FOREIGN_PAY_MANY", "foreign employer pay records"),
+    ("SAVING_KIND_FORM_2555_ONE", "Form 2555"),
+    ("SAVING_KIND_FORM_2555_MANY", "Forms 2555"),
+    ("SAVING_KIND_HOBBY_SALES_ONE", "hobby sales record"),
+    ("SAVING_KIND_HOBBY_SALES_MANY", "hobby sales records"),
+    ("SAVING_KIND_WILDFIRE_RELIEF_ONE", "wildfire relief payment"),
+    ("SAVING_KIND_WILDFIRE_RELIEF_MANY", "wildfire relief payments"),
+    ("SAVING_KIND_DISASTER_RELIEF_ONE", "disaster relief payment"),
+    ("SAVING_KIND_DISASTER_RELIEF_MANY", "disaster relief payments"),
+    ("SAVING_KIND_CASUALTY_LIVING_INSURANCE_ONE", "living-expense insurance record"),
+    ("SAVING_KIND_CASUALTY_LIVING_INSURANCE_MANY", "living-expense insurance records"),
+    ("SAVING_KIND_DISASTER_MITIGATION_ONE", "hazard mitigation grant"),
+    ("SAVING_KIND_DISASTER_MITIGATION_MANY", "hazard mitigation grants"),
+    ("SAVING_KIND_ALIMONY_RECORD_ONE", "alimony record"),
+    ("SAVING_KIND_ALIMONY_RECORD_MANY", "alimony records"),
+    ("SAVING_KIND_MOVE_ONE", "move"),
+    ("SAVING_KIND_MOVE_MANY", "moves"),
+    ("SAVING_KIND_EMPLOYEE_EXPENSES_FORM_ONE", "Form 2106"),
+    ("SAVING_KIND_EMPLOYEE_EXPENSES_FORM_MANY", "Forms 2106"),
+    ("SAVING_KIND_BUSINESS_ONE", "business"),
+    ("SAVING_KIND_BUSINESS_MANY", "businesses"),
+    ("SAVING_KIND_EARLIER_INSTALLMENT_SALE_ONE", "earlier installment sale"),
+    ("SAVING_KIND_EARLIER_INSTALLMENT_SALE_MANY", "earlier installment sales"),
+    ("SAVING_KIND_EARLIER_RELATED_EXCHANGE_ONE", "earlier related-party exchange"),
+    ("SAVING_KIND_EARLIER_RELATED_EXCHANGE_MANY", "earlier related-party exchanges"),
+    ("SAVING_KIND_FARM_ONE", "farm"),
+    ("SAVING_KIND_FARM_MANY", "farms"),
+    ("SAVING_KIND_FARM_RENTAL_ONE", "farm rental"),
+    ("SAVING_KIND_FARM_RENTAL_MANY", "farm rentals"),
+    ("SAVING_KIND_FORM_1041_K1_ONE", "Form 1041 K-1"),
+    ("SAVING_KIND_FORM_1041_K1_MANY", "Forms 1041 K-1"),
+    ("SAVING_KIND_FORM_1065_K1_ONE", "Form 1065 K-1"),
+    ("SAVING_KIND_FORM_1065_K1_MANY", "Forms 1065 K-1"),
+    ("SAVING_KIND_FORM_1120_S_K1_ONE", "Form 1120-S K-1"),
+    ("SAVING_KIND_FORM_1120_S_K1_MANY", "Forms 1120-S K-1"),
+    ("SAVING_KIND_FORM_3921_ONE", "Form 3921"),
+    ("SAVING_KIND_FORM_8606_ONE", "Form 8606"),
+    ("SAVING_KIND_FORM_8606_MANY", "Forms 8606"),
+    ("SAVING_KIND_FORM_8915_F_ONE", "Form 8915-F"),
+    ("SAVING_KIND_FORM_8915_F_MANY", "Forms 8915-F"),
+    ("SAVING_KIND_GAMBLING_LOSSES_ENTRY_ONE", "gambling losses entry"),
+    ("SAVING_KIND_GAMBLING_LOSSES_ENTRY_MANY", "gambling losses entries"),
+    ("SAVING_KIND_HOME_SALE_ONE", "home sale"),
+    ("SAVING_KIND_HOME_SALE_MANY", "home sales"),
+    ("SAVING_KIND_HOME_SALE_S_SPOUSE_ANSWERS_ONE", "home sale's spouse answers"),
+    ("SAVING_KIND_HOME_SALE_S_SPOUSE_ANSWERS_MANY", "home sales' spouse answers"),
+    ("SAVING_KIND_HOUSEHOLD_EMPLOYER_ONE", "household employer"),
+    ("SAVING_KIND_HOUSEHOLD_EMPLOYER_MANY", "household employers"),
+    ("SAVING_KIND_HSA_ONE", "HSA"),
+    ("SAVING_KIND_HSA_MANY", "HSAs"),
+    ("SAVING_KIND_ISO_SALE_ONE", "ISO sale"),
+    ("SAVING_KIND_ISO_SALE_MANY", "ISO sales"),
+    ("SAVING_KIND_EMPLOYEE_SALE_ONE", "employee share sale"),
+    ("SAVING_KIND_EMPLOYEE_SALE_MANY", "employee share sales"),
+    ("SAVING_KIND_ESPP_SALE_ONE", "ESPP share sale"),
+    ("SAVING_KIND_ESPP_SALE_MANY", "ESPP share sales"),
+    ("SAVING_KIND_NUA_SALE_ONE", "NUA share sale"),
+    ("SAVING_KIND_NUA_SALE_MANY", "NUA share sales"),
+    ("SAVING_KIND_QSBS_SALE_ONE", "qualified small business stock sale"),
+    ("SAVING_KIND_QSBS_SALE_MANY", "qualified small business stock sales"),
+    ("SAVING_KIND_SECTION_1244_LOSS_ONE", "section 1244 stock loss"),
+    ("SAVING_KIND_SECTION_1244_LOSS_MANY", "section 1244 stock losses"),
+    ("SAVING_KIND_WORTHLESS_SECURITY_ONE", "worthless security"),
+    ("SAVING_KIND_WORTHLESS_SECURITY_MANY", "worthless securities"),
+    ("SAVING_KIND_BAD_DEBT_ONE", "bad debt"),
+    ("SAVING_KIND_BAD_DEBT_MANY", "bad debts"),
+    ("SAVING_KIND_CAPITAL_RETURN_ONE", "1099-DIV return of capital"),
+    ("SAVING_KIND_CAPITAL_RETURN_MANY", "1099-DIV returns of capital"),
+    ("SAVING_KIND_FORM_2439_ONE", "Form 2439"),
+    ("SAVING_KIND_FORM_2439_MANY", "Form 2439 statements"),
+    ("SAVING_KIND_LONG_TERM_CARE_PREMIUM_ONE", "long-term-care premium"),
+    ("SAVING_KIND_LONG_TERM_CARE_PREMIUM_MANY", "long-term-care premiums"),
+    ("SAVING_KIND_OPTIONAL_METHOD_ELECTION_ONE", "optional method election"),
+    ("SAVING_KIND_OPTIONAL_METHOD_ELECTION_MANY", "optional method elections"),
+    ("SAVING_KIND_PARTNERSHIP_INCOME_SOURCE_ONE", "partnership income source"),
+    ("SAVING_KIND_PARTNERSHIP_INCOME_SOURCE_MANY", "partnership income sources"),
+    ("SAVING_KIND_QCD_RECORD_ONE", "QCD record"),
+    ("SAVING_KIND_QCD_RECORD_MANY", "QCD records"),
+    ("SAVING_KIND_RENTAL_ONE", "rental"),
+    ("SAVING_KIND_RENTAL_MANY", "rentals"),
+    ("SAVING_KIND_REQUIRED_DISTRIBUTION_ONE", "required distribution"),
+    ("SAVING_KIND_REQUIRED_DISTRIBUTION_MANY", "required distributions"),
+    ("SAVING_KIND_ROTH_IRA_HISTORY_ONE", "Roth IRA history"),
+    ("SAVING_KIND_ROTH_IRA_HISTORY_MANY", "Roth IRA histories"),
+    ("SAVING_KIND_SAVINGS_BONDS_MANY", "savings bond records"),
+    ("SAVING_KIND_SAVINGS_BONDS_ONE", "savings bond record"),
+    ("SAVING_KIND_SAVINGS_BONDS_PERSON_MANY", "savings bond person rows"),
+    ("SAVING_KIND_SAVINGS_BONDS_PERSON_ONE", "savings bond person row"),
+    ("SAVING_KIND_SSA_1099_ONE", "SSA-1099"),
+    ("SAVING_KIND_SSA_1099_MANY", "SSA-1099s"),
+    ("SAVING_KIND_TRUMP_ACCOUNT_ONE", "Trump account"),
+    ("SAVING_KIND_TRUMP_ACCOUNT_MANY", "Trump accounts"),
+    ("SAVING_KIND_CASH_TIP_RECORD_ONE", "cash tip record"),
+    ("SAVING_KIND_CASH_TIP_RECORD_MANY", "cash tip records"),
+    ("SAVING_KIND_PRIVATE_LOAN_INTEREST_ONE", "private loan interest record"),
+    ("SAVING_KIND_PRIVATE_LOAN_INTEREST_MANY", "private loan interest records"),
+    ("SAVING_KIND_W2_ONE", "W-2"),
+    ("SAVING_KIND_W2_MANY", "W-2s"),
+    ("SAVING_KIND_W2G_ONE", "W-2G"),
+    ("SAVING_KIND_W2G_MANY", "W-2Gs"),
+    ("SAVING_KIND_WHALING_CAPTAIN_CLAIM_ONE", "whaling captain claim"),
+    ("SAVING_KIND_WHALING_CAPTAIN_CLAIM_MANY", "whaling captain claims"),
+    (
+        "ISSUE_ESTATE_FINAL_INTEREST_LIMITED",
+        "Your net investment income doesn't absorb all the final-year box 11 code B investment interest. Regulations section 1.642(h)-2(a) allows this deduction only in the year the estate or trust ends, and whether the part section 163(d) disallows carries forward isn't settled, so this return can't be completed.",
+    ),
+    (
+        "NOL_AMOUNT_UNAVAILABLE",
+        "A required regular-tax amount for {0} cannot be represented. No complete estimate is available.",
+    ),
+    (
+        "ATNOL_AMOUNT_UNAVAILABLE",
+        "A required alternative-tax amount for {0} cannot be represented. No complete estimate is available.",
+    ),
+    (
+        "WARN_ESTATE_CAPITAL_NOL_LEFT_OUT",
+        "The fiduciary's regular business/nonbusiness capital-loss portions are unavailable. Only the current-year NOL benefit is left out; ordinary income, tax and capital carryovers remain.",
+    ),
+    (
+        "WARN_ESTATE_CAPITAL_ATNOL_LEFT_OUT",
+        "The fiduciary's AMT business/nonbusiness capital-loss portions are unavailable. Only the current-year alternative NOL benefit is left out; ordinary AMT and capital carryovers remain.",
+    ),
+    (
+        "WARN_ESTATE_CAPITAL_NIIT_LEFT_OUT",
+        "The fiduciary's investment-tax capital-loss balance is unavailable. Only the investment-tax deduction from these carryovers is left out; regular and AMT capital-loss treatment remains.",
+    ),
+    (
+        "ISSUE_ESTATE_OTHER_SOURCE_REQUIRED",
+        "This K-1 has unclassified income, foreign-beneficiary or inconsistent-return information. Sections 652 and 662 require its actual income character; known portfolio income is retained but a complete federal estimate needs the owning worksheet.",
+    ),
+    (
+        "WARN_ESTATE_INVESTMENT_ACTIVITY_LEFT_OUT",
+        "The fiduciary investment-credit property needs its actual activity classification; this credit benefit is left out.",
+    ),
+    (
+        "ISSUE_RELATED_FORM_ACTIVITY_MISSING",
+        "{0} needs its receiving activity. Enter the business, rental property, farm, farm rental, royalty entry, equipment entry or hobby, then add this component to its Related forms.",
+    ),
+    (
+        "ISSUE_RELATED_FORM_ACTIVITY_NOT_CHOSEN",
+        "{0} needs the activity that receives it. Open that activity and add this component to its Related forms.",
+    ),
+    (
+        "ISSUE_RELATED_FORM_PAGE_RENTALS",
+        "{0} needs the rental or royalty property it belongs to: add it here and link the form.",
+    ),
+    (
+        "ISSUE_RELATED_FORM_PAGE_FARMING",
+        "{0} needs the farm it belongs to: add the farm here and link the form.",
+    ),
+    (
+        "ISSUE_RELATED_FORM_PAGE_BUSINESS",
+        "{0} needs the business it belongs to: add the business here and link the form.",
+    ),
+    ("SAVING_KIND_RELATED_FORM_ONE", "related-form link"),
+    ("SAVING_KIND_RELATED_FORM_MANY", "related-form links"),
+    (
+        "SAVING_KIND_ESTATE_QBI_APPORTIONMENT_ONE",
+        "beneficiary QBI apportionment with its prior-loss history",
+    ),
+    (
+        "SAVING_KIND_ESTATE_QBI_APPORTIONMENT_MANY",
+        "beneficiary QBI apportionments with their prior-loss histories",
+    ),
+    (
+        "SAVING_REMOVES_RETAINED_RESEARCH_SOURCE",
+        "Saving removes a retained loss's business link because its source or research-credit question no longer applies. Its financial loss balance is kept.",
+    ),
+    (
+        "NOTE_NOL_PTP_EBL_DEBT_CHARACTER",
+        "Debt cancellation reduces the retained financial NOL after its displayed pre-debt qualified PTP balance. Its final qualified PTP character requires the actual attribute-reduction source allocation; the displayed amount is not a post-debt carry.",
+    ),
+    (
+        "NOL_PTP_EBL_RECONCILE",
+        "Reconcile the original and surviving PTP excess business loss, its qualified portion and any actual spouse shares to this retained NOL.",
+    ),
+    (
+        "WARN_NOL_PTP_EBL_UNAVAILABLE",
+        "The PTP excess-business-loss character or its current deduction attribution is unavailable for retained loss year {0}. The affected REIT/PTP benefit and carry are unavailable; independently known ordinary QBI and the financial NOL deduction remain included.",
+    ),
+    (
+        "ATNOL_EXCEPTION_AFTER_2017",
+        "Only a loss from 2017 or earlier can be a documented exception to the 90% limit.",
+    ),
+    ("NOL_TWICE", "Enter the net operating loss once for the return."),
+    (
+        "INJURED_CAPITAL_OWNER_TOTAL",
+        "Each spouse’s actual surviving short- and long-term losses must reconcile to the carryovers calculated from this prior return.",
+    ),
+    (
+        "INJURED_NIIT_OWNER_TOTAL",
+        "The actual spouse amounts must sum to the retained Form 8960 difference and fit each spouse's surviving regular loss records.",
+    ),
+    (
+        "INJURED_CARRYBACK_OWNER_TOTAL",
+        "The actual absorbed carryback amounts must sum to this election and fit the spouses' source-loss records. A carryback refund is not a current-year payment.",
+    ),
+    (
+        "INJURED_NOL_OWNER_TOTAL",
+        "The spouses’ actual surviving regular losses must total the unused balance for this loss year.",
+    ),
+    (
+        "INJURED_QBI_OWNER_TOTAL",
+        "The spouses’ actual retained losses must total the business and REIT/PTP losses on this source.",
+    ),
+    (
+        "FARM_OPTIONAL_SE_DIFFERS",
+        "The farm optional method applies to all of one person's farms: give each of their farms the same answer.",
+    ),
+    ("FARM_AVERAGING_TWICE", "Enter farm income averaging once for the whole return."),
+    ("FARM_LOSS_TWICE", "Enter the farm loss carryback choice once for the whole return."),
+    (
+        "SECTION_1256_CARRYBACK_TWICE",
+        "Enter the section 1256 loss carryback choice once for the whole return.",
+    ),
+    ("W2G_WITHHOLDING_ABOVE_WINNINGS", "Box 4 cannot exceed box 1 reportable winnings."),
+    (
+        "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE",
+        "Actual payroll coverage is unavailable for this pay; its affected payroll tax cannot be determined. Correct the payroll source on Wages.",
+    ),
+    (
+        "ISSUE_EMPLOYEE_RAILROAD_ORDINARY_TAX",
+        "Ordinary RRTA collection and employee representative tax are not calculated. Actual railroad compensation and Additional Medicare Tax remain included.",
+    ),
+    (
+        "ISSUE_EMPLOYEE_FOREIGN_GOVERNMENT_PAYROLL",
+        "Foreign government or international organization pay requires its special self-employment and payroll treatment; employee FICA exemption alone does not establish zero tax.",
+    ),
+    (
+        "ISSUE_EMPLOYEE_RRTA_COMPENSATION_UNAVAILABLE",
+        "Actual RRTA compensation is unavailable; its dependent payroll tax cannot be determined. Correct the railroad source on Wages.",
+    ),
+    (
+        "GAMBLING_LOSSES_TWICE",
+        "Enter your gambling losses and winnings without a W-2G once for the whole return.",
+    ),
+    (
+        "R_REPAYMENT_NEEDS_FORM_8606",
+        "A repayment to an IRA is figured on this owner's Form 8606. Enter last year's Form 8606 and the December 31, 2026 value, or remove the repayment.",
+    ),
+    ("FORM_8606_TWICE", "Enter last year's Form 8606 only once for each owner."),
+    ("FORM_2555_TWICE", "Enter one Form 2555 for each person."),
+    ("FOREIGN_ACCOUNT_TWICE", "Enter your foreign accounts and trusts once for the whole return."),
+    (
+        "FOREIGN_ASSETS_VALUE_NEEDED",
+        "Enter the highest total value of your foreign financial assets during 2026.",
+    ),
+    (
+        "CAPITAL_LOSS_CARRYOVER_LIMIT",
+        "Enter at most two 2025 returns with a capital loss carryover.",
+    ),
+    (
+        "ISSUE_ANSWER_SPOUSE_ITEMIZES",
+        "Answer whether your spouse itemizes on their separate return.",
+    ),
+    (
+        "ISSUE_ANSWER_YOUR_SPOUSE_STANDARD_DEDUCTION_BOXES",
+        "Answer your spouse's standard deduction boxes: choose None of these unless your spouse had no gross income, is not filing and cannot be claimed as a dependent.",
+    ),
+    (
+        "ISSUE_ANSWER_WHETHER_COMMUNITY_PROPERTY_APPLIES",
+        "Answer whether community property applies to your separate return: a community-property state divides your income between your separate returns.",
+    ),
+    (
+        "SPOUSE_SECTION179_TWICE",
+        "Enter your spouse's section 179 purchases once for the whole return.",
+    ),
+    (
+        "BUSINESS_PROPERTY_LOSSES_TWICE",
+        "Enter your 2021–2025 business-property losses once for the whole return.",
+    ),
+    (
+        "QBI_LOSS_CARRYFORWARD_TWICE",
+        "Enter last year's QBI loss carryforward once for the whole return.",
+    ),
+    (
+        "ISO_SOLD_ABOVE_TRANSFERRED",
+        "Form 3921: the shares sold in 2026 cannot exceed the shares transferred (box 5).",
+    ),
+    (
+        "ISO_VESTED_BEFORE_EXERCISED",
+        "Form 3921: the date the shares vested cannot be before the date exercised (box 2).",
+    ),
+    (
+        "CREDIT_ONE_BUSINESS_PER_OWNER",
+        "All of one owner's businesses are one employer; enter the credit on one business only.",
+    ),
+    (
+        "INTEREST_LIMIT_ELECTION_QUESTIONS_UPDATED",
+        "Record {0}: review the election out of the business interest limit for the property you entered, then save again. None of these edits has been saved yet.",
+    ),
+    (
+        "BUILDING_RECOVERY_SOURCE_QUESTIONS_UPDATED",
+        "Record {0}, physical building {1}: an improvement now needs this building's recovery facts. Review the source record and save again. None of these edits has been saved yet.",
+    ),
+    ("INSTALLMENT_PROFIT_ABOVE_CONTRACT", "The gross profit cannot exceed the contract price."),
+    (
+        "INSTALLMENT_PAID_ABOVE_CONTRACT",
+        "The payments received before and in 2026 cannot exceed the contract price.",
+    ),
+    (
+        "SOURCE_FARM_NEEDED",
+        "Form 8615 line 1 earned income: the tax on a child's unearned income applies to this return, so choose what produces this farm's income under More about this farm, Something else.",
+    ),
+    (
+        "SOURCE_BUSINESS_NEEDED",
+        "Form 8615 line 1 earned income: the tax on a child's unearned income applies to this return, so choose what produces this business's income.",
+    ),
+    (
+        "SOURCE_PARTNER_NEEDED",
+        "Form 8615 line 1 and the Standard Deduction Worksheet for Dependents (Form 1040 line 12e) read this partnership's income source for this return: choose what produces its income.",
+    ),
+    (
+        "SOURCE_NOT_NEEDED",
+        "What produces this income is not read on this return: choose Not needed.",
+    ),
+    ("REVIEW_NOT_ANSWERED", "Not answered yet"),
+    // A page the path has not reached yet: the item opens it ahead.
+    ("REVIEW_COMING_UP", "Coming up"),
+    // The review's finishing row: the first unfinished page, by name.
+    ("REVIEW_CONTINUE_FROM", "Continue the interview on {0} to calculate the federal estimate."),
+    (
+        "ESTIMATE_LATER_ITEMS",
+        "{0,plural,one {# more item in later sections} other {# more items in later sections}}",
+    ),
+    ("REVIEW_NOTHING_ENTERED", "Nothing entered"),
+    ("REVIEW_ENTERED", "Entered"),
+    ("REVIEW_PAYER_NAMES_NEEDED", "Payer names are needed on Schedule B above $1,500"),
+    (
+        "REVIEW_HSA_ACCOUNT_NEEDED",
+        "Employer HSA contributions or a linked failed cash deposit need this owner’s matching health-account facts",
+    ),
+    ("REVIEW_ATTENTION", "Needs attention: {0}"),
+    ("REVIEW_ATTENTION_NOT_CALCULATED", "Needs attention: {0} is not calculated yet"),
+    ("REVIEW_NOT_CALCULATED", "{0} is not calculated yet"),
+    // A concrete checklist plan with no entry yet: a soft reminder on its
+    // topic's row, never an item needing review.
+    ("REVIEW_PLANNED_TOPIC", "Planned"),
+    ("REVIEW_TOPICS", "{0,plural,one {# topic} other {# topics}}"),
+    ("REVIEW_ADJUSTMENTS", "{0,plural,one {# adjustment} other {# adjustments}}"),
+    ("REVIEW_TAXES", "{0,plural,one {# tax} other {# taxes}}"),
+    ("REVIEW_SITUATIONS", "{0,plural,one {# situation} other {# situations}}"),
+    ("REVIEW_PAYMENTS", "{0,plural,one {# payment} other {# payments}}"),
+    (
+        "REVIEW_MOVING_EXPENSES_NEEDED",
+        "A W-2 shows government moving reimbursements (box 12 code P); enter that move on More adjustments so the reimbursement is compared with your moving expenses.",
+    ),
+    // Tax form names (TaxForm::name_key), which title calculated return rows.
+    ("FORM_FORM1040", "1040"),
+    ("FORM_SCHEDULE1", "Schedule 1"),
+    ("FORM_SCHEDULE1A", "Schedule 1-A"),
+    ("FORM_SCHEDULE2", "Schedule 2"),
+    ("FORM_SCHEDULE3", "Schedule 3"),
+    ("FORM_SCHEDULE8812", "Schedule 8812"),
+    ("FORM_SCHEDULEA", "Schedule A"),
+    ("FORM_SCHEDULEB", "Schedule B"),
+    ("FORM_SCHEDULEC", "Schedule C"),
+    ("FORM_SCHEDULED", "Schedule D"),
+    ("FORM_SCHEDULEE", "Schedule E"),
+    ("FORM_SCHEDULEEIC", "Schedule EIC"),
+    ("FORM_SCHEDULEF", "Schedule F"),
+    ("FORM_SCHEDULEH", "Schedule H"),
+    ("FORM_SCHEDULEJ", "Schedule J"),
+    ("FORM_SCHEDULER", "Schedule R"),
+    ("FORM_SCHEDULESE", "Schedule SE"),
+    ("FORM_FORM982", "Form 982"),
+    ("FORM_FORM1040ES", "Form 1040-ES"),
+    ("FORM_FORM1062", "Form 1062"),
+    ("FORM_FORM1116", "Form 1116"),
+    ("FORM_FORM1116_SCHEDULE_B", "Schedule B (Form 1116)"),
+    (
+        "WARN_FTC_K1_GROSS_ASSUMED",
+        "{0} has no Schedule K-3, so its gross income is taken as its net income on Form 1116 line 3e; with the schedule your credit may be higher.",
+    ),
+    (
+        "WARN_FOREIGN_TAX_DEDUCTION_UNUSED",
+        "You chose to deduct foreign income taxes, but this estimate uses the standard deduction, so those taxes give no deduction and no credit. Revisit Deductions or choose the foreign tax credit on More credits.",
+    ),
+    (
+        "WARN_FOREIGN_ACCRUED_SANCTIONED_TAX_NOT_DEDUCTED",
+        "Your ordinary foreign-tax credit uses accrued taxes. The sanctioned-country source rows do not establish payment in 2026, so their potential cash-basis itemized deduction is left out; your tax may be lower if those taxes were paid. Their unresolved investment-expense share is checked before allowing investment interest. Attached K-3 taxes retain the entity's paid or accrued treatment.",
+    ),
+    (
+        "WARN_FOREIGN_K1_TAX_SOURCE_MISSING",
+        "{0}: the basis worksheet allows foreign taxes not identified by this year's Schedule K-3 country rows, including a possible released carry. That additional foreign-tax deduction is left out because its source is missing; your tax may be lower. Its unresolved investment-expense share is still checked before allowing investment interest.",
+    ),
+    (
+        "WARN_FOREIGN_K3_NIIT_TAX_NOT_ALLOCATED",
+        "{0}: the Schedule K-3 foreign taxes are deducted on Schedule A, but their share attributable to net investment income is not established by the foreign-tax categories. That additional Form 8960 deduction is left out; your tax may be lower.",
+    ),
+    (
+        "WARN_FTC_SANCTIONED_COUNTRY_TAX",
+        "No credit is allowed for taxes paid to a sanctioned country. The deductible part would reduce tax only if you itemize; revisit Deductions to choose your method.",
+    ),
+    ("FORM_FORM2439", "Form 2439"),
+    ("FORM_FORM2441", "Form 2441"),
+    ("FORM_FORM2106", "Form 2106"),
+    ("FORM_FORM2555", "Form 2555"),
+    ("FORM_FORM3800", "Form 3800"),
+    ("FORM_FORM4136", "Form 4136"),
+    ("FORM_FORM4137", "Form 4137"),
+    ("FORM_FORM4255", "Form 4255"),
+    ("FORM_FORM4562", "Form 4562"),
+    ("FORM_FORM4562B", "Form 4562-B"),
+    ("FORM_FORM4684", "Form 4684"),
+    ("FORM_FORM4797", "Form 4797"),
+    ("FORM_FORM4835", "Form 4835"),
+    ("FORM_FORM4952", "Form 4952"),
+    ("FORM_FORM4972", "Form 4972"),
+    ("FORM_FORM5329", "Form 5329"),
+    ("FORM_FORM5695", "Form 5695"),
+    ("FORM_FORM5884", "Form 5884"),
+    ("FORM_FORM6198", "Form 6198"),
+    ("FORM_FORM6251", "Form 6251"),
+    ("FORM_FORM6252", "Form 6252"),
+    ("FORM_FORM6781", "Form 6781"),
+    ("FORM_FORM7203", "Form 7203"),
+    ("FORM_FORM7206", "Form 7206"),
+    ("FORM_FORM8283", "Form 8283"),
+    ("FORM_FORM8379", "Form 8379"),
+    ("FORM_FORM8396", "Form 8396"),
+    ("FORM_FORM8582", "Form 8582"),
+    ("FORM_FORM8582CR", "Form 8582-CR"),
+    ("FORM_FORM8606", "Form 8606"),
+    ("FORM_FORM8615", "Form 8615"),
+    ("FORM_FORM8801", "Form 8801"),
+    ("FORM_FORM8815", "Form 8815"),
+    ("FORM_FORM8829", "Form 8829"),
+    ("FORM_FORM8834", "Form 8834"),
+    ("FORM_FORM8839", "Form 8839"),
+    ("FORM_FORM8846", "Form 8846"),
+    ("FORM_FORM8853", "Form 8853"),
+    ("FORM_FORM8859", "Form 8859"),
+    ("FORM_FORM8862", "Form 8862"),
+    ("FORM_FORM8863", "Form 8863"),
+    ("FORM_FORM8880", "Form 8880"),
+    ("FORM_FORM8881", "Form 8881"),
+    ("FORM_FORM8889", "Form 8889"),
+    ("FORM_FORM8915F", "Form 8915-F"),
+    ("FORM_FORM8911", "Form 8911"),
+    ("FORM_FORM8919", "Form 8919"),
+    ("FORM_FORM8936", "Form 8936"),
+    ("FORM_FORM8941", "Form 8941"),
+    ("DRAFT_ROW_WITH_COUNT", "{0}: {1,plural,other {#}}"),
+    ("DRAFT_ROW_WITH_RATIO", "{0}: {1,number,0.0000}"),
+    ("PRINT_BOX_CHECKED", "Checked"),
+    ("PRINT_BOX_NOT_CHECKED", "Not checked"),
+    ("DRAFT_ROW_WITH_YEAR", "{0}: {1,number,0}"),
+    ("DRAFT_ROW_WITH_PERCENTAGE", "{0}: {1,number,0.##}%"),
+    ("DRAFT_ROW_WITH_TEXT", "{0}: {1}"),
+    ("FORM_FORM8949", "Form 8949"),
+    ("FORM_FORM8958", "Form 8958"),
+    ("FORM_FORM8959", "Form 8959"),
+    ("FORM_FORM8960", "Form 8960"),
+    ("FORM_FORM8962", "Form 8962"),
+    ("FORM_FORM8978", "Form 8978"),
+    ("FORM_FORM8994", "Form 8994"),
+    ("FORM_FORM8995", "Form 8995"),
+    ("FORM_FORM8995A", "Form 8995-A"),
+    ("FORM_FORMW2", "Form W-2"),
+    ("FORM_FORMW2G", "Form W-2G"),
+    ("FORM_FORM1095A", "Form 1095-A"),
+    ("FORM_FORM1098", "Form 1098"),
+    ("FORM_FORM1098C", "Form 1098-C"),
+    ("FORM_FORM1098E", "Form 1098-E"),
+    ("FORM_FORM1098T", "Form 1098-T"),
+    ("FORM_FORM1099B", "Form 1099-B"),
+    ("FORM_FORM1099C", "Form 1099-C"),
+    ("FORM_FORM1099DIV", "Form 1099-DIV"),
+    ("FORM_FORM1099G", "Form 1099-G"),
+    ("FORM_FORM1099INT", "Form 1099-INT"),
+    ("FORM_FORM1099K", "Form 1099-K"),
+    ("FORM_FORM1099MISC", "Form 1099-MISC"),
+    ("FORM_FORM1099NEC", "Form 1099-NEC"),
+    ("FORM_FORM1099Q", "Form 1099-Q"),
+    ("FORM_FORM1099R", "Form 1099-R"),
+    ("FORM_FORM1099SA", "Form 1099-SA"),
+    ("FORM_FORM5498", "Form 5498"),
+    ("FORM_SCHEDULEK1FORM1041", "Schedule K-1 (Form 1041)"),
+    ("FORM_SCHEDULEK1FORM1065", "Schedule K-1 (Form 1065)"),
+    ("FORM_SCHEDULEK1FORM1120S", "Schedule K-1 (Form 1120-S)"),
+    ("LABEL_ENTRY_CURRENT_INSTALLMENT_SALE", "Installment sale"),
+    ("INSTALLMENT_OWNER_INVALID", "Choose a seller whose income belongs on this return."),
+    ("SAVING_KIND_CURRENT_INSTALLMENT_SALE_ONE", "installment sale"),
+    ("SAVING_KIND_CURRENT_INSTALLMENT_SALE_MANY", "installment sales"),
+    (
+        "NOTE_PARTNERSHIP_ENTITY_BASIS_ENDING",
+        "Tax year {2,number,0}: Partnership {0} ending outside basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_PARTNERSHIP_COMPONENT_BASIS_ALLOWED",
+        "Tax year {2,number,0}: Partnership {0} source {4} ordinary loss allowed by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_PARTNERSHIP_COMPONENT_BASIS_SUSPENDED",
+        "Tax year {2,number,0}: Partnership {0} source {4} ordinary loss suspended by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_PARTNERSHIP_COMPONENT_RISK_ALLOWED",
+        "Tax year {2,number,0}: Partnership {0} source {4} ordinary loss allowed at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_PARTNERSHIP_COMPONENT_RISK_SUSPENDED",
+        "Tax year {2,number,0}: Partnership {0} source {4} ordinary loss suspended at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_PARTNERSHIP_COMPONENT_PASSIVE_OPENING",
+        "Tax year {2,number,0}: Partnership {0} source {4} opening passive loss: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_PARTNERSHIP_GROUP_BEFORE_PASSIVE",
+        "Tax year {2,number,0}: Partnership {0} group {4} ordinary result before passive limits: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_ENTITY_BASIS_ENDING",
+        "Tax year {2,number,0}: AMT partnership {0} ending outside basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_COMPONENT_BASIS_ALLOWED",
+        "Tax year {2,number,0}: AMT partnership {0} source {4} ordinary loss allowed by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_COMPONENT_BASIS_SUSPENDED",
+        "Tax year {2,number,0}: AMT partnership {0} source {4} ordinary loss suspended by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_COMPONENT_RISK_ALLOWED",
+        "Tax year {2,number,0}: AMT partnership {0} source {4} ordinary loss allowed at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_COMPONENT_RISK_SUSPENDED",
+        "Tax year {2,number,0}: AMT partnership {0} source {4} ordinary loss suspended at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_COMPONENT_PASSIVE_OPENING",
+        "Tax year {2,number,0}: AMT partnership {0} source {4} opening passive loss: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_PARTNERSHIP_GROUP_BEFORE_PASSIVE",
+        "Tax year {2,number,0}: AMT partnership {0} group {4} ordinary result before passive limits: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_SCORP_ACTIVITY_COMPONENT_BASIS_ALLOWED",
+        "Tax year {2,number,0}: S corporation {0} source {4} ordinary loss allowed by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_SCORP_ACTIVITY_COMPONENT_BASIS_SUSPENDED",
+        "Tax year {2,number,0}: S corporation {0} source {4} ordinary loss suspended by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_SCORP_ACTIVITY_COMPONENT_RISK_ALLOWED",
+        "Tax year {2,number,0}: S corporation {0} source {4} ordinary loss allowed at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_SCORP_ACTIVITY_COMPONENT_RISK_SUSPENDED",
+        "Tax year {2,number,0}: S corporation {0} source {4} ordinary loss suspended at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_SCORP_ACTIVITY_COMPONENT_PASSIVE_OPENING",
+        "Tax year {2,number,0}: S corporation {0} source {4} opening passive loss: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_SCORP_ACTIVITY_GROUP_BEFORE_PASSIVE",
+        "Tax year {2,number,0}: S corporation {0} group {4} ordinary result before passive limits: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_SCORP_ACTIVITY_COMPONENT_BASIS_ALLOWED",
+        "Tax year {2,number,0}: AMT S corporation {0} source {4} ordinary loss allowed by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_SCORP_ACTIVITY_COMPONENT_BASIS_SUSPENDED",
+        "Tax year {2,number,0}: AMT S corporation {0} source {4} ordinary loss suspended by basis: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_SCORP_ACTIVITY_COMPONENT_RISK_ALLOWED",
+        "Tax year {2,number,0}: AMT S corporation {0} source {4} ordinary loss allowed at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_SCORP_ACTIVITY_COMPONENT_RISK_SUSPENDED",
+        "Tax year {2,number,0}: AMT S corporation {0} source {4} ordinary loss suspended at risk: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_SCORP_ACTIVITY_COMPONENT_PASSIVE_OPENING",
+        "Tax year {2,number,0}: AMT S corporation {0} source {4} opening passive loss: {1,number,currency}. {3}",
+    ),
+    (
+        "NOTE_AMT_SCORP_ACTIVITY_GROUP_BEFORE_PASSIVE",
+        "Tax year {2,number,0}: AMT S corporation {0} group {4} ordinary result before passive limits: {1,number,currency}. {3}",
+    ),
+    ("RETURN_1040_36", "1040 36 — Overpayment applied to 2027 estimated tax"),
+    (
+        "PAYMENT_APPLIED_CREDIT_UNAVAILABLE",
+        "The planned credit is retained, but the available overpayment is not yet known. Finish or correct the return; final cash and forecast credit remain unavailable.",
+    ),
+    (
+        "ISSUE_APPLIED_CREDIT_CAPACITY",
+        "The retained planned credit exceeds the current available overpayment, or is negative. Correct it in Payments; it has not been reduced automatically.",
+    ),
+    (
+        "NOTE_APPLIED_CREDIT_SPOUSE_OUTSIDE_FORECAST",
+        "The planned credit is for your spouse’s account. It is outside this taxpayer’s separate estimated-tax forecast and has not reduced its payment schedule.",
+    ),
+    (
+        "NOTE_APPLIED_CREDIT_ROUNDING",
+        "Your retained planned credit is {0,number,currency}; Form 1040 line 36 reports {1,number,currency}. Line 35a is the exact remaining whole-dollar refund.",
+    ),
+    (
+        "NOTE_APPLIED_CREDIT_PLAN",
+        "The {0,number,currency} on line 36 is a plan for 2027 estimated tax, not an actual payment or a filing. The available credit remains subject to IRS offsets and injured-spouse handling. The IRS normally applies it to the taxpayer's account; using a spouse's account requires a separate statement with the spouse's SSN. This App has not made that statement or assigned this credit between spouses. Once filed, the election cannot be changed. Settlement follows the final 2025 Form 1040 instructions pending final 2026 instructions.",
+    ),
+    (
+        "MTC_PRIOR_RETURN_COUNT",
+        "Enter one prior joint return or one or two separate prior returns.",
+    ),
+    ("MTC_PRIOR_RETURN_TWICE", "Enter each prior filing unit once."),
+    (
+        "MTC_JOINT_AND_SEPARATE_HISTORY",
+        "A prior joint return cannot be combined with another prior filing unit.",
+    ),
+    ("MTC_PRIOR_STATUS_UNIT", "Match the prior filing status to the people on that prior return."),
+    (
+        "MTC_OWNER_NOT_ON_RETURN",
+        "Choose a person on this return; the same joint couple requires a current joint return.",
+    ),
+    (
+        "MTC_HISTORY_INVALID",
+        "Review the retained minimum-tax history amounts and source worksheets.",
+    ),
+    ("MTC_NOL_YEAR_TWICE", "Combine exclusion-only loss amounts from the same original loss year."),
+    (
+        "MTC_NOL_SAME_YEAR",
+        "An exclusion-only loss cannot be carried to its own original loss year.",
+    ),
+    (
+        "MTC_REGULAR_GAIN_BANDS",
+        "The retained regular 15% band occupant cannot exceed the zero-rate band occupant.",
+    ),
+    (
+        "MTC_FTC_REDUCTION_ABOVE_TAX",
+        "Foreign tax reductions cannot exceed tax paid and the exclusion-only carryover.",
+    ),
+    (
+        "MTC_FTC_STATEMENT_LIMIT",
+        "The prior statement-only foreign credit is limited to $300, or $600 on a prior joint return.",
+    ),
+    ("MTC_FTC_CATEGORY_TWICE", "Enter each exclusion-only foreign-credit category once."),
+    (
+        "MTC_FTC_RECLASSIFICATION_UNBALANCED",
+        "Foreign tax moved between categories must balance to zero.",
+    ),
+    (
+        "MTC_FTC_NEGATIVE_POOL",
+        "Tax paid plus carryover, less reductions and with reclassifications, cannot be negative.",
+    ),
+    (
+        "MTC_FOREIGN_GAIN_SOURCE",
+        "Match the retained modified foreign-earned-income rate worksheets to the dividend and capital-gain facts.",
+    ),
+    (
+        "MTC_GAIN_CAP_BELOW_PREFERENTIAL",
+        "The retained Schedule D gain cap cannot be below its preferential-rate amount.",
+    ),
+    (
+        "WARN_MTC_OWNERSHIP_LEFT_OUT",
+        "Minimum-tax credit left out: attribution of a former joint return requires supported source records. Current income and taxes remain calculated.",
+    ),
+    (
+        "WARN_MTC_NOL_LEFT_OUT",
+        "Minimum-tax credit left out: the separate exclusion-only loss worksheets are unavailable. Current income and taxes remain calculated.",
+    ),
+    (
+        "WARN_MTC_FOREIGN_EARNED_LEFT_OUT",
+        "Minimum-tax credit left out: the modified prior foreign-earned-income rate worksheets are unavailable. Current income and taxes remain calculated.",
+    ),
+    (
+        "WARN_MTC_FOREIGN_CREDIT_LEFT_OUT",
+        "Minimum-tax credit left out: the prior exclusion-only foreign-credit sources require an unsupported category or worksheet. Current income and taxes remain calculated.",
+    ),
+    (
+        "WARN_MTC_NONRESIDENT_LEFT_OUT",
+        "Minimum-tax credit left out: the prior Form 1040-NR real-property-gain floor needs a supported historical worksheet. Current income and taxes remain calculated.",
+    ),
+    (
+        "MTC_REGULAR_GAIN_BASE",
+        "The retained regular ordinary-income amount cannot exceed that return's Form 6251 starting income; use the modified source worksheets when Form 2555 applies.",
+    ),
+    ("PRINT_VEHICLE_PASSENGER_CAR", "Passenger car"),
+    ("PRINT_VEHICLE_PASSENGER_TRUCK_VAN", "Passenger truck or van"),
+    ("PRINT_VEHICLE_HEAVY_SUV", "Heavy SUV (listed property)"),
+    ("PRINT_VEHICLE_HEAVY_TRUCK_VAN", "Heavy truck or van (listed property)"),
+    ("FORM_8912", "Form 8912"),
+    ("RETURN_1040_10", "1040 10 — Adjustments to income"),
+    ("RETURN_1040_11A_11B", "1040 11a / 11b — Adjusted gross income"),
+    ("RETURN_1040_12E", "1040 12e — Standard or itemized deduction"),
+    ("RETURN_1040_12F", "1040 12f — Non-itemizer charitable deduction"),
+    ("RETURN_1040_13A", "1040 13a — Additional deductions"),
+    ("RETURN_1040_13B", "1040 13b — Qualified business income deduction"),
+    ("RETURN_1040_14", "1040 14 — Total deductions"),
+    ("RETURN_1040_15", "1040 15 — Taxable income"),
+    ("RETURN_1040_16", "1040 16 — Regular income tax"),
+    ("RETURN_1040_17", "1040 17 — AMT and Schedule 2 repayments"),
+    ("RETURN_1040_18", "1040 18 — Income tax before credits"),
+    ("RETURN_1040_19", "1040 19 — Child and other-dependent credits"),
+    ("RETURN_1040_1A", "1040 1a — W-2 wages"),
+    ("RETURN_1040_1C", "1040 1c — Tips outside W-2 wages"),
+    ("RETURN_1040_1E", "1040 1e — Taxable dependent-care benefits"),
+    ("RETURN_1040_1F", "1040 1f — Taxable adoption benefits"),
+    ("RETURN_1040_1G", "1040 1g — Employee wages from Form 8919"),
+    ("RETURN_1040_1H", "1040 1h — Other taxable wages"),
+    ("RETURN_1040_1Z", "1040 1z — Total wages"),
+    ("RETURN_1040_20", "1040 20 — Other nonrefundable credits"),
+    ("RETURN_1040_21", "1040 21 — Total nonrefundable credits"),
+    ("RETURN_1040_22", "1040 22 — Income tax after credits"),
+    ("RETURN_1040_23", "1040 23 — Additional taxes"),
+    ("RETURN_1040_24A", "1040 24a — Total tax before the first farmland installment"),
+    ("RETURN_1040_24B", "1040 24b — First farmland tax installment"),
+    ("RETURN_1040_24C", "1040 24c — Tax including first farmland installment"),
+    ("RETURN_1040_25A", "1040 25a — W-2 federal income tax withheld"),
+    ("RETURN_1040_25B", "1040 25b — 1099 federal income tax withheld"),
+    ("RETURN_1040_25C", "1040 25c — Other-form federal tax withheld"),
+    ("RETURN_1040_25D", "1040 25d — Total federal tax withheld"),
+    ("RETURN_1040_26", "1040 26 — Estimated payments"),
+    ("RETURN_1040_27A", "1040 27a — Earned income credit"),
+    ("RETURN_1040_28", "1040 28 — Additional child tax credit"),
+    ("RETURN_1040_29", "1040 29 — Refundable education credit"),
+    ("RETURN_1040_2A", "1040 2a — Tax-exempt interest"),
+    ("RETURN_1040_2B", "1040 2b — Taxable interest"),
+    ("RETURN_1040_30", "1040 30 — Refundable adoption credit"),
+    ("RETURN_1040_31", "1040 31 — Other payments"),
+    ("RETURN_1040_32A", "1040 32a — Payments and refundable credits subtotal"),
+    ("RETURN_1040_32C", "1040 32c — Payments and refundable credits after Schedule 3-A"),
+    ("RETURN_1040_33", "1040 33 — Total payments and refundable credits"),
+    ("RETURN_1040_34", "1040 34 — Overpayment"),
+    ("RETURN_1040_35A", "1040 35a — Refund after the estimated tax penalty"),
+    ("RETURN_1040_37", "1040 37 — Balance due"),
+    ("RETURN_1040_37_2", "1040 37 — Amount you owe including the estimated tax penalty"),
+    ("RETURN_1040_38", "1040 38 — Estimated tax penalty"),
+    ("RETURN_1040_3A", "1040 3a — Qualified dividends"),
+    ("RETURN_1040_3B", "1040 3b — Ordinary dividends"),
+    ("RETURN_1040_4A", "1040 4a — IRA gross distributions"),
+    ("RETURN_1040_4B", "1040 4b — IRA taxable distributions"),
+    ("RETURN_1040_5A", "1040 5a — Pension and annuity gross distributions"),
+    ("RETURN_1040_5B", "1040 5b — Pension and annuity taxable distributions"),
+    ("RETURN_1040_6A", "1040 6a — Social Security and equivalent railroad benefits"),
+    ("RETURN_1040_6B", "1040 6b — Taxable Social Security and equivalent railroad benefits"),
+    ("RETURN_1040_7A", "1040 7a — Capital gain or loss"),
+    ("RETURN_1040_8", "1040 8 — Additional income"),
+    ("RETURN_1040_9", "1040 9 — Total income"),
+    (
+        "NOTE_NIIT_NONRESIDENT_SPOUSE_SEPARATE",
+        "The net investment income tax is figured under the default method for a section 6013(g) or (h) joint return without the election: as if the U.S. citizen or resident spouse filed separately, on that spouse's own net investment income and modified AGI against $125,000. The nonresident spouse's wages, interest and dividends are left out; expenses and deductions stay with the U.S. spouse. Choose the joint election to apply the joint amounts and $250,000 instead.",
+    ),
+    (
+        "NOTE_NIIT_NONRESIDENT_SPOUSE_ELECTED",
+        "You chose to apply the section 6013(g) or (h) joint return election to the net investment income tax: check the election box on Form 8960 and use the joint amounts and the $250,000 threshold.",
+    ),
+    (
+        "ISSUE_NIIT_NONRESIDENT_SPOUSE_DOCUMENTS_NEED_THE_JOINT_ELECTION",
+        "The nonresident spouse has income documents other than wages, interest and dividends. Without the joint election for the net investment income tax, the U.S. spouse's separate figures cannot be separated from them here; choose the joint election or review Form 8960.",
+    ),
+    (
+        "NOTE_NONRESIDENT_SPOUSE_TREATED_AS_A_RESIDENT",
+        "You chose to treat your nonresident spouse as a U.S. resident (section 6013(g) or (h)). This joint return taxes both spouses' worldwide income for all of 2026, so enter all of it. Attach a statement signed by both spouses making the choice, with each spouse's name, address and SSN or ITIN; the choice stays in effect for later years until it ends.",
+    ),
+    (
+        "NOTE_INNOCENT_SPOUSE_RELIEF_IS_A_SEPARATE_REQUEST",
+        "Innocent spouse relief is requested separately on Form 8857, not on this return, and does not change this joint return's tax.",
+    ),
+    (
+        "NOTE_CHILD_ELECTION_NOT_REQUIRED",
+        "{0}: the child's interest and dividends are $1,350 or less, so the child need not file and nothing is reported on your return (Form 8814).",
+    ),
+    (
+        "NOTE_EXCESS_ELECTIVE_DEFERRALS",
+        "Your W-2 box 12 deferrals are above the 2026 limit (plus any catch-up your age allows), so the excess is taxed as wages on Form 1040 line 1h. It excludes the 403(b) 15-year-rule increase, which this estimate does not apply; your tax may be higher.",
+    ),
+    (
+        "NOTE_EXCESS_ELECTIVE_DEFERRALS_SEVERAL_W2S",
+        "The excess deferrals come from more than one W-2. Ask the plans to pay back the excess by April 15, 2027; an excess left in the plans is also taxed again when paid out.",
+    ),
+    (
+        "NOTE_CHILD_FOREIGN_ACCOUNT",
+        "{0}: the child's foreign financial account or foreign trust needs Schedule B Part III and possibly Form 8938 on your return; this estimate does not prepare them.",
+    ),
+    ("CHILD_ELECTION_TWICE", "Report each child once: remove the extra Form 8814 for this child."),
+    (
+        "CHILD_ELECTION_CHILD_NOT_ELIGIBLE",
+        "Choose a child on this return who was under 19, or a full-time student under 24, at the end of 2026 and who did not file a joint return.",
+    ),
+    ("CHILD_ELECTION_PARENT_NEEDED", "Choose whose return reports this child's income."),
+    (
+        "CHILD_ELECTION_PARENT_NOT_NEEDED",
+        "On a joint return this question is not needed; the child's other parent is your spouse.",
+    ),
+    ("SAVING_KIND_FORM_8814_ONE", "Form 8814"),
+    ("SAVING_KIND_FORM_8814_MANY", "Forms 8814"),
+    ("FORM_FORM8814", "Form 8814"),
+    (
+        "MESSAGE_RELATED_EXCHANGE_YOUR_SPOUSE_S_GOES_ON_THIS_RETURN_ONLY_WHEN_YOU_FILE_JOINTLY",
+        "Your spouse's exchange goes on this return only when you file jointly.",
+    ),
+    (
+        "MESSAGE_RELATED_EXCHANGE_ENTER_THE_PROPERTY_A_LAST_TRANSFER_IN_2024_OR_2025_AND_THE_DATE_IN_2026",
+        "Related-party exchange: enter the property, a last transfer date in 2024 or 2025, the date of the disposition in 2026 and the deferred gain from your Form 8824.",
+    ),
+    ("FORM_FORM8824", "Form 8824"),
+    (
+        "EDUCATION_ACCOUNT_EXPENSES_TWICE",
+        "Enter 529 and Coverdell expenses once for the whole return, with a row for each student.",
+    ),
+    ("SAVING_KIND_1099_Q_ONE", "1099-Q"),
+    ("SAVING_KIND_1099_Q_MANY", "1099-Qs"),
+    ("SAVING_KIND_1099_Q_STUDENT_ONE", "1099-Q student choice"),
+    ("SAVING_KIND_1099_Q_STUDENT_MANY", "1099-Q student choices"),
+    ("SAVING_KIND_EDUCATION_ACCOUNT_EXPENSES_ONE", "529 and Coverdell expenses record"),
+    ("SAVING_KIND_EDUCATION_ACCOUNT_EXPENSES_MANY", "529 and Coverdell expenses records"),
+    (
+        "SAVING_KIND_EDUCATION_ACCOUNT_EXPENSES_STUDENT_ONE",
+        "529 and Coverdell expenses student row",
+    ),
+    (
+        "SAVING_KIND_EDUCATION_ACCOUNT_EXPENSES_STUDENT_MANY",
+        "529 and Coverdell expenses student rows",
+    ),
+    (
+        "WARN_ESTATE_QBI_HISTORY_LEFT_OUT",
+        "QBI statement {0}: the prior passive-loss QBI worksheet is missing. The affected historical QBI loss character is left out; current source character remains included.",
+    ),
+    (
+        "WARN_ESTATE_QBI_COOPERATIVE_LEFT_OUT",
+        "QBI statement {0}: cooperative patron allocation needs the cooperative owner. This affected benefit is left out; ordinary income and tax remain included.",
+    ),
+    (
+        "NOTE_ESTATE_QBI_PASSIVE_CARRY",
+        "QBI statement {0}, loss year {1}: passive loss carried forward {2,number,currency}, including qualified loss {3,number,currency}. Keep the original loss-year qualification with the next return.",
+    ),
+    (
+        "ISSUE_K1_GAIN_NIIT_ADJUSTMENT",
+        "A gain on a partnership interest or S corporation shares — a distribution above your basis or a sale — from a business you materially participate in, with modified AGI above the net investment income tax threshold, needs the Form 8960 line 5c adjustment for the entity's business property (proposed Regulations section 1.1411-7), which this App does not calculate.",
+    ),
+    ("DISPLAY_MTH_RETURN", "Prior return"),
+    ("DISPLAY_MTH_AMT", "Prior regular tax, AMT and carryovers"),
+    ("DISPLAY_MTH_FOREIGN", "Foreign items, gains and old credits"),
+    ("DISPLAY_DOCUMENT_PARTICIPATION", "Participation and activity records"),
+    ("DISPLAY_DOCUMENT_QBI_RECORDS", "Your qualified business income records"),
+    ("DISPLAY_DOCUMENT_PRINTED_SOURCE", "Accepted printed source"),
+    ("DISPLAY_DOCUMENT_MORTGAGE_ANSWERS", "Your mortgage records"),
+    ("DISPLAY_FTC_CARRYBACK", "Carryback and limits"),
+    ("DISPLAY_FTC_RECORDS", "Assets, losses and adjustments"),
+    (
+        "NOTE_IRA_RETURN_AMENDED",
+        "A contribution returned after April 15, 2027 under a timely filed return needs an amended 2026 return showing the earnings; this App does not file it.",
+    ),
+    (
+        "NOTE_EIC_DECLINED",
+        "You chose to decline the earned income credit, so the credit is zero. Check Form 1040 line 27c when filing.",
+    ),
+    (
+        "NOTE_RAILROAD_TIER_2_FORM_843",
+        "Tier 2 tax from multiple railroad employers is not credited on Form 1040. Review Form 843 for an overpayment refund.",
+    ),
+    (
+        "ISSUE_SITUATION_RAILROAD_REPRESENTATIVE",
+        "Railroad employee representative compensation and taxes (Form CT-2; Form 8959 line 8; Schedule 8812 lines 12–15) is not calculated yet.",
+    ),
+    (
+        "SITUATION_NAME_RAILROAD_REPRESENTATIVE",
+        "Railroad employee representative compensation and taxes (Form CT-2; Form 8959 line 8; Schedule 8812 lines 12–15)",
+    ),
+    ("RETURN_1040_1B", "1040 1b — Household employee wages without a W-2"),
+    ("RETURN_1040_1D", "1040 1d — Medicaid waiver wages"),
+    ("RETURN_1040_1I", "1040 1i — Nontaxable combat pay elected for the earned income credit"),
+    ("SAVING_STATUTORY_BUSINESS_ASSOCIATION", "statutory employee Schedule C association"),
+    (
+        "ISSUE_COMMUNITY_COUNTERPART_PARTNER_SE_UNRESOLVED",
+        "Your spouse's partnership self-employment loss is held back by activity limits. This App cannot reconcile that partner's Schedule SE or the required Form 8958 allocation; this separate return is not calculated.",
+    ),
+    ("SOURCE_SCORP_NOTE_REPAYMENT", "{0}, written note {1} principal repayment"),
+];

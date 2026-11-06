@@ -14,7 +14,7 @@ fn unit17_prepared_callback_borrows_selected_assets_at_the_hypothetical_stage() 
     let mut page = business(data.receipts());
     let mut property = asset(data.assets[0].cost, data.assets[0].placed, AssetClass::Five);
     property.acquired = Some(data.assets[0].acquired);
-    property.history = AssetHistory::New {
+    property.gds_mut().unwrap().history = AssetHistory::New {
         first_year: FirstYearDeduction::Section179 {
             description: "Synthetic identity source".into(),
             elected: data.assets[0].elected179(),
@@ -87,7 +87,11 @@ fn unit17_prepared_callback_borrows_selected_assets_at_the_hypothetical_stage() 
                 )
                 .unwrap();
                 assert_eq!(office, 150_000);
-                Some(Section179OtherLimitedDeduction { system, amount_cents: office })
+                Some(Section179OtherLimitedDeduction {
+                    system,
+                    amount_cents: office,
+                    coordinated_owner_sources: Default::default(),
+                })
             },
         )
         .unwrap();
@@ -117,6 +121,7 @@ fn unit17_prepared_callback_borrows_selected_assets_at_the_hypothetical_stage() 
                 Some(Section179OtherLimitedDeduction {
                     system,
                     amount_cents: 6_000_000 + operating - 100_000,
+                    coordinated_owner_sources: Default::default(),
                 })
             },
         )
@@ -159,11 +164,16 @@ fn unit17_prepared_callback_keeps_refusal_checks_and_zero_availability_timing() 
             Some(Section179OtherLimitedDeduction {
                 system: Section179IncomeSystem::Alternative,
                 amount_cents: -1,
+                coordinated_owner_sources: Default::default(),
             }),
             Section179PreparedIssue::OtherDeductionWrongSystem,
         ),
         (
-            Some(Section179OtherLimitedDeduction { system, amount_cents: -1 }),
+            Some(Section179OtherLimitedDeduction {
+                system,
+                amount_cents: -1,
+                coordinated_owner_sources: Default::default(),
+            }),
             Section179PreparedIssue::NegativeOtherDeduction,
         ),
         (None, Section179PreparedIssue::OtherDeductionUnavailable),

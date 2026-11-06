@@ -1,0 +1,62 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 23",
+  "example": "Withholding on eligible rollover distributions, Example",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "taxpayer born 1960-06-15 (over 59 1/2)",
+   "reason": "the example gives no age; an older filer keeps the 10% tax out of the printed amounts"
+  },
+  {
+   "fact": "the $8,000 is rolled over to a traditional IRA within 60 days",
+   "reason": "the example: roll over only $8,000"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19600615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7",
+     "gross": 10000,
+     "taxable": 10000,
+     "withholding": 2000,
+     "rolled_over": 8000
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 10000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 2000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "25b",
+   "amount": 2000,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

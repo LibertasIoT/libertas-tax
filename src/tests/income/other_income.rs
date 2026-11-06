@@ -116,7 +116,9 @@ fn d_the_deduction_cannot_be_more_than_the_itemized_total() {
         withholding: 0,
     };
     assert_eq!(
-        crate::interview::document_rule(&IncomeDocument::OtherIncome(item)),
+        crate::interview::document_rule(&IncomeSource::Record {
+            value: crate::IncomeRecord::OtherIncome(item)
+        }),
         Some("RECOVERY_DEDUCTED_ABOVE_ITEMIZED")
     );
 }
@@ -135,9 +137,10 @@ fn d_a_recovery_and_the_state_refund_of_the_same_year_share_one_worksheet() {
     let mut d = complete(FederalStatus::Single);
     add(
         &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: 100_000,
-            history: TaxRefundHistory::IncomeTax {
+        income(refund_income(
+            100_000,
+            0,
+            TaxRefundHistory::IncomeTax {
                 deduction_year: 2025,
                 income_paid: 500_000,
                 sales_available: 0,
@@ -149,8 +152,7 @@ fn d_a_recovery_and_the_state_refund_of_the_same_year_share_one_worksheet() {
                 property_refunded: 0,
                 ordinary: true,
             },
-            withholding: 0,
-        }),
+        )),
     );
     add(&mut d, income(item(recovery_kind(2025, 700, 17_000, 15_750, 40_000, true), 700)));
     let r = supported(&d);
@@ -193,14 +195,7 @@ fn d_real_estate_tax_refunded_goes_through_worksheet_2a_to_line_8z() {
         ordinary: true,
     };
     let mut d = complete(FederalStatus::Single);
-    add(
-        &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: 150_000,
-            history: history(150_000),
-            withholding: 0,
-        }),
-    );
+    add(&mut d, income(refund_income(150_000, 0, history(150_000))));
     let r = supported(&d);
     assert_eq!(value(&r, "taxable_state_tax_refund"), 0);
     assert_eq!(value(&r, "agi"), 60_000);
@@ -210,14 +205,7 @@ fn d_real_estate_tax_refunded_goes_through_worksheet_2a_to_line_8z() {
     // line 11 = 2,500; 1a goes to Schedule 1 line 1 (577 in whole dollars) and 1b to
     // line 8z (1,923).
     let mut d = complete(FederalStatus::Single);
-    add(
-        &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: 150_000,
-            history: history(500_000),
-            withholding: 0,
-        }),
-    );
+    add(&mut d, income(refund_income(150_000, 0, history(500_000))));
     let r = supported(&d);
     assert_eq!(line_amount(&r, "taxable_state_tax_refund"), 57_700);
     assert_eq!(line_amount(&r, "recovery_2025_taxable"), 250_000);
@@ -301,10 +289,6 @@ fn e_prize_card_insurance_unemployment_fund_and_other_kinds_reach_line_8z() {
     assert_eq!(value(&r, "inmate_pay"), 400);
     assert_eq!(value(&r, "schedule_1_other_income"), 1_300 + 9_000 + 300);
     assert_eq!(value(&r, "agi"), 60_000 + 1_300 + 9_000 + 300 + 400);
-    let FederalIncome::OtherIncome { data } = &mut d.income[3].income else { unreachable!() };
-    let OtherIncomeKind::Other { description } = &mut data.kind else { unreachable!() };
-    description.clear();
-    assert!(!data.valid());
     // Premiums and contributions above the benefits floor at zero.
     let mut d = complete(FederalStatus::Single);
     add(&mut d, income(item(OtherIncomeKind::CardInsurance { premiums: 900_000 }, 100)));
@@ -318,8 +302,10 @@ fn head_with_one_child_and_w2(box1: i64, deferred: i64, inmate: i64) -> FederalD
     add_child(&mut d);
     d.income[0] = wage(1, Owner::Taxpayer, box1 * 100, 0);
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
+    let mut data = edit_wage(data);
     data.deferred_pension = deferred * 100;
     data.inmate_pay = inmate * 100;
+    drop(data);
     d
 }
 
@@ -351,10 +337,13 @@ fn f_the_two_parts_cannot_exceed_box_1() {
     for (deferred, inmate, rule) in
         [(800_000, 300_000, Some("W2_SCHEDULE_1_PAY_ABOVE_WAGES")), (800_000, 200_000, None)]
     {
-        let mut w = crate::tests::cross::interview::w2(1_000_000);
-        w.answers.deferred_pension = deferred;
+        let mut w = w2_source(crate::tests::cross::interview::w2(1_000_000));
+        w.answers.deferred_pension = W2Amount::of(deferred);
         w.answers.inmate_pay = inmate;
-        assert_eq!(crate::interview::document_rule(&IncomeDocument::W2(w)), rule);
+        // The two parts are topic answers: the answer rule reads the stored source.
+        let mut entry = wage(1, Owner::Taxpayer, 1_000_000, 0);
+        entry.income = FederalIncome::Wage { data: WageSource::W2(w.wage_source()) };
+        assert_eq!(crate::interview::wage_answer_issue(&entry).map(|issue| issue.key), rule);
     }
 }
 
@@ -370,8 +359,10 @@ fn f_dependent_standard_deduction_keeps_both_parts_and_ira_compensation_only_the
             FilerDependency::CanBeClaimed { claimed: false };
         d.income[0] = wage(1, Owner::Taxpayer, 500_000, 0);
         let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
+        let mut data = edit_wage(data);
         data.deferred_pension = deferred;
         data.inmate_pay = inmate;
+        drop(data);
         let r = supported(&d);
         assert_eq!(value(&r, "agi"), 5_000);
         assert_eq!(value(&r, "taxable_income"), 0);
@@ -384,8 +375,10 @@ fn f_dependent_standard_deduction_keeps_both_parts_and_ira_compensation_only_the
         let mut d = complete(FederalStatus::Single);
         d.income[0] = wage(1, Owner::Taxpayer, 1_000_000, 0);
         let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
+        let mut data = edit_wage(data);
         data.deferred_pension = deferred;
         data.inmate_pay = inmate;
+        drop(data);
         d.adjustments.as_mut().unwrap().iras = ira_facts(700_000, 0, Answer::No);
         d
     };

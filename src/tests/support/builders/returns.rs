@@ -17,6 +17,36 @@ pub(in crate::tests) fn person() -> FederalPerson {
         first_name: "Synthetic".into(),
         last_name: "Filer".into(),
         real_estate_professional: None,
+        whole_return: 0,
+    }
+}
+// The whole-return situations as the filers' pages store them: the
+// YourSituations items on the taxpayer, the SpouseSituations items on the
+// spouse.
+pub(in crate::tests) trait FilerSituations {
+    fn set_situations(&mut self, bits: u32, on: bool);
+}
+impl FilerSituations for FederalDraft {
+    fn set_situations(&mut self, bits: u32, on: bool) {
+        let people = self.people.as_mut().expect("people page");
+        let spouse_bits =
+            bits & !(YourSituations::DUAL_STATUS.0 | YourSituations::COMMUNITY_PROPERTY.0);
+        assert!(
+            spouse_bits == 0 || people.spouse.is_some(),
+            "the spouse page's items need a spouse"
+        );
+        for (person, bits) in [
+            (Some(&mut people.taxpayer), bits & !spouse_bits),
+            (people.spouse.as_mut(), spouse_bits),
+        ] {
+            if let Some(person) = person.filter(|_| bits != 0) {
+                if on {
+                    person.whole_return |= bits;
+                } else {
+                    person.whole_return &= !bits;
+                }
+            }
+        }
     }
 }
 // Records the People page's real estate professional status of an owner.
@@ -36,13 +66,15 @@ pub(in crate::tests) fn wage(
     withholding: i64,
 ) -> FederalIncomeEntry {
     FederalIncomeEntry {
+        printed: None,
         refund_management: None,
         state_source: Default::default(),
         id,
         label: alloc::format!("Employer {id}"),
-        owner,
+        owner: crate::DocumentOwner::from(owner),
         income: FederalIncome::Wage {
-            data: FederalWage {
+            data: wage_source(FederalWage {
+                tips_without_w2: false,
                 abroad: 0,
                 deferred_pension: 0,
                 inmate_pay: 0,
@@ -66,9 +98,19 @@ pub(in crate::tests) fn wage(
                 statutory_employee: false,
                 retirement_plan: false,
                 other_box12: Vec::new(),
-            },
+            }),
         },
         community: CommunityShare::NotNeeded,
+    }
+}
+// What a separate return's own pages ask: community property and the spouse's
+// standard deduction boxes. A draft turned into a separate return answers them.
+pub(in crate::tests) fn answer_separate_pages(d: &mut FederalDraft) {
+    let setup = d.setup.as_mut().unwrap();
+    setup.community_property = CommunityProperty::No;
+    setup.separate_spouse = SeparateSpouseBoxes::NoneOfThese;
+    if let Some(ded) = d.deductions.as_mut() {
+        ded.spouse_itemizes = Some(false);
     }
 }
 pub(in crate::tests) fn filing_choice(status: FederalStatus) -> FilingChoice {
@@ -94,7 +136,13 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
     let mut d = FederalDraft::empty("synthetic-return".into());
     let joint = status == FederalStatus::Joint;
     d.setup = Some(FederalSetup {
-        separate_spouse: SeparateSpouseBoxes::NoneOfThese,
+        // A separate return holds the answers its own pages ask; every other
+        // status holds them unanswered.
+        separate_spouse: if status == FederalStatus::Separate {
+            SeparateSpouseBoxes::NoneOfThese
+        } else {
+            SeparateSpouseBoxes::NotAnswered
+        },
         label: crate::common::test_label("Synthetic return"),
         basis: AmountBasis::Estimate,
         status: filing_choice(status),
@@ -104,19 +152,33 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
             MaritalState::Unmarried
         },
         paid_over_half_home: true,
-        community_property: CommunityProperty::No,
+        community_property: if status == FederalStatus::Separate {
+            CommunityProperty::No
+        } else {
+            CommunityProperty::NotAnswered
+        },
     });
     d.people = Some(FederalPeople {
         parent_tax: None,
         taxpayer: person(),
-        spouse: (if joint { Some(person()) } else { None }).into(),
+        spouse: (if joint {
+            let mut spouse = person();
+            spouse.first_name = "Jordan".into();
+            Some(spouse)
+        } else {
+            None
+        })
+        .into(),
     });
-    // The people page was passed with nobody on it, and each section's
-    // less-common page with "None of these" (gate fixes batch A).
+    // This is a finished return: its existing W-2 was accepted in the Document
+    // center, the people page was passed with nobody on it, and each section's
+    // less-common page with "None of these".
+    d.without_form = Some(IncomeWithoutFormAnswers::default());
     d.finished_sections = vec![
         TaxSection::Children,
+        TaxSection::Documents,
+        TaxSection::IncomeWithoutForm,
         TaxSection::Checklist,
-        TaxSection::MoreIncome,
         TaxSection::Income,
         TaxSection::MoreAdjustments,
         TaxSection::Adjustments,
@@ -126,10 +188,15 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
         TaxSection::Credits,
         TaxSection::OtherTaxes,
         TaxSection::Payments,
+        TaxSection::OftenMissed,
     ];
     d.income = vec![wage(1, Owner::Taxpayer, if joint { 10_000_000 } else { 6_000_000 }, 650_000)];
     d.next_id = 2;
     d.adjustments = Some(FederalAdjustments {
+        health_statements: vec![],
+        health_contribution_allocations: vec![],
+
+        social_premiums: Default::default(),
         health_employer_w2: vec![],
         health_marketplace: HealthMarketplace::default(),
         social_election: SocialElection::Regular,
@@ -149,11 +216,15 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
         employee_expenses: vec![],
     });
     d.deductions = Some(FederalDeductions {
+        vehicle_gift_documents: vec![],
+        vehicle_gifts: vec![],
+        vehicle_recoveries: Default::default(),
         investment_interest: None,
         mortgage: vec![],
         repayment: RepaymentClaim::None,
-        choice: DeductionSelection::Automatic { expenses: ItemizedChoice::No },
-        spouse_itemizes: false,
+        itemize_override: None,
+        itemized: crate::tests::support::builders::empty_facts(),
+        spouse_itemizes: (status == FederalStatus::Separate).then_some(false),
         personal_casualties: vec![],
         property_gifts: vec![],
         appraisals: vec![],
@@ -184,6 +255,7 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
         clean_vehicles: None,
         legacy_ev_passive_allowed: None,
         education: vec![],
+        students: vec![],
         education_recapture: None,
         saver: (None).into(),
         foreign_tax: ForeignTaxClaim::No,
@@ -194,6 +266,10 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
         care: FederalCare::default(),
     });
     d.screening = Some(FederalScreening {
+        espp_acquisitions: Vec::new(),
+        espp_sale_answers: Vec::new(),
+        iso_sale_answers: Vec::new(),
+        nua_sale_answers: Vec::new(),
         qbi_aggregations: Vec::new(),
         clergy: Vec::new(),
         farm_averaging: None,
@@ -228,10 +304,10 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
         credit_recipient: None,
         extension_payer: None,
         extension_refund_property: None,
-        estimated: Some(0),
+        estimated: crate::EstimatedPaymentEntryRecord::None,
         extension: 0,
         home_kerosene: None,
-        estimated_payments: vec![],
+
         prior_year: None,
         withholding_by_date: false,
         withholding_periods: None,
@@ -243,6 +319,7 @@ pub(in crate::tests) fn complete(status: FederalStatus) -> FederalDraft {
         next_year: NextYearEstimateRecord::NotNeeded,
         joint,
     });
+    name_accepted_income_documents(&mut d);
     d
 }
 pub(in crate::tests) fn child(id: i64) -> FederalDependent {
@@ -261,7 +338,7 @@ pub(in crate::tests) fn child(id: i64) -> FederalDependent {
         valid_tin: true,
         situation: DependentSituation::Supported { your_support_over_half: true, gross_income: 0 },
         facts: PersonFacts::NONE.0,
-        care: DependentCare::No,
+        care: Some(DependentCare::No),
         competing: CompetingClaim::NoOne,
     }
 }
@@ -275,18 +352,24 @@ pub(in crate::tests) fn link_home_fixture(d: &mut FederalDraft, v: &mut FederalR
     v.expenses.retain(|e| !matches!(e.category, RentalExpenseCategory::MortgageInterest));
     d.deductions.as_mut().unwrap().set_mortgage_interest(interest);
     d.deductions.as_mut().unwrap().mortgage[0].id = 101;
-    v.mortgage_loans = vec![101];
+    v.related = vec![101];
 }
 pub(in crate::tests) fn add(d: &mut FederalDraft, mut e: FederalIncomeEntry) {
     e.id = d.next_id;
     d.next_id += 1;
+    crate::interview::related_forms::prepare_component_ids(
+        core::slice::from_mut(&mut e),
+        &[],
+        &mut d.next_id,
+    )
+    .unwrap();
     // A community-property return divides every item; a fixture says Community.
     if e.community == CommunityShare::NotNeeded
         && d.setup.as_ref().is_some_and(crate::community::applies)
     {
         e.community = CommunityShare::Community;
     }
-    for id in crate::rental_energy::ids_mut(&mut e.income) {
+    for id in crate::rental_energy_records::ids_mut(&mut e.income) {
         if *id == 0 {
             *id = d.next_id;
             d.next_id += 1;
@@ -308,20 +391,14 @@ pub(in crate::tests) fn add(d: &mut FederalDraft, mut e: FederalIncomeEntry) {
         }
     }
     if let FederalIncome::Cooperative { data } = &mut e.income {
-        if data.allocations.is_empty() {
-            let eligible = crate::cooperative::eligible_activities(d, e.owner);
-            data.allocations.push(crate::cooperative::automatic(
-                data,
-                (eligible.len() == 1).then(|| eligible[0]),
-            ));
+        if data.more.allocations.is_empty() {
+            data.more
+                .allocations
+                .push(crate::cooperative::automatic(&FederalCooperative::from(&*data)));
         }
-        let eligible = crate::cooperative::eligible_activities(d, e.owner);
-        for a in &mut data.allocations {
-            if a.activity.is_none() && eligible.len() == 1 {
-                a.activity = Some(eligible[0]);
-            }
-            if a.id == 0 {
-                a.id = d.next_id;
+        for allocation in &mut data.more.allocations {
+            if allocation.id == 0 {
+                allocation.id = d.next_id;
                 d.next_id += 1;
             }
         }
@@ -336,6 +413,18 @@ pub(in crate::tests) fn add(d: &mut FederalDraft, mut e: FederalIncomeEntry) {
     } {
         fixture_conservation_parcel(farm, &mut d.next_id);
     }
+    let person = if e.owner == crate::DocumentOwner::Spouses { -2 } else { -1 };
+    let names = fixture_document_names(d, person).map(|mut names| {
+        names.set_assignment(crate::document_names::Assignment::matched(
+            if e.owner == crate::DocumentOwner::Spouses {
+                crate::DocumentRecipient::Spouse
+            } else {
+                crate::DocumentRecipient::Taxpayer
+            },
+        ));
+        names
+    });
+    prepare_income_fixture(&mut e, names);
     d.income.push(e);
 }
 // The record identity of one CCC loan of the farm at an income position.
@@ -355,11 +444,12 @@ pub(in crate::tests) fn add_child(d: &mut FederalDraft) {
 }
 pub(in crate::tests) fn income(value: FederalIncome) -> FederalIncomeEntry {
     FederalIncomeEntry {
+        printed: None,
         refund_management: None,
         state_source: Default::default(),
         id: 0,
         label: "Synthetic document".into(),
-        owner: Owner::Taxpayer,
+        owner: crate::DocumentOwner::Yours,
         income: value,
         community: CommunityShare::NotNeeded,
     }
@@ -368,15 +458,7 @@ pub(in crate::tests) fn income(value: FederalIncome) -> FederalIncomeEntry {
 // Every checklist topic ticked, so a prune keeps the pages and documents of a
 // fixture that was not built through the checklist.
 pub(in crate::tests) fn all_ticked(d: &mut FederalDraft) {
-    d.checklist = Checklist {
-        income: u32::MAX,
-        adjustments: u32::MAX,
-        deductions: u32::MAX,
-        credit_topics: u32::MAX,
-        other_taxes: u32::MAX,
-        payments: u32::MAX,
-        whole_return: u32::MAX,
-    };
+    d.checklist = Checklist { activities: u32::MAX, paid: u32::MAX, carryovers: u32::MAX };
 }
 // Sets the age at the end of 2026 of a person on the return (-1 you, -2 your
 // spouse) through the birth date on the people page: the one source of an
@@ -395,4 +477,40 @@ pub(in crate::tests) fn set_age(d: &mut FederalDraft, person: i64, age: u32) {
 // the stored education and Marketplace rows name the person, not a position.
 pub(in crate::tests) fn sid(d: &FederalDraft, index: usize) -> i64 {
     crate::federal_rules::people_students(d)[index].id
+}
+
+pub(in crate::tests) fn dated_payments_mut(
+    pay: &mut FederalPayments,
+) -> &mut Vec<crate::DatedPayment> {
+    if matches!(pay.estimated, crate::EstimatedPaymentEntryRecord::None) {
+        pay.estimated = crate::EstimatedPaymentEntryRecord::Sources { payments: vec![] };
+    }
+    let crate::EstimatedPaymentEntryRecord::Sources { payments } = &mut pay.estimated else {
+        panic!("dated source required")
+    };
+    payments
+}
+pub(in crate::tests) fn page_estimated_sources_mut(
+    entry: &mut crate::EstimatedPaymentEntry,
+) -> &mut Vec<crate::InjuredDatedPayment> {
+    let crate::EstimatedPaymentEntry::Sources { payments } = entry else {
+        panic!("dated source required")
+    };
+    payments
+}
+pub(in crate::tests) fn unknown_estimated(
+    amount: i64,
+    payer: crate::PaymentPayer,
+) -> crate::EstimatedPaymentEntryRecord {
+    if amount == 0 {
+        crate::EstimatedPaymentEntryRecord::None
+    } else {
+        crate::EstimatedPaymentEntryRecord::TimingUnknown {
+            payments: vec![crate::AnnualEstimatedAmountRecord {
+                amount,
+                payer,
+                refund_property: None,
+            }],
+        }
+    }
 }

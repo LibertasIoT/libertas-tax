@@ -30,7 +30,7 @@ fn unit13_statutory_w2_sources_unlinked_and_expenses_only_public_lifecycle() {
                     assert_eq!(r.refund, Some((5500 - tax) * 100));
                     let mut ordinary = d.clone();
                     ordinary.injured_spouse = None;
-                    ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+                    ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
                     let plain = supported(&ordinary);
                     assert_eq!(plain.return_lines, r.return_lines);
                     assert_eq!(
@@ -39,8 +39,8 @@ fn unit13_statutory_w2_sources_unlinked_and_expenses_only_public_lifecycle() {
                     );
                     let saved = save_reopen_native_sources(
                         d,
-                        &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::Farming],
-                        &[TaxSection::Wages, TaxSection::SelfEmployment],
+                        &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::Farming],
+                        &[TaxSection::Documents, TaxSection::SelfEmployment],
                     );
                     let r = supported(&saved);
                     let mut wages = [60_000, 20_000];
@@ -76,7 +76,7 @@ fn unit13_statutory_w2_sources_multiple_w2_c_and_f_preserve_native_category_resi
             assert_eq!(return_line(&r, "1a"), 8_000_000);
             let mut plain = d.clone();
             plain.injured_spouse = None;
-            plain.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+            plain.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
             let financial = supported(&plain);
             assert_eq!(r.return_lines, financial.return_lines);
             assert_eq!(
@@ -85,8 +85,8 @@ fn unit13_statutory_w2_sources_multiple_w2_c_and_f_preserve_native_category_resi
             );
             let saved = save_reopen_native_sources(
                 d,
-                &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::Farming],
-                &[TaxSection::Wages, TaxSection::SelfEmployment],
+                &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::Farming],
+                &[TaxSection::Documents, TaxSection::SelfEmployment],
             );
             let r = supported(&saved);
             // W2 net6802 plus Other C residual1; F receives native residual0.
@@ -122,13 +122,25 @@ fn unit13_statutory_w2_sources_incomplete_or_wrong_owner_packet_never_infers_cla
         }),
     ] {
         facts.income_categories.statutory_business = packet;
-        let projection =
-            crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, None).unwrap();
+        let projection = crate::injured_spouse::owners::project_sources(
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
+            &r,
+            None,
+            &facts,
+            None,
+        )
+        .unwrap();
         assert_eq!(projection.agi(), [60_000, 20_000]);
         let mut printed = r.clone();
         printed.lines.retain(|row| !row.id.starts_with("form_8379_"));
         crate::injured_spouse::allocate(
-            &d,
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
             &mut printed,
             d.injured_spouse.as_ref().unwrap(),
             &facts,
@@ -177,14 +189,15 @@ fn unit13_statutory_w2_sources_depreciation_uses_actual_native_net() {
         let mut property =
             crate::tests::cross::interview::asset(1_000_000, 20260601, AssetClass::Five);
         property.acquired = Some(20170927);
-        property.history = AssetHistory::New { first_year: FirstYearDeduction::Regular };
+        property.gds_mut().unwrap().history =
+            AssetHistory::New { first_year: FirstYearDeduction::Regular };
         page.assets = vec![property];
         // Obtain only the accepted durable identity; retain the native source
         // and its original regular/AMT depreciation operands unchanged.
         let d = save_native_asset_identities(
             d,
             id,
-            IncomeDocument::Business(page),
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
             TaxSection::SelfEmployment,
         );
         let r = supported(&d);
@@ -194,8 +207,8 @@ fn unit13_statutory_w2_sources_depreciation_uses_actual_native_net() {
         assert_eq!(value(&r, &alloc::format!("business_{id}_asset_0_amt_depreciation")), 1500);
         let saved = save_reopen_native_sources(
             d,
-            &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::Farming],
-            &[TaxSection::Wages, TaxSection::SelfEmployment],
+            &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::Farming],
+            &[TaxSection::Documents, TaxSection::SelfEmployment],
         );
         for injured in [Owner::Taxpayer, Owner::Spouse] {
             let mut next = saved.clone();
@@ -212,7 +225,7 @@ fn unit13_statutory_w2_sources_unrelated_foreign_election_keeps_known_class() {
     let mut d = injured_return((60_000, 5000), (20_000, 500), 0, allocation());
     source_statutory_wage(&mut d, Owner::Taxpayer, None);
     let mut foreign = income(foreign_pay(30_000));
-    foreign.owner = Owner::Spouse;
+    foreign.owner = crate::DocumentOwner::Spouses;
     add(&mut d, foreign);
     set_claim(&mut d, foreign_claim(Owner::Spouse));
     let r = supported(&d);
@@ -224,8 +237,8 @@ fn unit13_statutory_w2_sources_unrelated_foreign_election_keeps_known_class() {
     assert_eq!(r.return_lines, supported(&plain).return_lines);
     let saved = save_reopen_native_sources(
         d,
-        &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::Farming],
-        &[TaxSection::Wages, TaxSection::SelfEmployment],
+        &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::Farming],
+        &[TaxSection::Documents, TaxSection::SelfEmployment],
     );
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         let mut next = saved.clone();
@@ -251,8 +264,8 @@ fn unit13_statutory_w2_sources_actual_foreign_exclusion_uses_native_per_c_owners
     assert_eq!(r.refund, Some(550_000));
     let saved = save_reopen_native_sources(
         d,
-        &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::Farming],
-        &[TaxSection::Wages, TaxSection::SelfEmployment],
+        &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::Farming],
+        &[TaxSection::Documents, TaxSection::SelfEmployment],
     );
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         let mut next = saved.clone();
@@ -279,8 +292,8 @@ fn unit13_statutory_w2_sources_supported_loss_preserves_signed_owner_net() {
         assert_eq!(r.return_lines, supported(&plain).return_lines);
         let saved = save_reopen_native_sources(
             d,
-            &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::Farming],
-            &[TaxSection::Wages, TaxSection::SelfEmployment],
+            &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::Farming],
+            &[TaxSection::Documents, TaxSection::SelfEmployment],
         );
         for injured in [Owner::Taxpayer, Owner::Spouse] {
             let mut next = saved.clone();
@@ -318,7 +331,10 @@ fn unit13_statutory_w2_sources_financial_context_keeps_original_combined_owner_r
             foreign_exclusion_dollars: [0; 2],
         });
         let projection = crate::injured_spouse::owners::project_sources(
-            &d,
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
             &r,
             d.injured_spouse.as_ref(),
             &facts,

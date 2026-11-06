@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 572000, "rule": {"select": "^<FederalCleanVehiclePage>", "flatten": true}}
+  ]
+}

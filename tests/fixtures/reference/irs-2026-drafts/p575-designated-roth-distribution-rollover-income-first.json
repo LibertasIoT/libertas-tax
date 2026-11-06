@@ -1,0 +1,55 @@
+{
+ "source": {
+  "title": "Publication 575, Pension and Annuity Income (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 25",
+  "example": "Rollovers from a designated Roth account, Example",
+  "url": "https://www.irs.gov/pub/irs-dft/p575--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ba325be68d9c43f14ec94b326ada3b66a5293c2ce9121b422a54816a91912595"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "taxpayer born 1960-06-15; the 1099-R shows code B, box 1 $14,000 and box 2a $3,000",
+   "reason": "the example gives $11,000 investment and $3,000 earned income in a nonqualified distribution"
+  },
+  {
+   "fact": "the $7,000 is rolled over to a Roth IRA within 60 days (the rollover page's Roth IRA destination)",
+   "reason": "the example"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19600615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7B",
+     "gross": 14000,
+     "taxable": 3000,
+     "rolled_over": 7000
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "5a",
+   "amount": 14000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 0,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

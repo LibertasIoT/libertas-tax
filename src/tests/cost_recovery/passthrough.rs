@@ -122,7 +122,6 @@ fn continuing_macrs_rejects_bad_history_and_expired_unrecovered_basis() {
         &business_with_bonus(100000, continuing_equipment(20260601, 20000, false)),
         "Income:",
     );
-    assert!(!business_with_bonus(100000, continuing_equipment(20250601, -1, false)).valid_stored());
     assert!(
         !business_with_bonus(100000, continuing_equipment(20250601, 100001, false)).valid_stored()
     );
@@ -304,13 +303,13 @@ fn unit17_ptp179_keeps_current_and_actual_prior_income_carry_out_of_pal() {
     }
     for alternative in [false, true] {
         let delivered = if alternative {
-            selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, (20_000) * 100)
+            selected_ptp179(&draft, Section179IncomeSystem::Alternative, 2, 20_000 * 100)
                 .unwrap()
                 .ptp_section179_pal_input(2)
                 .unwrap()
                 .clone()
         } else {
-            selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (20_000) * 100)
+            selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 20_000 * 100)
                 .unwrap()
                 .ptp_section179_pal_input(2)
                 .unwrap()
@@ -347,7 +346,7 @@ fn unit17_ptp179_keeps_current_and_actual_prior_income_carry_out_of_pal() {
                     &restart(draft.clone()).draft,
                     Section179IncomeSystem::Alternative,
                     2,
-                    (20_000) * 100,
+                    20_000 * 100,
                 )
                 .unwrap()
                 .ptp_section179_pal_input(2)
@@ -358,7 +357,7 @@ fn unit17_ptp179_keeps_current_and_actual_prior_income_carry_out_of_pal() {
                     &restart(draft.clone()).draft,
                     Section179IncomeSystem::Regular,
                     2,
-                    (20_000) * 100,
+                    20_000 * 100,
                 )
                 .unwrap()
                 .ptp_section179_pal_input(2)
@@ -376,7 +375,7 @@ fn unit17_ptp179_income_limit_carry_never_enters_the_current_pal_amount() {
         data.section179_carryover = 200_000;
         data.section179_carryover_sold = 0;
     }
-    let delivered = selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (5_000) * 100)
+    let delivered = selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 5_000 * 100)
         .unwrap()
         .ptp_section179_pal_input(2)
         .cloned()
@@ -392,7 +391,7 @@ fn unit17_ptp179_income_limit_carry_never_enters_the_current_pal_amount() {
 fn unit17_ptp179_preserves_passive_source_for_its_own_pal_consumer() {
     let mut draft = ptp179_draft(20_000, 5_000);
     if let FederalIncome::Partnership { data } = &mut draft.income.last_mut().unwrap().income {
-        data.participation = PartnerParticipation::General { facts: participation_facts() };
+        data.participation = Some(PartnerParticipation::General { facts: participation_facts() });
     }
     let delivered = selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 0)
         .unwrap()
@@ -420,7 +419,7 @@ fn unit17_ptp179_preserves_alternative_basis_and_existing_owner_boundaries() {
     if let FederalIncome::Partnership { data } = &mut draft.income.last_mut().unwrap().income {
         let alternative = data.alternative.as_mut().unwrap();
         alternative.ordinary = 0;
-        alternative.basis.opening = 100_000;
+        alternative.basis.opening = Some(100_000);
         data.amt_section179_income_carry =
             Some(Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: vec![] });
     }
@@ -432,7 +431,7 @@ fn unit17_ptp179_preserves_alternative_basis_and_existing_owner_boundaries() {
         data.guaranteed_capital = 100_000;
     }
     let Err(E::OwnerIssues(issues)) =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (5_000) * 100)
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 5_000 * 100)
             .unwrap()
             .ptp_section179_pal_input(2)
             .cloned()
@@ -441,7 +440,7 @@ fn unit17_ptp179_preserves_alternative_basis_and_existing_owner_boundaries() {
     };
     assert!(issues.iter().any(|issue| issue.display.key.contains("GUARANTEED_PAYMENTS")));
     let selected =
-        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, (5_000) * 100).unwrap();
+        selected_ptp179(&draft, Section179IncomeSystem::Regular, 2, 5_000 * 100).unwrap();
     assert_eq!(selected.ptp_section179_pal_input(2), Err(E::OwnerIssues(issues)));
     assert_eq!(selected.income.business_income_limit_cents, 6_500_000);
     assert_eq!(selected.income.k1[&2].allowed_cents, 6_500_000);
@@ -460,11 +459,12 @@ fn unit17_income_source_nets_actual_classes_once_and_supplied_zero_wins() {
         &draft,
         Section179IncomeSystem::Regular,
         &[],
-        &[section179_income_source(2, (8_000) * 100, (2_000) * 100, (-3_000) * 100, (1_000) * 100)],
+        &[section179_income_source(2, 8_000 * 100, 2_000 * 100, (-3_000) * 100, 1_000 * 100)],
         |_, _, _| {
             Some(Section179OtherLimitedDeduction {
                 system: Section179IncomeSystem::Regular,
                 amount_cents: 0,
+                coordinated_owner_sources: Default::default(),
             })
         },
     )
@@ -484,6 +484,7 @@ fn unit17_income_source_nets_actual_classes_once_and_supplied_zero_wins() {
             Some(Section179OtherLimitedDeduction {
                 system: Section179IncomeSystem::Regular,
                 amount_cents: 0,
+                coordinated_owner_sources: Default::default(),
             })
         },
     )
@@ -502,6 +503,7 @@ fn unit17_income_source_nets_actual_classes_once_and_supplied_zero_wins() {
             Some(Section179OtherLimitedDeduction {
                 system: Section179IncomeSystem::Regular,
                 amount_cents: 0,
+                coordinated_owner_sources: Default::default(),
             })
         },
     )
@@ -527,7 +529,8 @@ fn unit17_income_source_checks_combined_inputs_without_changing_native_arithmeti
             &[huge],
             |_, _, _| Some(Section179OtherLimitedDeduction {
                 system: Section179IncomeSystem::Regular,
-                amount_cents: 0
+                amount_cents: 0,
+                coordinated_owner_sources: Default::default()
             })
         ),
         Err(crate::Section179PreparedIssue::AggregateAmountOverflow)

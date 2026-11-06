@@ -8,6 +8,27 @@ pub(in crate::tests) fn injured_home_employee_money(
     source: Source,
     owner: Owner,
 ) -> FederalResult {
+    if matches!(source, Source::UncoveredEmployee) {
+        // 2026-10-19 actual coverage unavailable: preserve source income, never
+        // advertise the former omitted-payroll subtotal as the whole tax.
+        let r = crate::federal_rules::estimate(d);
+        assert_eq!(value(&r, "agi"), 275000);
+        assert!(!r.lines.iter().any(|line| line.id == "regular_income_tax"));
+        assert_eq!(r.tax, None);
+        assert_eq!(r.state, crate::ResultState::Incomplete);
+        let entry = d
+            .income
+            .iter()
+            .find(|entry| matches!(entry.income, FederalIncome::EmployeeWages { .. }))
+            .unwrap();
+        assert!(
+            r.issues
+                .iter()
+                .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE"
+                    && issue.context == crate::interview::income_issue_context(entry))
+        );
+        return r;
+    }
     let r = supported(d);
     assert_eq!(
         return_line(&r, "1a"),
@@ -155,4 +176,23 @@ pub(in crate::tests) fn injured_additional_medicare_money(
     assert_eq!(ordinary.return_lines, r.return_lines);
     assert_eq!((ordinary.tax, ordinary.refund, ordinary.balance), (r.tax, r.refund, r.balance));
     r
+}
+
+// Every Form 8919 belongs to one physical employee and carries a complete
+// wage-base projection, including zero line 9 when the base is exhausted.
+pub(in crate::tests) fn form8919_base(r: &FederalResult, owner: usize, used: i64, left: i64) {
+    for (line, suffix, expected) in
+        [("7", "wage_base", 184_500), ("8", "used_base", used), ("9", "remaining_base", left)]
+    {
+        let id = alloc::format!("employee_wages_{owner}_{suffix}");
+        let rows: alloc::vec::Vec<_> = r.lines.iter().filter(|row| row.id == id).collect();
+        assert_eq!(rows.len(), 1, "{id}");
+        assert_eq!(rows[0].amount, expected * 100, "{id}");
+        assert_eq!(super::displayed_line_amount(r, &id), expected * 100, "{id}");
+        assert_eq!(
+            rows[0].form_line,
+            Some(crate::FormLine::new(crate::TaxForm::Form8919, line)),
+            "{id}"
+        );
+    }
 }

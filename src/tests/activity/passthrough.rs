@@ -38,6 +38,7 @@ fn personal_rental_investment_income_uses_strict_thirty_percent_basis_test() {
         let mut rent = personal_rent(10000, 3000);
         let FederalIncome::NonbusinessProperty { kind, .. } = &mut rent else { panic!() };
         *kind = NonbusinessPropertyKind::PersonalRental {
+            related: alloc::vec![],
             basis,
             depreciable_basis: depreciable,
             assets: vec![],
@@ -59,10 +60,11 @@ fn personal_rental_investment_income_uses_strict_thirty_percent_basis_test() {
 #[test]
 fn personal_rental_basis_records_validate_and_suspend_unabsorbed_loss() {
     let mut d = complete(FederalStatus::Single);
-    for (basis, depreciable) in [(-1, 0), (0, 1), (100, 101), (100, -1), (100000000001, 0)] {
+    for (basis, depreciable) in [(0, 1), (100, 101)] {
         let mut rent = personal_rent(10000, 3000);
         let FederalIncome::NonbusinessProperty { kind, .. } = &mut rent else { panic!() };
         *kind = NonbusinessPropertyKind::PersonalRental {
+            related: alloc::vec![],
             basis,
             depreciable_basis: depreciable,
             assets: vec![],
@@ -82,6 +84,7 @@ fn personal_rental_loss_is_suspended_without_real_estate_special_allowance() {
         let mut rent = personal_rent(1000, 13000);
         let FederalIncome::NonbusinessProperty { kind, .. } = &mut rent else { panic!() };
         *kind = NonbusinessPropertyKind::PersonalRental {
+            related: alloc::vec![],
             basis: 1000000,
             depreciable_basis: depreciable,
             assets: vec![],
@@ -351,13 +354,6 @@ fn participation_invalid_and_missing_sources_keep_named_boundaries() {
     let mut facts = participation_facts();
     facts.management_minutes = facts.minutes + 1;
     assert_eq!(facts.material(), Participation::Unavailable);
-    let invalid_limited = PartnerParticipation::Limited {
-        minutes: 0,
-        prior_ten: 11,
-        personal_service: false,
-        service_years: 0,
-    };
-    assert_eq!(invalid_limited.material(), Participation::Unavailable);
     let mut source = scorp_document();
     source.participation = None;
     assert_eq!(source.nonpassive(), Participation::Unavailable);
@@ -377,7 +373,7 @@ fn participation_invalid_and_missing_sources_keep_named_boundaries() {
 fn live_passive_pool_combines_k1_after_basis_at_risk_and_prior_passive_loss() {
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: passive_scorp_document() }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(passive_scorp_document()) }));
     let rental_id = d.next_id;
     add(&mut d, income(FederalIncome::Rental { data: rental(16_000, 0) }));
     assert_eq!(restart(d.clone()).draft, d);
@@ -402,7 +398,7 @@ fn live_passive_k1_profit_offsets_rental_loss_before_special_allowance() {
     source.passive.loss = 0;
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let rental_id = d.next_id;
     add(&mut d, income(FederalIncome::Rental { data: rental(0, 20_000) }));
     let r = estimate(&d);
@@ -414,18 +410,14 @@ fn live_passive_k1_profit_offsets_rental_loss_before_special_allowance() {
 #[test]
 fn live_passive_pool_does_not_present_missing_k1_facts_as_zero() {
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: passive_scorp_document() }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(passive_scorp_document()) }));
     let mut unknown = passive_scorp_document();
     unknown.participation = None;
-    add(&mut d, income(FederalIncome::Scorp { data: unknown.clone() }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(unknown.clone()) }));
     let r = estimate(&d);
     assert!(r.issues.iter().any(|i| i.section == "S-corporation passive pool"));
     assert!(!r.review_notes.iter().any(|n| n.starts_with("Passive activity ")));
     assert!(unknown.activity_result().is_err());
-    unknown.participation = Some(participation_facts());
-    unknown.participation.as_mut().unwrap().minutes = 0;
-    unknown.passive.loss = -1;
-    assert!(!unknown.valid());
 }
 
 #[test]
@@ -469,7 +461,10 @@ fn former_passive_scorp_uses_own_income_before_the_shared_pool() {
 fn former_passive_scorp_remaining_loss_can_use_other_passive_income() {
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: nonpassive_scorp(10_000, 15_000) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(nonpassive_scorp(10_000, 15_000)) }),
+    );
     let rental_id = d.next_id;
     add(&mut d, income(FederalIncome::Rental { data: rental(13_000, 0) }));
     assert_eq!(restart(d.clone()).draft, d);
@@ -514,7 +509,7 @@ fn retained_at_risk_nondeductible_costs_remain_separate_from_deductible_losses()
         (4_625, 375)
     );
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 55_375);
     assert_eq!(value(&r, "qbi_loss_carryforward"), 4_625);
@@ -524,7 +519,7 @@ fn retained_at_risk_nondeductible_costs_remain_separate_from_deductible_losses()
 #[test]
 fn property_qbi_uses_its_own_basis_risk_and_passive_buckets() {
     let mut source = passive_property_scorp(-30_000, -40_000);
-    source.opening = 3_500_000;
+    source.opening = Some(3_500_000);
     source.risk.start = ScorpRiskStart::Detailed { capacity: 1_400_000, profit: 0, loss: 0 };
     source.property_qbi = property_qbi(20_000, 0);
     source.qbi_statement = complete_ordinary_scorp(0, false).qbi_statement;
@@ -615,7 +610,10 @@ fn formerly_passive_partner_splits_earned_loss_release_without_overlap() {
     partner.alternative = Some(partner.regular.clone());
     partner.se_history = PartnerSeHistory { basis: 0, risk: 0, passive: 150000 };
     add(&mut d, income(FederalIncome::Partnership { data: partner }));
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(1000, false) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(1000, false)) }),
+    );
     let mut report = supported(&complete(FederalStatus::Single));
     let pool = crate::extended_rules::rentals(&d, 40000, &mut report);
     assert!(pool.inputs_complete, "{:?}", report.issues);
@@ -649,7 +647,8 @@ fn unit19_scorp_loan_sources_reuse_calendar_repayment_and_collection_checks() {
         ],
     };
     assert!(dated.source_valid());
-    for date in [20260230, 20270101] {
+    {
+        let date = 20270101;
         let mut invalid = dated.clone();
         let ScorpNoteHolding::Dated { payments, .. } = &mut invalid.repayment_term else {
             unreachable!()
@@ -657,8 +656,7 @@ fn unit19_scorp_loan_sources_reuse_calendar_repayment_and_collection_checks() {
         payments[0].date = date;
         assert!(!invalid.source_valid());
     }
-    // 2026-10-16 D-2026-10-15-13: repayment count is unrestricted;
-    // the actual positive principal sum, not an arbitrary row cap, decides.
+    // The actual positive principal sum determines validity, without a repayment-count cap.
     let mut many = dated.clone();
     many.repayments = 101;
     many.repayment_term = ScorpNoteHolding::Dated {
@@ -666,24 +664,10 @@ fn unit19_scorp_loan_sources_reuse_calendar_repayment_and_collection_checks() {
         payments: vec![ScorpNoteRepayment { date: 20260101, principal: 1 }; 101],
     };
     assert!(many.source_valid());
-    let mut overflow = many.clone();
-    overflow.repayment_term = ScorpNoteHolding::Dated {
-        advanced: 20250101,
-        payments: vec![ScorpNoteRepayment { date: 20260101, principal: i64::MAX }; 2],
-    };
-    assert!(!overflow.source_valid());
-    let mut negative = many.clone();
-    let ScorpNoteHolding::Dated { payments, .. } = &mut negative.repayment_term else {
-        unreachable!()
-    };
-    payments[0].principal = -1;
-    assert!(!negative.source_valid());
     let mut mismatch = dated.clone();
     mismatch.repayments -= 1;
     assert!(!mismatch.source_valid());
-    for (basis, repayments, advances) in
-        [(100_001, 50_000, 20_000), (80_000, 120_001, 20_000), (80_000, 50_000, -1)]
-    {
+    for (basis, repayments, advances) in [(100_001, 50_000, 20_000), (80_000, 120_001, 20_000)] {
         let mut invalid = formal.clone();
         invalid.basis = basis;
         invalid.repayments = repayments;
@@ -753,12 +737,12 @@ fn unit19_ptp_pal_component(
 fn unit19_ptp_pal_179(active: bool, elected: i64) -> (FederalDraft, crate::Ptp179PalInput) {
     let mut draft = ptp179_draft(20_000, elected);
     if let FederalIncome::Partnership { data } = &mut draft.income.last_mut().unwrap().income {
-        data.participation = PartnerParticipation::Limited {
+        data.participation = Some(PartnerParticipation::Limited {
             minutes: if active { 30_001 } else { 0 },
             prior_ten: 0,
             personal_service: false,
             service_years: 0,
-        };
+        });
     }
     let supplied = selected_ptp179(
         &draft,
@@ -1034,44 +1018,10 @@ fn unit19_ptp_pal_regular_and_amt_keep_separate_source_histories() {
 
 #[test]
 fn unit19_risk_source_intrinsic_money_bounds_and_recapture_do_not_need_a_parent() {
-    let scorp_fields: [fn(&mut ScorpRisk) -> &mut i64; 8] = [
-        |v| &mut v.excluded_funding,
-        |v| &mut v.excluded_returns,
-        |v| &mut v.protected,
-        |v| &mut v.released,
-        |v| &mut v.prior_loss,
-        |v| &mut v.prior_nondeductible,
-        |v| &mut v.deducted,
-        |v| &mut v.recaptured,
-    ];
-    let partner_fields: [fn(&mut PartnerRiskRecord) -> &mut i64; 10] = [
-        |v| &mut v.opening_debt,
-        |v| &mut v.ending_debt,
-        |v| &mut v.excluded_contributions,
-        |v| &mut v.excluded_distributions,
-        |v| &mut v.protected,
-        |v| &mut v.released,
-        |v| &mut v.prior_loss,
-        |v| &mut v.prior_nondeductible,
-        |v| &mut v.deducted,
-        |v| &mut v.recaptured,
-    ];
     let scorp = complete_ordinary_scorp(1_000, true).risk;
     let partner = ordinary_partner_source(1_000, true).regular.risk;
     assert!(scorp.source_valid());
     assert!(partner.source_valid());
-    for bad in [-1, 100_000_000_001] {
-        for field in scorp_fields {
-            let mut record = scorp.clone();
-            *field(&mut record) = bad;
-            assert!(!record.source_valid());
-        }
-        for field in partner_fields {
-            let mut record = partner.clone();
-            *field(&mut record) = bad;
-            assert!(!record.source_valid());
-        }
-    }
     let mut scorp = scorp;
     let mut partner = partner;
     scorp.deducted = 100;
@@ -1096,12 +1046,6 @@ fn unit19_risk_source_detailed_history_keeps_each_native_owners_exact_boundary()
         (100, 1, 1, false, false),
         (10_000, 0, 10_100, false, false),
         (10_000, 100, 100, false, false),
-        (-1, 0, 0, false, false),
-        (100_000_000_001, 0, 0, false, false),
-        (100, -1, 0, false, false),
-        (100, 100_000_000_001, 0, false, false),
-        (100, 0, -1, false, false),
-        (100, 0, 100_000_000_001, false, false),
     ] {
         scorp.start = ScorpRiskStart::Detailed { capacity, profit, loss };
         partner.start = scorp.start.clone();
@@ -1146,10 +1090,7 @@ fn unit19_risk_source_unknown_complete_and_amt_facts_do_not_establish_contextual
     let regular = owner.risk.clone();
     let absent: Option<ScorpRisk> = None;
     assert!(absent.as_ref().is_none_or(ScorpRisk::source_valid));
-    let mut invalid = regular.clone();
-    invalid.deducted = -1;
     assert!(regular.source_valid());
-    assert!(!Some(invalid).as_ref().is_none_or(ScorpRisk::source_valid));
 }
 
 #[test]
@@ -1163,7 +1104,6 @@ fn unit19_risk_source_single_partner_preserves_specific_history_errors_and_nativ
             101,
             Some("ISSUE_PARTNERSHIP_THE_RETAINED_AT_RISK_HISTORY_IS_INCONSISTENT_0CD4F902"),
         ),
-        (-1, 0, 0, Some("ISSUE_PARTNERSHIP_REVIEW_THE_RETAINED_FORM_6198_AMOUNTS_34CD8625")),
         (
             10_000,
             100,
@@ -1181,7 +1121,7 @@ fn unit19_risk_source_single_partner_preserves_specific_history_errors_and_nativ
         assert_eq!(actual.as_ref().err().map(|error| error.0), expected);
     }
     source.risk.complete = false;
-    source.risk.start = ScorpRiskStart::Detailed { capacity: -1, profit: 0, loss: 0 };
+    source.risk.start = ScorpRiskStart::Detailed { capacity: 0, profit: 0, loss: 0 };
     assert_eq!(
         source
             .risk

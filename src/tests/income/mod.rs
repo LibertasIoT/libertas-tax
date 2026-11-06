@@ -1,4 +1,5 @@
 use super::*;
+use crate::tests::core_tests::native_edit::*;
 
 pub(in crate::tests) mod abroad_clergy;
 pub(in crate::tests) mod business;
@@ -8,6 +9,7 @@ pub(in crate::tests) mod health_accounts;
 pub(in crate::tests) mod information_returns;
 pub(in crate::tests) mod interview;
 pub(in crate::tests) mod other_income;
+pub(in crate::tests) mod related_forms_other;
 pub(in crate::tests) mod relief_income;
 pub(in crate::tests) mod repayment;
 pub(in crate::tests) mod retirement;

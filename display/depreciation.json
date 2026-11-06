@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 164000, "rule": {"select": "^<BusinessLeasedVehicle>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_LEASE_TERM", "fields": ["began", "ends", "fair_market_value", "lease_payments", "passenger_automobile"]}, {"title": "DISPLAY_LEASE_USE", "fields": ["total_miles", "business_miles", "commuting", "operating_costs", "parking_tolls"]}, {"title": "DISPLAY_LEASE_RECORDS", "fields": ["personal_use_available", "other_vehicle", "evidence"]}]}},
+    {"order": 165000, "rule": {"select": "^<BusinessLeasedVehicle>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_LEASE_TERM", "fields": ["began", "ends", "fair_market_value", "lease_payments", "passenger_automobile"]}, {"title": "DISPLAY_LEASE_USE", "fields": ["total_miles", "business_miles", "commuting", "operating_costs", "parking_tolls"]}, {"title": "DISPLAY_LEASE_RECORDS", "fields": ["personal_use_available", "other_vehicle", "evidence"]}]}},
+    {"order": 417000, "rule": {"select": "^<ListedProperty>", "flatten": true}}
+  ]
+}

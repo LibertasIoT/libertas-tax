@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 977000, "rule": {"select": "^<InjuredSpouseInitial>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_INJURED_DEBT", "fields": ["injured", "debt", "obligated", "community"]}, {"title": "DISPLAY_INJURED_JOINT", "fields": ["estimated", "student_loan_borrower", "new_allocations", "allocations", "claimants"]}, {"title": "DISPLAY_INJURED_ROWS", "fields": ["known", "estimated_share", "explanation"]}]}}
+  ]
+}

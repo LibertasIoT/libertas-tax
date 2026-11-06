@@ -15,7 +15,8 @@ pub struct PropertyRollover {
     /// Net sale proceeds
     /// Actual proceeds after sale expenses; may exceed the original distribution value.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub proceeds: i64,
     /// Entire lot and ordinary investment treatment confirmed
     /// Nonemployer investment stock, with no NUA, after-tax employee contributions, collectibles, wash sale, related-party loss, mixed cash allocation, foreign adjustment or special election. All shares in this entry were sold, and any rollover used their actual proceeds within its eligible period. Unsold property or cash substituted for retained stock requires another treatment. Broker and plan statements show it. No leaves this distribution out of the estimate with a notice; that situation is not supported.

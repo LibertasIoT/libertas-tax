@@ -1,83 +1,372 @@
 // 2026 Form 5329 Parts X and XI; section 530A(d)(5) and 4973(b).
-// Coverage: Form 5329 Parts X-XI (Trump accounts) — Supported (audited 2026-09-28, u5-credits).
+// Coverage: Form 5329 Parts X-XI (Trump accounts).
 //   Lines 56-63 of the 2026 draft Form 5329 (line 56 is zero for 2026; line 61 6% to Schedule 2
 //   line 18; line 63 100% of 2026 returned-excess earnings to Schedule 2 line 5). The $5,000
 //   limit excludes pilot (section 6434), qualified general and rollover contributions; section 128
 //   employer deposits count. Page: the Other taxes list's Trump account item
 //   (OtherTax::TrumpAccounts, screening.trump_accounts, rows by owner), both-sides rules
 //   TRUMP_EXEMPT_ABOVE_CONTRIBUTIONS and TRUMP_LOSS_ABOVE_PRINCIPAL. Not calculated here: the
-//   Form 4547 election (no tax effect; a filing item deferred with printing) and W-2 box 12
-//   code TA (refused on the W-2). Tests: T/other_taxes.rs
+//   Form 4547 election (no tax effect; a filing item deferred with printing). The W-2
+//   owner handles code TA separately. Printed 1099-R boxes 1 and 7d bind corrective
+//   returns by source identity; personal receipt and deadline facts stay on Other taxes.
+//   Tests: tests/family/other_taxes.rs and tests/federal/printed_form_boxes.rs.
 //   trump_account_excess_through_the_other_taxes_page,
 //   trump_account_five_thousand_dollar_limit_boundary, trump_account_page_rules_are_checked_on_save.
 // Form8379 line18 receives each beneficiary's final line61/63 tax, retaining
 // the native annual rounding. T/injured_spouse.rs unit13_trump_account_excess.
 use crate::federal_rules::valid_date;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
 use crate::{FederalPeople, FederalResult, FederalStatus, Owner};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 /// Trump-account value included after a beneficiary's death during the growth period
 /// Written from a Form 1099-R with code 4 and box 7c checked, on the acquirer's own return. If the beneficiary's estate acquired the account, it goes on the beneficiary's 2026 final return. The account ceases to be both a Trump account and an IRA on the death date.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct TrumpDeathAcquisition {
+    /// Additional printed retirement-statement boxes
+    pub form_boxes: crate::RetirementPrintedBoxes,
+    /// Form 1099-R box 2a taxable amount as printed
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_2a: i64,
+    /// Form 1099-R box 3 capital gain
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_3: i64,
+    /// Form 1099-R box 6 net unrealized appreciation
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_6: i64,
+    /// Form 1099-R box 8a other
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_8a: i64,
+    /// Form 1099-R box 8b share
+    /// [NullText]
+    /// Box 8b is blank
+    /// [SetText]
+    /// Printed annuity-contract share
+    #[libertas_number(min = 0.01, max = 99.99, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub box_8b_percent: Option<f64>,
+    /// Form 1099-R box 9a share
+    /// [NullText]
+    /// Box 9a is blank
+    /// [SetText]
+    /// Printed distribution share
+    #[libertas_number(min = 0.01, max = 99.99, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub box_9a_percent: Option<f64>,
+    /// Form 1099-R box 9b employee contributions
+    /// [NullText]
+    /// Box 9b is blank
+    /// [SetText]
+    /// Printed employee contributions
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_9b: Option<i64>,
+    /// Form 1099-R box 10 in-plan Roth rollover amount
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_10: i64,
+    /// Form 1099-R box 7a distribution codes as printed
+    #[libertas_bitflags(crate::DistributionCodes)]
+    pub box7: u32,
+    /// Form 1099-R box 7b IRA/SEP/SIMPLE as printed
+    pub ira: bool,
+    /// Form 1099-R box 7c Trump account as printed
+    pub trump: bool,
+
     /// The beneficiary's estate acquired the account
     /// Yes only on the deceased beneficiary's own final return. Otherwise this income belongs on the individual acquirer's return, not the beneficiary's or the estate's return.
     pub beneficiary_estate: bool,
     /// Account fair market value on the beneficiary's date of death — Form 1099-R box 1
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub value: i64,
     /// Account basis on the date of death
     /// Use the trustee's basis record. Pilot, qualified general and section 128 employer deposits do not create basis; qualifying other-source deposits and transferred basis do. Basis above value produces no deductible loss here.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub basis: i64,
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    /// [NullText]
+    /// Trustee basis not known
+    /// [SetText]
+    /// Actual trustee basis
+    #[libertas_default($null)]
+    pub basis: Option<i64>,
     /// Federal income tax withheld on the death distribution, if any
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub withholding: i64,
+}
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for TrumpDeathAcquisition {}
+
+// The 1099-R onto the internal death acquisition: code 4 the acquirer's income at the child's
+// death (section 530A(d)(6)), box 1 the value and box 2a its excess over the basis.
+impl From<&crate::R1099Source> for TrumpDeathAcquisition {
+    fn from(source: &crate::R1099Source) -> Self {
+        let crate::R1099Source {
+            form,
+            code,
+            // A Trump account row asks only its own code.
+            taxable_method: _,
+            disability: _,
+            box_10_basis: _,
+            disaster: _,
+            after_death: _,
+            ira_basis: _,
+        } = source;
+        let Some(crate::DistributionCode::TrumpDeath { estate, basis }) = code else {
+            unreachable!("only a Trump account death code files a 1099-R as an acquisition")
+        };
+        let crate::R1099 {
+            payer: _,
+            payer_telephone: _,
+            account_number: _,
+            recipient: _,
+            gross,
+            taxable,
+            // Printed 2b, 5, 7d, 11, 12 and 13 are retained through form_boxes.
+            taxable_not_determined: _,
+            total_distribution: _,
+            box_3,
+            withholding,
+            employee_contributions: _,
+            box_6,
+            box7,
+            ira,
+            trump,
+            excess_contribution_earnings: _,
+            box_8a,
+            box_8b_percent,
+            box_9a_percent,
+            box_9b,
+            box_10,
+            first_roth_year: _,
+            fatca: _,
+            payment_date: _,
+            state_details: _,
+        } = form;
+        Self {
+            form_boxes: form.form_boxes(),
+            box_2a: taxable.unwrap_or(0),
+            box_3: box_3.unwrap_or(0),
+            box_6: box_6.unwrap_or(0),
+            box_8a: box_8a.unwrap_or(0),
+            box_8b_percent: *box_8b_percent,
+            box_9a_percent: *box_9a_percent,
+            box_9b: *box_9b,
+            box_10: box_10.unwrap_or(0),
+            box7: *box7,
+            ira: *ira,
+            trump: *trump,
+            beneficiary_estate: *estate,
+            value: *gross,
+            basis: *basis,
+            withholding: withholding.unwrap_or(0),
+        }
+    }
 }
 
 impl TrumpDeathAcquisition {
     pub(crate) fn valid(&self) -> bool {
-        (0..=100_000_000_000).contains(&self.value)
-            && (0..=100_000_000_000).contains(&self.basis)
+        [self.box_2a, self.box_3, self.box_6, self.box_8a, self.box_10, self.withholding]
+            .into_iter()
+            .all(|v| (0..=100_000_000_000).contains(&v))
+            && self.box_9b.is_none_or(|v| (0..=100_000_000_000).contains(&v))
+            && crate::lump_sum::percent_valid(self.box_8b_percent)
+            && crate::lump_sum::percent_valid(self.box_9a_percent)
+            && (0..=100_000_000_000).contains(&self.value)
+            && self.basis.is_none_or(|basis| (0..=100_000_000_000).contains(&basis))
             && (0..=100_000_000_000).contains(&self.withholding)
     }
 
-    pub(crate) fn taxable(&self) -> i64 {
-        positive(self.value - self.basis)
+    pub(crate) fn taxable(&self) -> Option<i64> {
+        self.basis.map(|basis| positive(self.value - basis))
     }
 }
 
 /// Qualified 2026 Trump-account transfer to the same beneficiary's ABLE account
 /// The trustee transfers the entire source balance directly in the calendar year the beneficiary turns 17. Form 1099-R reports the gross transfer with zero taxable income; the receiving ABLE program reports its own rollover. This is not an annual ABLE contribution.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[derive(Clone, Debug, PartialEq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct TrumpAbleRollover {
+    /// Additional printed retirement-statement boxes
+    pub form_boxes: crate::RetirementPrintedBoxes,
+    /// Form 1099-R box 2a taxable amount as printed
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_2a: i64,
+    /// Form 1099-R box 3 capital gain
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_3: i64,
+    /// Form 1099-R box 6 net unrealized appreciation
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_6: i64,
+    /// Form 1099-R box 8a other
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_8a: i64,
+    /// Form 1099-R box 8b share
+    /// [NullText]
+    /// Box 8b is blank
+    /// [SetText]
+    /// Printed annuity-contract share
+    #[libertas_number(min = 0.01, max = 99.99, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub box_8b_percent: Option<f64>,
+    /// Form 1099-R box 9a share
+    /// [NullText]
+    /// Box 9a is blank
+    /// [SetText]
+    /// Printed distribution share
+    #[libertas_number(min = 0.01, max = 99.99, step = 0.01)]
+    #[libertas_physical_unit("percent")]
+    pub box_9a_percent: Option<f64>,
+    /// Form 1099-R box 9b employee contributions
+    /// [NullText]
+    /// Box 9b is blank
+    /// [SetText]
+    /// Printed employee contributions
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_9b: Option<i64>,
+    /// Form 1099-R box 10 in-plan Roth rollover amount
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box_10: i64,
+    /// Form 1099-R box 7a distribution codes as printed
+    #[libertas_bitflags(crate::DistributionCodes)]
+    pub box7: u32,
+    /// Form 1099-R box 7b IRA/SEP/SIMPLE as printed
+    pub ira: bool,
+    /// Form 1099-R box 7c Trump account as printed
+    pub trump: bool,
+    /// Form 1099-R box 4 federal income tax withheld
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub withholding: i64,
+
     /// Entire source-account balance transferred — Form 1099-R box 1
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// Direct trustee-to-trustee transfer date in 2026
     #[libertas_date_only]
     pub transferred: u32,
 }
+// Natural-unit quantities are validated finite values, so equality is reflexive.
+impl Eq for TrumpAbleRollover {}
+
+// The 1099-R onto the internal transfer: code G the whole account moved to the child's ABLE
+// account (section 530A(d)(4)).
+impl From<&crate::R1099Source> for TrumpAbleRollover {
+    fn from(source: &crate::R1099Source) -> Self {
+        let crate::R1099Source {
+            form,
+            code,
+            // A Trump account row asks only its own code.
+            taxable_method: _,
+            disability: _,
+            box_10_basis: _,
+            disaster: _,
+            after_death: _,
+            ira_basis: _,
+        } = source;
+        let Some(crate::DistributionCode::TrumpToAble { transferred }) = code else {
+            unreachable!("only a Trump account ABLE code files a 1099-R as a transfer")
+        };
+        let crate::R1099 {
+            payer: _,
+            payer_telephone: _,
+            account_number: _,
+            recipient: _,
+            gross,
+            taxable,
+            // Printed 2b, 5, 7d, 11, 12 and 13 are retained through form_boxes.
+            taxable_not_determined: _,
+            total_distribution: _,
+            box_3,
+            withholding,
+            employee_contributions: _,
+            box_6,
+            box7,
+            ira,
+            trump,
+            excess_contribution_earnings: _,
+            box_8a,
+            box_8b_percent,
+            box_9a_percent,
+            box_9b,
+            box_10,
+            first_roth_year: _,
+            fatca: _,
+            payment_date: _,
+            state_details: _,
+        } = form;
+        Self {
+            form_boxes: form.form_boxes(),
+            box_2a: taxable.unwrap_or(0),
+            box_3: box_3.unwrap_or(0),
+            box_6: box_6.unwrap_or(0),
+            box_8a: box_8a.unwrap_or(0),
+            box_8b_percent: *box_8b_percent,
+            box_9a_percent: *box_9a_percent,
+            box_9b: *box_9b,
+            box_10: box_10.unwrap_or(0),
+            box7: *box7,
+            ira: *ira,
+            trump: *trump,
+            withholding: withholding.unwrap_or(0),
+            amount: *gross,
+            transferred: *transferred,
+        }
+    }
+}
 
 impl TrumpAbleRollover {
     pub(crate) fn valid(&self) -> bool {
-        (1..=100_000_000_000).contains(&self.amount)
+        [self.box_2a, self.box_3, self.box_6, self.box_8a, self.box_10, self.withholding]
+            .into_iter()
+            .all(|v| (0..=100_000_000_000).contains(&v))
+            && self.box_9b.is_none_or(|v| (0..=100_000_000_000).contains(&v))
+            && crate::lump_sum::percent_valid(self.box_8b_percent)
+            && crate::lump_sum::percent_valid(self.box_9a_percent)
+            && (1..=100_000_000_000).contains(&self.amount)
             && valid_date(self.transferred)
             && (20260704..=20261231).contains(&self.transferred)
     }
 }
 
+pub use crate::trump_account_source::{TrumpAccount, TrumpExcessReturn};
+pub(crate) use crate::trump_account_source::{accounts_issue, valid_accounts};
+
 /// One account beneficiary's 2026 Trump-account contributions
 /// Use only on the beneficiary's own return, not on a parent's return for a dependent. The pilot payment, qualified general contributions and qualified rollovers are exempt from the $5,000 annual limit; eligible section 128 employer deposits are not. Contributions to another person's account do not create this return's Form 5329 tax.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct TrumpAccount {
+pub struct TrumpAccountView {
     /// Account beneficiary on this return
     #[libertas_default(Taxpayer)]
     #[libertas_constrained_by("$.allowed_owners")]
@@ -85,12 +374,14 @@ pub struct TrumpAccount {
     /// Total contributions accepted in 2026
     /// Include original principal before the corrective returns below. Count a full trustee-to-trustee rollover accepted by a successor Trump account as another accepted contribution; its entire incoming amount also belongs in the exempt amount below. Contributions could not begin before July 4, 2026.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub contributions: i64,
     /// Contributions exempt from the $5,000 limit
     /// Include only section 6434 pilot payments, qualified general contributions and qualified rollover contributions. A qualified Trump-to-Trump rollover is a direct trustee transfer of the entire source balance for the same beneficiary; it is not a Form 1099-R distribution. Include the incoming rollover once here and once in total accepted contributions above, even if it contains earlier 2026 deposits. Section 128 employer contributions count toward the limit and stay in the total above, not here.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub exempt: i64,
     /// Completed returns of excess principal and attributable income
     /// Enter a correction received in 2026 or later, including after the documented 2026-return filing deadline. Only principal returned by that deadline reduces 2026 excess; later distributions and their earnings belong to their receipt-year return.
@@ -100,100 +391,28 @@ pub struct TrumpAccount {
     pub confirmed: bool,
 }
 
-/// Returned excess Trump-account contribution
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct TrumpExcessReturn {
-    /// Excess contribution principal, Form 1099-R box 1
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub principal: i64,
-    /// Net income attributable to the returned excess
-    /// A loss reduces cash returned but cannot exceed principal. Positive 2026 Form 1099-R box 7d income incurs the separate 100% additional tax in 2026; a 2027 return belongs to 2027 instead.
-    #[libertas_money("USD", 2)]
-    pub earnings: i64,
-    /// Date the completed distribution was received
-    #[libertas_date_only]
-    pub received: u32,
-    /// Applicable 2026-return due date, including any documented extension or relief
-    #[libertas_date_only]
-    pub deadline: u32,
-    /// The custodian's excess-contribution distribution and income allocation are confirmed
-    /// The custodian's corrective-distribution statement shows it. No stops the estimate: the Form 5329 additional taxes are not calculated without it.
-    pub confirmed: bool,
+impl From<&TrumpAccount> for TrumpAccountView {
+    fn from(value: &TrumpAccount) -> Self {
+        Self {
+            owner: value.owner,
+            contributions: value.contributions,
+            exempt: value.exempt,
+            returns: value.returns.clone(),
+            confirmed: value.confirmed,
+        }
+    }
 }
 
-impl TrumpExcessReturn {
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (i128::from(self.earnings) + i128::from(self.principal) < 0).then(|| {
-            crate::validation::ValidationIssue::new("TRUMP_LOSS_ABOVE_PRINCIPAL")
-                .at_field("earnings")
-        })
+impl From<&TrumpAccountView> for TrumpAccount {
+    fn from(value: &TrumpAccountView) -> Self {
+        Self {
+            owner: value.owner,
+            contributions: value.contributions,
+            exempt: value.exempt,
+            returns: value.returns.clone(),
+            confirmed: value.confirmed,
+        }
     }
-    fn valid(&self) -> bool {
-        (1..=100_000_000_000).contains(&self.principal)
-            && (-100_000_000_000..=100_000_000_000).contains(&self.earnings)
-            && self.issue().is_none()
-            && valid_date(self.received)
-            && valid_date(self.deadline)
-            && (20260704..=20281231).contains(&self.received)
-            && (20270101..=20281231).contains(&self.deadline)
-    }
-}
-impl TrumpAccount {
-    fn contribution_issue(&self) -> Option<crate::validation::ValidationIssue> {
-        (self.exempt > self.contributions).then(|| {
-            crate::validation::ValidationIssue::new("TRUMP_EXEMPT_ABOVE_CONTRIBUTIONS")
-                .at_field("exempt")
-        })
-    }
-    fn returns_issue(&self) -> Option<crate::validation::ValidationIssue> {
-        self.returns.iter().enumerate().find_map(|(index, returned)| {
-            returned.issue().map(|issue| issue.in_list("returns", index))
-        })
-    }
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        self.contribution_issue().or_else(|| self.returns_issue())
-    }
-    pub(crate) fn valid(&self) -> bool {
-        (0..=100_000_000_000).contains(&self.contributions)
-            && (0..=100_000_000_000).contains(&self.exempt)
-            && self.issue().is_none()
-            && self.returns.len() <= 100
-            && self.returns.iter().all(TrumpExcessReturn::valid)
-    }
-}
-// Preserve the normal Save's group-wide failure order, then keep the retained
-// shape policy in the existing valid_accounts owner.
-pub(crate) fn accounts_issue(
-    values: &[TrumpAccount],
-) -> Option<crate::validation::ValidationIssue> {
-    values
-        .iter()
-        .enumerate()
-        .find_map(|(index, account)| {
-            account.contribution_issue().map(|issue| issue.in_list("accounts", index))
-        })
-        .or_else(|| {
-            values.iter().enumerate().find_map(|(index, account)| {
-                account.returns_issue().map(|issue| issue.in_list("accounts", index))
-            })
-        })
-        .or_else(|| {
-            values.iter().enumerate().find_map(|(index, account)| {
-                values[..index].iter().any(|prior| prior.owner == account.owner).then(|| {
-                    crate::validation::ValidationIssue::new("TRUMP_ACCOUNT_TWICE")
-                        .at_field("owner")
-                        .in_list("accounts", index)
-                })
-            })
-        })
-}
-
-pub(crate) fn valid_accounts(values: &[TrumpAccount]) -> bool {
-    values
-        .iter()
-        .enumerate()
-        .all(|(i, v)| v.valid() && !values[..i].iter().any(|old| old.owner == v.owner))
 }
 
 // Dollars on Form 5329, after the annual form-line rounding.
@@ -320,4 +539,83 @@ pub(crate) fn calculate(
         );
     }
     (excess_tax, returned_earnings_tax)
+}
+
+/// Receipt and correction facts for a printed Trump-account excess return
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct TrumpExcessDocumentView {
+    /// Accepted Form 1099-R identity
+    #[libertas_hidden]
+    #[libertas_key]
+    #[libertas_unique]
+    pub id: i64,
+    /// Printed payer
+    #[libertas_read_only]
+    pub label: alloc::string::String,
+    /// Printed box 1 excess-contribution principal
+    #[libertas_read_only]
+    #[libertas_money("USD", 2)]
+    pub principal: i64,
+    /// Printed box 7d earnings
+    #[libertas_read_only]
+    #[libertas_money("USD", 2)]
+    pub earnings: i64,
+    /// Date the corrective distribution was received
+    /// [NullText]
+    /// Not answered yet
+    /// [SetText]
+    /// The corrective distribution was received on
+    #[libertas_date_only]
+    #[libertas_default($null)]
+    pub received: Option<u32>,
+    /// Applicable return due date, including extension or relief
+    /// [NullText]
+    /// Not answered yet
+    /// [SetText]
+    /// The applicable return deadline was
+    #[libertas_date_only]
+    #[libertas_default($null)]
+    pub deadline: Option<u32>,
+    /// The custodian's corrective distribution is confirmed
+    pub confirmed: bool,
+}
+
+pub(crate) fn printed_excess(entry: &crate::FederalIncomeEntry) -> Option<(i64, i64)> {
+    match &entry.income {
+        crate::FederalIncome::Retirement { data: source }
+            if {
+                let data = &crate::FederalRetirement::from(source);
+                data.trump && data.box7 == crate::DistributionCodes::CODE_8.0
+            } =>
+        {
+            let data = &crate::FederalRetirement::from(source);
+            Some((data.gross, data.form_boxes.excess_contribution_earnings))
+        }
+        _ => None,
+    }
+}
+
+// Project retained source identities on each calculation and document edit.
+// Receipt dates and due dates remain the account owner's independent facts.
+pub(crate) fn project_accounts(d: &crate::FederalDraft) -> Vec<TrumpAccount> {
+    let mut accounts = d.screening.as_ref().map_or_else(Vec::new, |s| s.trump_accounts.clone());
+    for account in &mut accounts {
+        account.returns.retain_mut(|payment| {
+            let Some(id) = payment.document_id else {
+                return true;
+            };
+            let Some(entry) = d.income.iter().find(|entry| {
+                entry.id == id && entry.owner == crate::DocumentOwner::from(account.owner)
+            }) else {
+                return false;
+            };
+            let Some((principal, earnings)) = printed_excess(entry) else {
+                return false;
+            };
+            payment.principal = principal;
+            payment.earnings = earnings;
+            true
+        });
+    }
+    accounts
 }

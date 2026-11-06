@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {"order": 631000, "rule": {"select": "^<QofInvestment>", "flatten": {"name_row": false}}},
+    {"order": 631001, "rule": {"select": "^<QofInvestmentPaper>", "flatten": {"name_row": false}}},
+    {"order": 632000, "rule": {"select": "^<QofDeferral>", "flatten": {"name_row": false}}},
+    {"order": 796000, "rule": {"select": "^<QofInvestment>.fund", "promote": true}},
+    {"order": 796001, "rule": {"select": "^<QofInvestmentPaper>.fund", "promote": true}},
+    {"order": 797000, "rule": {"select": "^<QofDeferral>.fund", "promote": true}},
+    {"order": 993000, "rule": {"select": "^<QofInvestment>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["source_recipient"]}, {"fields": ["fund_ein", "invested_on", "fund", "gain_code", "short_term", "long_term"]}, {"fields": ["event", "special"]}]}},
+    {"order": 993001, "rule": {"select": "^<QofInvestmentPaper>", "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "source_recipient"]}, {"fields": ["fund_ein", "invested_on", "fund", "gain_code", "short_term", "long_term"]}]}}
+  ]
+}

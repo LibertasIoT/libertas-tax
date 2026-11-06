@@ -1,4 +1,3 @@
-// Additive Phase A owner; existing callers migrate in Phase B.
 #![allow(dead_code)]
 
 use super::ratio::fraction;
@@ -8,6 +7,7 @@ pub(crate) mod gds;
 pub(crate) mod historical;
 pub(crate) mod macrs_tables;
 pub(crate) mod monthly_history;
+pub(crate) mod straight_line;
 
 // These schedules operate on real calendar months, not a fabricated service day.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +48,8 @@ pub(crate) struct MonthlySchedule {
     // Actual current initial deduction, separately supplied by its owning stage.
     // This engine does not determine eligibility, elections or initial phaseout.
     pub initial_cents: i64,
+    // The first month with no allowable recovery; None retains the full clock.
+    pub allowed_before: Option<Month>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +80,7 @@ impl MonthlySchedule {
             tax_year,
             basis_cents,
             initial_cents,
+            allowed_before: None,
         };
         schedule.amounts()
     }
@@ -97,6 +100,7 @@ impl MonthlySchedule {
             tax_year,
             basis_cents,
             initial_cents: 0,
+            allowed_before: None,
         };
         schedule.amounts()
     }
@@ -106,7 +110,11 @@ impl MonthlySchedule {
     // engine component; no rejection, catch-up or cap is inferred here.
     pub(crate) fn allowable(self) -> Result<MonthlyAmounts, InvalidMonthlySchedule> {
         // Keep that source calendar range; eligible basis and initial expense are nonnegative.
-        if !(1..=9999).contains(&self.tax_year) || self.basis_cents < 0 || self.initial_cents < 0 {
+        if !(1..=9999).contains(&self.tax_year)
+            || self.basis_cents < 0
+            || self.initial_cents < 0
+            || self.allowed_before.is_some_and(|month| !month.valid())
+        {
             return Err(InvalidMonthlySchedule);
         }
         // A positive recovery period is required for the fraction's divisor.
@@ -143,7 +151,9 @@ impl MonthlySchedule {
         // Preserve the native cumulative fraction difference, including its
         // cent rounding. Rounding this year's fraction separately differs.
         let cumulative = |year: i64| {
-            let months = (year * 12 + 12 - started).clamp(0, period);
+            let year_end = year * 12 + 12;
+            let end = self.allowed_before.map_or(year_end, |month| year_end.min(month.index()));
+            let months = (end - started).clamp(0, period);
             fraction(self.basis_cents, months, period)
         };
         let prior = cumulative(i64::from(self.tax_year) - 1);

@@ -82,7 +82,7 @@ fn d2_employer_tip_fica_not_taken_by_form_8846_is_on_line_23() {
     // Reported tips $19,765; the minimum-wage shortfall excludes $6,695 of them, so
     // Form 8846 line 3 is $13,070 and line 4 $1,000. Employer FICA on the tips $1,530.
     let month = |hours_hundredths, wages_excluding_tips, reported_tips| EmployerTipMonth {
-        hours_hundredths,
+        hours: f64::from(hours_hundredths) / 100.0,
         wages_excluding_tips,
         reported_tips,
     };
@@ -143,14 +143,9 @@ fn d3_startup_costs_and_section_197_amortization_are_line_27b() {
     let business = business_data(&mut d);
     business.startup = BusinessStartup::None;
     business.expenses.clear();
-    business.intangibles.push(BusinessIntangible {
-        label: "Goodwill".into(),
-        cost: 15_000_000,
-        acquired: 20260701,
-        additions: vec![],
-        business_started: 20200101,
-        eligible: true,
-    });
+    business.intangibles.push(crate::tests::support::builders::ordinary_intangible(
+        15_000_000, 20260701, 20200101, 0,
+    ));
     let r = supported(&d);
     // A business with amortization and no Other expense still prints line 27b.
     assert_eq!(cents(&r, &line27b), 500_000);
@@ -232,14 +227,9 @@ fn d11_amortization_beginning_in_the_year_is_form_4562b_and_not_form_4562() {
     business.assets.push(continuing_five_year_asset());
     // Goodwill of $150,000 acquired July 1, 2026 in a business begun in 2020:
     // 6 / 180 x $150,000 = $5,000.
-    business.intangibles.push(BusinessIntangible {
-        label: "Goodwill".into(),
-        cost: 15_000_000,
-        acquired: 20260701,
-        additions: vec![],
-        business_started: 20200101,
-        eligible: true,
-    });
+    business.intangibles.push(crate::tests::support::builders::ordinary_intangible(
+        15_000_000, 20260701, 20200101, 0,
+    ));
     let r = supported(&d);
     // No Form 4562: the depreciation is Schedule C line 13 alone.
     assert!(form_rows(&r, TaxForm::Form4562).is_empty(), "{r:?}");
@@ -279,14 +269,9 @@ fn d11_amortization_begun_before_the_year_is_form_4562b_line_2() {
         eligible: true,
     };
     // A second business-wide item: goodwill bought in 2026, $5,000.
-    business.intangibles.push(BusinessIntangible {
-        label: "Goodwill".into(),
-        cost: 15_000_000,
-        acquired: 20260701,
-        additions: vec![],
-        business_started: 20200101,
-        eligible: true,
-    });
+    business.intangibles.push(crate::tests::support::builders::ordinary_intangible(
+        15_000_000, 20260701, 20200101, 0,
+    ));
     let r = supported(&d);
     let mut rows = form_rows(&r, TaxForm::Form4562B);
     rows.sort();
@@ -331,7 +316,8 @@ fn assert_schedule_se_foots(r: &FederalResult, church_5b: i64, social_wages: i64
 // D5: Schedule SE line 4c under $400 is entered as -0- when there is church employee income.
 fn church_wage(box_1: i64) -> FederalIncomeEntry {
     income(FederalIncome::Wage {
-        data: FederalWage {
+        data: wage_source(FederalWage {
+            tips_without_w2: false,
             abroad: 0,
             deferred_pension: 0,
             inmate_pay: 0,
@@ -355,7 +341,7 @@ fn church_wage(box_1: i64) -> FederalIncomeEntry {
             statutory_employee: false,
             retirement_plan: false,
             other_box12: Vec::new(),
-        },
+        }),
     })
 }
 
@@ -384,8 +370,8 @@ fn d5_line_4c_under_400_is_zero_with_church_employee_income() {
 // D6: the farm optional method's gross income includes Form 1099-G box 7 income.
 fn routed_agriculture_payment(dollars: i64) -> FederalIncomeEntry {
     let mut entry = government_unemployment(0, &[], 0);
-    let FederalIncome::Unemployment { data } = &mut entry.income else { panic!() };
-    data.agriculture_payment = dollars * 100;
+    let FederalIncome::GovernmentPayment { data } = &mut entry.income else { panic!() };
+    data.form.agriculture_payments = Some(dollars * 100);
     entry
 }
 
@@ -413,7 +399,7 @@ fn d6_farm_optional_method_counts_1099_g_box_7_income() {
 // D7: church employee income stays on line 6 when the owner has a partnership K-1.
 fn general_partner(box_14_a: i64) -> FederalIncomeEntry {
     let mut partner = ordinary_partner_source(box_14_a, true);
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(box_14_a * 100);
     income(FederalIncome::Partnership { data: partner })
 }
@@ -514,7 +500,7 @@ fn d12_simplified_office_gross_income_limit_subtracts_the_form_4797_loss() {
     press.disposal = crate::AssetDisposal::Disposed {
         date: 20260715,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds: 304_000,
             selling_expenses: 0,
             payment: crate::SalePayment::InFull,
@@ -701,7 +687,11 @@ fn continuing_vehicle(
             business_miles: miles.1,
             operating_costs: 0,
             loan_interest: 0,
-            passenger_automobile: passenger,
+            kind: if passenger {
+                crate::VehicleKind::PassengerCar
+            } else {
+                crate::VehicleKind::HeavyTruckVan
+            },
         },
         earlier_business_percent: earlier,
         ..bonus_equipment(0, 100)
@@ -764,7 +754,7 @@ fn d10_passenger_car_used_50_percent_or_less_recaptures_the_excess_depreciation(
         business_miles: 6_000,
         operating_costs: 0,
         loan_interest: 0,
-        passenger_automobile: true,
+        kind: crate::VehicleKind::PassengerCar,
     };
     over.earlier_business_percent = Some(80);
     assert!(!over.valid());
@@ -789,7 +779,7 @@ fn d10_recapture_sums_the_straight_line_years_of_a_heavier_vehicle() {
         business_miles: 6_000,
         operating_costs: 0,
         loan_interest: 0,
-        passenger_automobile: false,
+        kind: crate::VehicleKind::HeavyTruckVan,
     };
     assert!(still.recapture().is_none());
 }

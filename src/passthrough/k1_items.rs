@@ -168,23 +168,27 @@ pub struct K1Section179SaleAmounts {
     /// Your share of the gross sales price
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub price: i64,
     /// Your share of the cost or other basis plus expense of sale
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Your share of depreciation excluding section179
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depreciation: i64,
     /// Your share of section179 passed through for this property
     /// The whole amount passed through, including any part you could not deduct.
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub section179: i64,
 }
 
@@ -535,13 +539,29 @@ pub enum PartnerIncomeCode {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PartnerIncome {
     /// Code
-    #[libertas_llm_doc_field]
     pub code: PartnerIncomeCode,
     /// Amount
     /// Enter a loss as a negative amount; only codes C, Q, R and S can be a loss.
-    #[libertas_llm_doc_field(allow_empty = false)]
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
+    pub amount: i64,
+}
+
+/// Calculated box 11 amount
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct PartnerIncomeTotal {
+    /// Code
+    pub code: PartnerIncomeCode,
+    /// Amount
     #[libertas_money("USD", 2)]
     pub amount: i64,
+}
+
+impl From<&PartnerIncome> for PartnerIncomeTotal {
+    fn from(item: &PartnerIncome) -> Self {
+        Self { code: item.code, amount: item.amount }
+    }
 }
 
 /// Box 10 code
@@ -573,11 +593,9 @@ pub enum ScorpIncomeCode {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct ScorpIncome {
     /// Code
-    #[libertas_llm_doc_field]
     pub code: ScorpIncomeCode,
     /// Amount
     /// Enter a loss as a negative amount; only codes C and S can be a loss.
-    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
     pub amount: i64,
 }
@@ -644,12 +662,11 @@ pub enum PartnerDeductionCode {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PartnerDeduction {
     /// Code
-    #[libertas_llm_doc_field]
     pub code: PartnerDeductionCode,
     /// Amount
-    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -704,12 +721,11 @@ pub enum ScorpDeductionCode {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct ScorpDeduction {
     /// Code
-    #[libertas_llm_doc_field]
     pub code: ScorpDeductionCode,
     /// Amount
-    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -723,7 +739,8 @@ pub enum K1Disposition {
         /// Proceeds
         /// Cash plus the fair market value of property received, less selling costs. Excludes the share of the entity's debts.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         proceeds: i64,
     },
     /// The partnership paid out the whole interest in cash
@@ -1100,28 +1117,51 @@ impl PartnerIncome {
         items: &[Self],
         list: &'static str,
     ) -> Option<crate::validation::ValidationIssue> {
-        use crate::validation::ValidationIssue;
-        if let Some((index, _)) = items
-            .iter()
-            .enumerate()
-            .find(|(index, item)| items[..*index].iter().any(|prior| prior.code == item.code))
-        {
-            return Some(
-                ValidationIssue::new("K1_INCOME_CODE_TWICE").at_field("code").in_list(list, index),
-            );
-        }
-        items
-            .iter()
-            .enumerate()
-            .find(|(_, item)| item.amount == 0 || (item.amount < 0 && !item.code.may_be_loss()))
-            .map(|(index, _)| {
-                ValidationIssue::new("K1_INCOME_CODE_SIGN").at_field("amount").in_list(list, index)
-            })
+        partner_income_issue(items, list, |item| (item.code, item.amount))
     }
     pub(crate) fn valid_list(items: &[Self]) -> bool {
-        Self::rule(items).is_none() && items.iter().all(|item| SIGNED.contains(&item.amount))
+        Self::rule(items).is_none()
     }
 }
+impl PartnerIncomeTotal {
+    pub(crate) fn issue(
+        items: &[Self],
+        list: &'static str,
+    ) -> Option<crate::validation::ValidationIssue> {
+        partner_income_issue(items, list, |item| (item.code, item.amount))
+    }
+    pub(crate) fn rule(items: &[Self]) -> Option<&'static str> {
+        Self::issue(items, "items").map(|issue| issue.key)
+    }
+}
+
+fn partner_income_issue<T>(
+    items: &[T],
+    list: &'static str,
+    value: impl Fn(&T) -> (PartnerIncomeCode, i64),
+) -> Option<crate::validation::ValidationIssue> {
+    use crate::validation::ValidationIssue;
+    if let Some((index, _)) = items
+        .iter()
+        .enumerate()
+        .find(|(index, item)| items[..*index].iter().any(|prior| value(prior).0 == value(item).0))
+    {
+        return Some(
+            ValidationIssue::new("K1_INCOME_CODE_TWICE").at_field("code").in_list(list, index),
+        );
+    }
+    items
+        .iter()
+        .enumerate()
+        .find(|(_, item)| {
+            let (code, amount) = value(item);
+            amount == 0 || (amount < 0 && !code.may_be_loss())
+        })
+        .map(|(index, _)| {
+            ValidationIssue::new("K1_INCOME_CODE_SIGN").at_field("amount").in_list(list, index)
+        })
+}
+
 impl ScorpIncome {
     pub(crate) fn rule(items: &[Self]) -> Option<&'static str> {
         Self::issue(items, "items").map(|issue| issue.key)
@@ -1252,13 +1292,15 @@ pub(crate) struct Entry {
 
 impl Entry {
     // The loss or deduction this entry brings to its class, actual source cents.
-    fn loss(&self) -> i64 {
+    fn checked_loss(&self) -> Option<i64> {
         if self.class.is_none() {
-            0
+            Some(0)
         } else if self.deduction || self.kind == K1ItemKind::GamblingLosses {
-            self.cents
+            Some(self.cents)
+        } else if self.cents < 0 {
+            self.cents.checked_neg()
         } else {
-            phase::floor(-self.cents, 0)
+            Some(0)
         }
     }
     // The entry's positive income, actual source cents.
@@ -1277,37 +1319,75 @@ pub(crate) struct K1Items {
 // destination (K1Items::flows). Every field is the amount that reaches its
 // line for this tax system.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct K1ItemFlows {
+pub(crate) struct K1ItemFlows<Number = i64> {
     // Schedule 1 line 8z: code A and code J.
-    pub portfolio: i64,
-    pub recovery: i64,
+    pub portfolio: Number,
+    pub recovery: Number,
     // Schedule 1 line 8c: code E.
-    pub debt: i64,
+    pub debt: Number,
     // Schedule 1 line 8b winnings and Schedule A line 16 losses.
-    pub winnings: i64,
-    pub gambling_losses: i64,
+    pub winnings: Number,
+    pub gambling_losses: Number,
     // Form 6781 Part I line 1: the K-1's net section 1256 amount.
-    pub section1256: i64,
+    pub section1256: Number,
     // Schedule D lines 5 and 12: code Q (portfolio).
-    pub preferred: [i64; 2],
+    pub preferred: [Number; 2],
     // Form 4797 Part II line 11 (2026): code R.
-    pub ordinary: i64,
+    pub ordinary: Number,
     // Schedule D lines 5 and 12: code S (the K-1's activity).
-    pub nonportfolio: [i64; 2],
+    pub nonportfolio: [Number; 2],
     // Schedule A class worksheet: the (B) 30%, (A) 50% and (C) 30% classes.
-    pub charity: [i64; 3],
-    pub charity_cash30: i64,
+    pub charity: [Number; 3],
+    pub charity_cash30: Number,
     // Form 4952 line 1.
-    pub investment_interest: i64,
+    pub investment_interest: Number,
     // Schedule E line 19, after basis and at-risk limits.
-    pub royalty_deductions: i64,
+    pub royalty_deductions: Number,
     // Schedule 1 line 18.
-    pub early_penalty: i64,
+    pub early_penalty: Number,
     // Each calculated code's amount for its row: (row, kind, cents).
-    pub rows: Vec<(&'static str, K1ItemKind, i64)>,
+    pub rows: Vec<(&'static str, K1ItemKind, Number)>,
     // Section 179 sale ordinary amounts after basis and at-risk limits:
     // (one-based property index, held long, cents). Also in `ordinary`.
-    pub sales: Vec<(usize, bool, i64)>,
+    pub sales: Vec<(usize, bool, Number)>,
+}
+
+impl K1ItemFlows<i128> {
+    fn narrow(self) -> Option<K1ItemFlows> {
+        Some(K1ItemFlows {
+            portfolio: self.portfolio.try_into().ok()?,
+            recovery: self.recovery.try_into().ok()?,
+            debt: self.debt.try_into().ok()?,
+            winnings: self.winnings.try_into().ok()?,
+            gambling_losses: self.gambling_losses.try_into().ok()?,
+            section1256: self.section1256.try_into().ok()?,
+            ordinary: self.ordinary.try_into().ok()?,
+            charity_cash30: self.charity_cash30.try_into().ok()?,
+            investment_interest: self.investment_interest.try_into().ok()?,
+            royalty_deductions: self.royalty_deductions.try_into().ok()?,
+            early_penalty: self.early_penalty.try_into().ok()?,
+            preferred: [self.preferred[0].try_into().ok()?, self.preferred[1].try_into().ok()?],
+            nonportfolio: [
+                self.nonportfolio[0].try_into().ok()?,
+                self.nonportfolio[1].try_into().ok()?,
+            ],
+            charity: [
+                self.charity[0].try_into().ok()?,
+                self.charity[1].try_into().ok()?,
+                self.charity[2].try_into().ok()?,
+            ],
+            rows: self
+                .rows
+                .into_iter()
+                .map(|(row, kind, amount)| Some((row, kind, amount.try_into().ok()?)))
+                .collect::<Option<_>>()?,
+            sales: self
+                .sales
+                .into_iter()
+                .map(|(index, held_long, amount)| Some((index, held_long, amount.try_into().ok()?)))
+                .collect::<Option<_>>()?,
+        })
+    }
 }
 
 impl K1ItemFlows {
@@ -1315,32 +1395,49 @@ impl K1ItemFlows {
     // ordinary loss sources. Positive recapture and sale gains stay whole.
     // Keep cents exactly as the loss-class owner does.
     pub(crate) fn after_passive(&self, cut: i64) -> Option<Self> {
-        let weights: Vec<i64> =
-            self.rows
-                .iter()
-                .map(|(_, kind, cents)| {
-                    if *kind == K1ItemKind::OrdinaryActivity { phase::floor(-cents, 0) } else { 0 }
-                })
-                .chain(self.sales.iter().map(|(_, _, cents)| phase::floor(-cents, 0)))
-                .collect();
-        if cut < 0 || cut > phase::floor(-self.ordinary, 0) || cut > weights.iter().sum() {
+        let weights: Vec<i64> = self
+            .rows
+            .iter()
+            .map(|(_, kind, cents)| {
+                if *kind == K1ItemKind::OrdinaryActivity {
+                    i64::try_from((-i128::from(*cents)).max(0)).ok()
+                } else {
+                    Some(0)
+                }
+            })
+            .chain(
+                self.sales
+                    .iter()
+                    .map(|(_, _, cents)| i64::try_from((-i128::from(*cents)).max(0)).ok()),
+            )
+            .collect::<Option<_>>()?;
+        if cut < 0
+            || i128::from(cut) > (-i128::from(self.ordinary)).max(0)
+            || cut > weights.iter().try_fold(0i64, |total, value| total.checked_add(*value))?
+        {
             return None;
         }
         let cuts = crate::kernel::ratio::allocate_remaining(cut, &weights);
         let mut result = self.clone();
         for (index, (_, _, cents)) in result.rows.iter_mut().enumerate() {
-            *cents += cuts[index];
+            *cents = cents.checked_add(cuts[index])?;
         }
         for (index, (_, _, cents)) in result.sales.iter_mut().enumerate() {
-            *cents += cuts[result.rows.len() + index];
+            *cents = cents.checked_add(cuts[result.rows.len() + index])?;
         }
-        result.ordinary += cut;
+        result.ordinary = result.ordinary.checked_add(cut)?;
         Some(result)
     }
 
     // The Schedule D lines 5 and 12 amounts of the codes, in cents.
     pub(crate) fn capital(&self) -> [i64; 2] {
-        [self.preferred[0] + self.nonportfolio[0], self.preferred[1] + self.nonportfolio[1]]
+        self.checked_capital().expect("bounded K-1 capital amounts")
+    }
+    pub(crate) fn checked_capital(&self) -> Option<[i64; 2]> {
+        Some([
+            (i128::from(self.preferred[0]) + i128::from(self.nonportfolio[0])).try_into().ok()?,
+            (i128::from(self.preferred[1]) + i128::from(self.nonportfolio[1])).try_into().ok()?,
+        ])
     }
     // The activity items (Form 8582), in source cents: debt, ordinary,
     // short-term and long-term.
@@ -1367,7 +1464,18 @@ pub(crate) struct ActivityItems {
 
 impl ActivityItems {
     pub(crate) fn net(&self) -> i64 {
-        self.debt + self.ordinary + self.short + self.long
+        self.checked_net().expect("bounded K-1 activity net")
+    }
+    pub(crate) fn checked_net(&self) -> Option<i64> {
+        self.checked_net_with(0)
+    }
+    pub(crate) fn checked_net_with(&self, ordinary: i64) -> Option<i64> {
+        [ordinary, self.debt, self.ordinary, self.short, self.long]
+            .into_iter()
+            .map(i128::from)
+            .sum::<i128>()
+            .try_into()
+            .ok()
     }
     pub(crate) fn any(&self) -> bool {
         *self != Self::default()
@@ -1408,7 +1516,7 @@ impl ActivityItems {
 }
 
 impl K1Items {
-    pub(crate) fn partner(income: &[PartnerIncome], deductions: &[PartnerDeduction]) -> Self {
+    pub(crate) fn partner(income: &[PartnerIncomeTotal], deductions: &[PartnerDeduction]) -> Self {
         let mut entries = Vec::new();
         for item in income {
             entries.push(Entry {
@@ -1464,7 +1572,10 @@ impl K1Items {
 
     // Ordinary recapture and short-held dispositions join OtherLoss, but
     // each property's gain and loss must enter the limit separately.
-    pub(crate) fn with_sales(mut self, sales: &[Section179SaleResult]) -> Self {
+    pub(crate) fn with_sales(self, sales: &[Section179SaleResult]) -> Self {
+        self.checked_with_sales(sales).expect("bounded K-1 sale cents")
+    }
+    pub(crate) fn checked_with_sales(mut self, sales: &[Section179SaleResult]) -> Option<Self> {
         for (index, sale) in sales.iter().enumerate() {
             if sale.ordinary != 0 {
                 self.entries.push(Entry {
@@ -1472,13 +1583,13 @@ impl K1Items {
                     class: Some(K1LossClass::OtherLoss),
                     row: "",
                     item: "",
-                    cents: sale.ordinary * 100,
+                    cents: sale.ordinary.checked_mul(100)?,
                     deduction: false,
                     sale: Some((index + 1, sale.held_long)),
                 });
             }
         }
-        self
+        Some(self)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -1488,44 +1599,68 @@ impl K1Items {
     // This year's loss or deduction of every class the codes join, whole
     // dollars (the current share of the class input).
     pub(crate) fn current(&self) -> LossAmounts {
+        self.checked_current().expect("bounded K-1 class cents")
+    }
+    pub(crate) fn checked_current(&self) -> Option<LossAmounts> {
         let mut amounts = LossAmounts::default();
         for entry in &self.entries {
             if let Some(class) = entry.class {
-                amounts[class] = Amount::<Cents>::new(amounts[class].get() + (entry.loss()))
-                    .expect("validated source class cents");
+                amounts[class] =
+                    Amount::<Cents>::new(amounts[class].get().checked_add(entry.checked_loss()?)?)
+                        .ok()?;
             }
         }
-        amounts
+        Some(amounts)
     }
 
     // The positive income of the codes, actual source cents: partner basis worksheet
     // line 4, Form 7203 line 3 and the K-1 activity's Form 6198 income.
     pub(crate) fn income(&self) -> i64 {
-        self.entries.iter().map(Entry::income).sum()
+        self.checked_income().expect("bounded K-1 income cents")
+    }
+    pub(crate) fn checked_income(&self) -> Option<i64> {
+        self.entries.iter().map(Entry::income).map(i128::from).sum::<i128>().try_into().ok()
     }
 
     // Code F less code V, cents: part of box 1 for every box 1 purpose.
     pub(crate) fn box_one(&self) -> i64 {
+        self.checked_box_one().expect("bounded K-1 box-one adjustment")
+    }
+    pub(crate) fn checked_box_one(&self) -> Option<i64> {
         self.entries
             .iter()
             .filter(|entry| entry.kind == K1ItemKind::BoxOneAdjustment)
-            .map(|entry| if entry.deduction { -entry.cents } else { entry.cents })
-            .sum()
+            .map(
+                |entry| {
+                    if entry.deduction { -i128::from(entry.cents) } else { i128::from(entry.cents) }
+                },
+            )
+            .sum::<i128>()
+            .try_into()
+            .ok()
     }
 
     // Box 13 code K, actual source cents: it reduces basis whether or not it is
     // deductible (the outside basis worksheet line 15n).
     pub(crate) fn ebie(&self) -> i64 {
+        self.checked_ebie().expect("bounded K-1 excess business interest")
+    }
+    pub(crate) fn checked_ebie(&self) -> Option<i64> {
         self.entries
             .iter()
             .filter(|entry| entry.kind == K1ItemKind::Ebie)
-            .map(|entry| entry.cents)
-            .sum()
+            .map(|entry| i128::from(entry.cents))
+            .sum::<i128>()
+            .try_into()
+            .ok()
     }
 
     // Whether any code is investment interest (box 13 (12) code H).
     pub(crate) fn investment_interest(&self) -> i64 {
-        self.current()[K1LossClass::InvestmentInterest].get()
+        self.checked_investment_interest().expect("bounded K-1 investment interest")
+    }
+    pub(crate) fn checked_investment_interest(&self) -> Option<i64> {
+        Some(self.checked_current()?[K1LossClass::InvestmentInterest].get())
     }
 
     // The resources of the left-out codes in a notice, once each.
@@ -1547,8 +1682,11 @@ impl K1Items {
 
     // The amounts of every code when no limit holds anything back.
     pub(crate) fn flows_whole(&self) -> K1ItemFlows {
-        let ledger = LossLedger { risk_allowed: self.current(), ..LossLedger::default() };
-        self.flows(&ledger)
+        self.checked_flows_whole().expect("bounded whole K-1 flows")
+    }
+    pub(crate) fn checked_flows_whole(&self) -> Option<K1ItemFlows> {
+        let ledger = LossLedger { risk_allowed: self.checked_current()?, ..LossLedger::default() };
+        self.checked_flows(&ledger)
     }
 
     // The amounts of every code after the limits. A class's allowed amount is
@@ -1556,21 +1694,26 @@ impl K1Items {
     // item-level pro rata of Reg. 1.704-1(d)(2) and 1.1366-2(a)(5), which is
     // linear); a gain is never limited.
     pub(crate) fn flows(&self, ledger: &LossLedger) -> K1ItemFlows {
-        let mut flows = K1ItemFlows::default();
+        self.checked_flows(ledger).expect("bounded K-1 flows")
+    }
+    pub(crate) fn checked_flows(&self, ledger: &LossLedger) -> Option<K1ItemFlows> {
+        let mut flows = K1ItemFlows::<i128>::default();
+        let losses: Vec<i64> =
+            self.entries.iter().map(Entry::checked_loss).collect::<Option<_>>()?;
         let mut shares = alloc::vec![0i64; self.entries.len()];
         for class in K1LossClass::ALL {
             let members: Vec<usize> = self
                 .entries
                 .iter()
                 .enumerate()
-                .filter(|(_, entry)| entry.class == Some(class) && entry.loss() > 0)
+                .filter(|(index, entry)| entry.class == Some(class) && losses[*index] > 0)
                 .map(|(index, _)| index)
                 .collect();
             if members.is_empty() {
                 continue;
             }
-            let weights: Vec<i64> = members.iter().map(|i| self.entries[*i].loss()).collect();
-            let total: i64 = weights.iter().sum();
+            let weights: Vec<i64> = members.iter().map(|i| losses[*i]).collect();
+            let total = weights.iter().try_fold(0i64, |total, value| total.checked_add(*value))?;
             let allowed = phase::bound(ledger.risk_allowed[class].get(), 0, total);
             let parts = crate::kernel::ratio::allocate_remaining(allowed, &weights);
             for (index, part) in members.iter().zip(parts) {
@@ -1587,6 +1730,7 @@ impl K1Items {
             } else {
                 entry.cents
             };
+            let amount = i128::from(amount);
             match entry.kind {
                 K1ItemKind::Portfolio => flows.portfolio += amount,
                 K1ItemKind::Recovery => flows.recovery += amount,
@@ -1621,7 +1765,7 @@ impl K1Items {
                 flows.rows.push((entry.row, entry.kind, amount));
             }
         }
-        flows
+        flows.narrow()
     }
 }
 
@@ -1634,6 +1778,13 @@ crate::community::divide_record!(K1Section179Sale {
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
 crate::community::divide_record!(PartnerIncome { amounts: [amount], gains: [], facts: [code] });
+
+// Allocate calculated amounts with their retained code character.
+crate::community::divide_record!(PartnerIncomeTotal {
+    amounts: [amount],
+    gains: [],
+    facts: [code]
+});
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
 crate::community::divide_record!(PartnerDeduction { amounts: [amount], gains: [], facts: [code] });
@@ -1677,7 +1828,7 @@ pub(crate) fn k1_sale_ids(income: &crate::FederalIncome) -> Vec<i64> {
             data.section179_sales.iter().map(|sale| sale.id).collect()
         }
         crate::FederalIncome::Scorp { data } => {
-            data.section179_sales.iter().map(|sale| sale.id).collect()
+            data.statements.section179_sales.iter().map(|sale| sale.id).collect()
         }
         crate::FederalIncome::PartnershipActivities { data } => {
             data.entity.section179_sales.iter().map(|sale| sale.id).collect()
@@ -1694,7 +1845,7 @@ pub(crate) fn k1_sale_ids_mut(income: &mut crate::FederalIncome) -> Vec<&mut i64
             data.section179_sales.iter_mut().map(|sale| &mut sale.id).collect()
         }
         crate::FederalIncome::Scorp { data } => {
-            data.section179_sales.iter_mut().map(|sale| &mut sale.id).collect()
+            data.statements.section179_sales.iter_mut().map(|sale| &mut sale.id).collect()
         }
         crate::FederalIncome::PartnershipActivities { data } => {
             data.entity.section179_sales.iter_mut().map(|sale| &mut sale.id).collect()

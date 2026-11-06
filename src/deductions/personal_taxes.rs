@@ -13,7 +13,8 @@ pub enum PersonalTaxElection {
         /// Eligible state/local income taxes paid
         /// Include eligible withholding and payments, net of same-year refunds. This is an amount paid, not a federal deduction or credit. For a refund spanning a prior payment year and 2026, enter its 2026 allocated share here only through this net amount; the refund record separately retains gross payments for reconciliation.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         paid: i64,
         /// Investment-income allocation source
         allocation: TaxIncomeAllocation,
@@ -23,7 +24,8 @@ pub enum PersonalTaxElection {
         /// Eligible general sales taxes paid
         /// Use documented deductible general sales taxes. This branch does not calculate optional state sales-tax tables.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         paid: i64,
     },
 }
@@ -40,11 +42,13 @@ pub enum TaxIncomeAllocation {
     SourceIncome {
         /// Investment income underlying these payments
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         investment: i64,
         /// Total income underlying these payments
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         total: i64,
     },
     // The paid tax and current AGI cannot recover a reasonable source-year

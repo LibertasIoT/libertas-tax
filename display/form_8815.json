@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 49000, "rule": {"select": "^<Form8815Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["taxpayer"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8", "line9", "line10", "line11", "line12", "line13", "line14"]}]}},
+    {"order": 49010, "rule": {"select": "^<Form8818Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "name", "date_cashed"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8"]}]}},
+    {"order": 50000, "rule": {"select": "^<Form8815Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["taxpayer"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8", "line9", "line10", "line11", "line12", "line13", "line14"]}]}},
+    {"order": 50010, "rule": {"select": "^<Form8818Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "name", "date_cashed"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["line1", "line2", "line3", "line4", "line5", "line6", "line7", "line8"]}]}},
+    {"order": 555000, "rule": {"select": "^<SavingsBondStudent>", "flatten": {"name_row": false}}},
+    {"order": 760000, "rule": {"select": "^<SavingsBondStudent>.person", "promote": {"use_parent_name": false}}}
+  ]
+}

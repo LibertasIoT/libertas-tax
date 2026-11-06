@@ -1,45 +1,37 @@
 use crate::kernel::carry::{Amount, Cents};
-// Coverage: Form 6198 — Partial (audited 2026-09-24).
-//   Lines: Detailed-method at-risk limit (Parts I, III via retained 2025 line 19b/21, Part IV),
-//   financing adjustments, recapture (capped, next-year deduction, 1978 threshold) for one
-//   ordinary-business S-corp K-1 or partnership K-1 activity. Refused: Schedule C and rental
-//   require "fully at risk = Yes" (no 6198 computed), unknown history with a loss (T2-31r), simplified method (Part II),
-//   qualified nonrecourse financing of an S corporation, pledged property, multiple activities.
-//   Unit k1-rentals (2026-10-09): a partner's share of qualified nonrecourse financing secured by
-//   real property (K-1 item K1) counts in the at-risk debt (section 465(b)(6)); K-1 box 2 and 3
-//   rental income and losses are items of the K-1's one at-risk activity (box 22/18 refused), and
-//   a rental loss this stage limits carries (unit B8, ScorpRisk::calculate through k1_loss::limit_classes).
-//   Evidence: scorp_risk.rs, scorp_basis.rs (prior_detailed_risk), k1_loss.rs (limit_classes), partnership.rs
-//   (PartnerRiskRecord), extended_rules.rs, federal_model.rs;
-//   kernel/loss_limits/risk_tests.rs::at_risk_irs_example_offsets_activity_income_before_limiting_net_loss,
-//   kernel/loss_limits/risk_tests.rs::at_risk_recapture_is_capped_and_becomes_next_year_deduction,
-//   passthrough.rs::scorp_at_risk_interview_applies_history_after_basis_and_survives_avro,
-//   passthrough.rs::at_risk_history_rejects_impossible_or_overflowing_records; Form 6198
-//   instructions example (test comment), i7203, i1065sk1
-//   Unit T2-31 (2026-09-26): an S-corporation distribution above stock basis is line 2a activity
-//   gain (no longer refused); the box 12 code A gift stays outside the activity.
-//   Unit T2-31r (2026-09-27, question C9 for shareholders, as T2-29p for partners): with an
-//   Unknown opening history the stage is skipped (ScorpRisk::without_history; investment and
-//   year_end None, no amount-at-risk notes) when the year's losses entering it (box 1 loss,
-//   nondeductible expenses, capital and section 1231 losses) do not exceed the activity's line 3
-//   income, nothing is carried at risk from 2025 (ordinary, nondeductible, capital, section
-//   1231), no deducted loss is left to recapture and box 11 is zero; otherwise HISTORY_NEEDED is
-//   refused by name. A box 11 carryover without the history is refused in section179.rs. Source:
-//   Instructions for Form 6198 (Purpose of Form: section 465 limits only the loss deducted; Who
-//   Must File: an activity that incurred a loss; line 21). Tests: tests/passthrough/passthrough.rs
-//   shareholder_profit_without_at_risk_history_needs_no_form_6198,
+// Coverage: Form 6198 — Partial (audited 2026-10-23).
+//   Detailed-method limits and recapture for the K-1's one activity use basis-allowed
+//   ordinary, rental, capital and section 1231 losses and nondeductible expenses.
+//   Qualified nonrecourse real-property financing is supported for partnerships.
+//   Refused: simplified method, pledged property, multiple activities, S-corporation
+//   qualified nonrecourse financing and coordinated section 179 limitations.
+//   Unknown opening history needs no amount-at-risk calculation only when admitted
+//   losses and expenses do not exceed activity income, there are no at-risk carries,
+//   no section 179 amount awaiting its test and no deducted loss left to recapture.
+//   Fully basis-admitted prior nondeductible expenses join current expenses in that
+//   comparison. With detailed history, fully basis-admitted current expenses also
+//   share the at-risk limit with basis-limited losses; partially admitted expenses
+//   and basis-expense carryforwards still need coordinated records.
+//   Taxable loan repayment and excluded returns need no allocation when this
+//   no-loss proof succeeds; repayment gain is never corporate activity income.
+//   Investment and year-end amount at risk remain unknown in this no-loss case.
+//   Detailed history also supports taxable repayments when every cash return
+//   is explicitly excluded investment, without supplied gain allocations or
+//   simultaneous advances on a current open account. Mixed returns still need
+//   source allocation; loan gain character and REG/AMT basis remain independent.
+//   Evidence: passthrough.rs::shareholder_profit_without_at_risk_history_needs_no_form_6198,
 //   shareholder_loss_equal_to_activity_income_needs_no_history_and_one_dollar_more_does,
-//   shareholder_at_risk_carryover_or_recapture_history_still_needs_form_6198; tests/passthrough/interview.rs
-//   k1_1120s_page_without_at_risk_history_reproduces_the_profit_fixture.
-//   Unit B8 (2026-10-10): Form 6198 Parts I and IV for the K-1's one activity share the income and the
-//   amount at risk among every at-risk class of the K1LossClass catalog (ordinary, rentals, capital,
-//   section 1231) and the nondeductible expenses, each with the basis-allowed amount plus its at-risk
-//   carry (ScorpK1.carried.*.risk for the rentals); the allowed part is ScorpRiskResult.ledger
-//   risk_allowed and the remaining portion of each item carries (risk_suspended; rule: i6198 Part
-//   IV line 21). A New start cannot carry anything (ScorpRisk::valid). With an unknown history the
-//   stage is skipped only when the basis-allowed losses of every at-risk class do not exceed the
-//   income and no at-risk carry exists (HISTORY_NEEDED otherwise). Section 179 stays outside this
-//   stage (ISSUE_SECTION179_RISK_CARRYFORWARD, narrowed reason).
+//   shareholder_at_risk_carryover_or_recapture_history_still_needs_form_6198;
+//   unit22.rs::retained_basis_expenses_without_risk_history_preserve_expenses_and_losses,
+//   retained_basis_expense_boundary_and_remaining_risk_refusals,
+//   retained_basis_expense_native_correction_preserves_unknown_history;
+//   no_loss_repayments_preserve_regular_and_amt_loan_gain_character,
+//   no_loss_repayment_native_correction_preserves_unknown_history,
+//   no_loss_repayment_uses_supplied_events_and_preserves_refusal_boundaries.
+//   fully_excluded_repayments_preserve_binding_risk_and_native_gain_character,
+//   fully_excluded_repayment_boundaries_and_native_correction.
+//   Sources: https://www.irs.gov/instructions/i6198 (Purpose, Who Must File, Part IV),
+//   https://www.irs.gov/instructions/i7203 (nondeductible expenses and losses-first election).
 
 use crate::k1_loss::{K1LossClass, LossLedger, limit_classes};
 use crate::kernel::phase;
@@ -66,17 +58,20 @@ pub enum ScorpRiskStart {
         /// 2025 Form 6198 line 19b
         /// Do not substitute line 10b or ending stock basis.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         capacity: i64,
         /// 2025 net profit from the activity
         /// Enter zero for a net-loss year; exclude prior recapture income.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         profit: i64,
         /// 2025 Form 6198 line 21 net loss
         /// Include nondeductible expenses absorbed by this limit; only the deductible portion enters the tax return. Enter the at-risk result even if passive limits later suspended deductible losses.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         loss: i64,
     },
     /// Missing history or another method requiring reconstruction
@@ -101,43 +96,51 @@ pub struct ScorpRisk {
     /// New contributions and loan advances funded by amounts not at risk
     /// The portion financed with nonqualifying nonrecourse/related-party borrowing or protected against loss. Never count the same funds twice. Qualified nonrecourse real-estate financing and pledged outside-property exceptions need separate analysis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub excluded_funding: i64,
     /// Previously at-risk investment newly protected during 2026
     /// Only amounts already included in the opening investment. Exclude casualty and tort insurance.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub protected: i64,
     /// Previously protected investment becoming at risk during 2026
     /// Only previously excluded investment; do not repeat current contributions or loan advances.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub released: i64,
     /// Withdrawals and principal repayments returning amounts already excluded from at-risk investment
     /// Included in the distributions and loan repayments entered above. Identify only the portion attributable to excluded investment; otherwise those withdrawals reduce the at-risk balance.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub excluded_returns: i64,
     /// Prior ordinary loss suspended by at-risk limits
     /// Exclude basis-suspended and passive-suspended losses; this amount already passed basis limits.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_loss: i64,
     /// Prior nondeductible expenses suspended only by at-risk limits
     /// From the retained at-risk worksheet. These already reduced stock/debt basis. Never repeat a basis-only nondeductible carryforward here; do not include ordinary deductible losses.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub prior_nondeductible: i64,
     /// Losses deducted in previous tax years beginning after 1978
     /// Retained cumulative recapture history for this activity; do not include the current year.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub deducted: i64,
     /// At-risk recapture income included in previous years
     /// Used only to cap further recapture; do not enter a current-year calculated amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub recaptured: i64,
     /// These financing records are complete for the supported activity
     /// Confirm one continuing ordinary-business activity, with no property distributions/contributions, capital expenditures included as nondeductible expenses, outside collateral, qualified nonrecourse real-estate financing, pre-1979 negative investment, debt transfers, or other special adjustments. Entered tax-exempt income belongs to this activity and increases its at-risk amount. All capital contributions and loan advances are actual cash investments; excluded new funding is identified above. An earlier recapture requiring an unentered next-year deduction needs reconstruction. Entered nondeductible expenses are noncapital costs of this activity. Prior at-risk expense balances have already passed basis and do not overlap basis carryforwards. Other required K-1 worksheets must also be complete. No leaves this K-1 out of the estimate with a notice; that situation is not supported.
@@ -251,7 +254,7 @@ impl ScorpRisk {
             && self.excluded_funding
                 <= owner.additions + owner.loans.iter().map(|l| l.advances).sum::<i64>()
             && (!matches!(self.start, ScorpRiskStart::New)
-                || (owner.opening == 0
+                || (owner.opening.is_none_or(|value| value == 0)
                     && !owner.class_input().carries()
                     && owner.section1231.as_ref().is_none_or(|v| v.passive_loss == 0)
                     && owner.loans.iter().all(|l| l.principal == 0)
@@ -367,9 +370,31 @@ impl ScorpRisk {
         {
             return Err(ScorpRiskError::SourceInconsistent);
         }
-        if !self.complete || owner.prior_nondeductible != 0 {
+        if !self.complete
+            || (owner.prior_nondeductible != 0 && !matches!(self.start, ScorpRiskStart::Unknown))
+        {
             return Err(ScorpRiskError::FinancingUnresolved);
         }
+        let expenses = owner.nondeductible;
+        // Form 6198 line 5 needs no investment calculation in a no-loss year
+        // without recapture exposure. An excluded-return allocation is then
+        // unused, even when the basis owner reports taxable loan repayment.
+        // Preserve the basis/expense coordinator before attempting that proof.
+        let coordinated = if owner.prior_nondeductible != 0 {
+            !basis.suspended.any()
+                && basis.nondeductible_used.get() == expenses + owner.prior_nondeductible
+        } else {
+            (expenses == 0 && self.prior_nondeductible == 0)
+                || (!basis.suspended.any() && basis.nondeductible_used.get() == expenses)
+        };
+        let history_error = if matches!(self.start, ScorpRiskStart::Unknown) && coordinated {
+            match self.without_history(owner, basis, events) {
+                Ok(result) => return Ok(result),
+                Err(error) => Some(error),
+            }
+        } else {
+            None
+        };
         let repayment_gain: i64 = events.map_or_else(
             || {
                 basis
@@ -380,17 +405,38 @@ impl ScorpRisk {
             },
             |value| value.loans.iter().sum(),
         );
-        if repayment_gain > 0 && self.excluded_returns > 0 {
+        let fully_excluded_returns = events.is_none()
+            && matches!(self.start, ScorpRiskStart::Detailed { .. })
+            && self.excluded_returns
+                == owner.distributions
+                    + owner.loans.iter().map(|loan| loan.repayments).sum::<i64>()
+            && owner
+                .loans
+                .iter()
+                .all(|loan| loan.kind != crate::ScorpLoanKind::OpenAccount || loan.advances == 0);
+        if repayment_gain > 0 && self.excluded_returns > 0 && !fully_excluded_returns {
             return Err(ScorpRiskError::DebtRepaymentAllocation);
         }
-        let expenses = owner.nondeductible;
+        if owner.prior_nondeductible != 0 {
+            return Err(ScorpRiskError::FinancingUnresolved);
+        }
+        // Form 7203 applies before Form 6198 (i7203, Loss Limitations).
+        // Fully admitted current expenses and the basis-allowed loss classes
+        // already have their source amounts; the existing risk stage shares
+        // its capacity between them even when basis suspended other losses.
+        // Mixed expense histories and partially admitted expenses remain outside
+        // this source-determined case; unknown-history admission stays separate.
+        let current_expenses_admitted = matches!(self.start, ScorpRiskStart::Detailed { .. })
+            && self.prior_nondeductible == 0
+            && basis.nondeductible_used.get() == expenses;
         if (expenses > 0 || self.prior_nondeductible > 0)
             && (basis.suspended.any() || basis.nondeductible_used.get() != expenses)
+            && !current_expenses_admitted
         {
             return Err(ScorpRiskError::BasisRiskCoordination);
         }
         if matches!(self.start, ScorpRiskStart::Unknown) {
-            return self.without_history(owner, basis, events);
+            return Err(history_error.expect("coordinated unknown history checked"));
         }
         let capacity = self.investment_from_parts(
             owner.additions, owner.distributions,
@@ -402,7 +448,11 @@ impl ScorpRisk {
             // Repayment reduces at-risk investment only by adjusted debt
             // basis recovered. The gain itself does not increase stock basis
             // or constitute ordinary income of the corporation's activity.
-            + repayment_gain;
+            // When all cash returns are excluded, investment_from_parts
+            // already cancels them in full. Adding gain again would create
+            // investment. Form 7203 line 34 says repayment gain adds no basis;
+            // Form 6198 Part III retains only the actual investment changes.
+            + if fully_excluded_returns { 0 } else { repayment_gain };
         // Form 6198 line 3 includes separately stated income of this activity.
         // The source confirmation establishes this allocation. Tax character
         // stays separate when the allowed ordinary loss enters the return.
@@ -475,7 +525,8 @@ impl ScorpRisk {
             + events.map_or_else(|| owner.disposal(basis), |value| value.disposal).activity_gain()
     }
 
-    // Question C9 (unit T2-31r, as T2-29p for partners): Form 6198 is filed
+    // Instructions for Form 6198, Purpose of Form and Who Must File:
+    // Form 6198 is filed
     // only for an activity that incurred a loss, and the at-risk rules limit
     // only the loss deducted. A continuing shareholder without 2025 at-risk
     // figures needs none when the stage limits nothing: the year's losses
@@ -493,7 +544,7 @@ impl ScorpRisk {
     ) -> Result<ScorpRiskResult, ScorpRiskError> {
         let income = Self::activity_income(owner, basis, events);
         let input = owner.class_input();
-        let nondeductible = owner.nondeductible;
+        let nondeductible = basis.nondeductible_used.get();
         let losses: i64 = K1LossClass::ALL
             .into_iter()
             .filter(|class| class.at_risk())

@@ -64,3 +64,34 @@ fn source_fact_retains_existing_unit_and_noncopy_value() {
     let amount: Amount<Cents> = fact.require(|| "existing source boundary").unwrap().unwrap();
     assert_eq!(amount.get(), 1);
 }
+
+#[test]
+fn source_counts_preserve_absence_unknown_zero_and_the_full_unsigned_domain() {
+    use super::source_fact::SourceUnits;
+
+    assert_eq!(SourceUnits::Unavailable.source_fact(), Ok(SourceFact::Unavailable));
+    assert_eq!(SourceUnits::NotReported.source_fact(), Ok(SourceFact::NotReported));
+    for units in [0, 1, u32::MAX] {
+        let actual = SourceUnits::Reported { units }.source_fact().unwrap();
+        assert_eq!(actual, SourceFact::Reported(units));
+        assert_ne!(actual, SourceFact::NotReported);
+        assert_ne!(actual, SourceFact::Unavailable);
+        assert_eq!(
+            actual.check_reported(|value| {
+                if *value <= 1 { Ok(()) } else { Err("source count bound") }
+            }),
+            if units <= 1 { Ok(SourceFact::Reported(units)) } else { Err("source count bound") }
+        );
+    }
+}
+
+#[test]
+fn source_dates_preserve_availability_and_reported_dates() {
+    use super::source_fact::SourceDate;
+
+    assert_eq!(SourceDate::Unavailable.source_fact(), Ok(SourceFact::Unavailable));
+    assert_eq!(SourceDate::NotReported.source_fact(), Ok(SourceFact::NotReported));
+    for date in [10101, 18491231, 20000229, 20240229, 99991231] {
+        assert_eq!(SourceDate::Reported { date }.source_fact(), Ok(SourceFact::Reported(date)));
+    }
+}

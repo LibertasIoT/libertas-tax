@@ -1,4 +1,4 @@
-// Schedule K-1 box items in the return's totals (unit B9-1): the amounts the
+// Schedule K-1 box items in the return's totals: the amounts the
 // per-code records and the year-end events of a partnership or S corporation
 // K-1 bring to Schedule 1 lines 4, 8b, 8c, 8z and 18, Schedule A, Schedule D,
 // Form 4797 Part II line 11 (2026), Form 4952, Form 8949 boxes C and F, the 28% and
@@ -7,9 +7,11 @@
 // the passive stage cuts the activity items afterward (extended_rules.rs).
 use crate::federal_rules::Totals;
 use crate::k1_items::{Disposal, K1ItemFlows};
-use crate::kernel::lines::push_line;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
+use crate::kernel::ratio::checked_sum;
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::push_line;
 use crate::{
     FederalIncome, FederalIncomeEntry, FederalResult, FormLine, GainTerm, Message, MessageArg,
     ScorpTradeKind, TaxForm,
@@ -72,36 +74,32 @@ fn term_index(term: Option<GainTerm>) -> usize {
 // The one place a K-1 item reaches Schedule D lines 5 and 12: through
 // `add_short` / `add_long`, so Form 1116 line 3e (`capital_gross`) sees it; a box 11 (10) item
 // of a K-1 with a Schedule K-3 goes through the outside-line-3e twin (its gross is in the K-3).
-fn add_capital(t: &mut Totals, term: usize, amount: i64, outside_line_3e: bool) {
-    match (term, outside_line_3e) {
-        (0, false) => t.add_short(amount),
-        (_, false) => t.add_long(amount),
-        (0, true) => t.add_short_outside_line_3e(amount),
-        (_, true) => t.add_long_outside_line_3e(amount),
-    }
+fn add_capital(t: &mut Totals, term: usize, amount: i64, outside_line_3e: bool) -> Option<()> {
+    t.try_add_k1_capital(amount, term != 0, outside_line_3e)
 }
 
 // The cents of capital gain (loss) each holding period gets in one tax
 // system, and the part that is investment income.
-fn capital(f: &Facts, flows: &K1ItemFlows, disposal: &Disposal) -> ([i64; 2], [i64; 2]) {
-    let mut total = flows.capital();
-    let mut investment = [flows.preferred[0], flows.preferred[1]];
+fn capital(f: &Facts, flows: &K1ItemFlows, disposal: &Disposal) -> Option<([i64; 2], [i64; 2])> {
+    let mut total = flows.checked_capital()?;
+    let mut investment = flows.preferred;
     if f.investment_activity {
-        investment[0] += flows.nonportfolio[0];
-        investment[1] += flows.nonportfolio[1];
+        for (amount, nonportfolio) in investment.iter_mut().zip(flows.nonportfolio) {
+            *amount = checked_sum([*amount, nonportfolio])?;
+        }
     }
     let term = term_index(f.term);
-    let events = disposal.distribution_gain + disposal.capital();
-    total[term] += events;
+    let events = checked_sum([disposal.distribution_gain, disposal.capital()])?;
+    total[term] = checked_sum([total[term], events])?;
     if f.investment_activity {
-        investment[term] += events;
+        investment[term] = checked_sum([investment[term], events])?;
     }
-    (total, investment)
+    Some((total, investment))
 }
 
-fn ordinary(f: &Facts, flows: &K1ItemFlows, disposal: &Disposal) -> i64 {
+fn ordinary(f: &Facts, flows: &K1ItemFlows, disposal: &Disposal) -> Option<i64> {
     let _ = f;
-    flows.ordinary + disposal.ordinary
+    checked_sum([flows.ordinary, disposal.ordinary])
 }
 
 // Gross portfolio royalties are the same in both tax systems; the allowed
@@ -109,17 +107,33 @@ fn ordinary(f: &Facts, flows: &K1ItemFlows, disposal: &Disposal) -> i64 {
 fn royalties(f: &Facts) -> i64 {
     match &f.entry.income {
         FederalIncome::Partnership { data } => data.separate.as_ref().map_or(0, |v| v.royalties),
-        FederalIncome::Scorp { data } => data.royalties,
+        FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
+            data.royalties
+        }
         _ => 0,
     }
 }
 
 pub(crate) fn apply(f: &Facts, t: &mut Totals, r: &mut FederalResult) {
+    if apply_checked(f, t, r).is_none() {
+        let (key, _message) = crate::partnership::PartnerPlan::RANGE;
+        crate::issue_localized!(
+            r,
+            &crate::interview::income_issue_context(f.entry),
+            "K-1 income",
+            key,
+            _message
+        );
+    }
+}
+
+fn apply_checked(f: &Facts, t: &mut Totals, r: &mut FederalResult) -> Option<()> {
     let flows = &f.flows;
-    let (regular, regular_investment) = capital(f, flows, &f.disposal);
-    let (alternative, alternative_investment) = capital(f, &f.amt_flows, &f.amt_disposal);
-    let events = f.disposal.distribution_gain + f.disposal.capital();
-    let amt_events = f.amt_disposal.distribution_gain + f.amt_disposal.capital();
+    let (regular, regular_investment) = capital(f, flows, &f.disposal)?;
+    let (alternative, alternative_investment) = capital(f, &f.amt_flows, &f.amt_disposal)?;
+    let events = checked_sum([f.disposal.distribution_gain, f.disposal.capital()])?;
+    let amt_events = checked_sum([f.amt_disposal.distribution_gain, f.amt_disposal.capital()])?;
     // At most seven signed64 operands per result: keep integral cancellation
     // inside this owner, then check its native-cent output once.
     let mut net = i128::from(t.amt_k1_capital_net_adjustment);
@@ -133,106 +147,145 @@ pub(crate) fn apply(f: &Facts, t: &mut Totals, r: &mut FederalResult) {
                 - i128::from(phase::floor(flows.capital()[term], 0));
         }
     }
-    let (Ok(net), Ok(gross)) = (i64::try_from(net), i64::try_from(gross)) else {
-        crate::issue_localized!(
-            r,
-            &crate::interview::income_issue_context(f.entry),
-            "K-1 capital income",
-            crate::k1_activity::ordinary::RANGE_KEY,
-            "Review the document amounts; they must be within the supported input range.",
-        );
-        return;
-    };
+    let net = i64::try_from(net).ok()?;
+    let gross = i64::try_from(gross).ok()?;
     t.amt_k1_capital_net_adjustment = net;
     t.amt_k1_capital_gross_adjustment = gross;
     let gross = royalties(f);
-    let net = gross - flows.royalty_deductions;
+    let net = i64::try_from(i128::from(gross) - i128::from(flows.royalty_deductions)).ok()?;
     t.royalties += crate::kernel::ratio::exact::whole(net);
-    t.k1_royalty_gross += gross;
-    t.k1_royalty_deductions += flows.royalty_deductions;
-    t.k1_royalty_losses += phase::cap(net, [0]);
-    t.amt_royalty_adjustment += flows.royalty_deductions - f.amt_flows.royalty_deductions;
-    t.other_8z += flows.portfolio + flows.recovery;
-    t.k1_line_7 += flows.portfolio + flows.recovery + if f.nii_activity { flows.debt } else { 0 };
-    t.k1_investment_income += flows.portfolio;
-    t.personal_debt += flows.debt;
-    t.gambling += flows.winnings;
-    t.gambling_losses += flows.gambling_losses;
+    t.k1_royalty_gross = checked_sum([t.k1_royalty_gross, gross])?;
+    t.k1_royalty_deductions = checked_sum([t.k1_royalty_deductions, flows.royalty_deductions])?;
+    t.k1_royalty_losses = checked_sum([t.k1_royalty_losses, phase::cap(net, [0])])?;
+    t.amt_royalty_adjustment = i64::try_from(
+        i128::from(t.amt_royalty_adjustment) + i128::from(flows.royalty_deductions)
+            - i128::from(f.amt_flows.royalty_deductions),
+    )
+    .ok()?;
+    t.other_8z = checked_sum([t.other_8z, flows.portfolio, flows.recovery])?;
+    t.k1_line_7 = checked_sum([
+        t.k1_line_7,
+        flows.portfolio,
+        flows.recovery,
+        if f.nii_activity { flows.debt } else { 0 },
+    ])?;
+    t.k1_investment_income = checked_sum([t.k1_investment_income, flows.portfolio])?;
+    t.personal_debt = checked_sum([t.personal_debt, flows.debt])?;
+    t.gambling = checked_sum([t.gambling, flows.winnings])?;
+    t.gambling_losses = checked_sum([t.gambling_losses, flows.gambling_losses])?;
     for class in 0..3 {
-        t.k1_charity[class] += flows.charity[class];
+        t.k1_charity[class] = checked_sum([t.k1_charity[class], flows.charity[class]])?;
     }
-    t.k1_charity_cash30 += flows.charity_cash30;
+    t.k1_charity_cash30 = checked_sum([t.k1_charity_cash30, flows.charity_cash30])?;
     let investment_interest = flows.investment_interest;
-    t.k1_interest += investment_interest;
-    t.injured_niit_deduction_cents.k1_interest
-        [usize::from(f.entry.owner == crate::Owner::Spouse)] += investment_interest;
-    t.early_penalty += flows.early_penalty;
-    t.k1_deferred_tax += f.deferred_tax;
-    t.reit_dividends += f.reit_dividends;
-    t.injured_reit_dividends[usize::from(f.entry.owner == crate::Owner::Spouse)] +=
-        f.reit_dividends;
+    t.k1_interest[0] = checked_sum([t.k1_interest[0], investment_interest])?;
+    t.k1_interest[1] = checked_sum([t.k1_interest[1], f.amt_flows.investment_interest])?;
+    let owner = usize::from(f.entry.owner == crate::DocumentOwner::Spouses);
+    t.injured_niit_deduction_cents.k1_interest[owner] =
+        checked_sum([t.injured_niit_deduction_cents.k1_interest[owner], investment_interest])?;
+    t.early_penalty = checked_sum([t.early_penalty, flows.early_penalty])?;
+    t.k1_deferred_tax = checked_sum([t.k1_deferred_tax, f.deferred_tax])?;
+    t.reit_dividends = checked_sum([t.reit_dividends, f.reit_dividends])?;
+    t.retain_reit_owner(f.entry, f.reit_dividends);
     // Form 1116 line 3e counts each gain whole: the box 11 (10) items and the owner's own
     // gain on the interest are separate contributions.
     let event_term = term_index(f.term);
     for term in 0..2 {
-        add_capital(t, term, flows.capital()[term], f.k3);
+        add_capital(t, term, flows.checked_capital()?[term], f.k3)?;
         // PRINT trace follows the admitted K-1 code owner. Own-interest
         // disposition events below stay on Form8949/ScheduleD3 or10.
-        t.schedule_d_k1[term] += flows.capital()[term];
-        add_capital(t, term, if term == event_term { events } else { 0 }, false);
-        t.investment_gains[term] += regular_investment[term];
-        t.amt_sale_adjustment[term] += alternative[term] - regular[term];
-        t.amt_investment_gain_adjustment[term] +=
-            alternative_investment[term] - regular_investment[term];
+        t.schedule_d_k1[term] =
+            checked_sum([t.schedule_d_k1[term], flows.checked_capital()?[term]])?;
+        add_capital(t, term, if term == event_term { events } else { 0 }, false)?;
+        t.investment_gains[term] =
+            checked_sum([t.investment_gains[term], regular_investment[term]])?;
+        t.amt_sale_adjustment[term] = i64::try_from(
+            i128::from(t.amt_sale_adjustment[term]) + i128::from(alternative[term])
+                - i128::from(regular[term]),
+        )
+        .ok()?;
+        t.amt_investment_gain_adjustment[term] = i64::try_from(
+            i128::from(t.amt_investment_gain_adjustment[term])
+                + i128::from(alternative_investment[term])
+                - i128::from(regular_investment[term]),
+        )
+        .ok()?;
     }
-    let regular_ordinary = ordinary(f, flows, &f.disposal);
-    let alternative_ordinary = ordinary(f, &f.amt_flows, &f.amt_disposal);
+    let regular_ordinary = ordinary(f, flows, &f.disposal)?;
+    let alternative_ordinary = ordinary(f, &f.amt_flows, &f.amt_disposal)?;
     let research = t.research_items.entry(f.entry.id).or_default();
-    research.business_loss +=
-        phase::floor(-flows.ordinary, 0) + phase::floor(-f.disposal.ordinary, 0);
-    research.capital_loss +=
-        flows.capital().iter().map(|amount| phase::floor(-*amount, 0)).sum::<i64>()
-            + phase::floor(-events, 0);
-    research.income += net
-        + flows.portfolio
-        + flows.recovery
-        + flows.debt
-        + flows.winnings
-        + regular.iter().sum::<i64>()
-        + regular_ordinary
-        - flows.early_penalty;
+    research.business_loss = checked_sum([
+        research.business_loss,
+        flows.ordinary.min(0).checked_neg()?,
+        f.disposal.ordinary.min(0).checked_neg()?,
+    ])?;
+    let flow_capital = flows.checked_capital()?;
+    research.capital_loss = checked_sum([
+        research.capital_loss,
+        flow_capital[0].min(0).checked_neg()?,
+        flow_capital[1].min(0).checked_neg()?,
+        events.min(0).checked_neg()?,
+    ])?;
+    research.income = checked_sum([
+        research.income,
+        net,
+        flows.portfolio,
+        flows.recovery,
+        flows.debt,
+        flows.winnings,
+        regular[0],
+        regular[1],
+        regular_ordinary,
+        flows.early_penalty.checked_neg()?,
+    ])?;
     for (class, amount) in [2, 0, 3].into_iter().zip(flows.charity) {
-        research.charity[class] += amount;
+        research.charity[class] = checked_sum([research.charity[class], amount])?;
     }
-    research.investment_interest += flows.investment_interest;
+    research.investment_interest =
+        checked_sum([research.investment_interest, flows.investment_interest])?;
     // The code R gain whole (not for a K-3 K-1) and the section 751 gain whole.
     if !f.k3 {
-        t.ordinary_gain_gross += phase::floor(flows.ordinary, 0);
+        t.ordinary_gain_gross =
+            checked_sum([t.ordinary_gain_gross, phase::floor(flows.ordinary, 0)])?;
     }
-    t.ordinary_gain_gross += phase::floor(f.disposal.ordinary, 0);
+    t.ordinary_gain_gross =
+        checked_sum([t.ordinary_gain_gross, phase::floor(f.disposal.ordinary, 0)])?;
     if f.k3 {
-        t.k3_agi_items += flows.portfolio + flows.recovery + flows.debt + flows.winnings;
+        t.k3_agi_items = checked_sum([
+            t.k3_agi_items,
+            flows.portfolio,
+            flows.recovery,
+            flows.debt,
+            flows.winnings,
+        ])?;
     }
-    t.k1_ordinary[0] += regular_ordinary;
-    t.k1_ordinary[1] += alternative_ordinary;
+    t.k1_ordinary[0] = checked_sum([t.k1_ordinary[0], regular_ordinary])?;
+    t.k1_ordinary[1] = checked_sum([t.k1_ordinary[1], alternative_ordinary])?;
     if f.investment_activity {
-        t.k1_investment_ordinary[0] += regular_ordinary;
-        t.k1_investment_ordinary[1] += alternative_ordinary;
+        t.k1_investment_ordinary[0] = checked_sum([t.k1_investment_ordinary[0], regular_ordinary])?;
+        t.k1_investment_ordinary[1] =
+            checked_sum([t.k1_investment_ordinary[1], alternative_ordinary])?;
     }
     if !f.nii_activity {
-        t.k1_nii_excluded -= flows.ordinary + flows.nonportfolio[0] + flows.nonportfolio[1];
+        t.k1_nii_excluded = i64::try_from(
+            i128::from(t.k1_nii_excluded)
+                - i128::from(flows.ordinary)
+                - i128::from(flows.nonportfolio[0])
+                - i128::from(flows.nonportfolio[1]),
+        )
+        .ok()?;
     }
     let disposal = &f.disposal;
     let term = term_index(f.term);
     // Form 8949 box C or F: the distribution gain and the capital part of
     // the sale (proceeds less the section 751 part, less the basis).
-    let events = disposal.distribution_gain + disposal.capital();
+    let events = checked_sum([disposal.distribution_gain, disposal.capital()])?;
     if events != 0 || disposal.sold {
         // Schedule D line 3 or 10 and its columns (d) and (e): the distribution above basis is
         // proceeds with no basis, the sale its proceeds and basis.
         let (line, total) =
             if term == 0 { (3, &mut t.sale_line_3) } else { (7, &mut t.sale_line_10) };
-        *total += events;
+        *total = checked_sum([*total, events])?;
         let sold = if disposal.sold { (disposal.proceeds, disposal.basis) } else { (0, 0) };
         t.add_columns(line, disposal.distribution_gain + sold.0, sold.1);
     }
@@ -242,16 +295,24 @@ pub(crate) fn apply(f: &Facts, t: &mut Totals, r: &mut FederalResult) {
     let sale_gain = disposal.capital();
     if term == 1 && sale_gain > 0 {
         let collectibles = phase::cap(f.collectibles, [sale_gain]);
-        t.collectible_long += collectibles;
-        t.unrecaptured_long += phase::cap(f.unrecaptured, [sale_gain - collectibles]);
+        t.collectible_long = checked_sum([t.collectible_long, collectibles])?;
+        t.unrecaptured_long = checked_sum([
+            t.unrecaptured_long,
+            phase::cap(f.unrecaptured, [sale_gain - collectibles]),
+        ])?;
     }
     // Section 1411(c)(4): a gain on the interest of a business the owner
     // materially participates in, other than trading, is net investment
     // income only to the extent of the deemed-sale gain (Form 8960 line 5c).
     if !f.nii_activity {
-        t.k1_business_gain += disposal.distribution_gain + phase::floor(disposal.sale_gain(), 0);
+        t.k1_business_gain = checked_sum([
+            t.k1_business_gain,
+            disposal.distribution_gain,
+            phase::floor(disposal.sale_gain(), 0),
+        ])?;
     }
     report(f, r);
+    Some(())
 }
 
 fn report(f: &Facts, r: &mut FederalResult) {
@@ -391,15 +452,29 @@ pub(crate) const DISPOSITION_OTHER: &str = crate::fixture_english!(
 // a disposition other than a sale or a liquidation for cash, and investment
 // interest (box 13 code H) with a loss the at-risk limit holds back, which
 // needs Form 4952 and Form 6198 each after the other (i6198 line 4).
+pub(crate) const DISPOSITION_NEEDED: (&str, &str) = (
+    "DOCUMENT_K1_DISPOSITION",
+    crate::fixture_english!("Answer what happened to this interest during the year."),
+);
+
 pub(crate) fn refusals(
     entry: &FederalIncomeEntry,
     items: &crate::k1_items::K1Items,
-    disposition: &crate::K1Disposition,
-    ledger: Option<&crate::k1_loss::LossLedger>,
+    disposition: &Option<crate::K1Disposition>,
+    ledgers: [Option<&crate::k1_loss::LossLedger>; 2],
     r: &mut FederalResult,
 ) {
     let context = crate::interview::income_issue_context(entry);
-    if *disposition == crate::K1Disposition::Other {
+    if disposition.is_none() {
+        crate::issue_localized!(
+            r,
+            &context,
+            "K-1 disposition",
+            "DOCUMENT_K1_DISPOSITION",
+            DISPOSITION_NEEDED.1
+        );
+    }
+    if *disposition == Some(crate::K1Disposition::Other) {
         crate::issue_localized!(
             r,
             &context,
@@ -408,7 +483,9 @@ pub(crate) fn refusals(
             DISPOSITION_OTHER,
         );
     }
-    if items.investment_interest() > 0 && ledger.is_some_and(|ledger| ledger.risk_suspended.any()) {
+    if items.investment_interest() > 0
+        && ledgers.into_iter().flatten().any(|ledger| ledger.risk_suspended.any())
+    {
         let message = Message::new(
             "ISSUE_K1_INVESTMENT_INTEREST_AT_RISK",
             alloc::vec![crate::interview::income_display_arg(entry)],
@@ -429,7 +506,7 @@ pub(crate) fn refusals(
 // passive, which never lowers tax; the entity's allocation among its activities
 // may make part of it passive income that frees another passive activity's
 // loss (Reg. 1.469-2T(e)(3); Pub 925). The estimate says so only when another
-// passive activity of the return has an unallowed loss this year (unit B9-1).
+// passive activity of the return has an unallowed loss this year.
 pub(crate) fn gain_not_passive(
     d: &crate::FederalDraft,
     rental: &crate::extended_rules::RentalResult,
@@ -438,7 +515,19 @@ pub(crate) fn gain_not_passive(
     for entry in &d.income {
         let (gain, passive, own) = match &entry.income {
             crate::FederalIncome::Partnership { data } => {
-                let (_, disposal) = data.outcome(&data.regular);
+                let (_, disposal) = match data.outcome(&data.regular) {
+                    Ok(outcome) => outcome,
+                    Err((key, _message)) => {
+                        crate::issue_localized!(
+                            r,
+                            &crate::interview::income_issue_context(entry),
+                            "K-1 income",
+                            key,
+                            _message
+                        );
+                        continue;
+                    }
+                };
                 (
                     disposal.activity_gain(),
                     data.items_in_pool()
@@ -452,6 +541,7 @@ pub(crate) fn gain_not_passive(
                 )
             }
             crate::FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
                 let (_, disposal) = data.outcome();
                 (
                     disposal.activity_gain(),

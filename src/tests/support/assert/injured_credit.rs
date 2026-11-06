@@ -17,9 +17,9 @@ pub(in crate::tests) mod business_credit_owner_sources {
         };
         assert!(id > 0);
         let entry = d.income.iter().find(|entry| entry.id == id).unwrap();
-        assert_eq!(entry.owner, owner);
+        assert_eq!(entry.owner, crate::DocumentOwner::from(owner));
         assert!(matches!(&entry.income, FederalIncome::Business { data }
-        if data.material_participation && data.all_at_risk()
+        if data.material_participation.individual(2026, false) == crate::participation::Participation::Yes && data.all_at_risk()
             && matches!(data.activity, BusinessActivity::Ordinary { .. })));
         id
     }
@@ -187,12 +187,13 @@ pub(in crate::tests) mod business_credit_owner_sources {
             .iter()
             .filter_map(|entry| match &entry.income {
                 FederalIncome::Dividend { data } => {
+                    let data = FederalDividend::from(data);
                     assert!(entry.id > 0);
                     assert_eq!(
                         (data.ordinary, data.qualified, data.capital_distributions),
                         (100000, 0, 0)
                     );
-                    Some((entry.id, entry.owner, data.foreign_tax))
+                    Some((entry.id, entry.owner.owned(), data.foreign_tax))
                 }
                 _ => None,
             })
@@ -241,7 +242,7 @@ pub(in crate::tests) mod business_credit_owner_sources {
         };
         assert!(id > 0);
         let entry = d.income.iter().find(|e| e.id == id).unwrap();
-        assert_eq!(entry.owner, owner);
+        assert_eq!(entry.owner, crate::DocumentOwner::from(owner));
         assert_eq!(entry.income, cash_business(0));
         match family {
             ResidualFamily::ForeignTax => {
@@ -258,8 +259,8 @@ pub(in crate::tests) mod business_credit_owner_sources {
                     })
                     .collect();
                 assert_eq!(entries.len(), 1);
-                assert_eq!(entries[0].0.owner, payer);
-                assert_eq!(entries[0].1.foreign_tax, 10000);
+                assert_eq!(entries[0].0.owner, crate::DocumentOwner::from(payer));
+                assert_eq!(entries[0].1.form.foreign_tax, Some(10000));
             }
             ResidualFamily::PremiumTax => {
                 let MarketplaceClaim::Yes { facts } = &d.credits.as_ref().unwrap().marketplace
@@ -362,12 +363,13 @@ pub(in crate::tests) mod elective_credit_mixed_sources {
             assert!(id > 0);
             let e = d.income.iter().find(|e| e.id == id).unwrap();
             assert!(matches!(&e.income, FederalIncome::Business { data }
-            if data.material_participation && data.all_at_risk()));
+            if data.material_participation.individual(2026, false) == crate::participation::Participation::Yes && data.all_at_risk()));
             assert_eq!(credit.credit, BusinessCredit::AdvancedManufacturingProduction);
-            let expected = family.credits()[usize::from(e.owner == Owner::Spouse)] * 100;
+            let expected =
+                family.credits()[usize::from(e.owner == crate::DocumentOwner::Spouses)] * 100;
             assert_eq!(credit.amount, expected);
             assert_eq!(credit.election, CreditElection::ElectivePayment { amount: expected });
-            links.push((id, e.owner, expected));
+            links.push((id, e.owner.owned(), expected));
         }
         links.sort_by_key(|row| row.0);
         assert_ne!(links[0].0, links[1].0);

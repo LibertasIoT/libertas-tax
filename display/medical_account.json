@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 1000000, "rule": {"select": "^<HsaTrusteeStatementPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["trustee_payer", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["amount", "account"]}]}}
+  ]
+}

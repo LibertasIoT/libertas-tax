@@ -81,11 +81,13 @@ pub enum ViaticalRegulation {
 pub struct CareFundingAmounts {
     /// Employee's after-tax net premiums
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub employee_premium: i64,
     /// Employer's tax-free net premiums
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub employer_premium: i64,
 }
 impl CareFundingAmounts {
@@ -332,7 +334,8 @@ pub struct CarePermanentInjury {
     /// Portion of the employer-attributable benefit paid for this injury
     /// Do not include medical reimbursement or another payment already listed as an excluded portion.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Injury on which the payment was based
     pub kind: CareInjuryKind,
@@ -373,7 +376,8 @@ pub enum NonqualifiedCareTreatment {
         /// Employer-attributable payment specifically reimbursing eligible medical care
         /// Only actual eligible expenses after the plan began, not amounts received regardless of expenses. Exclude prior-year deductions recovered and permanent-injury payments entered separately. Enter unreimbursed medical costs net of this reimbursement on Medical.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         medical_reimbursement: i64,
         /// Separate permanent-injury payment from the employer-attributable benefit
@@ -420,7 +424,7 @@ pub enum LtcContract {
         /// Actual payment tax treatment
         treatment: NonqualifiedCareTreatment,
     },
-    // A printed 1099-LTC does not establish the actual legal receipt character.
+    // An unchecked optional box 4 does not establish actual contract qualification.
     // Unavailable insurer/source records retain ISSUE_LTC_LIFE_CHARACTER_UNRESOLVED.
     /// Contract qualification is not established
     Unknown,
@@ -446,7 +450,8 @@ pub enum NonqualifiedCareTreatmentPage {
         /// Employer-attributable payment specifically reimbursing eligible medical care
         /// Only actual eligible expenses after the plan began, not amounts received regardless of expenses. Exclude prior-year deductions recovered and permanent-injury payments entered separately. Enter unreimbursed medical costs net of this reimbursement on Medical.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         medical_reimbursement: i64,
         /// Separate permanent-injury payment from the employer-attributable benefit
@@ -499,7 +504,7 @@ pub enum LtcContractPage {
         /// Actual payment tax treatment
         treatment: NonqualifiedCareTreatmentPage,
     },
-    // A printed 1099-LTC does not establish the actual legal receipt character.
+    // An unchecked optional box 4 does not establish actual contract qualification.
     // Unavailable insurer/source records retain ISSUE_LTC_LIFE_CHARACTER_UNRESOLVED.
     /// Contract qualification is not established
     Unknown,

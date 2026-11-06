@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 59000, "rule": {"select": "^<IntangiblePriorClaimedPage>.regular", "when_single_choice": "hide"}},
+    {"order": 60000, "rule": {"select": "^<IntangiblePriorClaimedPage>.amt", "when_single_choice": "hide"}},
+    {"order": 61000, "rule": {"select": "^<IntangibleSourcePage>.first_existed", "when_single_choice": "hide"}}
+  ]
+}

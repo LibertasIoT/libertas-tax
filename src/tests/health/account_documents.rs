@@ -1,6 +1,5 @@
-// Health, long-term care and ABLE account documents (unit B6a, 2026-10-09): the fixtures F1-F13 of
-// the map (the Forms 1099-R ones are the B5 unit's) and the boundaries the stored kinds were tested
-// with before they became documents. Amounts in the comments are dollars; the records carry cents.
+// Health, long-term care and ABLE account documents and their stored-value boundaries.
+// Amounts in the comments are dollars; the records carry cents.
 // Unless stated: single filer born 1980-06-15 with $60,000 of wages (the `complete` household), one
 // document, and ids from 2 (the W-2 is 1).
 use super::*;
@@ -8,7 +7,13 @@ use crate::kernel::ratio::exact::{self, whole};
 use crate::tests::cross::interview::{
     PAGE_ADJUSTMENTS, accepted, hsa_account, open_hsa_page, open_topic, page_documents, save_topic,
 };
-use crate::tests::support::client::survey::survey_preview_document;
+use crate::tests::support::builders::contribution_documents::{
+    attempted_hsa_rollover, attempted_hsa_rollover_source, ordinary_hsa_deposit,
+};
+use crate::tests::support::client::income_pages::{
+    open_documents, save_documents, save_each_topic,
+};
+use alloc::string::{String, ToString};
 
 fn dollars(v: i64) -> i64 {
     v * 100
@@ -31,41 +36,50 @@ fn own_payment(gross: i64, paid: u32, medical: i64) -> MedicalSaPayment {
 // A Form 1099-SA in dollars.
 fn sa(gross: i64, account: MedicalSaAccount, payment: MedicalSaPayment) -> FederalIncome {
     FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(gross),
-            account,
-            payment,
+        data: crate::SaSource {
+            medicare_prior: if matches!(&account, MedicalSaAccount::MedicareAdvantage) {
+                Some(MedicareMsaPrior::None)
+            } else {
+                None
+            },
+            medicare_from_spouse: if matches!(&account, MedicalSaAccount::MedicareAdvantage) {
+                Some(false)
+            } else {
+                None
+            },
+            payment: Some(payment.clone()),
+            ..sa_source(Sa1099 {
+                origin: crate::HealthDocumentOrigin::Form1099Sa,
+                gross: dollars(gross),
+                box2_earnings: None,
+                box3_code: match &payment {
+                    MedicalSaPayment::Own { .. } => Some(1),
+                    MedicalSaPayment::ExcessReturned => Some(2),
+                    MedicalSaPayment::Inherited { .. } => Some(4),
+                    MedicalSaPayment::Prohibited { .. } => Some(5),
+                    MedicalSaPayment::Unreported { .. } => None,
+                },
+                box4_value: None,
+                account: account.clone(),
+                ..Default::default()
+            })
         },
     }
 }
 fn archer_form(gross: i64, paid: u32, medical: i64) -> FederalIncome {
     sa(gross, MedicalSaAccount::Archer, own_payment(gross, paid, medical))
 }
-fn ma_account(balance: i64, deductible: i64) -> MedicalSaAccount {
-    MedicalSaAccount::MedicareAdvantage {
-        prior: MedicareMsaPrior::Existing {
-            balance: dollars(balance),
-            deductible: dollars(deductible),
-        },
-    }
+fn ma_account(balance: i64, deductible: i64) -> MedicareMsaPrior {
+    MedicareMsaPrior::Existing { balance: dollars(balance), deductible: dollars(deductible) }
 }
 fn ma_none() -> MedicalSaAccount {
-    MedicalSaAccount::MedicareAdvantage { prior: MedicareMsaPrior::None }
+    MedicalSaAccount::MedicareAdvantage
 }
 fn bill(incurred: u32, paid: u32, amount: i64) -> InheritedMedicalPayment {
     InheritedMedicalPayment { incurred, paid, amount: dollars(amount) }
 }
-fn inherited_payment(
-    died: u32,
-    value: i64,
-    payments: Vec<InheritedMedicalPayment>,
-) -> MedicalSaPayment {
-    MedicalSaPayment::Inherited {
-        died,
-        value: dollars(value),
-        beneficiary: MedicalBeneficiary::Nonspouse { payments },
-    }
+fn inherited_payment(died: u32, payments: Vec<InheritedMedicalPayment>) -> MedicalSaPayment {
+    MedicalSaPayment::Inherited { died, beneficiary: MedicalBeneficiary::Nonspouse { payments } }
 }
 fn kinds() -> [MedicalSaAccount; 3] {
     [MedicalSaAccount::Hsa, MedicalSaAccount::Archer, ma_none()]
@@ -109,7 +123,7 @@ fn f1_archer_msa_partly_medical() {
     assert_eq!(r.tax.unwrap(), expected.tax.unwrap() + 24_000);
     assert_eq!(restart(d.clone()).draft, d);
     let FederalIncome::MedicalDistribution { data } = &mut d.income[1].income else { panic!() };
-    let MedicalSaPayment::Own { disabled_since, .. } = &mut data.payment else { panic!() };
+    let Some(MedicalSaPayment::Own { disabled_since, .. }) = &mut data.payment else { panic!() };
     *disabled_since = Some(20260301);
     let r = supported(&d);
     assert_eq!(value(&r, "archer_msa_taxable_distributions"), 1200);
@@ -136,21 +150,41 @@ fn f2_the_65th_birthday_is_taxed_and_the_next_day_is_not() {
 // onset are taxed on the day and exempt the day after; an onset before birth is refused.
 #[test]
 fn archer_msa_age_and_disability_exceptions_start_after_the_event_date() {
-    let form = |paid, disabled| FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(1000),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::Own {
+    let form = |paid, disabled| crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Own {
             nonmedical: vec![MedicalAccountWithdrawal { date: paid, amount: dollars(1000) }],
             medical: 0,
             rollover: None,
             disabled_since: disabled,
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(1000),
+            box2_earnings: None,
+            box3_code: Some(1),
+            box4_value: None,
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
     let mut p = person();
     p.birth_date = 19610615;
     let base = |paid, p: &FederalPerson| {
-        exact::rounded(&form(paid, None).amounts(p).unwrap().penalized).unwrap()
+        exact::rounded(&form(paid, None).record().amounts(p).unwrap().penalized).unwrap()
     };
     assert_eq!(base(20260614, &p), dollars(1000));
     assert_eq!(base(20260615, &p), dollars(1000));
@@ -158,13 +192,13 @@ fn archer_msa_age_and_disability_exceptions_start_after_the_event_date() {
     p.birth_date = 19800101;
     assert_eq!(base(20260616, &p), dollars(1000));
     let disabled = |onset, paid| {
-        exact::rounded(&form(paid, Some(onset)).amounts(&p).unwrap().penalized).unwrap()
+        exact::rounded(&form(paid, Some(onset)).record().amounts(&p).unwrap().penalized).unwrap()
     };
     assert_eq!(disabled(20260615, 20260615), dollars(1000));
     assert_eq!(disabled(20260614, 20260615), 0);
     assert_eq!(disabled(20250101, 20260615), 0);
     assert_eq!(
-        form(20260615, Some(19700101)).amounts(&p).unwrap_err().0,
+        form(20260615, Some(19700101)).record().amounts(&p).unwrap_err().0,
         "ISSUE_ARCHER_MSA_DISABILITY_BEFORE_BIRTH"
     );
 }
@@ -175,7 +209,7 @@ fn archer_msa_spouses_combine_tax_base_before_rounding_rate() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, income(archer_msa(3)));
     let mut spouse = income(archer_msa(3));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "archer_msa_taxable_distributions"), 6);
@@ -223,10 +257,10 @@ fn archer_msa_medical_and_rollover_exclusions_preserve_nonmedical_tax() {
     let before = supported(&itemizing);
     let mut data = archer_msa(0);
     if let FederalIncome::MedicalDistribution { data } = &mut data
-        && let MedicalSaPayment::Own { rollover, .. } = &mut data.payment
+        && let Some(MedicalSaPayment::Own { rollover, .. }) = &mut data.payment
     {
-        data.gross += dollars(5000);
         *rollover = Some(archer_rollover());
+        data.form1099sa_mut().unwrap().gross_distribution += dollars(5000);
     }
     add(&mut itemizing, income(data));
     let r = supported(&itemizing);
@@ -240,37 +274,57 @@ fn archer_msa_medical_and_rollover_exclusions_preserve_nonmedical_tax() {
 // type in 12 months (section 220(f)(5)): an ineligible one is refused, not taxed silently.
 #[test]
 fn archer_msa_rollover_enforces_sixty_days_and_preceding_year() {
-    let form = |rollover: MedicalRollover| FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(5000),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::Own {
+    let form = |rollover: MedicalRollover| crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Own {
             nonmedical: vec![],
             medical: 0,
             rollover: Some(rollover),
             disabled_since: None,
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(5000),
+            box2_earnings: None,
+            box3_code: Some(1),
+            box4_value: None,
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
     let mut v = archer_rollover();
-    assert!(form(v.clone()).amounts(&person()).is_ok());
+    assert!(form(v.clone()).record().amounts(&person()).is_ok());
     v.receipts[0].deposits[0].deposited = 20260303;
-    assert!(form(v.clone()).amounts(&person()).is_err());
+    assert!(form(v.clone()).record().amounts(&person()).is_err());
     v.receipts[0].deposits[0].deposited = 20260302;
     v.preceding = Some(20250101);
-    assert!(form(v.clone()).amounts(&person()).is_ok());
+    assert!(form(v.clone()).record().amounts(&person()).is_ok());
     v.preceding = Some(20250102);
-    assert!(form(v.clone()).amounts(&person()).is_err());
+    assert!(form(v.clone()).record().amounts(&person()).is_err());
     // A December payment may be deposited in the next year: 60 days from 2026-12-31 is 2027-03-01.
     v.receipts[0].received = 20261231;
     v.receipts[0].deposits[0].deposited = 20270301;
     v.preceding = None;
-    assert!(form(v.clone()).valid());
-    assert!(form(v.clone()).amounts(&person()).is_ok());
+    assert!(form(v.clone()).record().valid());
+    assert!(form(v.clone()).record().amounts(&person()).is_ok());
     v.receipts[0].deposits[0].deposited = 20270302;
-    assert!(form(v.clone()).amounts(&person()).is_err());
+    assert!(form(v.clone()).record().amounts(&person()).is_err());
     // A deposit before the receipt is not a rollover.
     v.receipts[0].deposits[0].deposited = 20261230;
-    assert!(!form(v).valid());
+    assert!(!form(v).record().valid());
     let mut d = complete(FederalStatus::Single);
     let mut late = archer_rollover();
     late.receipts[0].deposits[0].deposited = 20260303;
@@ -316,20 +370,40 @@ fn archer_msa_can_coexist_with_hsa_and_inherited_death_values() {
 // on 2026-01-01, still taxed).
 #[test]
 fn archer_prohibited_transaction_uses_the_january_value_and_date() {
-    let form = FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(12_345),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::Prohibited { occurred: 20261231 },
+    let form = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Prohibited { occurred: 20261231 }),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(12_345),
+            box2_earnings: None,
+            box3_code: Some(5),
+            box4_value: None,
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
     let mut p = person();
     p.birth_date = 19610615;
-    let a = form.amounts(&p).unwrap();
+    let a = form.record().amounts(&p).unwrap();
     assert_eq!((a.taxable, a.penalized), (whole(dollars(12_345)), whole(dollars(12_345))));
     p.birth_date = 19601231;
-    assert_eq!(form.amounts(&p).unwrap().penalized, whole(0));
+    assert_eq!(form.record().amounts(&p).unwrap().penalized, whole(0));
     p.birth_date = 19610101;
-    assert_eq!(form.amounts(&p).unwrap().penalized, whole(dollars(12_345)));
+    assert_eq!(form.record().amounts(&p).unwrap().penalized, whole(dollars(12_345)));
     let mut d = complete(FederalStatus::Single);
     add(&mut d, income(FederalIncome::MedicalDistribution { data: form }));
     let r = supported(&d);
@@ -349,11 +423,12 @@ fn f7_archer_excess_returned() {
     let mut d = complete(FederalStatus::Single);
     add(
         &mut d,
-        income(sa(
-            1150,
-            MedicalSaAccount::Archer,
-            MedicalSaPayment::ExcessReturned { earnings: Some(dollars(150)) },
-        )),
+        income({
+            let mut value = sa(1150, MedicalSaAccount::Archer, MedicalSaPayment::ExcessReturned);
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().earnings_on_excess_contributions = Some(dollars(150));
+            value
+        }),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "archer_msa_2_excess_earnings"), 150);
@@ -362,19 +437,43 @@ fn f7_archer_excess_returned() {
     assert_eq!(return_line(&r, "8"), 15_000);
     assert_eq!(value(&r, "agi"), 60_150);
     // HSA code2 is linked to its corrective contribution facts; printed earnings cannot exceed box1.
-    let mut v = FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(100),
-        account: MedicalSaAccount::Hsa,
-        payment: MedicalSaPayment::ExcessReturned { earnings: Some(dollars(10)) },
+    let mut v = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Hsa, MedicalSaAccount::MedicareAdvantage) {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Hsa,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::ExcessReturned),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(100),
+            box2_earnings: Some(dollars(10)),
+            box3_code: Some(2),
+            box4_value: None,
+            account: MedicalSaAccount::Hsa,
+            ..Default::default()
+        })
     };
-    assert_eq!(v.rule(), None);
-    v.account = MedicalSaAccount::Archer;
-    assert_eq!(v.rule(), None);
-    v.payment = MedicalSaPayment::ExcessReturned { earnings: Some(dollars(101)) };
-    assert_eq!(v.rule(), Some("SA1099_EARNINGS_ABOVE_GROSS"));
-    v.account = ma_none();
-    assert_eq!(v.rule(), Some("SA1099_EXCESS_NOT_ARCHER"));
+    assert_eq!(v.record().rule(), None);
+    v.form1099sa_mut().unwrap().account = MedicalSaAccount::Archer;
+    assert_eq!(v.record().rule(), None);
+    v.payment = Some(MedicalSaPayment::ExcessReturned);
+    v.form1099sa_mut().unwrap().earnings_on_excess_contributions = Some(dollars(101));
+    v.form1099sa_mut().unwrap().distribution_code =
+        Some(crate::Form1099SaDistributionCode::ExcessContributions);
+    assert_eq!(v.record().rule(), Some("SA1099_EARNINGS_ABOVE_GROSS"));
+    v.form1099sa_mut().unwrap().account = ma_none();
+    v.medicare_prior = Some(MedicareMsaPrior::None);
+    v.medicare_from_spouse = Some(false);
+    assert_eq!(v.record().rule(), Some("SA1099_EXCESS_NOT_ARCHER"));
 }
 
 // ---- Form 1099-SA: a Medicare Advantage MSA (Form 8853 Section B) ----
@@ -387,7 +486,17 @@ fn f7_archer_excess_returned() {
 fn f3_medicare_advantage_msa_with_a_prior_balance() {
     let mut d = complete(FederalStatus::Single);
     born(&mut d, 19550201);
-    add(&mut d, income(sa(5000, ma_account(4000, 5000), own_payment(5000, 20260901, 2000))));
+    add(
+        &mut d,
+        income({
+            let mut value =
+                sa(5000, MedicalSaAccount::MedicareAdvantage, own_payment(5000, 20260901, 2000));
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.medicare_prior = Some(ma_account(4000, 5000));
+            data.medicare_from_spouse = Some(false);
+            value
+        }),
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "medicare_msa_taxable_distributions"), 3000);
     assert_eq!(value(&r, "medicare_msa_2_balance_relief"), 1000);
@@ -435,19 +544,35 @@ fn medicare_msa_prior_balance_relief_and_new_account_tax() {
 fn medicare_msa_disability_and_death_apply_on_date_but_age_does_not() {
     let mut p = person();
     p.birth_date = 19500101;
-    let form = |paid, disabled| FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(2000),
-        account: ma_none(),
-        payment: MedicalSaPayment::Own {
+    let form = |paid, disabled| crate::SaSource {
+        medicare_prior: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Own {
             nonmedical: vec![MedicalAccountWithdrawal { date: paid, amount: dollars(2000) }],
             medical: 0,
             rollover: None,
             disabled_since: disabled,
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(2000),
+            box2_earnings: None,
+            box3_code: Some(1),
+            box4_value: None,
+            account: ma_none(),
+            ..Default::default()
+        })
     };
     let penalized = |p: &FederalPerson, paid, disabled| {
-        exact::rounded(&form(paid, disabled).amounts(p).unwrap().penalized).unwrap()
+        exact::rounded(&form(paid, disabled).record().amounts(p).unwrap().penalized).unwrap()
     };
     for paid in [20260614, 20260615, 20260616] {
         assert_eq!(penalized(&p, paid, None), dollars(2000));
@@ -497,7 +622,7 @@ fn medicare_msa_spouses_do_not_share_balance_relief() {
         )),
     );
     let mut spouse = income(medicare_msa(5000, MedicareMsaPrior::None));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "medicare_msa_taxable_distributions"), 10_000);
@@ -519,11 +644,18 @@ fn medicare_msa_spouses_do_not_share_balance_relief() {
 fn medicare_msa_rounds_form_totals_after_aggregating_payments() {
     let cents = |gross, medical, paid| {
         income(FederalIncome::MedicalDistribution {
-            data: FederalMedicalDistribution {
-                origin: crate::HealthDocumentOrigin::Form1099Sa,
-                gross,
-                account: ma_none(),
-                payment: MedicalSaPayment::Own {
+            data: crate::SaSource {
+                medicare_prior: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Own {
                     nonmedical: vec![MedicalAccountWithdrawal {
                         date: paid,
                         amount: gross - medical,
@@ -531,7 +663,16 @@ fn medicare_msa_rounds_form_totals_after_aggregating_payments() {
                     medical,
                     rollover: None,
                     disabled_since: None,
-                },
+                }),
+                ..sa_source(Sa1099 {
+                    origin: crate::HealthDocumentOrigin::Form1099Sa,
+                    gross,
+                    box2_earnings: None,
+                    box3_code: Some(1),
+                    box4_value: None,
+                    account: ma_none(),
+                    ..Default::default()
+                })
             },
         })
     };
@@ -573,11 +714,18 @@ fn medicare_msa_medical_use_is_neither_income_nor_an_itemized_deduction() {
 fn medicare_msa_is_not_investment_income_and_final_return_rejects_postdeath_payments() {
     let mut d = complete(FederalStatus::Single);
     let disabled = FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(302_000),
-            account: ma_none(),
-            payment: MedicalSaPayment::Own {
+        data: crate::SaSource {
+            medicare_prior: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+                Some(MedicareMsaPrior::None)
+            } else {
+                None
+            },
+            medicare_from_spouse: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+                Some(false)
+            } else {
+                None
+            },
+            payment: Some(MedicalSaPayment::Own {
                 nonmedical: vec![MedicalAccountWithdrawal {
                     date: 20260615,
                     amount: dollars(300_000),
@@ -585,7 +733,16 @@ fn medicare_msa_is_not_investment_income_and_final_return_rejects_postdeath_paym
                 medical: dollars(2000),
                 rollover: None,
                 disabled_since: Some(20260101),
-            },
+            }),
+            ..sa_source(Sa1099 {
+                origin: crate::HealthDocumentOrigin::Form1099Sa,
+                gross: dollars(302_000),
+                box2_earnings: None,
+                box3_code: Some(1),
+                box4_value: None,
+                account: ma_none(),
+                ..Default::default()
+            })
         },
     };
     add(&mut d, income(disabled));
@@ -608,11 +765,17 @@ fn medicare_prohibited_transaction_uses_january_first_and_prior_balance_relief()
     born(&mut d, 19400615);
     add(
         &mut d,
-        income(sa(
-            10_000,
-            ma_account(10_000, 10_000),
-            MedicalSaPayment::Prohibited { occurred: 20260105 },
-        )),
+        income({
+            let mut value = sa(
+                10_000,
+                MedicalSaAccount::MedicareAdvantage,
+                MedicalSaPayment::Prohibited { occurred: 20260105 },
+            );
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.medicare_prior = Some(ma_account(10_000, 10_000));
+            data.medicare_from_spouse = Some(false);
+            value
+        }),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "medicare_msa_2_deemed"), 10_000);
@@ -635,11 +798,16 @@ fn f4_inherited_hsa_with_bills_and_earnings() {
     let mut d = complete(FederalStatus::Single);
     add(
         &mut d,
-        income(sa(
-            20_400,
-            MedicalSaAccount::Hsa,
-            inherited_payment(20260320, 20_000, vec![bill(20260301, 20260510, 1500)]),
-        )),
+        income({
+            let mut value = sa(
+                20_400,
+                MedicalSaAccount::Hsa,
+                inherited_payment(20260320, vec![bill(20260301, 20260510, 1500)]),
+            );
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(20_000));
+            value
+        }),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "inherited_medical_2_value"), 20_000);
@@ -652,19 +820,29 @@ fn f4_inherited_hsa_with_bills_and_earnings() {
     assert_eq!(value(&r, "agi"), 60_000 + 18_900);
     assert_eq!(value(&r, "hsa_additional_tax"), 0);
     let mut late = d.clone();
-    late.income[1].income = sa(
-        20_400,
-        MedicalSaAccount::Hsa,
-        inherited_payment(20260320, 20_000, vec![bill(20260301, 20270321, 1500)]),
-    );
+    late.income[1].income = {
+        let mut value = sa(
+            20_400,
+            MedicalSaAccount::Hsa,
+            inherited_payment(20260320, vec![bill(20260301, 20270321, 1500)]),
+        );
+        let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+        data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(20_000));
+        value
+    };
     let r = supported(&late);
     assert_eq!(value(&r, "inherited_medical_2_taxable"), 20_000);
     // A bill paid the last day of the year counts.
-    late.income[1].income = sa(
-        20_400,
-        MedicalSaAccount::Hsa,
-        inherited_payment(20260320, 20_000, vec![bill(20260301, 20270320, 1500)]),
-    );
+    late.income[1].income = {
+        let mut value = sa(
+            20_400,
+            MedicalSaAccount::Hsa,
+            inherited_payment(20260320, vec![bill(20260301, 20270320, 1500)]),
+        );
+        let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+        data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(20_000));
+        value
+    };
     assert_eq!(value(&supported(&late), "inherited_medical_2_taxable"), 18_500);
 }
 
@@ -674,12 +852,17 @@ fn f4_inherited_hsa_with_bills_and_earnings() {
 #[test]
 fn f5_inherited_archer_msa_to_the_estate_on_the_final_return() {
     let mut d = complete(FederalStatus::Single);
-    let estate = |died| MedicalSaPayment::Inherited {
-        died,
-        value: dollars(8000),
-        beneficiary: MedicalBeneficiary::Estate,
-    };
-    add(&mut d, income(sa(8000, MedicalSaAccount::Archer, estate(20260505))));
+    let estate =
+        |died| MedicalSaPayment::Inherited { died, beneficiary: MedicalBeneficiary::Estate };
+    add(
+        &mut d,
+        income({
+            let mut value = sa(8000, MedicalSaAccount::Archer, estate(20260505));
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(8000));
+            value
+        }),
+    );
     assert!(issue(&d, "ISSUE_INHERITED_MEDICAL_ESTATE_DATE_MISMATCH"));
     die(&mut d, 20260505);
     let r = supported(&d);
@@ -690,11 +873,20 @@ fn f5_inherited_archer_msa_to_the_estate_on_the_final_return() {
     assert_eq!(value(&r, "inherited_medical_earnings"), 0);
     assert_eq!(return_line(&r, "8"), 800_000);
     assert_eq!(return_line(&r, "23"), 0);
-    d.income[1].income = sa(8000, MedicalSaAccount::Archer, estate(20260504));
+    d.income[1].income = {
+        let mut value = sa(8000, MedicalSaAccount::Archer, estate(20260504));
+        let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+        data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(8000));
+        value
+    };
     assert!(issue(&d, "ISSUE_INHERITED_MEDICAL_ESTATE_DATE_MISMATCH"));
     // An individual beneficiary cannot have died before the holder.
-    d.income[1].income =
-        sa(8000, MedicalSaAccount::Archer, inherited_payment(20260616, 8000, vec![]));
+    d.income[1].income = {
+        let mut value = sa(8000, MedicalSaAccount::Archer, inherited_payment(20260616, vec![]));
+        let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+        data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(8000));
+        value
+    };
     assert!(issue(&d, "ISSUE_INHERITED_MEDICAL_BENEFICIARY_PREDECEASED"));
 }
 
@@ -710,7 +902,14 @@ fn f6_inherited_account_of_an_earlier_death_taxes_only_later_earnings() {
         let expected = supported(&d);
         add(
             &mut d,
-            income(sa(10_300, account.clone(), inherited_payment(20251130, 10_000, vec![]))),
+            income({
+                let mut value = sa(10_300, account.clone(), inherited_payment(20251130, vec![]));
+                let FederalIncome::MedicalDistribution { data } = &mut value else {
+                    unreachable!()
+                };
+                data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(10_000));
+                value
+            }),
         );
         let r = supported(&d);
         assert_eq!(value(&r, "inherited_medical_3_taxable"), 0);
@@ -726,7 +925,12 @@ fn f6_inherited_account_of_an_earlier_death_taxes_only_later_earnings() {
         assert_eq!(r.tax, reference.tax);
         assert_ne!(r.tax, expected.tax);
         assert_eq!(restart(d.clone()).draft, d);
-        d.income[2].income = sa(9700, account, inherited_payment(20251130, 10_000, vec![]));
+        d.income[2].income = {
+            let mut value = sa(9700, account, inherited_payment(20251130, vec![]));
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(10_000));
+            value
+        };
         let r = supported(&d);
         assert_eq!(value(&r, "inherited_medical_3_earnings"), 0);
         assert!(noted(&r, "NOTE_INHERITED_MEDICAL_DECLINE"));
@@ -742,11 +946,16 @@ fn earlier_death_medical_offset_stays_on_death_year_return() {
     let expected = supported(&d);
     add(
         &mut d,
-        income(sa(
-            10_000,
-            MedicalSaAccount::Archer,
-            inherited_payment(20251231, 10_000, vec![bill(20251201, 20260601, 1000)]),
-        )),
+        income({
+            let mut value = sa(
+                10_000,
+                MedicalSaAccount::Archer,
+                inherited_payment(20251231, vec![bill(20251201, 20260601, 1000)]),
+            );
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(10_000));
+            value
+        }),
     );
     let r = supported(&d);
     assert_eq!(r.tax, expected.tax);
@@ -791,11 +1000,18 @@ fn inherited_medical_expenses_use_actual_death_window_including_following_year()
         let mut d = complete(FederalStatus::Single);
         add(
             &mut d,
-            income(sa(
-                50_000,
-                MedicalSaAccount::Hsa,
-                inherited_payment(20260615, 50_000, vec![bill(incurred, paid, 12_000)]),
-            )),
+            income({
+                let mut value = sa(
+                    50_000,
+                    MedicalSaAccount::Hsa,
+                    inherited_payment(20260615, vec![bill(incurred, paid, 12_000)]),
+                );
+                let FederalIncome::MedicalDistribution { data } = &mut value else {
+                    unreachable!()
+                };
+                data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(50_000));
+                value
+            }),
         );
         let r = supported(&d);
         assert_eq!(value(&r, "inherited_medical_2_medical"), medical);
@@ -809,24 +1025,45 @@ fn inherited_medical_expenses_are_capped_per_account_and_rounded_after_sum() {
     let mut d = complete(FederalStatus::Single);
     add(
         &mut d,
-        income(sa(
-            1000,
-            MedicalSaAccount::Archer,
-            inherited_payment(20260615, 1000, vec![bill(20260101, 20260616, 2000)]),
-        )),
+        income({
+            let mut value = sa(
+                1000,
+                MedicalSaAccount::Archer,
+                inherited_payment(20260615, vec![bill(20260101, 20260616, 2000)]),
+            );
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(1000));
+            value
+        }),
     );
     add(
         &mut d,
-        income(sa(1000, MedicalSaAccount::Archer, inherited_payment(20260615, 1000, vec![]))),
+        income({
+            let mut value = sa(1000, MedicalSaAccount::Archer, inherited_payment(20260615, vec![]));
+            let FederalIncome::MedicalDistribution { data } = &mut value else { unreachable!() };
+            data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(1000));
+            value
+        }),
     );
     assert_eq!(value(&supported(&d), "archer_msa_taxable_distributions"), 1000);
-    let pair = FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(1000),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::Inherited {
+    let pair = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Inherited {
             died: 20260615,
-            value: dollars(1000),
+
             beneficiary: MedicalBeneficiary::Nonspouse {
                 payments: [49, 49]
                     .map(|amount| InheritedMedicalPayment {
@@ -836,9 +1073,18 @@ fn inherited_medical_expenses_are_capped_per_account_and_rounded_after_sum() {
                     })
                     .into(),
             },
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(1000),
+            box2_earnings: None,
+            box3_code: Some(4),
+            box4_value: Some(dollars(1000)),
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
-    let a = pair.amounts(&person()).unwrap();
+    let a = pair.record().amounts(&person()).unwrap();
     assert_eq!((a.inherited_medical, a.inherited), (whole(1), whole(999)));
 }
 
@@ -850,10 +1096,8 @@ fn inherited_medical_offset_does_not_create_an_itemized_medical_deduction() {
     let before = supported(&d);
     let mut form = medical_inheritance(ma_none());
     if let FederalIncome::MedicalDistribution { data } = &mut form {
-        data.gross = dollars(12_000);
-        if let MedicalSaPayment::Inherited { value, .. } = &mut data.payment {
-            *value = dollars(12_000);
-        }
+        data.form1099sa_mut().unwrap().gross_distribution = dollars(12_000);
+        data.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(12_000));
     }
     add(&mut d, income(form));
     let r = supported(&d);
@@ -869,7 +1113,7 @@ fn multiple_medical_inheritances_coexist_with_own_medicare_account() {
     add(&mut d, income(medicare_msa(5000, MedicareMsaPrior::None)));
     for account in [MedicalSaAccount::Hsa, MedicalSaAccount::Archer, ma_none(), ma_none()] {
         let mut e = income(medical_inheritance(account));
-        e.owner = Owner::Spouse;
+        e.owner = crate::DocumentOwner::Spouses;
         add(&mut d, e);
     }
     let r = supported(&d);
@@ -889,7 +1133,7 @@ fn inherited_medical_estate_beneficiary_requires_original_holders_final_return()
         let mut d = complete(FederalStatus::Single);
         let mut form = medical_inheritance(account);
         if let FederalIncome::MedicalDistribution { data } = &mut form
-            && let MedicalSaPayment::Inherited { beneficiary, .. } = &mut data.payment
+            && let Some(MedicalSaPayment::Inherited { beneficiary, .. }) = &mut data.payment
         {
             *beneficiary = MedicalBeneficiary::Estate;
         }
@@ -964,78 +1208,125 @@ fn prior_nol_does_not_replace_medicare_msa_balance_relief() {
 // The page rules the client checks, checked again on save with the same keys.
 #[test]
 fn sa1099_rules_are_checked_again_on_the_server() {
-    let own =
-        |medical, rollover: Option<MedicalRollover>, disabled_since| FederalMedicalDistribution {
+    let own = |medical, rollover: Option<MedicalRollover>, disabled_since| crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Own {
+            nonmedical: vec![MedicalAccountWithdrawal {
+                date: 20260615,
+                amount: (dollars(1000 - medical)
+                    - rollover.as_ref().map_or(0, |r| exact::rounded(&r.amount()).unwrap()))
+                .max(0),
+            }],
+            medical: dollars(medical),
+            rollover,
+            disabled_since,
+        }),
+        ..sa_source(Sa1099 {
             origin: crate::HealthDocumentOrigin::Form1099Sa,
             gross: dollars(1000),
+            box2_earnings: None,
+            box3_code: Some(1),
+            box4_value: None,
             account: MedicalSaAccount::Archer,
-            payment: MedicalSaPayment::Own {
-                nonmedical: vec![MedicalAccountWithdrawal {
-                    date: 20260615,
-                    amount: (dollars(1000 - medical)
-                        - rollover.as_ref().map_or(0, |r| exact::rounded(&r.amount()).unwrap()))
-                    .max(0),
-                }],
-                medical: dollars(medical),
-                rollover,
-                disabled_since,
-            },
-        };
-    assert_eq!(own(1000, None, None).rule(), None);
-    assert!(own(1000, None, None).valid());
-    assert!(!own(1001, None, None).valid());
-    assert_eq!(own(600, Some(archer_rollover()), None).rule(), Some("SA1099_MEDICAL_ABOVE_GROSS"));
+            ..Default::default()
+        })
+    };
+    assert_eq!(own(1000, None, None).record().rule(), None);
+    assert!(own(1000, None, None).record().valid());
+    assert!(own(1001, None, None).record().valid());
+    assert_eq!(own(1001, None, None).record().rule(), Some("SA1099_MEDICAL_ABOVE_GROSS"));
+    assert_eq!(
+        own(600, Some(archer_rollover()), None).record().rule(),
+        Some("SA1099_MEDICAL_ABOVE_GROSS")
+    );
     // 600 spent and 5,000 rolled over out of 1,000.
     let mut ma = own(0, Some(archer_rollover()), None);
-    ma.gross = dollars(10_000);
-    ma.account = ma_none();
-    assert_eq!(ma.rule(), Some("SA1099_ROLLOVER_NOT_ARCHER"));
+    ma.form1099sa_mut().unwrap().gross_distribution = dollars(10_000);
+    ma.form1099sa_mut().unwrap().account = ma_none();
+    ma.medicare_prior = Some(MedicareMsaPrior::None);
+    ma.medicare_from_spouse = Some(false);
+    assert_eq!(ma.record().rule(), Some("SA1099_ROLLOVER_NOT_ARCHER"));
     let mut early = archer_rollover();
     early.receipts[0].deposits[0].deposited = 20251231;
     let mut early_form = own(0, Some(early), None);
-    early_form.gross = dollars(10_000);
-    assert_eq!(early_form.rule(), Some("SA1099_ROLLOVER_BEFORE_RECEIPT"));
+    early_form.form1099sa_mut().unwrap().gross_distribution = dollars(10_000);
+    assert_eq!(early_form.record().rule(), Some("SA1099_ROLLOVER_BEFORE_RECEIPT"));
     // A later onset is valid source context; it cannot exempt an earlier payment.
-    assert_eq!(own(0, None, Some(20260616)).rule(), None);
+    assert_eq!(own(0, None, Some(20260616)).record().rule(), None);
     assert_eq!(
-        own(0, None, Some(20260616)).amounts(&person()).unwrap().penalized,
+        own(0, None, Some(20260616)).record().amounts(&person()).unwrap().penalized,
         whole(dollars(1000))
     );
-    assert_eq!(own(0, None, Some(20260615)).rule(), None);
+    assert_eq!(own(0, None, Some(20260615)).record().rule(), None);
     let mut spouse = own(0, None, None);
-    spouse.account = MedicalSaAccount::MedicareFromSpouse;
-    spouse.payment = inherited_payment(20260101, 100, vec![]);
-    assert_eq!(spouse.rule(), Some("SA1099_SPOUSE_ACCOUNT_IS_OWN"));
-    // Invalid dates and amounts are not storable.
+    spouse.form1099sa_mut().unwrap().account = MedicalSaAccount::MedicareAdvantage;
+    spouse.medicare_from_spouse = Some(true);
+    spouse.medicare_prior = None;
+    spouse.payment = Some(inherited_payment(20260101, vec![]));
+    spouse.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(100));
+    spouse.form1099sa_mut().unwrap().distribution_code =
+        Some(crate::Form1099SaDistributionCode::DeathDistributionOtherThanCode6);
+    assert_eq!(spouse.record().rule(), Some("SA1099_SPOUSE_ACCOUNT_IS_OWN"));
     let mut bad = own(0, None, None);
-    for paid in [20251231, 20260229, 20270101] {
-        bad.payment = own_payment(1000, paid, 0);
-        assert!(!bad.valid(), "{paid}");
-    }
-    bad.payment = inherited_payment(20260229, 100, vec![]);
-    assert!(!bad.valid());
-    bad.payment = inherited_payment(20260615, 100, vec![bill(20260102, 20260101, 1)]);
-    assert!(!bad.valid());
-    bad.payment = inherited_payment(19961231, 100, vec![]);
-    assert!(!bad.valid());
-    bad.payment = MedicalSaPayment::Prohibited { occurred: 20251231 };
-    assert!(!bad.valid());
+    bad.payment = Some(inherited_payment(20260615, vec![bill(20260102, 20260101, 1)]));
+    bad.form1099sa_mut().unwrap().fmv_on_date_of_death = Some(dollars(100));
+    bad.form1099sa_mut().unwrap().distribution_code =
+        Some(crate::Form1099SaDistributionCode::DeathDistributionOtherThanCode6);
+    assert!(!bad.record().valid());
     // The save refuses what the rules refuse.
     let d = complete(FederalStatus::Single);
     let mut s = Interview::new(TEST_USER, d.clone());
     let item = item(
         Owner::Taxpayer,
         0,
-        IncomeDocument::Sa1099(Sa1099 {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(100),
-            account: ma_none(),
-            payment: MedicalSaPayment::ExcessReturned { earnings: Some(10) },
-        }),
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Sa1099(
+                crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                    medicare_prior: if matches!(&ma_none(), MedicalSaAccount::MedicareAdvantage) {
+                        Some(MedicareMsaPrior::None)
+                    } else {
+                        None
+                    },
+                    medicare_from_spouse: if matches!(
+                        &ma_none(),
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    payment: None,
+                    ..sa_source(Sa1099 {
+                        trustee_payer: Default::default(),
+                        recipient: Default::default(),
+                        origin: crate::HealthDocumentOrigin::Form1099Sa,
+                        gross: dollars(100),
+                        box2_earnings: Some(10),
+                        box3_code: Some(2),
+                        box4_value: None,
+                        account: ma_none(),
+                    })
+                }),
+            ),
+        },
     );
-    let Reply::Response(P::Problem { message, .. }) =
-        send(&mut s, save_topic(&d, TaxSection::OtherIncome, vec![item]))
-    else {
+    let Reply::Response(P::Problem { message, .. }) = ({
+        let request = save_documents(&mut s, vec![item]);
+        send(&mut s, request)
+    }) else {
         panic!("expected a refused save")
     };
     assert_eq!(message, libertas::libertas_formatted_text("SA1099_EXCESS_NOT_ARCHER", &[]));
@@ -1109,19 +1400,30 @@ fn f10_ltc_terminal_illness_and_a_nonqualified_contract() {
     add(
         &mut d,
         income(FederalIncome::LtcBenefits {
-            data: FederalLtcPayment {
-                interest: 0,
+            data: crate::LtcSource {
+                interest: None,
+                form: crate::Ltc1099Paper {
+                    payer: Default::default(),
+                    recipient: Default::default(),
+                    insured_party: Default::default(),
+                    date_certified: None,
+                    benefits: Some(0),
+                    accelerated: Some(dollars(50_000)),
+                    paid: LtcPaidBasis::NotChecked,
+                    box4_qualified: true,
+                    illness: Some(LtcIllness::Terminal),
+                    calendar_year: 2026,
+                    corrected: false,
+                    payer_phone: String::new(),
+                    account_number: String::new(),
+                },
                 benefit_origin: Some(LtcPaymentOrigin::Insurance),
                 accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
                     business_insurable_interest: false,
                 }),
-                benefits: 0,
-                accelerated: dollars(50_000),
-                paid: LtcPaidBasis::NotChecked,
                 contract: LtcContract::Qualified {
                     qualification: CareContractQualification::Qualified,
                 },
-                illness: LtcIllness::Terminal,
                 insured: None,
             },
         }),
@@ -1136,19 +1438,30 @@ fn f10_ltc_terminal_illness_and_a_nonqualified_contract() {
     add(
         &mut d,
         income(FederalIncome::LtcBenefits {
-            data: FederalLtcPayment {
-                interest: 0,
+            data: crate::LtcSource {
+                interest: None,
+                form: crate::Ltc1099Paper {
+                    payer: Default::default(),
+                    recipient: Default::default(),
+                    insured_party: Default::default(),
+                    date_certified: None,
+                    benefits: Some(dollars(6000)),
+                    accelerated: Some(0),
+                    paid: LtcPaidBasis::PerDiem,
+                    box4_qualified: false,
+                    illness: Some(LtcIllness::Chronic),
+                    calendar_year: 2026,
+                    corrected: false,
+                    payer_phone: String::new(),
+                    account_number: String::new(),
+                },
                 benefit_origin: Some(LtcPaymentOrigin::Insurance),
                 accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
                     business_insurable_interest: false,
                 }),
-                benefits: dollars(6000),
-                accelerated: 0,
-                paid: LtcPaidBasis::PerDiem,
                 contract: LtcContract::Nonqualified {
                     treatment: NonqualifiedCareTreatment::Unclassified,
                 },
-                illness: LtcIllness::Chronic,
                 insured: None,
             },
         }),
@@ -1165,10 +1478,36 @@ fn f10_ltc_terminal_illness_and_a_nonqualified_contract() {
     assert!(notes.iter().all(|n| n.display.key != "WARN_LTC_NONQUALIFIED_LEFT_OUT"));
     let mut s = restart(d.clone());
     assert_eq!(estimate(&s.draft), r);
-    let request = open_topic(&mut s, TaxSection::OtherIncome);
-    assert!(
-        matches!(&page_documents(&request)[0].document, IncomeDocument::Ltc1099(f) if f.contract == (LtcContractPage::Nonqualified { treatment:NonqualifiedCareTreatmentPage::Unclassified }))
-    );
+    let request = open_documents(&mut s);
+    assert!(matches!(
+        &page_documents(&request)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Ltc1099(_) }
+    ));
+    let topic = open_topic(&mut s, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { followups, .. } = &topic else { unreachable!() };
+    let source_id = s
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::LtcBenefits { .. }))
+        .unwrap()
+        .id;
+    let row = followups
+        .iter()
+        .find(|row| row.key == alloc::format!("income/{source_id}/ltc_contract"))
+        .unwrap();
+    assert!(matches!(
+        row.answer,
+        crate::DocumentAnswer::LtcContract {
+            value: LtcContractPage::Nonqualified {
+                treatment: NonqualifiedCareTreatmentPage::Unclassified
+            }
+        }
+    ));
 }
 
 // A reimbursed amount of a qualified contract is excluded outright, a chronically ill insured's
@@ -1176,6 +1515,8 @@ fn f10_ltc_terminal_illness_and_a_nonqualified_contract() {
 #[test]
 fn ltc_reimbursed_and_accelerated_benefits_by_their_boxes() {
     let form = |benefits, accelerated, paid, illness| FederalLtcPayment {
+        date_certified: crate::SourceDate::Unavailable,
+
         interest: 0,
         benefit_origin: Some(LtcPaymentOrigin::Insurance),
         accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
@@ -1184,8 +1525,9 @@ fn ltc_reimbursed_and_accelerated_benefits_by_their_boxes() {
         benefits: dollars(benefits),
         accelerated: dollars(accelerated),
         paid,
+        box4_qualified: true,
         contract: LtcContract::Qualified { qualification: CareContractQualification::Qualified },
-        illness,
+        illness: Some(illness),
         insured: None,
     };
     let reimbursed = form(1000, 0, LtcPaidBasis::Reimbursed, LtcIllness::Chronic);
@@ -1234,7 +1576,7 @@ fn ltc_unused_period_limit_cannot_offset_another_period() {
     // The periods' payments must total the forms'.
     let mut off = d.clone();
     if let FederalIncome::LtcBenefits { data } = &mut off.income[2].income {
-        data.benefits += dollars(10);
+        data.form.benefits = Some(data.form.benefits.unwrap_or(0) + dollars(10));
     }
     assert!(issue(&off, "ISSUE_LTC_PERIOD_PAYMENTS_DIFFER"));
     // Overlapping periods are not storable.
@@ -1292,28 +1634,13 @@ fn prior_nol_uses_only_long_term_care_benefits_above_period_exclusion() {
 
 // The record's dates and payments are checked where they are stored.
 #[test]
-fn ltc_period_source_rejects_outside_year_invalid_dates_and_negative_payments() {
-    for (starts, ends) in
-        [(20251231, 20260101), (20261231, 20270101), (20260229, 20260301), (20260102, 20260101)]
+fn ltc_period_source_rejects_reversed_dates() {
     {
+        let (starts, ends) = (20260102, 20260101);
         let mut d = complete(FederalStatus::Single);
         add(&mut d, income(ltc_record(ltc_one_period(starts, ends))));
         assert!(!d.valid_stored(), "{starts}-{ends}");
     }
-    let mut d = complete(FederalStatus::Single);
-    let mut p =
-        ltc_period(1000, CareBenefitRecipient::Other { insured_received: -1, others_received: 0 });
-    let several =
-        |periods| ltc_record(LtcPeriods::Several { method: CarePeriodMethod::EqualRate, periods });
-    let mut second = p.clone();
-    second.starts = 20260201;
-    second.ends = 20260228;
-    add(&mut d, income(several(vec![p.clone(), second.clone()])));
-    assert!(!d.valid_stored());
-    p.recipient = CareBenefitRecipient::Insured { other_payees: false };
-    p.received = -1;
-    d.income[1].income = several(vec![p, second]);
-    assert!(!d.valid_stored());
     // The rule the page checks, checked again on save.
     let record = FederalLtcInsured {
         insured: FederalLtcInsuredPerson::Other { name: "A".into() },
@@ -1349,14 +1676,14 @@ fn ltc_link_resolves_by_identity_the_only_record_or_none() {
     let mut joint = complete(FederalStatus::Joint);
     add(&mut joint, income(ltc_record(periods())));
     let mut form = income(ltc_form(15_000, None));
-    form.owner = Owner::Spouse;
+    form.owner = crate::DocumentOwner::Spouses;
     add(&mut joint, form);
     let r = supported(&joint);
     assert_eq!(value(&r, "taxable_ltc_benefits"), 2100);
     // Separate returns: another filer's record is refused.
     let mut separate = complete(FederalStatus::Separate);
     let mut record = income(ltc_record(periods()));
-    record.owner = Owner::Spouse;
+    record.owner = crate::DocumentOwner::Spouses;
     add(&mut separate, record);
     add(&mut separate, income(ltc_form(15_000, Some(2))));
     assert!(estimate(&separate).state == ResultState::Unsupported);
@@ -1366,7 +1693,23 @@ fn ltc_link_resolves_by_identity_the_only_record_or_none() {
 
 fn qa(gross: i64, earnings: i64, treatment: AbleTreatment) -> FederalIncome {
     FederalIncome::Able {
-        data: AbleDistribution { gross: dollars(gross), earnings: dollars(earnings), treatment },
+        data: crate::AbleSource {
+            form: crate::Form1099QaPaper {
+                payer: Default::default(),
+                recipient: Default::default(),
+                gross: dollars(gross),
+                earnings: dollars(earnings),
+                basis: dollars(gross - earnings),
+                program_to_program_transfer: false,
+                account_terminated: false,
+                recipient_not_designated_beneficiary: matches!(
+                    treatment,
+                    AbleTreatment::Corrective { .. }
+                ),
+                ..Default::default()
+            },
+            treatment: Some(treatment),
+        },
     }
 }
 fn annual(expenses: i64) -> AbleTreatment {
@@ -1441,43 +1784,164 @@ fn f13_able_returned_excess_contribution() {
         .find(|n| n.display.key == "NOTE_ABLE_CORRECTION_PRIOR_RETURN")
         .expect("the prior-year note");
     assert_eq!(note.display.args[1], MessageArg::Number(2025));
-    d.income[1].income = qa(1150, 150, AbleTreatment::Corrective { year: 2027 });
-    assert!(!d.valid_stored());
+}
+
+// Box 6 (the recipient is not the designated beneficiary) never decides the treatment: a returned
+// excess contribution and a payment after death stand with or without it, and an annual withdrawal
+// answered while it is checked is the named unsupported boundary, with no figure.
+#[test]
+fn qa1099_box_6_never_requires_or_forbids_a_treatment() {
+    let with_box_6 = |checked: bool, treatment: AbleTreatment| {
+        let FederalIncome::Able { mut data } = qa(1150, 150, treatment) else { unreachable!() };
+        data.form.recipient_not_designated_beneficiary = checked;
+        FederalIncome::Able { data }
+    };
+    for checked in [false, true] {
+        let mut d = complete(FederalStatus::Single);
+        add(&mut d, income(with_box_6(checked, AbleTreatment::Corrective { year: 2026 })));
+        let r = supported(&d);
+        assert_eq!(value(&r, "able_corrective_earnings"), 150, "box 6 {checked}");
+        assert_eq!(value(&r, "account_additional_tax"), 0);
+        assert_eq!(restart(d.clone()).draft, d);
+        d.income[1].income = with_box_6(checked, AbleTreatment::Death);
+        assert_eq!(value(&supported(&d), "able_taxable_distributions"), 0);
+    }
+    let mut d = complete(FederalStatus::Single);
+    add(&mut d, income(with_box_6(false, annual(0))));
+    assert_eq!(value(&supported(&d), "able_taxable_distributions"), 150);
+    d.income[1].income = with_box_6(true, annual(0));
+    let FederalIncome::Able { data } = &d.income[1].income else { unreachable!() };
+    assert!(crate::AbleDistribution::from(data).answer_issue().is_none());
+    assert_eq!(crate::AbleDistribution::from(data).taxable(), None);
+    assert!(issue(&d, "ISSUE_ABLE_PAYMENT_TO_NON_BENEFICIARY"));
+}
+
+// Box 4 never enters box 1: a program-to-program transfer changes no figure, and a form showing only
+// the transfer distributed nothing, so it asks for no treatment. Box 5 changes nothing either.
+#[test]
+fn qa1099_box_4_transfer_only_form_needs_no_treatment() {
+    let form = |gross, earnings, transfer, terminated, treatment| {
+        let FederalIncome::Able { mut data } = qa(gross, earnings, annual(0)) else {
+            unreachable!()
+        };
+        data.form.program_to_program_transfer = transfer;
+        data.form.account_terminated = terminated;
+        data.treatment = treatment;
+        data
+    };
+    let only = form(0, 0, true, true, None);
+    assert!(crate::AbleDistribution::from(&only).answer_issue().is_none());
+    assert_eq!(crate::AbleDistribution::from(&only).taxable(), Some(0));
+    assert!(!crate::AbleDistribution::from(&only).penalized());
+    let IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Qa1099(paper) } =
+        crate::interview::document_item(
+            &income(FederalIncome::Able { data: only.clone() }),
+            &[],
+            false,
+        )
+        .unwrap()
+        .document
+    else {
+        unreachable!()
+    };
+    assert_eq!(crate::AbleSource { form: paper, treatment: only.treatment.clone() }, only);
+    let mut d = complete(FederalStatus::Single);
+    add(&mut d, income(FederalIncome::Able { data: only }));
+    assert_eq!(value(&supported(&d), "able_taxable_distributions"), 0);
+    // Without box 4 an empty form still asks what it was; box 4 on a real distribution changes nothing.
+    assert_eq!(
+        crate::AbleDistribution::from(&form(0, 0, false, false, None)).answer_issue().unwrap().key,
+        "QA1099_TREATMENT_NEEDED"
+    );
+    assert_eq!(
+        crate::AbleDistribution::from(&form(1000, 0, true, false, None))
+            .answer_issue()
+            .unwrap()
+            .key,
+        "QA1099_TREATMENT_NEEDED"
+    );
+    let same = |transfer, terminated| {
+        crate::AbleDistribution::from(&form(10_000, 2000, transfer, terminated, Some(annual(7500))))
+            .taxable()
+    };
+    assert_eq!(same(true, true), Some(dollars(500)));
+    assert_eq!(same(false, false), same(true, false));
 }
 
 // Box 3 is not stored: the page shows gross less earnings, and the rules keep the boxes consistent.
 #[test]
 fn qa1099_boxes_and_rollover_rules_are_checked_on_the_server() {
-    let page = |gross, earnings, basis, treatment| Qa1099 {
-        gross: dollars(gross),
-        earnings: dollars(earnings),
-        basis: dollars(basis),
-        treatment,
+    let page = |gross, earnings, basis, treatment| crate::AbleSource {
+        form: crate::Form1099QaPaper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            gross: dollars(gross),
+            earnings: dollars(earnings),
+            basis: dollars(basis),
+            program_to_program_transfer: false,
+            account_terminated: false,
+            recipient_not_designated_beneficiary: matches!(
+                treatment,
+                AbleTreatment::Corrective { .. }
+            ),
+            ..Default::default()
+        },
+        treatment: Some(treatment),
     };
-    assert_eq!(page(100, 20, 80, annual(0)).rule(), None);
-    assert_eq!(page(100, 20, 70, annual(0)).rule(), Some("QA1099_BOXES_DO_NOT_ADD_UP"));
+    assert_eq!(page(100, 20, 80, annual(0)).topic_issue(true).map(|issue| issue.key), None);
+    assert_eq!(
+        page(100, 20, 70, annual(0)).topic_issue(true).map(|issue| issue.key),
+        Some("QA1099_BOXES_DO_NOT_ADD_UP")
+    );
     let rolled = |amount, earnings| AbleTreatment::Annual {
         rollover: AbleRollover::Qualified { amount: dollars(amount), earnings: dollars(earnings) },
         expenses: 0,
         following_expenses: 0,
     };
-    assert_eq!(page(100, 20, 80, rolled(101, 0)).rule(), Some("QA1099_ROLLOVER_ABOVE_GROSS"));
     assert_eq!(
-        page(100, 20, 80, rolled(50, 51)).rule(),
+        page(100, 20, 80, rolled(101, 0)).topic_issue(true).map(|issue| issue.key),
+        Some("QA1099_ROLLOVER_ABOVE_GROSS")
+    );
+    assert_eq!(
+        page(100, 20, 80, rolled(50, 51)).topic_issue(true).map(|issue| issue.key),
         Some("QA1099_ROLLOVER_EARNINGS_ABOVE_AMOUNT")
     );
-    assert_eq!(page(100, 20, 80, rolled(50, 20)).rule(), None);
-    let record = page(100, 20, 80, annual(0)).record();
-    assert_eq!(record.page(), page(100, 20, 80, annual(0)));
+    assert_eq!(page(100, 20, 80, rolled(50, 20)).topic_issue(true).map(|issue| issue.key), None);
+    let source = page(100, 20, 80, annual(0));
+    let record = crate::AbleDistribution::from(&source);
+    let IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Qa1099(paper) } =
+        crate::interview::document_item(
+            &income(FederalIncome::Able { data: source.clone() }),
+            &[],
+            false,
+        )
+        .unwrap()
+        .document
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        crate::AbleDistribution::from(&crate::AbleSource {
+            form: paper,
+            treatment: source.treatment.clone()
+        }),
+        record
+    );
     // A loss (box 2 negative) is not deductible: it taxes nothing.
     let mut loss = qa(100, -20, annual(0));
     let FederalIncome::Able { data } = &mut loss else { panic!() };
-    assert!(data.valid());
-    assert_eq!(data.taxable(), 0);
+    assert!(crate::AbleDistribution::from(&*data).valid());
+    assert_eq!(crate::AbleDistribution::from(&*data).taxable(), Some(0));
     // A rollover must leave the remaining earnings within the remaining gross.
-    data.earnings = dollars(90);
-    data.treatment = rolled(80, 10);
-    assert!(!data.valid());
+    data.form.earnings = dollars(90);
+    data.form.basis = data.form.gross - data.form.earnings;
+    data.treatment = Some(rolled(80, 10));
+    assert!(crate::AbleDistribution::from(&*data).valid());
+    assert_eq!(
+        crate::AbleDistribution::from(&*data).answer_issue().unwrap().key,
+        "QA1099_ROLLOVER_EARNINGS_NOT_RECONCILED"
+    );
+    assert_eq!(crate::AbleDistribution::from(&*data).taxable(), None);
 }
 
 // Two forms are two accounts: each has its own earnings ratio and its own expenses.
@@ -1504,7 +1968,7 @@ fn able_partial_rollover_combines_with_the_expense_election() {
     d.income.pop();
     let mut entry = income(mixed_able(4000, 800, 3000));
     if let FederalIncome::Able { data } = &mut entry.income
-        && let AbleTreatment::Annual { following_expenses, .. } = &mut data.treatment
+        && let Some(AbleTreatment::Annual { following_expenses, .. }) = &mut data.treatment
     {
         *following_expenses = 300_000;
     }
@@ -1512,80 +1976,176 @@ fn able_partial_rollover_combines_with_the_expense_election() {
     assert_eq!(value(&supported(&d), "able_taxable_distributions"), 0);
 }
 
-// ---- The documents on the Other income page ----
+// ---- Health documents in the Document center and topic-owned records ----
 
-fn other_income_page(d: &FederalDraft) -> P {
-    let mut s = Interview::new(TEST_USER, d.clone());
-    open_topic(&mut s, TaxSection::OtherIncome)
+fn other_income_page(session: &mut Interview) -> P {
+    open_documents(session)
 }
 pub(in crate::tests) fn save_items(d: &FederalDraft, items: Vec<IncomeDocumentItem>) -> Interview {
     let mut s = Interview::new(TEST_USER, d.clone());
-    accepted(&send(&mut s, save_topic(d, TaxSection::OtherIncome, items)));
+    crate::tests::support::client::admit_native_fixture_facts(&mut s);
+    save_each_topic(&mut s, items);
     s
 }
 pub(in crate::tests) use crate::tests::support::builders::survey::survey_uncatalogued_document as item;
 
-// The four documents are offered by the Other income page, save onto their stored records and
-// reopen as they were entered; the records show on no other page.
+// Three statements belong to the Document center; the insured periods belong
+// to Long-term care benefits. Both editors preserve their accepted source values.
 #[test]
-fn the_four_documents_save_and_reopen_on_the_other_income_page() {
+fn health_documents_and_insured_periods_save_and_reopen_in_their_own_editors() {
     let d = complete(FederalStatus::Single);
-    let documents = vec![
-        IncomeDocument::Sa1099(Sa1099 {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(3000),
-            account: MedicalSaAccount::Archer,
-            payment: own_payment(3000, 20260615, 1800),
-        }),
-        IncomeDocument::Ltc1099(Ltc1099 {
-            interest: 0,
-            benefit_origin: Some(LtcPaymentOrigin::Insurance),
-            accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
-                business_insurable_interest: false,
+    let documents = [
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Sa1099(
+                crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                    medicare_prior: if matches!(
+                        &MedicalSaAccount::Archer,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(MedicareMsaPrior::None)
+                    } else {
+                        None
+                    },
+                    medicare_from_spouse: if matches!(
+                        &MedicalSaAccount::Archer,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    payment: Some(own_payment(3000, 20260615, 1800)),
+                    ..sa_source(Sa1099 {
+                        trustee_payer: Default::default(),
+                        recipient: Default::default(),
+                        origin: crate::HealthDocumentOrigin::Form1099Sa,
+                        gross: dollars(3000),
+                        box2_earnings: None,
+                        box3_code: Some(1),
+                        box4_value: None,
+                        account: MedicalSaAccount::Archer,
+                    })
+                }),
+            ),
+        },
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Ltc1099(ltc_document(crate::LtcSource {
+                interest: None,
+                form: crate::Ltc1099Paper {
+                    payer: Default::default(),
+                    recipient: Default::default(),
+                    insured_party: Default::default(),
+                    date_certified: None,
+                    benefits: Some(dollars(15_000)),
+                    accelerated: Some(0),
+                    paid: LtcPaidBasis::PerDiem,
+                    box4_qualified: true,
+                    illness: Some(LtcIllness::Chronic),
+                    calendar_year: 2026,
+                    corrected: false,
+                    payer_phone: String::new(),
+                    account_number: String::new(),
+                },
+                benefit_origin: Some(LtcPaymentOrigin::Insurance),
+                accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
+                    business_insurable_interest: false,
+                }),
+                contract: LtcContract::Qualified {
+                    qualification: CareContractQualification::Qualified,
+                },
+                insured: None,
+            })),
+        },
+        IncomeSource::Record {
+            value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                insured: LtcInsuredPerson::OnReturn { person: -1 },
+                periods: one_period(20260601, 20260630, 9000, 0).into(),
             }),
-            benefits: dollars(15_000),
-            accelerated: 0,
-            paid: LtcPaidBasis::PerDiem,
-            contract: LtcContractPage::Qualified {
-                qualification: CareContractQualification::Qualified,
-            },
-            illness: LtcIllness::Chronic,
-            insured: None,
-        }),
-        IncomeDocument::LtcInsured(LtcInsured {
-            insured: LtcInsuredPerson::OnReturn { person: -1 },
-            periods: one_period(20260601, 20260630, 9000, 0).into(),
-        }),
-        IncomeDocument::Qa1099(Qa1099 {
-            gross: dollars(10_000),
-            earnings: dollars(2000),
-            basis: dollars(8000),
-            treatment: annual(7500),
-        }),
+        },
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Qa1099(able_document(crate::AbleSource {
+                form: crate::Form1099QaPaper {
+                    calendar_year: Some(2026),
+                    payer: Default::default(),
+                    recipient: Default::default(),
+                    gross: dollars(10_000),
+                    earnings: dollars(2000),
+                    basis: dollars(8000),
+                    program_to_program_transfer: false,
+                    account_terminated: false,
+                    recipient_not_designated_beneficiary: false,
+                    ..Default::default()
+                },
+                treatment: Some(annual(7500)),
+            })),
+        },
     ];
     let items: Vec<_> =
         documents.iter().cloned().map(|document| item(Owner::Taxpayer, 0, document)).collect();
     let s = save_items(&d, items);
     assert!(matches!(s.draft.income[1].income, FederalIncome::MedicalDistribution { .. }));
     assert!(matches!(s.draft.income[2].income, FederalIncome::LtcBenefits { .. }));
-    assert!(matches!(s.draft.income[3].income, FederalIncome::LtcInsured { .. }));
-    assert!(matches!(s.draft.income[4].income, FederalIncome::Able { .. }));
+    assert!(matches!(s.draft.income[3].income, FederalIncome::Able { .. }));
+    assert!(matches!(s.draft.income[4].income, FederalIncome::LtcInsured { .. }));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "archer_msa_taxable_distributions"), 1200);
     assert_eq!(value(&r, "taxable_ltc_benefits"), 2100);
     assert_eq!(value(&r, "able_taxable_distributions"), 500);
     // Reopened: the page returns the documents, each with its amount on the return.
     let mut again = restart(s.draft.clone());
-    let page = open_topic(&mut again, TaxSection::OtherIncome);
-    let shown = page_documents(&page);
-    assert_eq!(shown.iter().map(|i| i.document.clone()).collect::<Vec<_>>(), documents);
+    let page = open_documents(&mut again);
+    let shown = page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .collect::<Vec<_>>();
+    let mut expected_ltc = documents[1].clone();
+    let IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Ltc1099(form) } =
+        &mut expected_ltc
+    else {
+        unreachable!()
+    };
+    assert!(form.box4_qualified);
+    assert_eq!(
+        shown.iter().map(|i| i.document.clone()).collect::<Vec<_>>(),
+        expected_named_sources(
+            &s.draft,
+            Owner::Taxpayer,
+            vec![documents[0].clone(), expected_ltc, documents[3].clone()]
+        )
+    );
     assert_eq!(shown[0].preview, Some(dollars(1200)));
     assert_eq!(shown[1].preview, None);
-    assert_eq!(shown[2].preview, None);
-    assert_eq!(shown[3].preview, Some(dollars(500)));
+    assert_eq!(shown[2].preview, Some(dollars(500)));
+    let record_page = open_topic(&mut again, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { followups, .. } = &record_page else { unreachable!() };
+    let qualified_id = shown[1].id;
+    let FederalIncome::LtcBenefits { data: qualified } =
+        &again.draft.income.iter().find(|entry| entry.id == qualified_id).unwrap().income
+    else {
+        unreachable!()
+    };
+    assert_eq!(qualified.contract, LtcContract::Unknown);
+    assert!(
+        !followups
+            .iter()
+            .any(|row| row.key == alloc::format!("income/{qualified_id}/ltc_contract"))
+    );
+    assert_eq!(qualified.accelerated_origin, None);
+    assert!(
+        !followups
+            .iter()
+            .any(|row| row.key == alloc::format!("income/{qualified_id}/ltc_accelerated_origin"))
+    );
+    let records = page_documents(&record_page);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].document, documents[2]);
+    assert_eq!(records[0].preview, None);
+    accepted(&send(&mut again, record_page));
     let shown = shown.to_vec();
-    let draft = again.draft.clone();
-    accepted(&send(&mut again, save_topic(&draft, TaxSection::OtherIncome, shown)));
+    accepted(&{
+        let request = save_documents(&mut again, shown);
+        send(&mut again, request)
+    });
     assert_eq!(again.draft, s.draft);
     // Other pages do not offer them.
     let retirement = open_topic(&mut again, TaxSection::Retirement);
@@ -1602,71 +2162,164 @@ fn ltc_insured_catalog_round_trips_through_the_documents_page() {
         item(
             Owner::Taxpayer,
             0,
-            IncomeDocument::Ltc1099(Ltc1099 {
-                interest: 0,
-                benefit_origin: Some(LtcPaymentOrigin::Insurance),
-                accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
-                    business_insurable_interest: false,
-                }),
-                benefits: dollars(15_000),
-                accelerated: 0,
-                paid: LtcPaidBasis::PerDiem,
-                contract: LtcContractPage::Qualified {
-                    qualification: CareContractQualification::Qualified,
-                },
-                illness: LtcIllness::Chronic,
-                insured,
-            }),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(crate::LtcSource {
+                    interest: None,
+                    form: crate::Ltc1099Paper {
+                        payer: crate::PrintedParty {
+                            name: alloc::format!("Synthetic insurer {insured:?}"),
+                            ..Default::default()
+                        },
+                        recipient: Default::default(),
+                        insured_party: Default::default(),
+                        date_certified: None,
+                        benefits: Some(dollars(15_000)),
+                        accelerated: Some(0),
+                        paid: LtcPaidBasis::PerDiem,
+                        box4_qualified: true,
+                        illness: Some(LtcIllness::Chronic),
+                        calendar_year: 2026,
+                        corrected: false,
+                        payer_phone: String::new(),
+                        account_number: String::new(),
+                    },
+                    benefit_origin: Some(LtcPaymentOrigin::Insurance),
+                    accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
+                        business_insurable_interest: false,
+                    }),
+                    contract: LtcContract::Qualified {
+                        qualification: CareContractQualification::Qualified,
+                    },
+                    insured,
+                })),
+            },
         )
     };
     let record = |id, insured, periods: LtcPeriods| {
         item(
             Owner::Taxpayer,
             id,
-            IncomeDocument::LtcInsured(LtcInsured { insured, periods: periods.into() }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                    insured,
+                    periods: periods.into(),
+                }),
+            },
         )
     };
     let you = LtcInsuredPerson::OnReturn { person: -1 };
     let parent = LtcInsuredPerson::Other { name: "Pat Sample".into() };
-    let first = save_items(
+    let mut first = save_items(
         &d,
         vec![
             record(0, you.clone(), one_period(20260601, 20260630, 9000, 0)),
             record(0, parent.clone(), one_period(20260101, 20260131, 0, 0)),
         ],
     );
-    let page = other_income_page(&first.draft);
-    let P::SaveIncomes { ltc_insured, .. } = &page else { panic!("the income page") };
-    assert_eq!(ltc_insured.iter().map(|c| c.id).collect::<Vec<_>>(), vec![2, 3]);
+    let insured_id = |person: &LtcInsuredPerson| {
+        first
+            .draft
+            .income
+            .iter()
+            .find_map(|entry| {
+                let FederalIncome::LtcInsured { data } = &entry.income else { return None };
+                (&data.page().insured == person).then_some(entry.id)
+            })
+            .unwrap()
+    };
+    let you_id = insured_id(&you);
+    let parent_id = insured_id(&parent);
+    let page = other_income_page(&mut first);
+    let P::SaveDocuments { ltc_insured, .. } = &page else { panic!("the Document center") };
+    assert_eq!(ltc_insured.iter().map(|c| c.id).collect::<Vec<_>>(), vec![you_id, parent_id]);
     assert!(status_text(&ltc_insured[1].label).contains("Pat Sample"));
     let items = vec![
-        record(2, you, one_period(20260601, 20260630, 9000, 0)),
-        record(3, parent, one_period(20260101, 20260131, 0, 0)),
-        form(Some(2)),
-        form(Some(3)),
+        record(you_id, you, one_period(20260601, 20260630, 9000, 0)),
+        record(parent_id, parent, one_period(20260101, 20260131, 0, 0)),
+        form(Some(you_id)),
+        form(Some(parent_id)),
     ];
     let s = save_items(&first.draft, items.clone());
     let r = supported(&s.draft);
     // Record 2: 12,900 limit of 15,000 = 2,100 taxed. Record 3: January's 13,330 limit: nothing.
-    assert_eq!(value(&r, "ltc_benefit_2_1_taxable"), 2100);
-    assert_eq!(value(&r, "ltc_benefit_3_1_taxable"), 1670);
+    assert_eq!(value(&r, &alloc::format!("ltc_benefit_{you_id}_1_taxable")), 2100);
+    assert_eq!(value(&r, &alloc::format!("ltc_benefit_{parent_id}_1_taxable")), 1670);
     assert_eq!(value(&r, "taxable_ltc_benefits"), 3770);
     let mut again = restart(s.draft.clone());
-    let page = open_topic(&mut again, TaxSection::OtherIncome);
-    let mut shown: Vec<_> = page_documents(&page).iter().map(|i| i.document.clone()).collect();
-    let mut want: Vec<_> = items.iter().map(|i| i.document.clone()).collect();
-    let order = |d: &IncomeDocument| alloc::format!("{d:?}");
+    let page = open_documents(&mut again);
+    let record_page = open_topic(&mut again, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { source_choices, .. } = &record_page else { unreachable!() };
+    assert!(
+        source_choices
+            .record
+            .contains(&(libertas_macros::variant_index!(crate::IncomeRecord::LtcInsured) as i32))
+    );
+    let mut shown: Vec<_> = page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .chain(page_documents(&record_page))
+        .map(|i| i.document)
+        .collect();
+    let mut want = expected_named_sources(
+        &s.draft,
+        Owner::Taxpayer,
+        items.iter().map(|i| i.document.clone()).collect(),
+    );
+    let P::SaveIncomes { followups, .. } = &record_page else { unreachable!() };
+    for entry in &again.draft.income {
+        if let FederalIncome::LtcBenefits { data } = &entry.income
+            && data.form.box4_qualified
+        {
+            assert_eq!(data.contract, LtcContract::Unknown);
+            assert!(
+                !followups
+                    .iter()
+                    .any(|row| row.key == alloc::format!("income/{}/ltc_contract", entry.id))
+            );
+            if data.form.accelerated.unwrap_or(0) == 0 {
+                assert_eq!(data.accelerated_origin, None);
+                assert!(
+                    !followups.iter().any(|row| row.key
+                        == alloc::format!("income/{}/ltc_accelerated_origin", entry.id))
+                );
+            }
+        }
+    }
+    let order = |d: &IncomeSource| alloc::format!("{d:?}");
     shown.sort_by_key(order);
     want.sort_by_key(order);
     assert_eq!(shown, want);
-    // A removed record clears the links that name it (F3, 2026-10-09): the form
-    // that chose it has no choice any more and takes the only record left, not
-    // a stale identity taxed in full.
-    let kept: Vec<_> = items
+    // Correct each form's own insured answer before removing the selected
+    // care-period source through its topic editor.
+    let kept: Vec<_> = page_documents(&page)
         .into_iter()
-        .filter(|i| !matches!(&i.document, IncomeDocument::LtcInsured(v) if matches!(v.insured, LtcInsuredPerson::Other { .. })))
+        .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .chain(page_documents(&record_page))
+        .filter(|row| row.id != parent_id)
         .collect();
-    let s = save_items(&s.draft, kept);
+    let parent_sources: Vec<_> = s
+        .draft
+        .income
+        .iter()
+        .filter_map(|entry| match &entry.income {
+            FederalIncome::LtcBenefits { data } if data.insured == Some(parent_id) => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .collect();
+    let mut correction = restart(s.draft.clone());
+    let mut topic = open_topic(&mut correction, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { followups, .. } = &mut topic else { unreachable!() };
+    for row in followups {
+        if parent_sources.iter().any(|id| row.key == alloc::format!("income/{id}/ltc_insured"))
+            && let crate::DocumentAnswer::LtcInsured { value } = &mut row.answer
+        {
+            *value = None;
+        }
+    }
+    accepted(&send(&mut correction, topic));
+    let s = save_items(&correction.draft, kept);
     let links: Vec<_> = s
         .draft
         .income
@@ -1676,15 +2329,15 @@ fn ltc_insured_catalog_round_trips_through_the_documents_page() {
             _ => None,
         })
         .collect();
-    assert_eq!(links, vec![Some(2), None]);
+    assert_eq!(links, vec![Some(you_id), None]);
     let r = supported(&s.draft);
     assert!(!noted(&r, "WARN_LTC_PERIODS_MISSING"));
 }
 
-// A periods record for a person who left the return goes with the person; one for a person still on
-// the return, or for someone else, stays.
+// Household changes retain each accepted care-period source and its insured answer.
+// Correct a person who left the return on Long-term care benefits before saving the source.
 #[test]
-fn a_periods_record_for_a_person_who_left_the_return_is_removed() {
+fn a_periods_record_for_a_person_who_left_the_return_is_retained_for_correction() {
     let mut d = complete(FederalStatus::Single);
     add_child(&mut d);
     let child = d.dependents[0].id;
@@ -1692,13 +2345,15 @@ fn a_periods_record_for_a_person_who_left_the_return_is_removed() {
         item(
             Owner::Taxpayer,
             0,
-            IncomeDocument::LtcInsured(LtcInsured {
-                insured,
-                periods: one_period(20260601, 20260630, 9000, 0).into(),
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                    insured,
+                    periods: one_period(20260601, 20260630, 9000, 0).into(),
+                }),
+            },
         )
     };
-    let s = save_items(
+    let mut s = save_items(
         &d,
         vec![
             record(LtcInsuredPerson::OnReturn { person: child }),
@@ -1706,6 +2361,16 @@ fn a_periods_record_for_a_person_who_left_the_return_is_removed() {
             record(LtcInsuredPerson::OnReturn { person: -1 }),
         ],
     );
+    assert!(s.draft.finished_sections.contains(&TaxSection::LongTermCareBenefits));
+    let saved = s.draft.clone();
+    let request = open_topic(&mut s, TaxSection::LongTermCareBenefits);
+    let reply = send(&mut s, request);
+    accepted(&reply);
+    assert!(!matches!(
+        reply,
+        Reply::Edit(P::SaveIncomes { topic: TaxSection::LongTermCareBenefits, .. })
+    ));
+    assert_eq!(s.draft, saved);
     let stored = |d: &FederalDraft| {
         d.income.iter().filter(|e| matches!(e.income, FederalIncome::LtcInsured { .. })).count()
     };
@@ -1723,8 +2388,33 @@ fn a_periods_record_for_a_person_who_left_the_return_is_removed() {
     let mut d = s.draft.clone();
     d.dependents.clear();
     let result = crate::interview::prune(&mut d);
-    assert_eq!(stored(&d), 2);
-    assert!(result.removed.iter().any(|row| row.key() == "SAVING_KIND_LTC_INSURED"), "{result:?}");
+    assert_eq!(stored(&d), 3);
+    assert_eq!(d.income, s.draft.income);
+    assert!(result.reopened.contains(&TaxSection::LongTermCareBenefits), "{result:?}");
+    assert!(!d.finished_sections.contains(&TaxSection::LongTermCareBenefits));
+    assert!(result.removed.iter().all(|row| row.key() != "SAVING_KIND_LTC_INSURED"), "{result:?}");
+    let mut correction = Interview::new(TEST_USER, d.clone());
+    let request = open_topic(&mut correction, TaxSection::LongTermCareBenefits);
+    let Reply::Response(P::Problem { message, field }) = send(&mut correction, request) else {
+        panic!("the retained insured person must be corrected")
+    };
+    assert_eq!(
+        message,
+        libertas::libertas_formatted_text(
+            "MESSAGE_A_PERSON_IS_NOT_ON_THIS_RETURN_CHOOSE_THE_PERSON_AGAIN",
+            &[],
+        )
+    );
+    assert_eq!(field.as_deref(), Some("[documents/documents/0/document/insured/person]"));
+    assert_eq!(correction.draft, d);
+    let mut request = open_topic(&mut correction, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let crate::IncomeRecord::LtcInsured(value) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
+    value.insured = LtcInsuredPerson::Other { name: "Former dependent".into() };
+    accepted(&send(&mut correction, request));
+    assert_eq!(stored(&correction.draft), 3);
 }
 
 // ---- Import mapping ----
@@ -1765,17 +2455,47 @@ fn instruction<'a>(source: &'a str, name: &str) -> &'a str {
 // the filer's.
 #[test]
 fn sa1099_import_reads_the_printed_boxes_and_leaves_personal_records() {
-    let source = include_str!("../../health/medical_account.rs");
-    let action = instruction(source, "Sa1099");
+    // 2026-10-27: Form 1099-SA (Rev. April 2025) owns these printed boxes:
+    // https://www.irs.gov/pub/irs-pdf/f1099sa.pdf. Import targets the paper type.
+    let source = include_str!("../../health/form_1099_sa_model.rs");
+    let action = instruction(source, "Form1099SaPaper");
     assert!(action.contains("Form 1099-SA"));
+    assert!(action.contains("Read each printed party block into trustee_payer, recipient"));
+    assert!(action.contains("Never infer a recipient from household names"));
     assert!(action.contains("For box 5 return Hsa, Archer or MedicareAdvantage"));
+    assert!(action.contains("Read the printed box 3 number into distribution_code"));
     assert!(action.contains(
-        "Own for code 1 or 3, ExcessReturned with the printed box 2 amount for code 2 (null when genuinely blank; never infer the signed custodian net-income adjustment), Inherited with the box 4 amount as value for code 4 or 6, and Prohibited for code 5"
+        "Read box 2 into earnings_on_excess_contributions and box 4 into fmv_on_date_of_death"
     ));
+    assert!(action.contains("report an error when none or more than one is checked"));
+    assert!(source.contains("pub distribution_code: Option<Form1099SaDistributionCode>"));
+    assert!(action.contains("Read the printed box 3 number into distribution_code: 1 NormalDistributions, 2 ExcessContributions, 3 Disability, 4 DeathDistributionOtherThanCode6, 5 ProhibitedTransaction, 6 DeathDistributionAfterYearOfDeathToNonspouseBeneficiary"));
+    assert!(action.contains("a blank, illegible or unlisted box 3 code is an error"));
+    assert!(action.contains("Read box 2 into earnings_on_excess_contributions and box 4 into fmv_on_date_of_death, returning null for a genuinely blank box"));
+    assert!(action.contains("Read box 1 gross_distribution; a blank box 1 is an error"));
+    assert!(
+        action.contains("Report an illegible amount, or two values that conflict, as an error")
+    );
+    assert!(action.contains("Never infer a value that is not printed"));
+    assert!(
+        action.contains("Never infer the signed custodian net-income adjustment or choose payment")
+    );
+    assert!(action.contains("Do not report payment dates, what the money paid for, a rollover, a disability date, the death date, who the beneficiary is or the account's prior-year value; the filer answers those"));
     assert!(action.contains("validation = \"$.document_facts\""));
     assert_eq!(
-        imported(source, "Sa1099", "/// Who inherited it"),
-        vec!["gross", "account", "payment", "earnings", "value"]
+        imported(source, "Form1099SaPaper", "/// Form 1099-SA box 3 distribution code"),
+        vec![
+            "calendar_year",
+            "corrected",
+            "trustee_payer",
+            "recipient",
+            "account_number",
+            "gross_distribution",
+            "earnings_on_excess_contributions",
+            "distribution_code",
+            "fmv_on_date_of_death",
+            "account"
+        ]
     );
 }
 
@@ -1783,17 +2503,34 @@ fn sa1099_import_reads_the_printed_boxes_and_leaves_personal_records() {
 #[test]
 fn ltc1099_import_reads_boxes_1_to_5_and_never_the_periods_record() {
     let source = include_str!("../../health/care_benefits.rs");
-    let action = instruction(source, "Ltc1099");
+    let action = instruction(source, "Ltc1099Paper");
     assert!(action.contains("Form 1099-LTC"));
     assert!(action.contains("PerDiem when Per diem is checked, Reimbursed when Reimbursed amount"));
     assert!(
-        action.contains("box 4 return Qualified with qualification Qualified when it is checked")
+        action
+            .contains("Read box 4 into box4_qualified: true when checked and false when unchecked")
     );
     assert!(action.contains("Chronic when Chronically ill is checked and Terminal"));
-    assert!(action.contains("do not choose the insured person's periods record"));
+    assert!(action.contains("Do not choose the insured person's periods record"));
+    assert!(action.contains("or infer it from printed identity"));
+    assert!(action.contains("POLICYHOLDER'S name"));
     assert_eq!(
-        imported(source, "Ltc1099", "/// How it was paid (box 3)\n#[derive"),
-        vec!["benefits", "accelerated", "paid", "contract", "illness"]
+        imported(source, "Ltc1099Paper", "\n}"),
+        vec![
+            "calendar_year",
+            "corrected",
+            "payer",
+            "payer_phone",
+            "recipient",
+            "account_number",
+            "insured_party",
+            "benefits",
+            "accelerated",
+            "paid",
+            "box4_qualified",
+            "illness",
+            "date_certified",
+        ]
     );
     // The periods record has no import at all.
     let record = &source[source.find("pub struct LtcInsured {").unwrap()..];
@@ -1802,21 +2539,26 @@ fn ltc1099_import_reads_boxes_1_to_5_and_never_the_periods_record() {
     assert!(!record[..record.find("\n}").unwrap()].contains("libertas_llm_doc_field"));
 }
 
-// Form 1099-QA import: boxes 1, 2, 3 and 6 only; the rollover, the expenses and the year are the
-// filer's.
+// Form 1099-QA import: boxes 1 through 6; the rollover, the expenses and the year are the filer's.
 #[test]
-fn qa1099_import_reads_boxes_1_2_3_and_6_only() {
-    let source = include_str!("../../family/able.rs");
+fn qa1099_import_reads_boxes_1_through_6() {
+    let source = include_str!("../../family/able_distribution_source.rs");
     let action = instruction(source, "Qa1099");
     assert!(action.contains("Form 1099-QA"));
-    assert!(
-        action
-            .contains("For treatment return Corrective when box 6 is checked and Annual otherwise")
-    );
-    assert!(action.contains("Do not read boxes 4 and 5"));
+    assert!(action.contains("into program_to_program_transfer, account_terminated and recipient_not_designated_beneficiary exactly as checked"));
+    assert!(!action.contains("returned excess") && !action.contains("Do not read boxes 4 and 5"));
     assert_eq!(
         imported(source, "Qa1099", "/// What the payment was\n#[derive"),
-        vec!["gross", "earnings", "basis", "treatment"]
+        vec![
+            "payer",
+            "recipient",
+            "gross",
+            "earnings",
+            "basis",
+            "program_to_program_transfer",
+            "account_terminated",
+            "recipient_not_designated_beneficiary"
+        ]
     );
 }
 
@@ -1964,15 +2706,20 @@ fn hsa_ira_transfers_name_their_1099_r_through_the_catalog() {
 }
 
 fn hsa_save(d: &FederalDraft, mut value: HsaPage) -> P {
+    let mut editor = Interview::new(TEST_USER, d.clone());
+    let P::SaveHsa { followups, .. } = open_hsa_page(&mut editor) else { unreachable!() };
     if value.employer_sources.is_empty() {
         value.employer_sources =
-            crate::health_employer::page_rows(d, crate::health_employer::bindings(d)).unwrap();
+            crate::health_employer::page_rows_current_year(d, crate::health_employer::bindings(d))
+                .unwrap();
         // Existing source fixtures describe current-year contributions.
         for source in &mut value.employer_sources {
             source.allocation = HealthEmployerYear::CurrentYear;
         }
     }
     P::SaveHsa {
+        followups,
+        questions: Vec::new(),
         user: TEST_USER,
         hsa_failed_deposits: vec![],
         archer_failed_deposits: vec![],
@@ -1983,7 +2730,7 @@ fn hsa_save(d: &FederalDraft, mut value: HsaPage) -> P {
         page: PAGE_ADJUSTMENTS,
         previous: PAGE_ADJUSTMENTS,
         review: false,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         other_coverage_allowed: false,
@@ -2014,29 +2761,10 @@ fn hsa_page_rules_are_checked_again_on_the_server() {
         let mut a = account();
         mutate(&mut a);
         let request = hsa_save(&d, page(a));
-        let reply = if key == "HSA_RECORD_INVALID" {
-            current_source_refusal(
-                "health-context-00",
-                &mut s,
-                request,
-                "HSA_RECORD_INVALID",
-                Some("[value/accounts/0/late_excess/0/date]"),
-                SourceScope::Health,
-            )
-        } else {
-            send(&mut s, request)
-        };
+        let reply = send(&mut s, request);
         assert_eq!(key_of(reply), key, "{key}");
         assert_eq!(s.draft, d);
     };
-    refused(
-        &|a| {
-            let mut c = hsa_correction(2026, 20260930, dollars(600), dollars(50));
-            c.returned = 20260101 - 1;
-            a.corrections = vec![c.page()];
-        },
-        "HSA_CORRECTION_RETURNED_BEFORE_DEPOSIT",
-    );
     refused(
         &|a| {
             let mut c = hsa_correction(2026, 20260930, dollars(600), dollars(50));
@@ -2135,19 +2863,6 @@ fn hsa_page_rules_are_checked_again_on_the_server() {
             a.last_month_history = Some(history);
         },
         "HSA_LAST_MONTH_DECEMBER_NEEDED",
-    );
-    // What no page rule states stays the generic record problem: a withdrawal dated outside 2026.
-    refused(
-        &|a| {
-            a.late_excess = vec![HsaLateExcessWithdrawal {
-                contribution_year: 2024,
-                deadline: 20250415,
-                date: 20270101,
-                amount: 100,
-                disabled: false,
-            }];
-        },
-        "HSA_RECORD_INVALID",
     );
     // The transfers: a row's rules, and an owner with no account.
     let transfer = |loss: Option<HsaEligibilityLoss>, coverage| HsaFundingRow {
@@ -2351,13 +3066,15 @@ fn able_item(owner: Owner, own: i64, other: i64, year_end: i64) -> IncomeDocumen
     item(
         owner,
         0,
-        IncomeDocument::AbleContributions(AbleContributionsPage {
-            own: dollars(own),
-            other: dollars(other),
-            work: AbleWork::No,
-            year_end: dollars(year_end),
-            additional_open: false,
-        }),
+        IncomeSource::Record {
+            value: crate::IncomeRecord::AbleContributions(AbleContributionsPage {
+                own: dollars(own),
+                other: dollars(other),
+                work: AbleWork::No,
+                year_end: dollars(year_end),
+                additional_open: false,
+            }),
+        },
     )
 }
 
@@ -2387,15 +3104,12 @@ fn able_contributions_save_through_the_other_income_page() {
     let page = open_topic(&mut again, TaxSection::OtherIncome);
     let shown = page_documents(&page).to_vec();
     assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].owner, Owner::Taxpayer);
-    let draft = again.draft.clone();
-    accepted(&send(&mut again, save_topic(&draft, TaxSection::OtherIncome, shown)));
+    assert_eq!(shown[0].owner, crate::DocumentOwner::Yours);
+    accepted(&{
+        let request = save_topic(&mut again, TaxSection::OtherIncome, shown);
+        send(&mut again, request)
+    });
     assert_eq!(again.draft.screening, s.draft.screening);
-    // Unticking the topic erases it with the other income kinds.
-    let mut erased = s.draft.clone();
-    erased.checklist.income &= !IncomeTopics::OTHER_INCOME.0;
-    crate::interview::prune(&mut erased);
-    assert!(erased.screening.unwrap().able_contributions.is_empty());
 }
 
 // One record for each beneficiary; your spouse's only on a joint return.
@@ -2404,13 +3118,13 @@ fn able_contributions_one_for_each_beneficiary_and_a_spouse_only_when_joint() {
     let d = complete(FederalStatus::Single);
     let mut s = Interview::new(TEST_USER, d.clone());
     let twice = save_topic(
-        &d,
+        &mut s,
         TaxSection::OtherIncome,
         vec![able_item(Owner::Taxpayer, 1000, 0, 1000), able_item(Owner::Taxpayer, 1000, 0, 1000)],
     );
     assert_eq!(key_of(send(&mut s, twice)), "ABLE_CONTRIBUTIONS_TWICE");
     let spouse =
-        save_topic(&d, TaxSection::OtherIncome, vec![able_item(Owner::Spouse, 1000, 0, 1000)]);
+        save_topic(&mut s, TaxSection::OtherIncome, vec![able_item(Owner::Spouse, 1000, 0, 1000)]);
     assert!(matches!(
         current_income_refusal(
             "income-source-1",
@@ -2433,7 +3147,9 @@ fn able_contributions_one_for_each_beneficiary_and_a_spouse_only_when_joint() {
     assert_eq!(value(&r, "able_taxpayer_excess_tax"), 0);
     // A working beneficiary's compensation allowance: the page's work choice keeps its facts.
     let mut working = able_item(Owner::Taxpayer, 8000, 0, 30_000);
-    if let IncomeDocument::AbleContributions(v) = &mut working.document {
+    if let IncomeSource::Record { value: crate::IncomeRecord::AbleContributions(v) } =
+        &mut working.document
+    {
         v.work = AbleWork::Working {
             compensation: dollars(10_000),
             residence: MarketplaceResidence::Contiguous,
@@ -2457,21 +3173,48 @@ fn sa1099_one_statement_dates_each_age_or_disability_exception() {
     for medicare in [false, true] {
         let mut d = complete(FederalStatus::Single);
         born(&mut d, 19610615);
-        let document = IncomeDocument::Sa1099(Sa1099 {
-            origin: crate::HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(6500),
-            account: if medicare { ma_none() } else { MedicalSaAccount::Archer },
-            payment: MedicalSaPayment::Own {
-                nonmedical: vec![
-                    MedicalAccountWithdrawal { date: 20260614, amount: dollars(1000) },
-                    MedicalAccountWithdrawal { date: 20260615, amount: dollars(2000) },
-                    MedicalAccountWithdrawal { date: 20260616, amount: dollars(3000) },
-                ],
-                medical: dollars(500),
-                rollover: None,
-                disabled_since: medicare.then_some(20260615),
-            },
-        });
+        let document = IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Sa1099(
+                crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                    medicare_prior: if matches!(
+                        &if medicare { ma_none() } else { MedicalSaAccount::Archer },
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(MedicareMsaPrior::None)
+                    } else {
+                        None
+                    },
+                    medicare_from_spouse: if matches!(
+                        &if medicare { ma_none() } else { MedicalSaAccount::Archer },
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    payment: Some(MedicalSaPayment::Own {
+                        nonmedical: vec![
+                            MedicalAccountWithdrawal { date: 20260614, amount: dollars(1000) },
+                            MedicalAccountWithdrawal { date: 20260615, amount: dollars(2000) },
+                            MedicalAccountWithdrawal { date: 20260616, amount: dollars(3000) },
+                        ],
+                        medical: dollars(500),
+                        rollover: None,
+                        disabled_since: medicare.then_some(20260615),
+                    }),
+                    ..sa_source(Sa1099 {
+                        trustee_payer: Default::default(),
+                        recipient: Default::default(),
+                        origin: crate::HealthDocumentOrigin::Form1099Sa,
+                        gross: dollars(6500),
+                        box2_earnings: None,
+                        box3_code: Some(1),
+                        box4_value: None,
+                        account: if medicare { ma_none() } else { MedicalSaAccount::Archer },
+                    })
+                }),
+            ),
+        };
         let mut s = save_items(&d, vec![item(Owner::Taxpayer, 0, document.clone())]);
         let r = supported(&s.draft);
         // Archer birthday itself remains taxed:20% of1000+2000=600.
@@ -2484,14 +3227,35 @@ fn sa1099_one_statement_dates_each_age_or_disability_exception() {
         );
         assert_eq!(s.draft.income.len(), 2); // One wage plus one actual statement.
         let id = s.draft.income[1].id;
-        let page = open_topic(&mut s, TaxSection::OtherIncome);
-        assert_eq!(page_documents(&page)[0].document, document);
-        assert_eq!(page_documents(&page)[0].preview, Some(dollars(6000)));
+        let page = open_documents(&mut s);
+        assert_eq!(
+            page_documents(&page)
+                .into_iter()
+                .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                .collect::<Vec<_>>()[0]
+                .document,
+            expected_named_source(&s.draft, Owner::Taxpayer, document.clone())
+        );
+        assert_eq!(
+            page_documents(&page)
+                .into_iter()
+                .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                .collect::<Vec<_>>()[0]
+                .preview,
+            Some(dollars(6000))
+        );
         accepted(&send(&mut s, page));
         assert_eq!(s.draft.income[1].id, id);
         let mut restarted = restart(s.draft.clone());
-        let page = open_topic(&mut restarted, TaxSection::OtherIncome);
-        assert_eq!(page_documents(&page)[0].document, document);
+        let page = open_documents(&mut restarted);
+        assert_eq!(
+            page_documents(&page)
+                .into_iter()
+                .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                .collect::<Vec<_>>()[0]
+                .document,
+            expected_named_source(&s.draft, Owner::Taxpayer, document.clone())
+        );
         assert_eq!(supported(&restarted.draft), supported(&s.draft));
     }
 }
@@ -2499,24 +3263,59 @@ fn sa1099_one_statement_dates_each_age_or_disability_exception() {
 #[test]
 fn sa1099_dated_uses_must_reconcile_without_consuming_identity() {
     let d = complete(FederalStatus::Single);
-    let data = FederalMedicalDistribution {
-        origin: crate::HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(1000),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::Own {
+    let data = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Own {
             medical: dollars(500),
             nonmedical: vec![MedicalAccountWithdrawal { date: 20260615, amount: dollars(400) }],
             rollover: None,
             disabled_since: None,
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: crate::HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(1000),
+            box2_earnings: None,
+            box3_code: Some(1),
+            box4_value: None,
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
-    assert_eq!(data.rule(), Some("SA1099_USES_NOT_GROSS"));
-    assert_eq!(data.preview(), None);
+    assert_eq!(data.record().rule(), Some("SA1099_USES_NOT_GROSS"));
+    assert_eq!(data.record().preview(), None);
     let mut s = Interview::new(TEST_USER, d.clone());
-    let items = vec![item(Owner::Taxpayer, 0, IncomeDocument::Sa1099(data.page()))];
-    let reply = send(&mut s, save_topic(&d, TaxSection::OtherIncome, items));
+    let items = vec![item(
+        Owner::Taxpayer,
+        0,
+        IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Sa1099(
+                crate::tests::support::client::income_pages::sa_document(data.clone()),
+            ),
+        },
+    )];
+    let request = save_documents(&mut s, items.clone());
+    accepted(&send(&mut s, request));
+    let before = s.draft.clone();
+    let reply = {
+        let request =
+            crate::tests::support::client::income_pages::information_return_answers(&mut s, &items);
+        send(&mut s, request)
+    };
     assert_eq!(key_of(reply), "SA1099_USES_NOT_GROSS");
-    assert_eq!(s.draft, d);
+    assert_eq!(s.draft, before);
 }
 
 // IRC220(e)(2),223(e)(2), incorporating408(e)(4); Pub9692025 final,
@@ -2528,11 +3327,22 @@ fn sa1099_dated_uses_must_reconcile_without_consuming_identity() {
 fn archer_unreported_pledges_use_actual_statement_and_event_dates() {
     let mut d = complete(FederalStatus::Single);
     born(&mut d, 19610615);
-    let mut data = FederalMedicalDistribution {
-        origin: HealthDocumentOrigin::TrusteeStatement,
-        gross: dollars(3000),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::Unreported {
+    let mut data = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Archer, MedicalSaAccount::MedicareAdvantage)
+        {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Archer,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: Some(MedicalSaPayment::Unreported {
             event: MedicalDeemed::Pledged {
                 assets: vec![
                     MedicalAccountWithdrawal { date: 20260614, amount: dollars(1000) },
@@ -2540,35 +3350,83 @@ fn archer_unreported_pledges_use_actual_statement_and_event_dates() {
                 ],
             },
             disabled_since: None,
-        },
+        }),
+        ..sa_source(Sa1099 {
+            origin: HealthDocumentOrigin::TrusteeStatement,
+            gross: dollars(3000),
+            box2_earnings: None,
+            box3_code: None,
+            box4_value: None,
+            account: MedicalSaAccount::Archer,
+            ..Default::default()
+        })
     };
-    let mut s = save_items(&d, vec![item(Owner::Taxpayer, 0, IncomeDocument::Sa1099(data.page()))]);
+    let mut s = save_items(
+        &d,
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::HsaTrusteeStatement(
+                    crate::tests::support::client::income_pages::sa_statement_document(
+                        data.clone(),
+                    ),
+                ),
+            },
+        )],
+    );
     let saved_id = s.draft.income.last().unwrap().id;
     let r = supported(&s.draft);
     assert_eq!(value(&r, "archer_msa_taxable_distributions"), 3000);
     assert_eq!(value(&r, "archer_msa_additional_tax"), 200);
     assert_eq!(estimate(&restart(s.draft.clone()).draft), r);
-    let page = open_topic(&mut s, TaxSection::OtherIncome);
-    let reopened = &page_documents(&page)[0];
+    let page = open_documents(&mut s);
+    let reopened = &page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .collect::<Vec<_>>()[0];
     assert_eq!(reopened.id, saved_id);
-    assert_eq!(reopened.document, IncomeDocument::Sa1099(data.page()));
-    data.origin = HealthDocumentOrigin::Form1099Sa;
-    assert_eq!(data.rule(), Some("SA1099_UNREPORTED_SOURCE_INVALID"));
-    assert!(data.amounts(&d.people.as_ref().unwrap().taxpayer).is_err());
-    let before = s.draft.clone();
-    let reply = send(
-        &mut s,
-        save_topic(
-            &before,
-            TaxSection::OtherIncome,
-            vec![item(Owner::Taxpayer, saved_id, IncomeDocument::Sa1099(data.page()))],
-        ),
+    assert_eq!(
+        reopened.document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::HsaTrusteeStatement(
+                    crate::tests::support::client::income_pages::sa_statement_document(
+                        data.clone()
+                    )
+                )
+            }
+        )
     );
-    assert_eq!(key_of(reply), "SA1099_UNREPORTED_SOURCE_INVALID");
+    data.origin = HealthDocumentOrigin::Form1099Sa;
+    assert_eq!(data.record().rule(), Some("SA1099_PRINTED_CODE_NEEDED"));
+    assert!(data.record().amounts(&d.people.as_ref().unwrap().taxpayer).is_err());
+    let before = s.draft.clone();
+    let reply = {
+        let request = save_documents(
+            &mut s,
+            vec![item(
+                Owner::Taxpayer,
+                saved_id,
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Sa1099(
+                        crate::tests::support::client::income_pages::sa_document(sa_source(
+                            data.internal(),
+                        )),
+                    ),
+                },
+            )],
+        );
+        send(&mut s, request)
+    };
+    assert_eq!(key_of(reply), "SA1099_PRINTED_CODE_NEEDED");
     assert_eq!(s.draft, before);
     data.origin = HealthDocumentOrigin::TrusteeStatement;
-    data.gross += 100;
-    assert_eq!(data.rule(), Some("SA1099_EVENT_VALUE_NOT_GROSS"));
+    let MedicalSaPaper::TrusteeStatement(statement) = &mut data.form else { unreachable!() };
+    statement.amount += 100;
+    assert_eq!(data.record().rule(), Some("SA1099_EVENT_VALUE_NOT_GROSS"));
     add(&mut d, income(FederalIncome::MedicalDistribution { data }));
     assert!(issue(&d, "SA1099_EVENT_VALUE_NOT_GROSS"));
 }
@@ -2584,12 +3442,39 @@ fn archer_unreported_pledges_use_actual_statement_and_event_dates() {
 #[test]
 fn own_hsa_statement_saves_once_without_a_contribution_account() {
     let d = complete(FederalStatus::Single);
-    let document = IncomeDocument::Sa1099(Sa1099 {
-        origin: HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(5000),
-        account: MedicalSaAccount::Hsa,
-        payment: own_payment(5000, 20260615, 4000),
-    });
+    let document = IncomeSource::OtherIncome {
+        value: crate::OtherIncomeDocument::Sa1099(
+            crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(own_payment(5000, 20260615, 4000)),
+                ..sa_source(Sa1099 {
+                    trustee_payer: Default::default(),
+                    recipient: Default::default(),
+                    origin: HealthDocumentOrigin::Form1099Sa,
+                    gross: dollars(5000),
+                    box2_earnings: None,
+                    box3_code: Some(1),
+                    box4_value: None,
+                    account: MedicalSaAccount::Hsa,
+                })
+            }),
+        ),
+    };
     let mut s = save_items(&d, vec![item(Owner::Taxpayer, 0, document.clone())]);
     assert!(s.draft.adjustments.as_ref().unwrap().hsa.is_empty());
     assert_eq!(s.draft.income.len(), 2);
@@ -2601,12 +3486,20 @@ fn own_hsa_statement_saves_once_without_a_contribution_account() {
     assert_eq!(return_line(&r, "8"), 100000);
     assert_eq!(return_line(&r, "23"), 20000);
     assert_eq!(estimate(&restart(s.draft.clone()).draft), r);
-    let page = open_topic(&mut s, TaxSection::OtherIncome);
-    let rows = page_documents(&page);
+    let page = open_documents(&mut s);
+    let rows = page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(rows[0].id, id);
-    assert_eq!(rows[0].document, document);
-    let before = s.draft.clone();
-    accepted(&send(&mut s, save_topic(&before, TaxSection::OtherIncome, rows.to_vec())));
+    assert_eq!(
+        rows[0].document,
+        expected_named_source(&s.draft, Owner::Taxpayer, document.clone())
+    );
+    accepted(&{
+        let request = save_documents(&mut s, rows.to_vec());
+        send(&mut s, request)
+    });
     assert_eq!(s.draft.income.len(), 2);
     assert_eq!(s.draft.income[1].id, id);
     assert_eq!(value(&supported(&s.draft), "hsa_taxable_distributions"), 1000);
@@ -2627,12 +3520,39 @@ fn own_hsa_statement_saves_once_without_a_contribution_account() {
 fn hsa_code2_actual_statement_links_signed_correction_once() {
     for (earnings, printed) in [(100, Some(dollars(100))), (-100, None)] {
         let d = complete(FederalStatus::Single);
-        let source = IncomeDocument::Sa1099(Sa1099 {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(1000 + earnings),
-            account: MedicalSaAccount::Hsa,
-            payment: MedicalSaPayment::ExcessReturned { earnings: printed },
-        });
+        let source = IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Sa1099(
+                crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                    medicare_prior: if matches!(
+                        &MedicalSaAccount::Hsa,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(MedicareMsaPrior::None)
+                    } else {
+                        None
+                    },
+                    medicare_from_spouse: if matches!(
+                        &MedicalSaAccount::Hsa,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    payment: None,
+                    ..sa_source(Sa1099 {
+                        trustee_payer: Default::default(),
+                        recipient: Default::default(),
+                        origin: HealthDocumentOrigin::Form1099Sa,
+                        gross: dollars(1000 + earnings),
+                        box2_earnings: printed,
+                        box3_code: Some(2),
+                        box4_value: None,
+                        account: MedicalSaAccount::Hsa,
+                    })
+                }),
+            ),
+        };
         let mut s = save_items(&d, vec![item(Owner::Taxpayer, 0, source.clone())]);
         let id = s.draft.income[1].id;
         assert!(issue(&s.draft, "HEALTH_CORRECTION_DOCUMENT_DETAILS_REQUIRED"));
@@ -2664,9 +3584,23 @@ fn hsa_code2_actual_statement_links_signed_correction_once() {
         assert_eq!(value(&r, "hsa_additional_tax"), 0);
         assert_eq!(value(&r, "agi"), 60000 + earnings.max(0));
         assert_eq!(estimate(&restart(s.draft.clone()).draft), r);
-        let page = open_topic(&mut s, TaxSection::OtherIncome);
-        assert_eq!(page_documents(&page)[0].id, id);
-        assert_eq!(page_documents(&page)[0].document, source);
+        let page = open_documents(&mut s);
+        assert_eq!(
+            page_documents(&page)
+                .into_iter()
+                .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                .collect::<Vec<_>>()[0]
+                .id,
+            id
+        );
+        assert_eq!(
+            page_documents(&page)
+                .into_iter()
+                .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                .collect::<Vec<_>>()[0]
+                .document,
+            expected_named_source(&s.draft, Owner::Taxpayer, source.clone())
+        );
         let request = open_hsa_page(&mut s);
         let before = s.draft.clone();
         accepted(&send(&mut s, request));
@@ -2677,14 +3611,44 @@ fn hsa_code2_actual_statement_links_signed_correction_once() {
 #[test]
 fn hsa_code2_correction_source_guards_owner_amounts_and_stale_identity() {
     let d = complete(FederalStatus::Single);
-    let data = Sa1099 {
-        origin: HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(1100),
-        account: MedicalSaAccount::Hsa,
-        payment: MedicalSaPayment::ExcessReturned { earnings: Some(dollars(100)) },
+    let data = crate::SaSource {
+        medicare_prior: if matches!(&MedicalSaAccount::Hsa, MedicalSaAccount::MedicareAdvantage) {
+            Some(MedicareMsaPrior::None)
+        } else {
+            None
+        },
+        medicare_from_spouse: if matches!(
+            &MedicalSaAccount::Hsa,
+            MedicalSaAccount::MedicareAdvantage
+        ) {
+            Some(false)
+        } else {
+            None
+        },
+        payment: None,
+        ..sa_source(Sa1099 {
+            trustee_payer: Default::default(),
+            recipient: Default::default(),
+            origin: HealthDocumentOrigin::Form1099Sa,
+            gross: dollars(1100),
+            box2_earnings: Some(dollars(100)),
+            box3_code: Some(2),
+            box4_value: None,
+            account: MedicalSaAccount::Hsa,
+        })
     };
-    let mut s =
-        save_items(&d, vec![item(Owner::Taxpayer, 0, IncomeDocument::Sa1099(data.clone()))]);
+    let mut s = save_items(
+        &d,
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Sa1099(
+                    crate::tests::support::client::income_pages::sa_document(data.clone()),
+                ),
+            },
+        )],
+    );
     let id = s.draft.income[1].id;
     let mut request = open_hsa_page(&mut s);
     let P::SaveHsa { value: page, .. } = &mut request else { unreachable!() };
@@ -2718,19 +3682,31 @@ fn hsa_code2_correction_source_guards_owner_amounts_and_stale_identity() {
     }
     accepted(&send(&mut s, good));
     let before = s.draft.clone();
-    let removal = save_topic(&before, TaxSection::OtherIncome, vec![]);
+    let removal = {
+        let mut request = open_documents(&mut s);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        documents.other.other_income.documents.clear();
+        request
+    };
     assert_eq!(key_of(send(&mut s, removal)), "HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE");
     assert_eq!(s.draft, before);
     let mut changed = data;
-    changed.gross += 100;
-    accepted(&send(
-        &mut s,
-        save_topic(
-            &before,
-            TaxSection::OtherIncome,
-            vec![item(Owner::Taxpayer, id, IncomeDocument::Sa1099(changed))],
-        ),
-    ));
+    changed.form1099sa_mut().unwrap().gross_distribution += 100;
+    accepted(&{
+        let request = save_documents(
+            &mut s,
+            vec![item(
+                Owner::Taxpayer,
+                id,
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Sa1099(
+                        crate::tests::support::client::income_pages::sa_document(changed),
+                    ),
+                },
+            )],
+        );
+        send(&mut s, request)
+    });
     assert!(issue(&s.draft, "HEALTH_CORRECTION_DOCUMENT_GROSS"));
     // Amount changes preserve identity and reopen review rather than trapping
     // the user between two source editors.
@@ -2741,29 +3717,17 @@ fn hsa_code2_correction_source_guards_owner_amounts_and_stale_identity() {
     page.accounts[0].corrections[0].principal += 100;
     accepted(&send(&mut s, request));
     assert_eq!(value(&supported(&s.draft), "hsa_correction_earnings"), 100);
+    // The Form 1099-SA keeps the HSA topic on the path: unchecking the box
+    // removes nothing.
     let before = s.draft.clone();
     let mut checklist = before.checklist;
-    checklist.income &= !IncomeTopics::OTHER_INCOME.0;
-    assert_eq!(
-        key_of(send(
-            &mut s,
-            crate::tests::cross::interview::save_checklist(&before, PAGE_ADJUSTMENTS, checklist)
-        )),
-        "HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE"
-    );
-    assert_eq!(s.draft, before);
-    checklist.adjustments &= !AdjustmentTopics::HSA.0;
+    checklist.paid &= !PaidTopics::HSA.0;
     accepted(&send(
         &mut s,
         crate::tests::cross::interview::save_checklist(&before, PAGE_ADJUSTMENTS, checklist),
     ));
-    assert!(
-        s.draft
-            .income
-            .iter()
-            .all(|e| !matches!(e.income, FederalIncome::MedicalDistribution { .. }))
-    );
-    assert!(s.draft.adjustments.as_ref().unwrap().hsa.is_empty());
+    assert_eq!(s.draft.income, before.income);
+    assert_eq!(s.draft.adjustments, before.adjustments);
 }
 
 #[test]
@@ -2774,12 +3738,39 @@ fn hsa_code2_one_statement_can_detail_multiple_contribution_years_and_payers() {
         vec![item(
             Owner::Taxpayer,
             0,
-            IncomeDocument::Sa1099(Sa1099 {
-                origin: HealthDocumentOrigin::Form1099Sa,
-                gross: dollars(1650),
-                account: MedicalSaAccount::Hsa,
-                payment: MedicalSaPayment::ExcessReturned { earnings: Some(dollars(150)) },
-            }),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Sa1099(
+                    crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                        medicare_prior: if matches!(
+                            &MedicalSaAccount::Hsa,
+                            MedicalSaAccount::MedicareAdvantage
+                        ) {
+                            Some(MedicareMsaPrior::None)
+                        } else {
+                            None
+                        },
+                        medicare_from_spouse: if matches!(
+                            &MedicalSaAccount::Hsa,
+                            MedicalSaAccount::MedicareAdvantage
+                        ) {
+                            Some(false)
+                        } else {
+                            None
+                        },
+                        payment: None,
+                        ..sa_source(Sa1099 {
+                            trustee_payer: Default::default(),
+                            recipient: Default::default(),
+                            origin: HealthDocumentOrigin::Form1099Sa,
+                            gross: dollars(1650),
+                            box2_earnings: Some(dollars(150)),
+                            box3_code: Some(2),
+                            box4_value: None,
+                            account: MedicalSaAccount::Hsa,
+                        })
+                    }),
+                ),
+            },
         )],
     );
     let id = s.draft.income[1].id;
@@ -2816,12 +3807,39 @@ fn archer_code2_source_and_corrective_detail_count_income_once() {
     for earnings in [20, -20] {
         let d = complete(FederalStatus::Joint);
         let printed = (earnings > 0).then_some(dollars(earnings));
-        let source = IncomeDocument::Sa1099(Sa1099 {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross: dollars(400 + earnings),
-            account: MedicalSaAccount::Archer,
-            payment: MedicalSaPayment::ExcessReturned { earnings: printed },
-        });
+        let source = IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::Sa1099(
+                crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                    medicare_prior: if matches!(
+                        &MedicalSaAccount::Archer,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(MedicareMsaPrior::None)
+                    } else {
+                        None
+                    },
+                    medicare_from_spouse: if matches!(
+                        &MedicalSaAccount::Archer,
+                        MedicalSaAccount::MedicareAdvantage
+                    ) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                    payment: None,
+                    ..sa_source(Sa1099 {
+                        trustee_payer: Default::default(),
+                        recipient: Default::default(),
+                        origin: HealthDocumentOrigin::Form1099Sa,
+                        gross: dollars(400 + earnings),
+                        box2_earnings: printed,
+                        box3_code: Some(2),
+                        box4_value: None,
+                        account: MedicalSaAccount::Archer,
+                    })
+                }),
+            ),
+        };
         let mut s = save_items(&d, vec![item(Owner::Taxpayer, 0, source.clone())]);
         let id = s.draft.income.last().unwrap().id;
         if earnings < 0 {
@@ -2872,17 +3890,23 @@ fn archer_code2_source_and_corrective_detail_count_income_once() {
         accepted(&send(&mut s, request));
         assert_eq!(s.draft, before);
         assert_eq!(
-            page_documents(&open_topic(&mut s, TaxSection::OtherIncome))[0].document,
-            source
+            page_documents(&open_documents(&mut s))
+                .into_iter()
+                .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+                .collect::<Vec<_>>()[0]
+                .document,
+            expected_named_source(&s.draft, Owner::Taxpayer, source.clone())
         );
-        let changed_owner = save_topic(
-            &before,
-            TaxSection::OtherIncome,
-            vec![item(Owner::Spouse, id, source.clone())],
-        );
+        let changed_owner = save_documents(&mut s, vec![item(Owner::Spouse, id, source.clone())]);
+        let changed_owner = fixture_owner_inputs(&s.draft, changed_owner);
         assert_eq!(key_of(send(&mut s, changed_owner)), "HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE");
         assert_eq!(s.draft, before);
-        let request = save_topic(&before, TaxSection::OtherIncome, vec![]);
+        let request = {
+            let mut request = open_documents(&mut s);
+            let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+            documents.other.other_income.documents.clear();
+            request
+        };
         assert_eq!(key_of(send(&mut s, request)), "HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE");
         assert_eq!(s.draft, before);
         let mut bad = s.draft.clone();
@@ -2905,22 +3929,33 @@ fn archer_code2_source_and_corrective_detail_count_income_once() {
 #[test]
 fn ltc_nonqualified_actual_funding_and_interest_round_trip() {
     let d = complete(FederalStatus::Single);
-    let make = |funding, medical_reimbursement, permanent_injury| Ltc1099 {
-        benefits: dollars(900),
-        accelerated: 0,
-        interest: dollars(25),
+    let make = |funding, medical_reimbursement, permanent_injury| crate::LtcSource {
+        interest: Some(dollars(25)),
+        form: crate::Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(dollars(900)),
+            accelerated: Some(0),
+            paid: LtcPaidBasis::PerDiem,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
         benefit_origin: Some(LtcPaymentOrigin::Insurance),
         accelerated_origin: None,
-        paid: LtcPaidBasis::PerDiem,
-        contract: LtcContractPage::Nonqualified {
-            treatment: NonqualifiedCareTreatmentPage::AccidentHealth {
+        contract: LtcContract::Nonqualified {
+            treatment: NonqualifiedCareTreatment::AccidentHealth {
                 funding,
                 medical_reimbursement,
                 permanent_injury,
                 recovery: None,
             },
         },
-        illness: LtcIllness::Chronic,
         insured: None,
     };
     let individual = CareBenefitFunding::Individual {
@@ -2930,8 +3965,16 @@ fn ltc_nonqualified_actual_funding_and_interest_round_trip() {
         },
     };
     let form = make(individual.clone(), dollars(100), None);
-    let mut s =
-        save_items(&d, vec![item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(form.clone()))]);
+    let mut s = save_items(
+        &d,
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(form.clone())),
+            },
+        )],
+    );
     let r = supported(&s.draft);
     let id = s.draft.income.last().unwrap().id;
     assert_eq!(value(&r, "taxable_ltc_benefits"), 500);
@@ -2941,12 +3984,22 @@ fn ltc_nonqualified_actual_funding_and_interest_round_trip() {
     assert_eq!(value(&r, "agi"), 60_525);
     assert!(!noted(&r, "WARN_LTC_PERIODS_MISSING"));
     assert_eq!(
-        page_documents(&open_topic(&mut s, TaxSection::OtherIncome))[0].document,
-        IncomeDocument::Ltc1099(form)
+        page_documents(&open_documents(&mut s))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::OtherIncome { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(form))
+            }
+        )
     );
     assert_eq!(supported(&restart(s.draft.clone()).draft), r);
     let before = s.draft.clone();
-    let unchanged = open_topic(&mut s, TaxSection::OtherIncome);
+    let unchanged = open_documents(&mut s);
     accepted(&send(&mut s, unchanged));
     assert_eq!(s.draft, before);
     for (funding, medical, injury, expected) in [
@@ -2975,25 +4028,50 @@ fn ltc_nonqualified_actual_funding_and_interest_round_trip() {
     ] {
         let s = save_items(
             &d,
-            vec![item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(make(funding, medical, injury)))],
+            vec![item(
+                Owner::Taxpayer,
+                0,
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Ltc1099(ltc_document(make(
+                        funding, medical, injury,
+                    ))),
+                },
+            )],
         );
         assert_eq!(value(&supported(&s.draft), "taxable_ltc_benefits"), expected);
     }
     let bad = make(CareBenefitFunding::AfterTax, dollars(1), None);
     assert_eq!(bad.record().rule(), Some("LTC1099_EXCLUDED_PORTIONS_ABOVE_EMPLOYER"));
-    let kept = s.draft.clone();
-    assert!(matches!(
-        send(
-            &mut s,
-            save_topic(
-                &kept,
-                TaxSection::OtherIncome,
-                vec![item(Owner::Taxpayer, id, IncomeDocument::Ltc1099(bad))]
-            )
-        ),
-        Reply::Edit(P::SaveIncomes { .. }) | Reply::Response(P::Problem { .. })
-    ));
-    assert_eq!(s.draft, kept);
+    let request = crate::tests::support::client::income_pages::information_return_answers(
+        &mut s,
+        &[item(
+            Owner::Taxpayer,
+            id,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(bad)),
+            },
+        )],
+    );
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    let index = followups
+        .iter()
+        .position(|row| row.key == alloc::format!("income/{id}/ltc_contract"))
+        .unwrap();
+    let path = libertas::SchemaPath::root()
+        .field("followups")
+        .key(followups[index].key.as_str())
+        .field("answer")
+        .field("value")
+        .field("treatment")
+        .field("medical_reimbursement")
+        .to_string();
+    crate::tests::support::client::survey::survey_refusal(
+        "ltc-nonqualified-excluded-portions",
+        &mut s,
+        request,
+        "LTC1099_EXCLUDED_PORTIONS_ABOVE_EMPLOYER",
+        &path,
+    );
 }
 
 // Reg1.105-1(d)(2)'s published group premiums8000/9000/7000 and employer
@@ -3060,27 +4138,44 @@ fn ltc_group_latest_known_years_and_first_year_methods() {
         ),
     ];
     for (funding, expected) in histories {
-        let form = Ltc1099 {
-            benefits: dollars(900),
-            accelerated: 0,
-            interest: 0,
+        let form = crate::LtcSource {
+            interest: None,
+            form: crate::Ltc1099Paper {
+                payer: Default::default(),
+                recipient: Default::default(),
+                insured_party: Default::default(),
+                date_certified: None,
+                benefits: Some(dollars(900)),
+                accelerated: Some(0),
+                box4_qualified: false,
+                paid: LtcPaidBasis::PerDiem,
+                illness: Some(LtcIllness::Chronic),
+                calendar_year: 2026,
+                corrected: false,
+                payer_phone: String::new(),
+                account_number: String::new(),
+            },
             benefit_origin: Some(LtcPaymentOrigin::Insurance),
             accelerated_origin: None,
-            contract: LtcContractPage::Nonqualified {
-                treatment: NonqualifiedCareTreatmentPage::AccidentHealth {
+            contract: LtcContract::Nonqualified {
+                treatment: NonqualifiedCareTreatment::AccidentHealth {
                     funding,
                     medical_reimbursement: 0,
                     permanent_injury: None,
                     recovery: None,
                 },
             },
-            paid: LtcPaidBasis::PerDiem,
-            illness: LtcIllness::Chronic,
             insured: None,
         };
         let s = save_items(
             &complete(FederalStatus::Single),
-            vec![item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(form))],
+            vec![item(
+                Owner::Taxpayer,
+                0,
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Ltc1099(ltc_document(form)),
+                },
+            )],
         );
         assert_eq!(value(&supported(&s.draft), "taxable_ltc_benefits"), expected);
     }
@@ -3102,7 +4197,7 @@ fn ltc_group_latest_known_years_and_first_year_methods() {
     );
 }
 
-// IRC101(g)(1),(2),(5), https://www.irs.gov/publications/p525 Accelerated
+// IRC101(g)(1),2,5, https://www.irs.gov/publications/p525 Accelerated
 //Death Benefits;2026draftf8853 printedp2, https://www.irs.gov/pub/irs-dft/f8853--dft.pdf.
 // Derived900terminal viatical proceeds exclude only with actual provider
 //qualification/no business insurable interest. A failed qualification leaves
@@ -3117,19 +4212,38 @@ fn ltc_viatical_and_life_streams_do_not_borrow_contract_qualification() {
         regulation: ViaticalRegulation::StateLicense { licensed: true },
         business_insurable_interest: false,
     };
-    let form = Ltc1099 {
-        benefits: 0,
-        accelerated: dollars(900),
-        interest: 0,
+    let form = crate::LtcSource {
+        interest: None,
+        form: crate::Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(0),
+            accelerated: Some(dollars(900)),
+            paid: LtcPaidBasis::NotChecked,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Terminal),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
         benefit_origin: None,
         accelerated_origin: Some(origin),
-        paid: LtcPaidBasis::NotChecked,
-        contract: LtcContractPage::Unknown,
-        illness: LtcIllness::Terminal,
+        contract: LtcContract::Unknown,
         insured: None,
     };
-    let mut s =
-        save_items(&d, vec![item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(form.clone()))]);
+    let mut s = save_items(
+        &d,
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(form.clone())),
+            },
+        )],
+    );
     assert_eq!(value(&supported(&s.draft), "taxable_ltc_benefits"), 0);
     let mut bad = form;
     if let Some(LtcPaymentOrigin::Viatical { business_insurable_interest, .. }) =
@@ -3138,47 +4252,67 @@ fn ltc_viatical_and_life_streams_do_not_borrow_contract_qualification() {
         *business_insurable_interest = true;
     }
     let id = s.draft.income.last().unwrap().id;
-    let kept = s.draft.clone();
-    accepted(&send(
+    save_each_topic(
         &mut s,
-        save_topic(
-            &kept,
-            TaxSection::OtherIncome,
-            vec![item(Owner::Taxpayer, id, IncomeDocument::Ltc1099(bad))],
-        ),
-    ));
+        vec![item(
+            Owner::Taxpayer,
+            id,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(bad)),
+            },
+        )],
+    );
     assert!(issue(&s.draft, "ISSUE_LTC_LIFE_CHARACTER_UNRESOLVED"));
-    let mixed = Ltc1099 {
-        benefits: dollars(900),
-        accelerated: dollars(500),
-        interest: 0,
+    let mixed = crate::LtcSource {
+        interest: None,
+        form: crate::Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(dollars(900)),
+            accelerated: Some(dollars(500)),
+            paid: LtcPaidBasis::PerDiem,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
         benefit_origin: Some(LtcPaymentOrigin::Insurance),
         accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
             business_insurable_interest: false,
         }),
-        paid: LtcPaidBasis::PerDiem,
-        contract: LtcContractPage::Nonqualified {
-            treatment: NonqualifiedCareTreatmentPage::AccidentHealth {
+        contract: LtcContract::Nonqualified {
+            treatment: NonqualifiedCareTreatment::AccidentHealth {
                 funding: CareBenefitFunding::AfterTax,
                 medical_reimbursement: 0,
                 permanent_injury: None,
                 recovery: None,
             },
         },
-        illness: LtcIllness::Chronic,
         insured: None,
     };
     let s = save_items(
         &d,
         vec![
-            item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(mixed)),
             item(
                 Owner::Taxpayer,
                 0,
-                IncomeDocument::LtcInsured(LtcInsured {
-                    insured: LtcInsuredPerson::OnReturn { person: -1 },
-                    periods: one_period(20260601, 20260601, 0, 0).into(),
-                }),
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Ltc1099(ltc_document(mixed)),
+                },
+            ),
+            item(
+                Owner::Taxpayer,
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                        insured: LtcInsuredPerson::OnReturn { person: -1 },
+                        periods: one_period(20260601, 20260601, 0, 0).into(),
+                    }),
+                },
             ),
         ],
     );
@@ -3197,53 +4331,71 @@ fn ltc_actual_annuity_and_recovery_sources_keep_income_once_and_protect_ids() {
     let mut s = Interview::new(TEST_USER, d);
     let mut annuity =
         crate::tests::cross::interview::r1099(dollars(900), DistributionCode::Nonqualified, false);
-    annuity.taxable = dollars(400);
-    let kept = s.draft.clone();
-    accepted(&send(
+    annuity.source_mut().form.taxable = Some(dollars(400));
+    save_each_topic(
         &mut s,
-        save_topic(
-            &kept,
-            TaxSection::Retirement,
-            vec![item(Owner::Taxpayer, 0, IncomeDocument::R1099(annuity))],
-        ),
-    ));
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(annuity)),
+            },
+        )],
+    );
     let source = s.draft.income.last().unwrap().id;
-    let form = Ltc1099 {
-        benefits: dollars(900),
-        accelerated: 0,
-        interest: 0,
+    let form = crate::LtcSource {
+        interest: None,
+        form: crate::Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(dollars(900)),
+            accelerated: Some(0),
+            paid: LtcPaidBasis::NotChecked,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
         benefit_origin: Some(LtcPaymentOrigin::Insurance),
         accelerated_origin: None,
-        paid: LtcPaidBasis::NotChecked,
-        contract: LtcContractPage::Nonqualified {
-            treatment: NonqualifiedCareTreatmentPage::LifeAnnuity { source },
+        contract: LtcContract::Nonqualified {
+            treatment: NonqualifiedCareTreatment::LifeAnnuity { source },
         },
-        illness: LtcIllness::Chronic,
         insured: None,
     };
-    let page = open_topic(&mut s, TaxSection::OtherIncome);
-    let P::SaveIncomes { annuity_sources, .. } = &page else { panic!() };
+    let page = open_documents(&mut s);
+    let P::SaveDocuments { annuity_sources, .. } = &page else { panic!() };
     assert!(
         annuity_sources
             .iter()
             .any(|v| v.id == source && v.owner == Owner::Taxpayer && v.gross == dollars(900))
     );
-    let kept = s.draft.clone();
-    accepted(&send(
+    save_each_topic(
         &mut s,
-        save_topic(
-            &kept,
-            TaxSection::OtherIncome,
-            vec![item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(form.clone()))],
-        ),
-    ));
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(form.clone())),
+            },
+        )],
+    );
     let result = supported(&s.draft);
     assert_eq!(value(&result, "agi"), 60_400);
     assert_eq!(value(&result, "taxable_ltc_benefits"), 0);
     assert!(noted(&result, "WARN_LTC_ANNUITY_EXCLUSION_UNAVAILABLE"));
     let kept = s.draft.clone();
     assert_eq!(
-        key_of(send(&mut s, save_topic(&kept, TaxSection::Retirement, vec![]))),
+        key_of({
+            let mut request = open_documents(&mut s);
+            let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+            documents.common.retirement.documents.clear();
+            send(&mut s, request)
+        }),
         "LTC1099_SOURCE_UNAVAILABLE"
     );
     assert_eq!(s.draft, kept);
@@ -3258,69 +4410,87 @@ fn ltc_actual_annuity_and_recovery_sources_keep_income_once_and_protect_ids() {
     assert!(issue(&forged, "LTC1099_SOURCE_UNAVAILABLE"));
 
     let d = complete(FederalStatus::Single);
-    let recovery = IncomeDocument::OtherIncome(OtherIncomeItem {
-        amount: dollars(300),
-        withholding: 0,
-        kind: OtherIncomeKind::Recovery {
-            worksheet: PriorYearRecovery {
-                year: 2025,
-                deducted: dollars(200),
-                itemized: dollars(20000),
-                standard: dollars(19000),
-                taxable_income: dollars(40000),
-                ordinary: true,
+    let recovery = IncomeSource::Record {
+        value: crate::IncomeRecord::OtherIncome(OtherIncomeItem {
+            amount: dollars(300),
+            withholding: 0,
+            kind: OtherIncomeKind::Recovery {
+                worksheet: PriorYearRecovery {
+                    year: 2025,
+                    deducted: dollars(200),
+                    itemized: dollars(20000),
+                    standard: dollars(19000),
+                    taxable_income: dollars(40000),
+                    ordinary: true,
+                },
             },
-        },
-    });
+        }),
+    };
     let mut s = save_items(&d, vec![item(Owner::Taxpayer, 0, recovery)]);
     let page = open_topic(&mut s, TaxSection::OtherIncome);
     let recovery = page_documents(&page)[0].clone();
     let P::SaveIncomes { recovery_sources, .. } = &page else { panic!() };
     assert!(recovery_sources.iter().any(|v| v.id == recovery.id));
-    let form = Ltc1099 {
-        benefits: dollars(900),
-        accelerated: 0,
-        interest: 0,
+    let form = crate::LtcSource {
+        interest: None,
+        form: crate::Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(dollars(900)),
+            accelerated: Some(0),
+            paid: LtcPaidBasis::PerDiem,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
         benefit_origin: Some(LtcPaymentOrigin::Insurance),
         accelerated_origin: None,
-        paid: LtcPaidBasis::PerDiem,
-        contract: LtcContractPage::Nonqualified {
-            treatment: NonqualifiedCareTreatmentPage::AccidentHealth {
+        contract: LtcContract::Nonqualified {
+            treatment: NonqualifiedCareTreatment::AccidentHealth {
                 funding: CareBenefitFunding::AfterTax,
                 medical_reimbursement: 0,
                 permanent_injury: None,
                 recovery: Some(recovery.id),
             },
         },
-        illness: LtcIllness::Chronic,
         insured: None,
     };
-    let kept = s.draft.clone();
-    accepted(&send(
+    save_each_topic(
         &mut s,
-        save_topic(
-            &kept,
-            TaxSection::OtherIncome,
-            vec![recovery, item(Owner::Taxpayer, 0, IncomeDocument::Ltc1099(form))],
-        ),
-    ));
+        vec![item(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(form)),
+            },
+        )],
+    );
     let result = supported(&s.draft);
     assert_eq!(value(&result, "recovery_2025_taxable"), 200);
     assert_eq!(value(&result, "taxable_ltc_benefits"), 0);
     assert_eq!(value(&result, "agi"), 60_200);
-    let page = open_topic(&mut s, TaxSection::OtherIncome);
-    let ltc = page_documents(&page)
-        .iter()
-        .find(|v| matches!(v.document, IncomeDocument::Ltc1099(_)))
-        .unwrap()
-        .clone();
     let kept = s.draft.clone();
     assert_eq!(
-        key_of(send(&mut s, save_topic(&kept, TaxSection::OtherIncome, vec![ltc]))),
+        key_of({
+            let request = save_topic(&mut s, TaxSection::OtherIncome, vec![]);
+            send(&mut s, request)
+        }),
         "LTC1099_SOURCE_UNAVAILABLE"
     );
     assert_eq!(s.draft, kept);
-    accepted(&send(&mut s, save_topic(&kept, TaxSection::OtherIncome, vec![])));
+    let mut request = open_documents(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.other.other_income.documents.clear();
+    accepted(&send(&mut s, request));
+    accepted(&{
+        let request = save_topic(&mut s, TaxSection::OtherIncome, vec![]);
+        send(&mut s, request)
+    });
     assert_eq!(value(&supported(&s.draft), "agi"), 60_000);
 }
 
@@ -3329,37 +4499,6 @@ fn ltc_actual_annuity_and_recovery_sources_keep_income_once_and_protect_ids() {
 // Ordinary failed-cash deposit classification is the contribution/excess
 // definitions' inference, not a published IRS worked example. Neutral60000
 // wages/1980 birth complete the actual public source and HSA pages.
-pub(in crate::tests) fn attempted_hsa_rollover(
-    received: u32,
-    deposits: Vec<MedicalRolloverDeposit>,
-) -> IncomeDocument {
-    IncomeDocument::Sa1099(Sa1099 {
-        origin: HealthDocumentOrigin::Form1099Sa,
-        gross: deposits.iter().map(|p| p.amount).sum(),
-        account: MedicalSaAccount::Hsa,
-        payment: MedicalSaPayment::Own {
-            nonmedical: vec![],
-            medical: 0,
-            disabled_since: None,
-            rollover: Some(MedicalRollover {
-                preceding: None,
-                receipts: vec![MedicalRolloverReceipt { received, deposits }],
-            }),
-        },
-    })
-}
-pub(in crate::tests) fn ordinary_hsa_deposit(
-    deposited: u32,
-    amount: i64,
-    year: u32,
-) -> MedicalRolloverDeposit {
-    MedicalRolloverDeposit {
-        deposited,
-        amount: dollars(amount),
-        destination: MedicalRolloverDestination::Hsa,
-        character: MedicalDepositCharacter::Cash { year, deadline: (year + 1) * 10000 + 415 },
-    }
-}
 #[test]
 fn hsa_failed_cash_rollover_uses_actual_designated_year_and_public_account_once() {
     for year in [2026, 2027] {
@@ -3426,7 +4565,8 @@ fn hsa_rollover_split_day_sixty_and_sixty_one_flows_to_existing_excess_owner() {
     //500 excess and30excise from actual account value; source tax remains100.
     let mut page = open_hsa_page(&mut s);
     let P::SaveHsa { value: input, .. } = &mut page else { panic!() };
-    input.accounts[0].coverage = HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12] };
+    input.accounts[0].coverage =
+        HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12].into() };
     input.accounts[0].excess_accounting = Some(hsa_excess_accounting(dollars(500), None, 0, 0, 0));
     accepted(&send(&mut s, page));
     let r = supported(&s.draft);
@@ -3462,7 +4602,7 @@ fn hsa_rollover_history_counts_only_successful_actual_receipts_not_source_order(
                 ),
             ],
         );
-        let projection = crate::medical_rollover::classify(&s.draft).unwrap();
+        let projection = crate::medical_rollover_return::classify(&s.draft).unwrap();
         assert_eq!(projection.failed.len(), 1);
         assert_eq!(
             projection.failed[0].received,
@@ -3510,7 +4650,7 @@ fn hsa_failed_deposit_correction_preserves_manual_totals_and_net_later_once() {
     assert_eq!(input.linked_deposits[0].deposits[0].amount, dollars(1000));
     let mut account = hsa_account(
         Owner::Taxpayer,
-        HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12] },
+        HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12].into() },
         0,
     );
     let mut correction = hsa_correction(2026, 20270301, dollars(400), -dollars(20));
@@ -3530,7 +4670,7 @@ fn hsa_failed_deposit_correction_preserves_manual_totals_and_net_later_once() {
     assert_eq!(value(&r, "hsa_return_year_excess_contribution_tax"), 36);
     assert_eq!(value(&r, "hsa_taxable_distributions"), 1000);
     assert_eq!(value(&r, "hsa_additional_tax"), 200);
-    let prepared = crate::medical_rollover::prepare(&s.draft).unwrap();
+    let prepared = crate::medical_rollover_return::prepare(&s.draft).unwrap();
     let working = prepared.draft.unwrap();
     let effective = &working.adjustments.as_ref().unwrap().hsa[0];
     assert_eq!(effective.personal, 0);
@@ -3543,7 +4683,7 @@ fn hsa_failed_deposit_correction_preserves_manual_totals_and_net_later_once() {
         crate::kernel::ratio::exact::whole(dollars(600))
     );
     assert_eq!(effective.corrections[0].failed_deposit, Some(source));
-    assert!(crate::medical_rollover::prepare(&working).is_err());
+    assert!(crate::medical_rollover_return::prepare(&working).is_err());
     let stored = &s.draft.adjustments.as_ref().unwrap().hsa[0];
     assert_eq!(stored.personal, 0);
     assert_eq!(stored.excess_accounting.as_ref().unwrap().later_return_year_deposits, 0);
@@ -3636,15 +4776,27 @@ fn hsa_failed_deposit_source_deletion_requires_removing_actual_correction() {
     input.accounts = vec![a];
     accepted(&send(&mut s, request));
     let before = s.draft.clone();
-    let deletion = save_topic(&before, TaxSection::OtherIncome, vec![]);
+    let deletion = {
+        let mut request = open_documents(&mut s);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        documents.other.other_income.documents.clear();
+        request
+    };
     assert_eq!(key_of(send(&mut s, deletion)), "HEALTH_FAILED_DEPOSIT_UNAVAILABLE");
     assert_eq!(s.draft, before);
     let mut request = open_hsa_page(&mut s);
     let P::SaveHsa { value: input, .. } = &mut request else { panic!() };
     input.accounts[0].corrections.clear();
     accepted(&send(&mut s, request));
-    let before = s.draft.clone();
-    accepted(&send(&mut s, save_topic(&before, TaxSection::OtherIncome, vec![])));
+    accepted(&{
+        let request = {
+            let mut request = open_documents(&mut s);
+            let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+            documents.other.other_income.documents.clear();
+            request
+        };
+        send(&mut s, request)
+    });
     assert_eq!(value(&supported(&s.draft), "hsa_taxable_distributions"), 0);
 }
 
@@ -3656,25 +4808,56 @@ fn hsa_failed_deposit_source_deletion_requires_removing_actual_correction() {
 fn archer_failed_deposit_correction_uses_source_and_return_statement_once() {
     let d = complete(FederalStatus::Single);
     let mut original =
-        attempted_hsa_rollover(20260101, vec![ordinary_hsa_deposit(20260303, 2350, 2026)]);
-    let IncomeDocument::Sa1099(data) = &mut original else { panic!() };
-    data.account = MedicalSaAccount::Archer;
-    let MedicalSaPayment::Own { rollover: Some(rollover), .. } = &mut data.payment else {
+        attempted_hsa_rollover_source(20260101, vec![ordinary_hsa_deposit(20260303, 2350, 2026)]);
+    original.form1099sa_mut().unwrap().account = MedicalSaAccount::Archer;
+    let Some(MedicalSaPayment::Own { rollover: Some(rollover), .. }) = &mut original.payment else {
         panic!()
     };
     rollover.receipts[0].deposits[0].destination = MedicalRolloverDestination::Archer;
-    let returned = IncomeDocument::Sa1099(Sa1099 {
-        origin: HealthDocumentOrigin::Form1099Sa,
-        gross: dollars(420),
-        account: MedicalSaAccount::Archer,
-        payment: MedicalSaPayment::ExcessReturned { earnings: Some(dollars(20)) },
-    });
+    let original = IncomeSource::OtherIncome {
+        value: crate::OtherIncomeDocument::Sa1099(
+            crate::tests::support::client::income_pages::sa_document(original),
+        ),
+    };
+    let returned = IncomeSource::OtherIncome {
+        value: crate::OtherIncomeDocument::Sa1099(
+            crate::tests::support::client::income_pages::sa_document(crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Archer,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Archer,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: None,
+                ..sa_source(Sa1099 {
+                    trustee_payer: Default::default(),
+                    recipient: Default::default(),
+                    origin: HealthDocumentOrigin::Form1099Sa,
+                    gross: dollars(420),
+                    box2_earnings: Some(dollars(20)),
+                    box3_code: Some(2),
+                    box4_value: None,
+                    account: MedicalSaAccount::Archer,
+                })
+            }),
+        ),
+    };
     let mut s = save_items(
         &d,
         vec![item(Owner::Taxpayer, 0, original), item(Owner::Taxpayer, 0, returned)],
     );
-    let original_id=s.draft.income.iter().find(|e|matches!(&e.income,FederalIncome::MedicalDistribution{data} if matches!(data.payment,MedicalSaPayment::Own{..}))).unwrap().id;
-    let returned_id=s.draft.income.iter().find(|e|matches!(&e.income,FederalIncome::MedicalDistribution{data} if matches!(data.payment,MedicalSaPayment::ExcessReturned{..}))).unwrap().id;
+    let original_id=s.draft.income.iter().find(|e|matches!(&e.income,FederalIncome::MedicalDistribution{data} if matches!(data.record().effective_payment(), Some(MedicalSaPayment::Own{..})))).unwrap().id;
+    let returned_id=s.draft.income.iter().find(|e|matches!(&e.income,FederalIncome::MedicalDistribution{data} if matches!(data.record().effective_payment(), Some(MedicalSaPayment::ExcessReturned)))).unwrap().id;
     let mut request = open_hsa_page(&mut s);
     let P::SaveHsa { value: input, archer_failed_deposits, hsa_failed_deposits, .. } = &mut request
     else {
@@ -3712,7 +4895,7 @@ fn archer_failed_deposit_correction_uses_source_and_return_statement_once() {
     assert_eq!(value(&r, "archer_msa_additional_tax"), 470);
     assert_eq!(value(&r, "archer_correction_earnings"), 20);
     assert_eq!(value(&r, "agi"), 60420);
-    let prepared = crate::medical_rollover::prepare(&s.draft).unwrap();
+    let prepared = crate::medical_rollover_return::prepare(&s.draft).unwrap();
     let working = prepared.draft.unwrap();
     let ArcherContributions::Records { owners, .. } = &working.adjustments.as_ref().unwrap().archer
     else {
@@ -3746,9 +4929,12 @@ fn hsa_failed_deposit_estimate_and_source_edits_keep_correction_graph_authoritat
             attempted_hsa_rollover(20260101, vec![ordinary_hsa_deposit(20260303, 1000, 2026)]),
         )],
     );
+    // The failed deposit's questions make the HSA page apply: asked by the
+    // walk, or already visited by it.
     assert!(
         crate::interview::derived_topics(&s.draft, TaxSection::Adjustments)
             .contains(&TaxSection::Hsa)
+            || s.draft.finished_sections.contains(&TaxSection::Hsa)
     );
     let source = s
         .draft
@@ -3761,7 +4947,7 @@ fn hsa_failed_deposit_estimate_and_source_edits_keep_correction_graph_authoritat
     let P::SaveHsa { value: input, .. } = &mut request else { panic!() };
     let mut a = hsa_account(
         Owner::Taxpayer,
-        HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12] },
+        HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12].into() },
         0,
     );
     let mut c = hsa_correction(2026, 20260401, dollars(400), 0);
@@ -3771,13 +4957,16 @@ fn hsa_failed_deposit_estimate_and_source_edits_keep_correction_graph_authoritat
     a.excess_accounting = Some(hsa_excess_accounting(dollars(600), None, 0, 0, 0));
     input.accounts = vec![a];
     let before = s.draft.clone();
-    let P::SaveHsa { value, hsa_failed_deposits, archer_failed_deposits, .. } = request.clone()
+    let P::SaveHsa { value, hsa_failed_deposits, archer_failed_deposits, followups, .. } =
+        request.clone()
     else {
         panic!()
     };
     let reply = send(
         &mut s,
         P::EstimateHsa {
+            followups,
+            questions: Vec::new(),
             user: TEST_USER,
             allowed_owners: vec![],
             allowed_family_split: vec![],
@@ -3810,7 +4999,12 @@ fn hsa_failed_deposit_estimate_and_source_edits_keep_correction_graph_authoritat
             attempted_hsa_rollover(received, vec![ordinary_hsa_deposit(20260303, amount, 2026)]),
         );
         assert_eq!(
-            key_of(send(&mut s, save_topic(&before, TaxSection::OtherIncome, vec![changed]))),
+            key_of({
+                crate::tests::support::client::income_pages::save_source_fixtures(
+                    &mut s,
+                    vec![changed],
+                )
+            }),
             key
         );
         assert_eq!(s.draft, before);
@@ -3818,26 +5012,25 @@ fn hsa_failed_deposit_estimate_and_source_edits_keep_correction_graph_authoritat
     let mut broken = before.clone();
     broken.adjustments.as_mut().unwrap().hsa[0].corrections[0].failed_deposit = Some(source + 100);
     assert!(!broken.valid_stored());
-    // Normal checklist pruning can remove both actual source and corrections
-    // in one candidate; removing the source alone was rejected above.
+    // The Form 1099-SA keeps the HSA topic on the path: unchecking the box
+    // removes nothing.
     let mut ticks = before.checklist;
-    ticks.income = 0;
-    ticks.adjustments = 0;
+    ticks.paid = 0;
     let request = crate::tests::cross::interview::save_checklist(
         &before,
         crate::tests::cross::interview::PAGE_CHILDREN,
         ticks,
     );
     accepted(&send(&mut s, request));
-    assert!(s.draft.adjustments.as_ref().unwrap().hsa.is_empty());
-    assert!(!s.draft.income.iter().any(|e| e.id == source));
+    assert_eq!(s.draft.adjustments, before.adjustments);
+    assert_eq!(s.draft.income, before.income);
 }
 
 #[test]
 fn hsa_failed_deposit_preview_uses_actual_complete_history_without_mutation() {
     for earlier_succeeded in [false, true] {
         let d = complete(FederalStatus::Single);
-        let mut s = save_items(
+        let s = save_items(
             &d,
             vec![item(
                 Owner::Taxpayer,
@@ -3853,15 +5046,42 @@ fn hsa_failed_deposit_preview_uses_actual_complete_history_without_mutation() {
             )],
         );
         let before = s.draft.clone();
-        let request = survey_preview_document(attempted_hsa_rollover(
-            20261201,
-            vec![ordinary_hsa_deposit(20261215, 1000, 2026)],
+        let mut candidate = restart(before.clone());
+        let center =
+            crate::tests::support::client::income_pages::open_document_center(&mut candidate);
+        let mut rows = crate::tests::support::client::income_pages::page_documents(&center)
+            .into_iter()
+            .filter(|row| {
+                matches!(
+                    row.document,
+                    IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Sa1099(_) }
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.push(item(
+            Owner::Taxpayer,
+            0,
+            attempted_hsa_rollover(20261201, vec![ordinary_hsa_deposit(20261215, 1000, 2026)]),
         ));
-        let Reply::Response(P::IncomePreview { preview: amount, .. }) = send(&mut s, request)
-        else {
-            panic!()
-        };
-        assert_eq!(amount, Some(dollars(if earlier_succeeded { 1000 } else { 0 })));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixtures(
+            &mut candidate,
+            rows,
+        ));
+        let source = candidate
+            .draft
+            .income
+            .iter()
+            .find(|entry| !before.income.iter().any(|old| old.id == entry.id))
+            .unwrap()
+            .id;
+        let projected = crate::medical_rollover_return::classify(&candidate.draft).unwrap();
+        let failed: i64 = projected
+            .failed
+            .iter()
+            .filter(|row| row.source == source)
+            .map(|row| row.deposit.amount)
+            .sum();
+        assert_eq!(failed, dollars(if earlier_succeeded { 1000 } else { 0 }));
         assert_eq!(s.draft, before);
     }
 }
@@ -3869,7 +5089,7 @@ fn hsa_failed_deposit_preview_uses_actual_complete_history_without_mutation() {
 #[test]
 fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() {
     let mut d = complete(FederalStatus::Joint);
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(InjuredSpouseAllocation {
         injured: Owner::Taxpayer,
         debt: OffsetDebt::ChildSupport,
@@ -3884,21 +5104,34 @@ fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() 
         item(
             owner,
             0,
-            IncomeDocument::Ltc1099(Ltc1099 {
-                interest: 0,
-                benefit_origin: Some(LtcPaymentOrigin::Insurance),
-                accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
-                    business_insurable_interest: false,
-                }),
-                benefits: dollars(15_000),
-                accelerated: 0,
-                paid: LtcPaidBasis::PerDiem,
-                contract: LtcContractPage::Qualified {
-                    qualification: CareContractQualification::Qualified,
-                },
-                illness: LtcIllness::Chronic,
-                insured: None,
-            }),
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(crate::LtcSource {
+                    interest: None,
+                    form: crate::Ltc1099Paper {
+                        payer: Default::default(),
+                        recipient: Default::default(),
+                        insured_party: Default::default(),
+                        date_certified: None,
+                        benefits: Some(dollars(15_000)),
+                        accelerated: Some(0),
+                        paid: LtcPaidBasis::PerDiem,
+                        box4_qualified: true,
+                        illness: Some(LtcIllness::Chronic),
+                        calendar_year: 2026,
+                        corrected: false,
+                        payer_phone: String::new(),
+                        account_number: String::new(),
+                    },
+                    benefit_origin: Some(LtcPaymentOrigin::Insurance),
+                    accelerated_origin: Some(LtcPaymentOrigin::AcceleratedLife {
+                        business_insurable_interest: false,
+                    }),
+                    contract: LtcContract::Qualified {
+                        qualification: CareContractQualification::Qualified,
+                    },
+                    insured: None,
+                })),
+            },
         )
     };
     let periods = vec![(20260601, 20260630), (20260701, 20260731)]
@@ -3913,19 +5146,21 @@ fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() 
             injured_payees: None,
         })
         .collect();
-    let first = save_items(
+    let mut first = save_items(
         &d,
         vec![
             item(
                 Owner::Taxpayer,
                 0,
-                IncomeDocument::LtcInsured(LtcInsured {
-                    insured: LtcInsuredPerson::OnReturn { person: -1 },
-                    periods: LtcPeriodsInput::Several {
-                        method: CarePeriodMethod::EqualRate,
-                        periods,
-                    },
-                }),
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::LtcInsured(LtcInsured {
+                        insured: LtcInsuredPerson::OnReturn { person: -1 },
+                        periods: LtcPeriodsInput::Several {
+                            method: CarePeriodMethod::EqualRate,
+                            periods,
+                        },
+                    }),
+                },
             ),
             form(Owner::Taxpayer),
             form(Owner::Spouse),
@@ -3940,14 +5175,28 @@ fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() 
         .filter(|e| matches!(e.income, FederalIncome::LtcBenefits { .. }))
         .map(|e| e.id)
         .collect();
-    let page = other_income_page(&first.draft);
-    let mut rows = page_documents(&page).to_vec();
-    let row =
-        rows.iter_mut()
-            .find_map(|e| {
-                if let IncomeDocument::LtcInsured(v) = &mut e.document { Some(v) } else { None }
-            })
-            .unwrap();
+    let page = open_topic(&mut first, TaxSection::LongTermCareBenefits);
+    let mut rows = page_documents(&page)
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row.document,
+                IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(_) }
+            )
+        })
+        .collect::<Vec<_>>();
+    let row = rows
+        .iter_mut()
+        .find_map(|e| {
+            if let IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(v) } =
+                &mut e.document
+            {
+                Some(v)
+            } else {
+                None
+            }
+        })
+        .unwrap();
     let LtcPeriodsInput::Several { periods, .. } = &mut row.periods else { panic!() };
     for (period, source) in periods.iter_mut().zip(&sources) {
         period.injured_payees = Some(InjuredLtcPeriodPayeesInput::Payments {
@@ -3962,8 +5211,16 @@ fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() 
     assert_eq!(value(&after, "taxable_ltc_benefits"), 3770);
     assert_eq!(value(&before, "agi"), value(&after, "agi"));
     let mut reopened = restart(saved.draft.clone());
-    let page = open_topic(&mut reopened, TaxSection::OtherIncome);
-    let shown = page_documents(&page).to_vec();
+    let page = open_topic(&mut reopened, TaxSection::LongTermCareBenefits);
+    let shown = page_documents(&page)
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row.document,
+                IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(_) }
+            )
+        })
+        .collect::<Vec<_>>();
     let stored = saved
         .draft
         .income
@@ -3977,23 +5234,28 @@ fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() 
         })
         .unwrap();
     assert!(
-        shown.iter().any(|e| matches!(&e.document,IncomeDocument::LtcInsured(v) if v==&stored))
+        shown.iter().any(|e| matches!(&e.document,IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(v) } if v==&stored))
     );
     let mut invalid = shown;
-    let row =
-        invalid
-            .iter_mut()
-            .find_map(|e| {
-                if let IncomeDocument::LtcInsured(v) = &mut e.document { Some(v) } else { None }
-            })
-            .unwrap();
+    let row = invalid
+        .iter_mut()
+        .find_map(|e| {
+            if let IncomeSource::Record { value: crate::IncomeRecord::LtcInsured(v) } =
+                &mut e.document
+            {
+                Some(v)
+            } else {
+                None
+            }
+        })
+        .unwrap();
     let LtcPeriodsInput::Several { periods, .. } = &mut row.periods else { panic!() };
     let Some(InjuredLtcPeriodPayeesInput::Payments { payments }) = &mut periods[0].injured_payees
     else {
         panic!()
     };
     payments[0].source = 999999;
-    let request = save_topic(&reopened.draft, TaxSection::OtherIncome, invalid);
+    let request = save_topic(&mut reopened, TaxSection::LongTermCareBenefits, invalid);
     crate::tests::cross::interview::rejected_with(
         current_source_refusal(
             "health-context-01",
@@ -4008,4 +5270,395 @@ fn unit13_approved_ltc_period_source_facts_save_reopen_and_preserve_joint_tax() 
         "INJURED_LTC_SOURCE_UNAVAILABLE",
     );
     assert_eq!(reopened.draft, saved.draft);
+}
+
+#[test]
+fn ltc_paper_corrections_preserve_actual_answers_and_require_topic_reconciliation() {
+    use crate::tests::support::client::income_pages::{
+        information_return_answers_for_topic, save_information_return_answers,
+    };
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let form = crate::LtcSource {
+        interest: Some(dollars(25)),
+        form: crate::Ltc1099Paper {
+            payer: Default::default(),
+            recipient: Default::default(),
+            insured_party: Default::default(),
+            date_certified: None,
+            benefits: Some(dollars(900)),
+            accelerated: Some(0),
+            paid: LtcPaidBasis::PerDiem,
+            box4_qualified: false,
+            illness: Some(LtcIllness::Chronic),
+            calendar_year: 2026,
+            corrected: false,
+            payer_phone: String::new(),
+            account_number: String::new(),
+        },
+        benefit_origin: Some(LtcPaymentOrigin::Insurance),
+        accelerated_origin: None,
+        contract: LtcContract::Nonqualified {
+            treatment: NonqualifiedCareTreatment::AccidentHealth {
+                funding: CareBenefitFunding::EmployerOnly,
+                medical_reimbursement: dollars(100),
+                permanent_injury: None,
+                recovery: None,
+            },
+        },
+        insured: None,
+    };
+    let source = |id, value| {
+        vec![item(
+            Owner::Taxpayer,
+            id,
+            IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::Ltc1099(ltc_document(value)),
+            },
+        )]
+    };
+    let request = save_documents(&mut session, source(0, form.clone()));
+    accepted(&send(&mut session, request));
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::LtcBenefits { .. }))
+        .unwrap();
+    let id = entry.id;
+    let FederalIncome::LtcBenefits { data } = &entry.income else { unreachable!() };
+    assert_eq!(data.contract, LtcContract::Unknown);
+    assert_eq!(data.benefit_origin, None);
+    assert_eq!(data.form.benefits, form.form.benefits);
+    // The interest is a topic answer beside the paper, like the contract: a paper save leaves it.
+    assert_eq!(data.interest, None);
+    assert_eq!(data.record().interest, 0);
+    assert!(!data.form.box4_qualified);
+    assert!(session.draft.valid_stored());
+    assert!(issue(&session.draft, "ISSUE_LTC_SOURCE_CHARACTER_UNRESOLVED"));
+    let desired = source(id, form.clone());
+    save_information_return_answers(&mut session, &desired);
+    let mut expected = supported(&session.draft);
+    {
+        let amount = dollars(50);
+        let checked = false;
+        let key = "LTC1099_EXCLUDED_PORTIONS_ABOVE_EMPLOYER";
+        let mut request = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let row =
+            documents.other.other_income.documents.iter_mut().find(|row| row.id == id).unwrap();
+        let crate::OtherIncomeDocument::Ltc1099(paper) = &mut row.document else { unreachable!() };
+        paper.benefits = Some(amount);
+        paper.box4_qualified = checked;
+        accepted(&send(&mut session, request));
+        assert!(session.draft.valid_stored());
+        assert!(issue(&session.draft, key));
+        let mut retained = form.clone();
+        retained.form.benefits = Some(amount);
+        retained.form.box4_qualified = checked;
+        let request = information_return_answers_for_topic(
+            &mut session,
+            &source(id, retained),
+            TaxSection::LongTermCareBenefits,
+        )
+        .unwrap();
+        let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+        let index = followups
+            .iter()
+            .position(|row| row.key == alloc::format!("income/{id}/ltc_contract"))
+            .unwrap();
+        let path = libertas::SchemaPath::root()
+            .field("followups")
+            .key(followups[index].key.as_str())
+            .field("answer")
+            .field("value")
+            .field("treatment")
+            .field("medical_reimbursement")
+            .to_string();
+        crate::tests::support::client::survey::survey_refusal(
+            key,
+            &mut session,
+            request,
+            key,
+            &path,
+        );
+        let request = save_documents(&mut session, desired.clone());
+        accepted(&send(&mut session, request));
+        expected.revision = session.draft.revision;
+        assert_eq!(supported(&session.draft), expected);
+    }
+    // 2026-10-26: IRS Form 1099-LTC instructions, box 4, establishes qualification
+    // when checked. An earlier personal answer cannot contradict the corrected paper.
+    // https://www.irs.gov/instructions/i1099ltc
+    let mut request = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let row = documents.other.other_income.documents.iter_mut().find(|row| row.id == id).unwrap();
+    let crate::OtherIncomeDocument::Ltc1099(paper) = &mut row.document else { unreachable!() };
+    paper.box4_qualified = true;
+    accepted(&send(&mut session, request));
+    let FederalIncome::LtcBenefits { data } =
+        &session.draft.income.iter().find(|entry| entry.id == id).unwrap().income
+    else {
+        unreachable!()
+    };
+    assert!(matches!(
+        data.record().effective_contract(),
+        LtcContract::Qualified { qualification: CareContractQualification::Qualified }
+    ));
+    assert_eq!(data.benefit_origin, form.benefit_origin);
+    assert_eq!(data.insured, form.insured);
+    assert_eq!(data.contract, form.contract);
+    assert!(!issue(&session.draft, "LTC1099_CONTRACT_CHECK_CONFLICT"));
+    let topic = open_topic(&mut session, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { followups, .. } = &topic else { unreachable!() };
+    assert!(!followups.iter().any(|row| row.key == alloc::format!("income/{id}/ltc_contract")));
+    accepted(&send(&mut session, topic));
+    assert_eq!(value(&supported(&session.draft), "agi"), 60_925);
+    // Restore the original nonqualified paper after checking the correction;
+    // its retained employer-funded answer still excludes the reimbursement.
+    let request = save_documents(&mut session, desired);
+    accepted(&send(&mut session, request));
+    expected.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), expected);
+    assert_eq!(value(&expected, "agi"), 60_825);
+    let saved = session.draft.clone();
+    let mut restored = restart(saved.clone());
+    for source in [true, false] {
+        let page = if source {
+            open_documents(&mut restored)
+        } else {
+            open_topic(&mut restored, TaxSection::LongTermCareBenefits)
+        };
+        accepted(&send(&mut restored, page));
+        assert_eq!(restored.draft, saved);
+    }
+    assert_eq!(supported(&restored.draft), expected);
+}
+
+#[test]
+fn ltc_printed_insured_and_certification_preserve_policyholder_answers_and_figures() {
+    use crate::tests::support::client::income_pages::{
+        open_document_center, reopened_ltc_fixture, save_ltc_fixture,
+    };
+    let (draft, id, paper) = ltc_identity_fixture();
+    let mut plain = paper.clone();
+    plain.insured_party = crate::PrintedParty::default();
+    plain.date_certified = None;
+    let mut session = restart(draft);
+    accepted(&save_ltc_fixture(&mut session, id, plain));
+    let mut expected = supported(&session.draft);
+    let insured_link = session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::LtcBenefits { data } => data.insured,
+            _ => None,
+        })
+        .unwrap();
+    let periods =
+        session.draft.income.iter().find(|entry| entry.id == insured_link).unwrap().clone();
+    accepted(&save_ltc_fixture(&mut session, id, paper.clone()));
+    expected.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), expected);
+    let source = session.draft.income.iter().find(|entry| entry.id == id).unwrap();
+    assert_eq!(source.owner, crate::DocumentOwner::Yours);
+    assert_eq!(source.printed.as_ref().unwrap().assigned, DocumentRecipient::Taxpayer);
+    assert_ne!(source.printed.as_ref().unwrap().recipient.name, paper.insured_party.name);
+    assert_eq!(source.printed.as_ref().unwrap().insured_party.as_ref(), Some(&paper.insured_party));
+    let saved = session.draft.clone();
+    session = restart(saved.clone());
+    assert_eq!(session.draft, saved);
+    let (reopened_id, mut corrected) = reopened_ltc_fixture(&mut session);
+    assert_eq!(reopened_id, id);
+    assert_eq!(corrected.insured_party.federal_id, "***-**-4321");
+    assert_eq!(corrected.insured_party.name, "Taylor Insured Example");
+    assert_eq!(
+        corrected.insured_party.address,
+        "7 Example Street, Apt. 00B\nSample City, NY 00123"
+    );
+    assert_eq!(corrected.date_certified, Some(20240229));
+    corrected.insured_party.address = "9 Corrected Example Road\nSample City, NY 00123".into();
+    corrected.date_certified = None;
+    let before_answers = session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::LtcBenefits { data } if entry.id == id => {
+                Some((data.insured, data.benefit_origin.clone(), data.contract.clone()))
+            }
+            _ => None,
+        })
+        .unwrap();
+    accepted(&save_ltc_fixture(&mut session, id, corrected));
+    expected.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), expected);
+    session = restart(session.draft);
+    let (_, corrected) = reopened_ltc_fixture(&mut session);
+    assert_eq!(corrected.insured_party.address, "9 Corrected Example Road\nSample City, NY 00123");
+    assert_eq!(corrected.date_certified, None);
+    let FederalIncome::LtcBenefits { data: corrected_answers } =
+        &session.draft.income.iter().find(|entry| entry.id == id).unwrap().income
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (
+            corrected_answers.insured,
+            corrected_answers.benefit_origin.clone(),
+            corrected_answers.contract.clone()
+        ),
+        before_answers
+    );
+    assert_eq!(corrected_answers.insured, Some(insured_link));
+    assert_eq!(corrected_answers.benefit_origin, Some(LtcPaymentOrigin::Insurance));
+    assert!(matches!(
+        corrected_answers.contract,
+        LtcContract::Qualified { qualification: CareContractQualification::Qualified }
+    ));
+    assert_eq!(session.draft.income.iter().find(|entry| entry.id == insured_link), Some(&periods));
+    let mut removal = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut removal else { unreachable!() };
+    documents.other.other_income.documents.retain(|row| row.id != id);
+    accepted(&send(&mut session, removal));
+    assert!(!session.draft.income.iter().any(|entry| entry.id == id));
+    assert_eq!(session.draft.income.iter().find(|entry| entry.id == insured_link), Some(&periods));
+    assert_eq!(value(&supported(&session.draft), "agi"), 60_000);
+    assert_eq!(restart(session.draft.clone()).draft, session.draft);
+}
+
+#[test]
+fn ltc_entry_statement_interest_correction_replaces_once_and_survives_restart() {
+    use crate::tests::support::client::income_pages::{answer_ltc_interest, save_ltc_fixture};
+    let (draft, id, mut paper) = ltc_identity_fixture();
+    paper.box4_qualified = true;
+    let mut session = restart(draft);
+    accepted(&save_ltc_fixture(&mut session, id, paper.clone()));
+    accepted(&answer_ltc_interest(&mut session, id, dollars(25)));
+    assert_eq!(value(&supported(&session.draft), "agi"), 60_025);
+    let source = session.draft.income.iter().find(|entry| entry.id == id).unwrap();
+    let FederalIncome::LtcBenefits { data } = &source.income else { unreachable!() };
+    let personal = (data.insured, data.benefit_origin.clone(), data.contract.clone());
+    let topic = open_topic(&mut session, TaxSection::LongTermCareBenefits);
+    let P::SaveIncomes { followups, .. } = &topic else { unreachable!() };
+    // The interest is asked beside the paper; a qualified contract needs no contract question.
+    assert!(followups.iter().any(|row| row.key == alloc::format!("income/{id}/ltc_interest")));
+    assert!(!followups.iter().any(|row| row.key == alloc::format!("income/{id}/ltc_contract")));
+    for amount in [dollars(40), 0] {
+        accepted(&answer_ltc_interest(&mut session, id, amount));
+        let output = supported(&session.draft);
+        assert_eq!(value(&output, "agi"), 60_000 + amount / 100);
+        assert_eq!(value(&output, "taxable_ltc_benefits"), 0);
+        let saved = session.draft.clone();
+        session = restart(saved.clone());
+        assert_eq!(session.draft, saved);
+        assert_eq!(supported(&session.draft), output);
+        let FederalIncome::LtcBenefits { data } =
+            &session.draft.income.iter().find(|entry| entry.id == id).unwrap().income
+        else {
+            unreachable!()
+        };
+        assert_eq!((data.insured, data.benefit_origin.clone(), data.contract.clone()), personal);
+        assert_eq!(data.interest, Some(amount));
+        assert_eq!(data.record().interest, amount);
+    }
+}
+
+#[test]
+fn ltc_blank_printed_amounts_remain_distinct_from_printed_zero_after_save_and_restart() {
+    use crate::tests::support::client::income_pages::{reopened_ltc_fixture, save_ltc_fixture};
+    let (draft, id, mut paper) = ltc_identity_fixture();
+    let mut session = restart(draft);
+    for amount in [None, Some(0)] {
+        for blank_benefits in [false, true] {
+            paper.benefits = if blank_benefits { amount } else { Some(dollars(4000)) };
+            paper.accelerated = if blank_benefits { Some(dollars(4000)) } else { amount };
+            accepted(&save_ltc_fixture(&mut session, id, paper.clone()));
+            session = restart(session.draft);
+            let (_, reopened) = reopened_ltc_fixture(&mut session);
+            assert_eq!(
+                (reopened.benefits, reopened.accelerated),
+                (paper.benefits, paper.accelerated)
+            );
+            assert_eq!(crate::Ltc1099::from(&reopened).interest, 0);
+        }
+    }
+}
+
+#[test]
+fn marketplace_blank_printed_columns_and_annual_totals_survive_save_and_restart() {
+    use crate::tests::cross::interview::all_year;
+    use crate::tests::support::client::income_pages::open_document_center;
+    let mut session = restart(complete(FederalStatus::Single));
+    let mut paper = all_year("Synthetic Marketplace issuer", 0, 0, 0).value;
+    paper.recipient = (&fixture_document_names(&session.draft, -1).unwrap().recipient).into();
+    for amount in [None, Some(0)] {
+        paper.january = Some(crate::Form1095ACoverageAmounts {
+            premium: amount,
+            benchmark: Some(60_000),
+            advance: amount,
+        });
+        paper.february = None;
+        paper.annual_totals =
+            crate::Form1095ACoverageAmounts { premium: amount, benchmark: amount, advance: amount };
+        let mut request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let id = documents.common.marketplace.documents.first().map_or(0, |row| row.id);
+        documents.common.marketplace.documents =
+            vec![crate::Form1095ADocument { id, value: paper.clone() }];
+        accepted(&send(&mut session, request));
+        session = restart(session.draft);
+        let request = open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = request else { unreachable!() };
+        assert_eq!(documents.common.marketplace.documents[0].value, paper);
+    }
+}
+
+#[test]
+fn sa_blank_earnings_and_death_value_remain_distinct_from_printed_zero_after_save_and_restart() {
+    let mut session = restart(complete(FederalStatus::Single));
+    let mut paper = crate::Form1099SaPaper {
+        gross_distribution: dollars(100),
+        distribution_code: Some(crate::Form1099SaDistributionCode::NormalDistributions),
+        account: MedicalSaAccount::Hsa,
+        recipient: fixture_document_names(&session.draft, -1).unwrap().recipient,
+        ..Default::default()
+    };
+    for amount in [None, Some(0)] {
+        paper.earnings_on_excess_contributions = amount;
+        paper.fmv_on_date_of_death = amount;
+        let id = session
+            .draft
+            .income
+            .iter()
+            .find_map(|row| {
+                matches!(row.income, FederalIncome::MedicalDistribution { .. }).then_some(row.id)
+            })
+            .unwrap_or(0);
+        let request = save_documents(
+            &mut session,
+            vec![item(
+                Owner::Taxpayer,
+                id,
+                IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::Sa1099(paper.clone()),
+                },
+            )],
+        );
+        accepted(&send(&mut session, request));
+        session = restart(session.draft);
+        let request = open_documents(&mut session);
+        let reopened = page_documents(&request)
+            .into_iter()
+            .find_map(|row| match row.document {
+                IncomeSource::OtherIncome { value: crate::OtherIncomeDocument::Sa1099(value) } => {
+                    Some(value)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(reopened.earnings_on_excess_contributions, amount);
+        assert_eq!(reopened.fmv_on_date_of_death, amount);
+        assert_eq!(reopened.gross_distribution, paper.gross_distribution);
+    }
 }

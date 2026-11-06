@@ -18,7 +18,7 @@ const NEW_FIVE: Schedule = Schedule {
 
 #[test]
 fn original_pub946_manual_switch_and_final_recovery_are_unchanged() {
-    // Existing repayment.rs $1,000 five-year example, each year mapped to2026.
+    // Pub. 946 five-year $1,000 manual-method example, each year mapped to 2026.
     for (year, prior, current) in [
         (2025, 20000, 32000),
         (2024, 52000, 19200),
@@ -214,8 +214,8 @@ fn use_change_rounds_after_full_year_and_before_disposition() {
 
 #[test]
 fn zero_same_year_disposal_missing_and_overflow_keep_their_native_boundaries() {
-    assert_eq!(calculate(NotReported), NotReported);
-    assert_eq!(calculate(Unavailable), Unavailable);
+    assert_eq!(calculate::<i64>(NotReported), NotReported);
+    assert_eq!(calculate::<i64>(Unavailable), Unavailable);
     assert_eq!(
         calculate(Reported(Schedule { history_basis_cents: 0, ..NEW_FIVE })),
         Reported(Amounts {
@@ -581,4 +581,231 @@ fn prepared_continuation_rate_reproduces_browns_printed_rate_and_deduction() {
     };
     assert_eq!(amounts.full_year_cents, 258_799);
     assert_eq!(ratio::dollars(amounts.current_macrs_cents), 2588);
+}
+
+fn exact_schedule(basis: Exact) -> Schedule<Exact> {
+    Schedule {
+        placed: NEW_FIVE.placed,
+        tax_year: NEW_FIVE.tax_year,
+        period: NEW_FIVE.period,
+        method: NEW_FIVE.method,
+        convention: NEW_FIVE.convention,
+        approach: NEW_FIVE.approach,
+        history_basis_cents: basis,
+        history: NEW_FIVE.history,
+        raw_bonus_cents: NEW_FIVE.raw_bonus_cents,
+        current_use_fraction: NEW_FIVE.current_use_fraction,
+        disposed: NEW_FIVE.disposed,
+        continuation: None,
+    }
+}
+
+#[test]
+fn exact_derived_basis_retains_fraction_through_annual_use_and_disposal() {
+    // Statutory residual from a 1,000,226-cent facility and 200,045-cent
+    // bonus allocated over its equal eligible and residual halves.
+    let residual = exact::ratio(800181, 2).unwrap();
+    let new = exact_schedule(residual.clone());
+    assert_eq!(
+        calculate(Reported(new)),
+        Reported(Amounts {
+            basis_after_raw_bonus_cents: residual.clone(),
+            full_year_cents: exact::ratio(800181, 10).unwrap(),
+            current_macrs_cents: exact::ratio(800181, 10).unwrap(),
+        })
+    );
+    let continuing = Schedule {
+        placed: Month { year: 2025, month: 6 },
+        history: History::Continuing {
+            prior_depreciation_cents: 80018,
+            carryforward179_cents: 0,
+            initial179_cents: 0,
+            initial_bonus_cents: 0,
+        },
+        current_use_fraction: Some((1, 2)),
+        disposed: Some(Month { year: 2026, month: 5 }),
+        ..exact_schedule(residual)
+    };
+    assert_eq!(
+        calculate(Reported(continuing)),
+        Reported(Amounts {
+            basis_after_raw_bonus_cents: exact::ratio(640145, 2).unwrap(),
+            full_year_cents: exact::whole(128029),
+            current_macrs_cents: exact::ratio(128029, 4).unwrap(),
+        })
+    );
+    // Same integer source, different prescribed projection policy. The native
+    // control above rounds at each stage; Exact carries 4/5 -> 2/5 -> 1/5.
+    let exact = Schedule {
+        placed: Month { year: 2025, month: 6 },
+        history: History::Continuing {
+            prior_depreciation_cents: 0,
+            carryforward179_cents: 0,
+            initial179_cents: 0,
+            initial_bonus_cents: 0,
+        },
+        current_use_fraction: Some((1, 2)),
+        disposed: Some(Month { year: 2026, month: 5 }),
+        ..exact_schedule(exact::whole(2))
+    };
+    assert_eq!(
+        calculate(Reported(exact)),
+        Reported(Amounts {
+            basis_after_raw_bonus_cents: exact::whole(2),
+            full_year_cents: exact::ratio(4, 5).unwrap(),
+            current_macrs_cents: exact::ratio(1, 5).unwrap(),
+        })
+    );
+}
+
+#[test]
+fn exact_table_basis_uses_actual_prior_caps_and_original_clock() {
+    let schedule = Schedule {
+        placed: Month { year: 2025, month: 6 },
+        approach: Approach::Tables,
+        history: History::Continuing {
+            prior_depreciation_cents: 50000,
+            carryforward179_cents: 10000,
+            initial179_cents: 10000,
+            initial_bonus_cents: 20000,
+        },
+        ..exact_schedule(exact::ratio(200001, 2).unwrap())
+    };
+    assert_eq!(
+        calculate(Reported(schedule.clone())),
+        Reported(Amounts {
+            basis_after_raw_bonus_cents: exact::ratio(80001, 2).unwrap(),
+            full_year_cents: exact::ratio(560004, 25).unwrap(),
+            current_macrs_cents: exact::ratio(560004, 25).unwrap(),
+        })
+    );
+    let capped = Schedule {
+        history: History::Continuing {
+            prior_depreciation_cents: 100000,
+            carryforward179_cents: 0,
+            initial179_cents: 0,
+            initial_bonus_cents: 0,
+        },
+        ..schedule
+    };
+    for placed_year in [2025, 2021] {
+        let result = calculate(Reported(Schedule {
+            placed: Month { year: placed_year, month: 6 },
+            disposed: Some(Month { year: 2026, month: 5 }),
+            ..capped.clone()
+        }));
+        assert_eq!(
+            result,
+            Reported(Amounts {
+                basis_after_raw_bonus_cents: exact::ratio(1, 2).unwrap(),
+                full_year_cents: exact::ratio(1, 2).unwrap(),
+                current_macrs_cents: exact::ratio(1, if placed_year == 2025 { 4 } else { 2 })
+                    .unwrap(),
+            })
+        );
+    }
+}
+
+#[test]
+fn exact_sources_keep_missing_invalid_and_native_history_overflow_unavailable() {
+    assert_eq!(calculate::<Exact>(NotReported), NotReported);
+    assert_eq!(calculate::<Exact>(Unavailable), Unavailable);
+    let valid = exact_schedule(exact::ratio(1, 2).unwrap());
+    let cases = [
+        Schedule { history_basis_cents: exact::ratio(-1, 2).unwrap(), ..valid.clone() },
+        Schedule { history: History::New { elected179_cents: 1 }, ..valid.clone() },
+        Schedule { current_use_fraction: Some((1, 0)), ..valid.clone() },
+        Schedule { disposed: Some(Month { year: 2026, month: 0 }), ..valid.clone() },
+        Schedule {
+            history: History::Continuing {
+                prior_depreciation_cents: 0,
+                carryforward179_cents: 0,
+                initial179_cents: 0,
+                initial_bonus_cents: 0,
+            },
+            ..valid.clone()
+        },
+        Schedule {
+            placed: Month { year: 2025, month: 6 },
+            history: History::Continuing {
+                prior_depreciation_cents: i64::MAX,
+                carryforward179_cents: 1,
+                initial179_cents: 0,
+                initial_bonus_cents: 0,
+            },
+            ..valid
+        },
+    ];
+    for schedule in cases {
+        assert_eq!(calculate(Reported(schedule)), Unavailable);
+    }
+}
+
+#[test]
+fn exact_native_entry_keeps_independent_table_operands_and_final_midquarter() {
+    let table = NativeSchedule {
+        placed: Month { year: 2025, month: 6 },
+        tax_year: 2026,
+        period: Period::Five,
+        method: Method::Regular,
+        convention: Convention::HalfYear,
+        table_basis_cents: Some((
+            exact::ratio(2000001, 2).unwrap(),
+            exact::ratio(1200001, 4).unwrap(),
+        )),
+        basis_after_raw_bonus_cents: exact::ratio(1000001, 2).unwrap(),
+        continuing: true,
+        current_use_fraction: None,
+        disposed: None,
+    };
+    // 700,000.25-cent original table basis, independent of current opening.
+    assert_eq!(table.full_year(), exact::ratio(5600002, 25).unwrap());
+    for table_basis_cents in [None, table.table_basis_cents.clone()] {
+        let final_mq = NativeSchedule {
+            placed: Month { year: 2021, month: 11 },
+            convention: Convention::MidQuarter,
+            table_basis_cents,
+            basis_after_raw_bonus_cents: exact::ratio(229921, 2).unwrap(),
+            disposed: Some(Month { year: 2026, month: 5 }),
+            ..table.clone()
+        };
+        assert_eq!(
+            final_mq.amounts(),
+            Amounts {
+                basis_after_raw_bonus_cents: exact::ratio(229921, 2).unwrap(),
+                full_year_cents: exact::ratio(229921, 2).unwrap(),
+                current_macrs_cents: exact::ratio(689763, 14).unwrap(),
+            }
+        );
+    }
+}
+
+#[test]
+fn exact_continuation_retains_current_adjusted_basis_clock_and_rate() {
+    let schedule = Schedule {
+        placed: Month { year: 2025, month: 6 },
+        history: History::Continuing {
+            prior_depreciation_cents: 0,
+            carryforward179_cents: 0,
+            initial179_cents: 0,
+            initial_bonus_cents: 0,
+        },
+        continuation: Some(AdjustedBasisContinuation {
+            effective_year: 2026,
+            adjusted_basis_cents: 2,
+            prior_depreciation_cents: 0,
+            declining_rate: Some((2, 5)),
+        }),
+        current_use_fraction: Some((1, 2)),
+        disposed: Some(Month { year: 2026, month: 5 }),
+        ..exact_schedule(exact::ratio(5, 2).unwrap())
+    };
+    assert_eq!(
+        calculate(Reported(schedule)),
+        Reported(Amounts {
+            basis_after_raw_bonus_cents: exact::whole(2),
+            full_year_cents: exact::ratio(4, 5).unwrap(),
+            current_macrs_cents: exact::ratio(1, 5).unwrap(),
+        })
+    );
 }

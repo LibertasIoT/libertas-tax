@@ -5,13 +5,17 @@ pub(in crate::tests) fn canceled_personal_debt(
     treatment: PersonalDebtTreatment,
 ) -> FederalIncomeEntry {
     income(FederalIncome::PersonalDebt {
-        data: PersonalDebtCancellation {
+        data: debt_source(PersonalDebtCancellation {
             date: 20260615,
             amount: amount * 100,
-            treatment,
+            treatment: Some(treatment),
             personally_liable: true,
+            box7_fmv: None,
+            interest: None,
+            debt_description: alloc::string::String::new(),
+            event_code: alloc::string::String::new(),
             transfer: None,
-        },
+        }),
     })
 }
 
@@ -109,16 +113,14 @@ pub(in crate::tests) fn personal_debt_owner_fixture(
             PersonalDebtTreatment::Taxable
         },
     );
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     if transfer {
         let FederalIncome::PersonalDebt { data } = &mut entry.income else { unreachable!() };
-        data.transfer = Some(PropertyTransfer {
-            value: 1_200_000,
-            property: TransferredProperty::Investment {
-                basis: 1_000_000,
-                term: GainTerm::Long,
-                collectible: false,
-            },
+        data.form.property_value = Some(1_200_000);
+        data.property = Some(TransferredProperty::Investment {
+            basis: 1_000_000,
+            term: GainTerm::Long,
+            collectible: false,
         });
     }
     add(&mut original, entry);

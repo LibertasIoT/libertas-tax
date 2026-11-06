@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {"order": 205000, "rule": {"select": "^<SavePayments>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 206000, "rule": {"select": "^<SaveIncomeByPeriod>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 308000, "rule": {"select": "^<Payments>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["withheld", "estimated", "extension"]}, {"ratio": 1, "fields": ["more"]}]}},
+    {"order": 841000, "rule": {"select": "^<SavePayments.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 842000, "rule": {"select": "^<SaveIncomeByPeriod.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 968000, "rule": {"select": "^<PaymentsInitial>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_PAYMENTS_MADE", "fields": ["withheld", "estimated", "extension"]}, {"title": "DISPLAY_PAYMENTS_PENALTY", "fields": ["more"]}]}},
+    {"order": 974000, "rule": {"select": "^<Payments>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_PAYMENTS_MADE", "fields": ["withheld", "estimated", "extension"]}, {"title": "DISPLAY_PAYMENTS_PENALTY", "fields": ["more"]}]}},
+    {"order": 975000, "rule": {"select": "^<Payments>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PAYMENTS_MADE", "fields": ["withheld", "estimated", "extension"]}, {"title": "DISPLAY_PAYMENTS_PENALTY", "fields": ["more"]}]}}
+  ]
+}

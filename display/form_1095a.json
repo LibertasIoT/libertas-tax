@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"order": 302000, "rule": {"select": "^<Form1095APaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_MARKETPLACE_STATEMENTS", "fields": ["calendar_year", "void", "corrected", "marketplace_identifier", "policy_number", "issuer", "recipient", "recipient_date_of_birth", "spouse_name", "spouse_ssn", "spouse_date_of_birth", "policy_start_date", "policy_termination_date", "covered_individuals", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "annual_totals"]}]}},
+    {"order": 304000, "rule": {"select": "^<Form1095APaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_MARKETPLACE_STATEMENTS", "fields": ["calendar_year", "void", "corrected", "marketplace_identifier", "policy_number", "issuer", "recipient", "recipient_date_of_birth", "spouse_name", "spouse_ssn", "spouse_date_of_birth", "policy_start_date", "policy_termination_date", "covered_individuals", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "annual_totals"]}]}},
+    {"order": 558000, "rule": {"select": "^<Form1095APaper>", "flatten": true}},
+    {"order": 763000, "rule": {"select": "^<Form1095APaper>.issuer", "promote": true}},
+    {"order": 763500, "rule": {"select": "^<Form1095ARecipient>.name", "promote": true}},
+    {"order": 763600, "rule": {"select": "^<Form1095ADocument>.value", "label": "DISPLAY_MARKETPLACE_INSURER"}},
+    {"order": 763700, "rule": {"select": "^<MarketplaceDocumentView>.value", "label": "DISPLAY_MARKETPLACE_INSURER"}}
+  ]
+}

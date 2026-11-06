@@ -84,8 +84,8 @@ fn old_asset(placed: u32, class: EquipmentClass) -> BusinessAsset {
 }
 fn ag_payment(dollars: i64) -> FederalIncomeEntry {
     let mut entry = government_unemployment(0, &[], 0);
-    let FederalIncome::Unemployment { data } = &mut entry.income else { panic!() };
-    data.agriculture_payment = dollars * 100;
+    let FederalIncome::GovernmentPayment { data } = &mut entry.income else { panic!() };
+    data.form.agriculture_payments = Some(dollars * 100);
     entry
 }
 
@@ -127,11 +127,14 @@ fn qbi_d1_the_business_and_farm_pages_take_qualified_tips() {
     let tips = Some(FederalBusinessTips { amount: 500_000, eligible: true });
     let mut s = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
     let mut page = business_page(6_000_000);
-    page.more.tips = tips.clone();
+    page.more.tips = tips.clone().into();
     let request = save_topic(
-        &s.draft.clone(),
+        &mut s,
         TaxSection::SelfEmployment,
-        vec![document(0, IncomeDocument::Business(page.clone()))],
+        vec![document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page.clone()) },
+        )],
     );
     accepted(&send(&mut s, request));
     let (_, stored) = stored_business(&s);
@@ -140,12 +143,17 @@ fn qbi_d1_the_business_and_farm_pages_take_qualified_tips() {
     let mut s = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
     let mut farm = cash_farm(2_000_000, 500_000);
     farm.more.tips = tips.clone();
-    let request =
-        farm_save(&s.draft.clone(), vec![document(0, IncomeDocument::Farm(farm.clone()))]);
+    let request = farm_save(
+        &mut s,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm.clone()) })],
+    );
     accepted(&send(&mut s, request));
     let (_, stored) = stored_business(&s);
     assert_eq!(stored.tips, tips);
-    assert_eq!(reopened_farming(&mut restart(s.draft.clone())).1, vec![IncomeDocument::Farm(farm)]);
+    assert_eq!(
+        reopened_farming(&mut restart(s.draft.clone())).1,
+        vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }]
+    );
 }
 
 // QBI-D2: Form 8995 line 5 is 20% of line 4, not a sum of rounded activity amounts (2026 i8995
@@ -178,7 +186,7 @@ fn patron_return() -> FederalDraft {
     patr.withholding = 30_000;
     patr.qualified_payments = 800_000;
     patr.allocations[0].qualified_payments = 800_000;
-    add(&mut d, income(FederalIncome::Cooperative { data: patr }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(patr) }));
     d
 }
 
@@ -218,8 +226,8 @@ fn qbi_d3_a_cooperative_patron_files_form_8995a_with_schedule_d() {
     // The same return without box 7 files Form 8995.
     let mut plain = d.clone();
     let FederalIncome::Cooperative { data } = &mut plain.income[1].income else { unreachable!() };
-    data.qualified_payments = 0;
-    data.allocations[0].qualified_payments = 0;
+    data.form.qualified_payments = 0;
+    data.more.allocations[0].qualified_payments = 0;
     let r = supported(&plain);
     assert_eq!(printed_line(&r, "qbi_deduction"), (TaxForm::Form8995, "17".into()));
     assert!(!has(&r, "qbi_patron_reduction"));
@@ -234,8 +242,8 @@ fn qbi_d3_a_cooperative_patron_files_form_8995a_with_schedule_d() {
 fn qbi_d4_patronage_distributions_are_qualified_only_as_box_8_reports() {
     let mut d = patron_return();
     let FederalIncome::Cooperative { data } = &mut d.income[1].income else { unreachable!() };
-    data.qualified_payments = 0;
-    data.allocations[0].qualified_payments = 0;
+    data.form.qualified_payments = 0;
+    data.more.allocations[0].qualified_payments = 0;
     let r = supported(&d);
     let farm = d.income[0].id;
     assert_eq!(value(&r, "self_employment_tax"), 7_065);
@@ -247,8 +255,8 @@ fn qbi_d4_patronage_distributions_are_qualified_only_as_box_8_reports() {
     assert_form_8995_foots(&r);
     // Box 8 of 12,000 makes 12,000 of the 20,000 qualified.
     let FederalIncome::Cooperative { data } = &mut d.income[1].income else { unreachable!() };
-    data.qualified_items = 1_200_000;
-    data.allocations[0].qualified_items = 1_200_000;
+    data.form.qualified_items = 1_200_000;
+    data.more.allocations[0].qualified_items = 1_200_000;
     let r = supported(&d);
     assert_eq!(value(&r, &alloc::format!("business_{farm}_qbi")), 38_467);
     assert_eq!(value(&r, "qbi_deduction"), 6_073.min(twenty(38_467)));
@@ -448,10 +456,9 @@ fn sf_d3_accrual_crop_insurance_is_line_41() {
     let mut d = empty_return(FederalStatus::Single);
     let mut e = accrual_farm(50000, 0, 0, 0, 10000);
     let FederalIncome::Business { data } = &mut e else { unreachable!() };
-    farm_of(data).insurance = FarmInsurance::Payments {
+    farm_of(data).insurance = FarmInsuranceRecords::Payments {
         current: vec![CropPayment::Other { amount: 800_000 }],
         previous_deferred: 0,
-        election: CropDeferral::Include,
         withholding: 0,
     };
     add(&mut d, income(e));

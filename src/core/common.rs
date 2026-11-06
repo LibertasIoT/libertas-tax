@@ -6,44 +6,6 @@ pub(crate) fn optional_text(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.into())
 }
 
-// Call-site macros for federal_rules::require_localized and issue_localized.
-// The section name and the English text exist only in test builds (the
-// functions take them as `#[cfg(test)]` parameters); the macros take them as
-// ordinary arguments and drop them from the call outside test builds, so a
-// call site needs no `#[cfg(test)]` lines. Arguments, in order:
-//   require_localized!(result, ok, context, section, KEY, "English text")
-//   issue_localized!(result, context, section, KEY, "English text")
-// Runtime behavior (the stored key, the issue pushed when `ok` is false) and
-// the test-only text are exactly those of the function call they replace.
-macro_rules! require_localized {
-    ($result:expr, $ok:expr, $context:expr, $section:expr, $key:expr, $english:expr $(,)?) => {
-        $crate::federal_rules::require_localized(
-            $result,
-            $ok,
-            $context,
-            #[cfg(test)]
-            $section,
-            $key,
-            #[cfg(test)]
-            $english,
-        )
-    };
-}
-macro_rules! issue_localized {
-    ($result:expr, $context:expr, $section:expr, $key:expr, $english:expr $(,)?) => {
-        $crate::federal_rules::issue_localized(
-            $result,
-            $context,
-            #[cfg(test)]
-            $section,
-            $key,
-            #[cfg(test)]
-            $english,
-        )
-    };
-}
-pub(crate) use {issue_localized, require_localized};
-
 /// Answer
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
@@ -457,6 +419,3 @@ fn resource_text(key: &str) -> &'static str {
 
 #[cfg(test)]
 pub(crate) type FormattedMessage = (String, Vec<libertas::LibertasMessageArgumentDecode>);
-
-// Community-property projections preserve accepted source identity and facts.
-crate::community::divide_enum!(Answer { records: [], units: [Yes, No, NotSure], tuples: [] });

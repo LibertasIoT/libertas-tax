@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 159000, "rule": {"select": "^<InvestmentLoanPage>.originating_k1", "when_single_choice": "hide"}},
+    {"order": 633000, "rule": {"select": "^<InvestmentElection>", "flatten": true}},
+    {"order": 634000, "rule": {"select": "^<InvestmentInterestUse>", "flatten": true}}
+  ]
+}

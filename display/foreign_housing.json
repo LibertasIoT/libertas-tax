@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 594000, "rule": {"select": "^<ExclusionRevocation>", "flatten": true}},
+    {"order": 595000, "rule": {"select": "^<ForeignHousing>", "flatten": true}},
+    {"order": 596000, "rule": {"select": "^<ForeignHousingHousehold>", "flatten": true}},
+    {"order": 776000, "rule": {"select": "^<ForeignHousingStay>.location", "promote": true}}
+  ]
+}

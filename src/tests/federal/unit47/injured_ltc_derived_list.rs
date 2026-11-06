@@ -2,7 +2,10 @@ use crate::tests::support::client::survey::survey_injured_capacity_session;
 use crate::tests::cross::interview::accepted;
 use crate::tests::support::{
     assert::{carrier_schema, schema_field},
-    builders::{INJURED_ANNUAL_SOURCE, INJURED_CONTRACT_DAYS, INJURED_DAILY_SOURCE},
+    builders::{
+        INJURED_ALLOCATION_COUNT, INJURED_ANNUAL_SOURCE, INJURED_CONTRACT_DAYS,
+        INJURED_DAILY_SOURCE, INJURED_INSURED_COUNT, INJURED_TAXABLE_PER_PERIOD,
+    },
     client::{
         injured_capacity_answer_page_is_pure, injured_capacity_calculation,
         injured_capacity_editor, injured_capacity_refusal, injured_capacity_source_plan,
@@ -16,11 +19,11 @@ fn injured_capacity_derived_source_plan() -> (Interview, [Option<i64>; 5]) {
         INJURED_DAILY_SOURCE * INJURED_CONTRACT_DAYS as i64,
         INJURED_ANNUAL_SOURCE
     );
-    assert_eq!(crate::dates::add_days(20260101, 364), 20261231);
-    let (mut session, ids, known_joint) = injured_capacity_source_plan();
+    assert_eq!(crate::dates::add_days(20260101, INJURED_CONTRACT_DAYS as i32 - 1), 20260102);
+    let (mut session, ids, known_joint) = injured_capacity_source_plan(INJURED_INSURED_COUNT);
     let saved = session.draft.clone();
     let result = supported(&saved);
-    assert_eq!(value(&result, "taxable_ltc_benefits"), 2_496_600);
+    assert_eq!(value(&result, "taxable_ltc_benefits"), INJURED_TAXABLE_PER_PERIOD * INJURED_ALLOCATION_COUNT as i64);
     assert_eq!(
         [
             result.tax,
@@ -59,20 +62,20 @@ fn injured_capacity_derived_source_plan() -> (Interview, [Option<i64>; 5]) {
     assert_eq!(cold.draft, saved);
     assert_eq!(
         value(&supported(&cold.draft), "taxable_ltc_benefits"),
-        2_496_600
+        INJURED_TAXABLE_PER_PERIOD * INJURED_ALLOCATION_COUNT as i64
     );
     assert_eq!(
         ltc.len(),
-        4380,
+        INJURED_ALLOCATION_COUNT,
         "actual producer must expose every source period"
     );
-    assert_eq!(plan.required.len(), 4380);
+    assert_eq!(plan.required.len(), INJURED_ALLOCATION_COUNT);
     assert_eq!(
         ltc.iter()
             .map(|r| r.component.as_str())
             .collect::<BTreeSet<_>>()
             .len(),
-        4380
+        INJURED_ALLOCATION_COUNT
     );
     for id in &ids {
         for day in 1..=INJURED_CONTRACT_DAYS {
@@ -87,8 +90,8 @@ fn injured_capacity_derived_source_plan() -> (Interview, [Option<i64>; 5]) {
             );
         }
     }
-    // The accepted source graph exceeds the historical4096 ceiling. Its
-    // unbounded native List retains exact required-membership validation.
+    // The schema, independently of fixture size, must keep every native carrier
+    // unbounded while Save validates exact required membership.
     if let Some(schema) = carrier_schema() {
         for (owner, list) in [
             ("InjuredSpouseInitial", "allocations"),
@@ -118,7 +121,7 @@ fn injured_capacity_answer_lifecycle(session: &mut Interview, known_joint: &[Opt
         unreachable!()
     };
     assert!(page.allocations.is_empty());
-    assert_eq!(page.new_allocations.len(), 4380);
+    assert_eq!(page.new_allocations.len(), INJURED_ALLOCATION_COUNT);
     for row in &mut page.new_allocations {
         assert_eq!(
             (row.joint, row.minimum, row.maximum),
@@ -131,7 +134,7 @@ fn injured_capacity_answer_lifecycle(session: &mut Interview, known_joint: &[Opt
     let before = session.draft.clone();
     let dirty = session.dirty;
     assert!(matches!(
-        send(session, injured_capacity_calculation(&request)),
+        crate::tests::support::client::income_pages::candidate_save_review(session, injured_capacity_calculation(&request)),
         Reply::Response(P::RunningEstimate { .. })
     ));
     assert_eq!(session.draft, before);
@@ -140,16 +143,16 @@ fn injured_capacity_answer_lifecycle(session: &mut Interview, known_joint: &[Opt
     assert!(session.draft.valid_stored());
     assert_eq!(session.draft.income, source_facts);
     let answers = &session.draft.injured_spouse.as_ref().unwrap().allocations;
-    assert_eq!(answers.len(), 4380);
+    assert_eq!(answers.len(), INJURED_ALLOCATION_COUNT);
     assert!(answers.iter().all(|row| row.injured == 7_000));
     assert_eq!(
         answers.iter().map(|row| row.injured).sum::<i64>(),
-        30_660_000
+        7_000 * INJURED_ALLOCATION_COUNT as i64
     );
     injured_capacity_answer_page_is_pure(session);
     let accepted_state = session.draft.clone();
     let result = supported(&accepted_state);
-    assert_eq!(value(&result, "taxable_ltc_benefits"), 2_496_600);
+    assert_eq!(value(&result, "taxable_ltc_benefits"), INJURED_TAXABLE_PER_PERIOD * INJURED_ALLOCATION_COUNT as i64);
     assert_eq!(
         [
             result.tax,
@@ -182,7 +185,7 @@ fn injured_capacity_answer_lifecycle(session: &mut Interview, known_joint: &[Opt
 }
 
 #[test]
-fn unit47_injured_ltc_identity_refusals_keep_all_4380_accepted_rows() {
+fn unit47_injured_ltc_identity_refusals_keep_all_accepted_rows() {
     let mut session = survey_injured_capacity_session();
     injured_capacity_bad_identity(&mut session);
     injured_capacity_corrected_answers(&mut session);
@@ -194,24 +197,25 @@ fn injured_capacity_bad_identity(session: &mut Interview) {
     let P::SaveInjuredSpouse { value, .. } = &mut duplicate else {
         unreachable!()
     };
-    value.allocations[4379].component = value.allocations[0].component.clone();
+    let last = value.allocations.len() - 1;
+    value.allocations[last].component = value.allocations[0].component.clone();
     injured_capacity_refusal(
         session,
         duplicate,
         "duplicate-component",
-        "[value/allocations/4379/component]",
+        &format!("[value/allocations/{last}/component]"),
         false,
     );
     let mut foreign = actual.clone();
     let P::SaveInjuredSpouse { value, .. } = &mut foreign else {
         unreachable!()
     };
-    value.allocations[4379].component = "ltc_999999999_period_1".into();
+    value.allocations[last].component = "ltc_999999999_period_1".into();
     injured_capacity_refusal(
         session,
         foreign,
         "foreign-component",
-        "[value/allocations/4379/component]",
+        &format!("[value/allocations/{last}/component]"),
         true,
     );
     let mut missing = actual.clone();
@@ -229,7 +233,7 @@ fn injured_capacity_bad_identity(session: &mut Interview) {
 }
 
 #[test]
-fn unit47_injured_ltc_amount_and_echo_refusals_keep_all_4380_accepted_rows() {
+fn unit47_injured_ltc_amount_and_echo_refusals_keep_all_accepted_rows() {
     let mut session = survey_injured_capacity_session();
     injured_capacity_bad_amounts(&mut session);
     injured_capacity_corrected_answers(&mut session);
@@ -237,25 +241,27 @@ fn unit47_injured_ltc_amount_and_echo_refusals_keep_all_4380_accepted_rows() {
 
 fn injured_capacity_bad_amounts(session: &mut Interview) {
     let actual = injured_capacity_editor(session);
+    let P::SaveInjuredSpouse { value, .. } = &actual else { unreachable!() };
+    let last = value.allocations.len() - 1;
     for (case, injured) in [("below-minimum", 6_999), ("above-maximum", 50_001)] {
         let mut invalid = actual.clone();
         let P::SaveInjuredSpouse { value, .. } = &mut invalid else {
             unreachable!()
         };
-        let row = &mut value.allocations[4379];
+        let row = &mut value.allocations[last];
         row.injured = injured;
         injured_capacity_refusal(
             session,
             invalid,
             case,
-            "[value/allocations/4379/injured]",
+            &format!("[value/allocations/{last}/injured]"),
             false,
         );
         let mut forged = actual.clone();
         let P::SaveInjuredSpouse { value, .. } = &mut forged else {
             unreachable!()
         };
-        let row = &mut value.allocations[4379];
+        let row = &mut value.allocations[last];
         row.injured = injured;
         // Save refreshes forged echo bounds; Estimate still recomputes and
         // refuses the amount. Neither path accepts the forged permission.
@@ -265,7 +271,7 @@ fn injured_capacity_bad_amounts(session: &mut Interview) {
             session,
             forged,
             &format!("forged-{case}"),
-            "[value/allocations/4379/injured]",
+            &format!("[value/allocations/{last}/injured]"),
             true,
         );
     }

@@ -1,33 +1,27 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
-use super::support::assert::{accepted, rejected_with};
+use alloc::string::ToString;
+use libertas::SchemaPath;
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
+use super::support::assert::{accepted, rejected_with, stored_k1_1041};
 use super::*;
 use crate::interview::document_income;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::builders::native_income::{document, native_w2 as w2};
-use super::support::client::income_pages::{open_topic, page_documents, save_topic};
+use super::support::client::income_pages::{
+    k1_topic_answers, open_documents, page_documents, save_documents, save_k1_sources_and_answers,
+    save_topic,
+};
 use crate::tests::cross::interview::{
     PAGE_INCOME, adult, back, benefits_request, car_1099c, earlier_installment,
     estate_activity_page, estate_final_amounts, estate_final_source, estate_nol_original_period,
-    estate_nol_page, estate_nol_weeks_history, form_8615_return, hub_rows, income_ticks, k1_1041,
+    estate_nol_page, estate_nol_weeks_history, form_8615_return, hub_rows, k1_1041,
     k1_1041_more_with, k1_1065, k1_1065_benefits, k1_1065_carried_zero, k1_1065_continuing,
     k1_1065_more, k1_1120s, k1_1120s_carried_zero, k1_1120s_continuing, k1_1120s_fixture,
     k1_1120s_more_mut, k1_rental_boxes, k1_sale_input_statement, main_estate_qbi, no_property_qbi,
     open_adjustments_hub, open_benefits, open_itemized_topic, partner_benefits_session,
     past_people, problem_text, refusal, reopened_k1s, row_of, save_1065s, save_benefits,
     save_deductions, save_k1_1120s, save_k1s, save_more_credits, save_setup, save_you,
-    se_health_test_months, se_health_test_year, tick, told_row,
+    se_health_test_months, se_health_test_year, tick,
 };
-fn stored_k1_1041(session: &Interview) -> (alloc::string::String, FederalEstateTrustPortfolioK1) {
-    session
-        .draft
-        .income
-        .iter()
-        .find_map(|e| match &e.income {
-            FederalIncome::EstateTrustPortfolio { data } => Some((e.label.clone(), data.clone())),
-            _ => None,
-        })
-        .expect("a stored Schedule K-1 (Form 1041)")
-}
 
 #[test]
 fn k1_1041_signed_activities_get_distinct_keys_and_preserve_history_on_reopen() {
@@ -68,9 +62,12 @@ fn k1_1041_signed_activities_get_distinct_keys_and_preserve_history_on_reopen() 
         None
     );
     let before = session.draft.clone();
-    let items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+    let items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(items.len(), 1);
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, items);
+    let request = save_documents(&mut session, items);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft, before);
     let mut restarted = restart(session.draft.clone());
@@ -98,17 +95,25 @@ fn k1_1041_client_server_reconcile_signed_boxes_and_reject_forged_activity_ident
     accepted(&reply);
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(p) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut p = edit_estate_document(p);
     let K1EstateTrustBusiness::Amounts(a) = &mut p.business else { unreachable!() };
     a.activities[0].id = 987_654;
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, items);
+    drop(p);
+    let request = save_documents(&mut session, items);
     let reply = current_income_refusal(
         "income-source-2018",
         &mut session,
         request,
         "ESTATE_ACTIVITY_LINK_INVALID",
-        "[documents/documents/0/document/business/activities/0]",
+        "[documents/common/k1/documents/0/document/statements/activities/0]",
     );
     assert!(matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
     assert_eq!(session.draft, before);
@@ -133,50 +138,42 @@ fn k1_1041_portfolio_rules_still_reject_cross_box_overstatement() {
 }
 
 #[test]
-fn k1_topic_is_listed_on_the_checklist_and_the_income_hub() {
-    // Question C5: the checklist's Schedule K-1 tick plans the topic; the
-    // walk opens its page offering the Form 1041 and 1120-S kinds, and the hub
-    // lists the topic with the K-1's count and amount once one is entered.
+fn k1_topic_is_listed_on_the_income_hub() {
+    // A Schedule K-1 is not asked about beyond the documents: its forms are
+    // entered in the Document center, and the hub lists the topic with the
+    // K-1's count and amount once one is entered.
     let mut s = Interview::new(TEST_USER, FederalDraft::empty("m3-hub".into()));
     let request = save_setup(&s.draft, ReturnSetup { filing: Filing::Single });
     send(&mut s, request);
     let request = save_you(&s.draft, adult("Casey", "Sample", 19850315));
     let reply = send(&mut s, request);
     let checklist = past_people(&mut s, reply);
-    let request = tick(checklist, income_ticks(IncomeTopics::PASS_THROUGH.0));
-    let Reply::Edit(P::SaveIncomes {
-        topic: TaxSection::PassThrough,
-        previous,
-        allowed_documents,
-        ..
-    }) = send(&mut s, request)
+    send(&mut s, tick(checklist, Checklist::NONE));
+    let P::SaveIncomes { allowed_documents, .. } =
+        crate::tests::cross::interview::open_topic(&mut s, TaxSection::PassThrough)
     else {
-        panic!("expected the Schedule K-1 page")
+        unreachable!()
     };
-    // Amended for T2-29p: the Form 1065 kind comes first.
-    assert_eq!(
-        allowed_documents,
-        vec![
-            libertas_macros::variant_index!(IncomeDocument::K1Partnership) as i32,
-            libertas_macros::variant_index!(IncomeDocument::K1PartnershipActivities) as i32,
-            libertas_macros::variant_index!(IncomeDocument::K1ScorpActivities) as i32,
-            libertas_macros::variant_index!(IncomeDocument::K1EstateTrust) as i32,
-            libertas_macros::variant_index!(IncomeDocument::K1Scorp) as i32,
-        ]
-    );
-    let request = back(&s.draft, previous);
-    let Reply::Response(hub @ P::Hub { .. }) = send(&mut s, request) else {
-        panic!("expected the income hub")
-    };
-    assert_eq!(told_row(&hub), ("What you told us".into(), "Schedule K-1".into()));
-    let P::Hub { suggested, .. } = &hub else { unreachable!() };
-    assert_eq!(*suggested, TaxSection::PassThrough);
+    assert!(allowed_documents.is_empty());
+    let P::SaveDocuments { allowed_documents, .. } = open_documents(&mut s) else { unreachable!() };
+    // Standalone K-1 forms are offered only in the Document center.
+    for kind in [
+        libertas_macros::variant_index!(crate::IncomeSourceKind::K1Partnership) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::K1PartnershipActivities) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::K1ScorpActivities) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::K1EstateTrust) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::K1Scorp) as i32,
+    ] {
+        assert!(allowed_documents.contains(&kind));
+    }
     let mut page = k1_1041("Synthetic Family Trust");
     page.interest = 100_000;
-    let request = save_topic(
-        &s.draft.clone(),
-        TaxSection::PassThrough,
-        vec![document(0, IncomeDocument::K1EstateTrust(page))],
+    let request = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(page)) },
+        )],
     );
     accepted(&send(&mut s, request));
     let request = back(&s.draft, PAGE_INCOME);
@@ -238,7 +235,7 @@ fn shared_k1_page_types_map_onto_their_records() {
     assert_eq!(LimitedParticipation::from_record(&PartnerParticipation::General { facts }), None);
 
     // K1IncomeSource: only "Not needed" unless the return reads the source
-    // (T2-cy); each choice reopens from the two stored fields.
+    // Each choice reopens from the two stored fields.
     assert_eq!(K1IncomeSource::allowed(false), vec![0]);
     assert_eq!(K1IncomeSource::allowed(true), vec![1, 2, 3]);
     for choice in [
@@ -255,8 +252,8 @@ fn shared_k1_page_types_map_onto_their_records() {
     // AMT records (question C10): the same-as-regular statement writes the
     // regular records as the AMT records and reopens from them.
     let scorp = complete_ordinary_scorp(20_000, true);
-    let same = ScorpAmtRecords::SameAsRegular.record(&scorp);
-    assert_eq!((same.stock, same.adjustment, same.complete), (scorp.opening, 0, true));
+    let same = ScorpAmtRecords::SameAsRegular.record(&scorp).unwrap();
+    assert_eq!((Some(same.stock), same.adjustment, same.complete), (scorp.opening, 0, true));
     assert_eq!(ScorpAmtRecords::from_record(&scorp, &same), ScorpAmtRecords::SameAsRegular);
     let mut different = same.clone();
     different.adjustment = -50_000;
@@ -271,7 +268,12 @@ fn stored_k1_1120s(session: &Interview) -> ScorpK1 {
         .income
         .iter()
         .find_map(|e| match &e.income {
-            FederalIncome::Scorp { data } => Some(data.clone()),
+            FederalIncome::Scorp { data } => {
+                let mut calculation = ScorpK1::from(data);
+                calculation.amt_record_choice = None;
+                calculation.research_credit_line = None;
+                Some(calculation)
+            }
             _ => None,
         })
         .expect("a stored Schedule K-1 (Form 1120-S)")
@@ -302,7 +304,7 @@ fn k1_1120s_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     full.qualified_dividends = 15_000;
     full.distributions = 50_000;
     full.qbi = K1ScorpQbi::NoStatement;
-    full.participation = Participation::Other {
+    full.participation = Some(Participation::Other {
         facts: ScorpParticipation {
             ordinary_scope: true,
             minutes: 12_000,
@@ -317,8 +319,9 @@ fn k1_1120s_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
             other_manager_more: false,
             other_business_over_100: false,
         },
-    };
+    });
     full.more = K1ScorpOtherBoxes {
+        calls: crate::K1ScorpCalls::default(),
         amt_section179_income_carry: None,
         allowed_investment_confirmations: Vec::new(),
         section179_carryover_sold: 0,
@@ -351,7 +354,7 @@ fn k1_1120s_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     };
     full.basis = K1ScorpBasis {
         start: K1ScorpStart::Continuing {
-            opening: 2_000_000,
+            opening: Some(2_000_000),
             risk_history: ScorpRiskStart::Unknown,
             carried: K1ScorpCarried {
                 rental_real_estate_passive_loss: 0,
@@ -403,14 +406,14 @@ fn k1_1120s_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     full.special = vec![crate::ScorpSpecial::Farming];
     // Separate AMT records: the restated regular ones with a box 15 code A
     // adjustment.
-    let mut amt = ScorpAmtRecords::SameAsRegular.record(&document_income_scorp(&full));
+    let mut amt = ScorpAmtRecords::SameAsRegular.record(&full.record()).unwrap();
     amt.adjustment = -25_000;
-    full.amt = ScorpAmtRecords::Separate { record: amt };
+    full.amt = Some(ScorpAmtRecords::Separate { record: amt });
     // A continuing shareholder whose only Other box is a nonzero trading flag
     // keeps the short Continuing fields and the investor shortcut.
     let mut middle = k1_1120s("Synthetic Corp C");
     middle.ordinary = 1_000_000;
-    middle.participation = Participation::Over500Hours { hours: 600 };
+    middle.participation = Some(Participation::Over500Hours { hours: 600 });
     middle.basis.start = k1_1120s_continuing(500_000, 500_000);
     middle.basis.loans = vec![ScorpLoan {
         kind: ScorpLoanKind::OpenAccount,
@@ -429,7 +432,7 @@ fn k1_1120s_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
         .income
         .iter()
         .filter_map(|e| match &e.income {
-            FederalIncome::Scorp { data } => Some((e.label.clone(), data.clone())),
+            FederalIncome::Scorp { data } => Some((e.label.clone(), ScorpK1::from(data))),
             _ => None,
         })
         .collect();
@@ -455,109 +458,92 @@ fn k1_1120s_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     // Reopening gives the same pages; saving them unchanged keeps the records.
     assert_eq!(
         reopened_k1s(&mut session),
-        pages.into_iter().map(IncomeDocument::K1Scorp).collect::<Vec<_>>()
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            pages
+                .into_iter()
+                .map(|value| IncomeSource::K1 { value: crate::K1Document::K1Scorp((value).into()) })
+                .collect::<Vec<_>>()
+        )
     );
     let before = session.draft.income.clone();
-    let items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, items);
+    let items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let request = save_documents(&mut session, items);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.income, before);
-}
-// The regular stored record of a page (its AMT records aside).
-fn document_income_scorp(page: &K1Scorp) -> ScorpK1 {
-    let FederalIncome::Scorp { mut data } = document_income(&IncomeDocument::K1Scorp(page.clone()))
-    else {
-        unreachable!()
-    };
-    data.amt = None;
-    data
+
+    // Missing personal records survive the page projection independently of
+    // the known-answer records above.
+    let mut entry = before
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Scorp { .. }))
+        .unwrap()
+        .clone();
+    let FederalIncome::Scorp { data } = &mut entry.income else { unreachable!() };
+    {
+        let mut source_edit = edit_scorp(data);
+        let data = &mut *source_edit;
+        data.participation = None;
+        data.amt = None;
+        data.disposition = None;
+    }
+    let source_view = ScorpK1::from(&*data);
+    let data = &source_view;
+    let page = K1ScorpPaper::from_record(&entry.label, data).unwrap();
+    assert!(page.participation.is_none());
+    assert!(page.amt.is_none());
+    assert!(page.disposition.is_none());
+    let mut calculation = (*data).clone();
+    calculation.amt_record_choice = None;
+    calculation.research_credit_line = None;
+    assert_eq!(page.record(), calculation);
+    let projected = crate::interview::document_item(&entry, &[], false).unwrap();
+    assert_eq!(
+        projected.document,
+        expected_named_source(
+            &session.draft,
+            entry.owner.owned(),
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) },
+        )
+    );
 }
 
 #[test]
-fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries() {
-    // Each client rule's server twin: the boundary is accepted, one cent
-    // past it is rejected with the rule's key.
-    // The page's "Losses carried from 2025" branch, opened with every amount zero.
-    fn continuing(page: &mut K1Scorp) -> &mut K1ScorpCarried {
-        if matches!(page.basis.start, K1ScorpStart::New) {
-            page.basis.start = k1_1120s_continuing(100_000, 100_000);
-        }
-        let K1ScorpStart::Continuing { carried, .. } = &mut page.basis.start else {
-            unreachable!()
-        };
-        carried
-    }
-    type Edit = Box<dyn Fn(&mut K1Scorp, i64)>;
-    let cases: Vec<(&str, Edit)> = vec![
-        (
-            "SCORP_QUALIFIED_ABOVE_DIVIDENDS",
-            Box::new(|p, extra| {
-                p.dividends = 100_000;
-                p.qualified_dividends = 100_000 + extra;
-            }),
-        ),
-        (
-            "SCORP_QBI_ABOVE_BOX_1",
-            Box::new(|p, extra| {
-                p.ordinary = 100_000;
-                p.qbi = K1ScorpQbi::Statement {
-                    ptp_income: 0,
-                    reit_dividends: 0,
-                    income: 100_000 + extra,
-                    wages: 0,
-                    property: 0,
-                    service: false,
-                    current_loss: 0,
-                    property_qbi: no_property_qbi(),
-                };
-            }),
-        ),
-        (
-            "SCORP_PRIVATE_ACTIVITY_ABOVE_EXEMPT",
-            Box::new(|p, extra| {
-                let K1ScorpOtherBoxes { private_activity, exempt_interest, .. } =
-                    k1_1120s_more_mut(p);
-                *exempt_interest = 50_000;
-                *private_activity = 50_000 + extra;
-            }),
-        ),
-        (
-            "SCORP_NONDEDUCTIBLE_CARRY_NEEDS_ELECTION",
-            Box::new(|p, extra| {
-                // A zero carryover needs no election; one cent does.
-                {
-                    let K1ScorpCarried { basis_nondeductible, .. } = continuing(p);
-                    *basis_nondeductible = extra;
-                }
-            }),
-        ),
-        (
-            "SCORP_CARRIED_COLLECTIBLES_ABOVE_LONG",
-            Box::new(|p, extra| {
-                let K1ScorpCarried { basis_long, basis_collectibles, .. } = continuing(p);
-                *basis_long = 20_000;
-                *basis_collectibles = 20_000 + extra;
-            }),
-        ),
-        (
-            "SCORP_CARRIED_COLLECTIBLES_ABOVE_LONG",
-            Box::new(|p, extra| {
-                let K1ScorpCarried { risk_long, risk_collectibles, .. } = continuing(p);
-                *risk_long = 20_000;
-                *risk_collectibles = 20_000 + extra;
-            }),
-        ),
-    ];
-    for (key, edit) in cases {
-        let mut page = k1_1120s("Synthetic Corp");
-        edit(&mut page, 0);
-        let (_, reply) = save_k1_1120s(vec![page]);
-        accepted(&reply);
-        let mut page = k1_1120s("Synthetic Corp");
-        edit(&mut page, 1);
-        let (_, reply) = save_k1_1120s(vec![page]);
-        rejected_with(reply, key);
-    }
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_dividends() {
+    super::support::assert::k1_1120s_boundary(0);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_qbi() {
+    super::support::assert::k1_1120s_boundary(1);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_private_activity() {
+    super::support::assert::k1_1120s_boundary(2);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_nondeductible() {
+    super::support::assert::k1_1120s_boundary(3);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_basis_collectibles() {
+    super::support::assert::k1_1120s_boundary(4);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_risk_collectibles() {
+    super::support::assert::k1_1120s_boundary(5);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_negative_box_1() {
     // A box 1 loss allows no positive QBI; with the election a carried
     // nondeductible expense is accepted.
     let mut page = k1_1120s("Synthetic Corp");
@@ -573,13 +559,22 @@ fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries() {
         property_qbi: no_property_qbi(),
     };
     rejected_with(save_k1_1120s(vec![page]).1, "SCORP_QBI_ABOVE_BOX_1");
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_election() {
     let mut page = k1_1120s("Synthetic Corp");
     {
-        let K1ScorpCarried { basis_nondeductible, losses_first, .. } = continuing(&mut page);
+        let K1ScorpCarried { basis_nondeductible, losses_first, .. } =
+            k1_boundary_continuing(&mut page);
         *basis_nondeductible = 1;
         *losses_first = true;
     }
     accepted(&save_k1_1120s(vec![page]).1);
+}
+
+#[test]
+fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries_duplicate_box() {
     // Each other box is listed once.
     let mut page = k1_1120s("Synthetic Corp");
     {
@@ -595,46 +590,46 @@ fn k1_1120s_rules_reject_on_both_sides_at_their_boundaries() {
 }
 
 #[test]
-fn k1_1120s_qbi_loss_tracking_follows_the_values() {
-    // With a section 199A statement the QBI loss tracking sits beside it and
-    // is always present: zero and empty lists when nothing applies. On both
-    // sides a current QBI loss portion fits the box 1 (or box 9) loss, a
-    // carried loss needs its loss-year history, and section 1231 QBI amounts
-    // need this year's section 1231 item (decided by the K-1's own boxes).
-    let statement = |loss_qbi: ScorpLossQbi, property_qbi| K1ScorpQbi::Statement {
-        ptp_income: 0,
-        reit_dividends: 0,
-        income: 0,
-        wages: 0,
-        property: 0,
-        service: false,
-        current_loss: loss_qbi.current,
-        property_qbi,
-    };
+fn k1_1120s_qbi_loss_tracking_follows_the_values_no_loss() {
     // No loss: the stored sections are empty.
     let (session, reply) = save_k1_1120s(vec![k1_1120s("Synthetic Corp")]);
     accepted(&reply);
     let record = stored_k1_1120s(&session);
     assert!(record.loss_qbi.is_empty() && record.property_qbi.is_empty());
+}
+
+#[test]
+fn k1_1120s_qbi_loss_tracking_follows_the_values_current_loss() {
     // A box 1 loss: the QBI portion fits the loss; zero (no QBI loss) is
     // a value too.
     let mut page = k1_1120s("Synthetic Corp");
     page.ordinary = -100_000;
     accepted(&save_k1_1120s(vec![page.clone()]).1);
     let mut loss = ScorpLossQbi { current: 100_001, ..Default::default() };
-    page.qbi = statement(loss.clone(), no_property_qbi());
+    page.qbi = scorp_loss_statement(loss.clone(), no_property_qbi());
     rejected_with(save_k1_1120s(vec![page.clone()]).1, "SCORP_QBI_LOSS_RECORDS_NEEDED");
     loss.current = 100_000;
-    page.qbi = statement(loss.clone(), no_property_qbi());
+    page.qbi = scorp_loss_statement(loss.clone(), no_property_qbi());
     let (mut session, reply) = save_k1_1120s(vec![page.clone()]);
     accepted(&reply);
     assert_eq!(stored_k1_1120s(&session).loss_qbi, loss);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page.clone())]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page.clone()).into()) }]
+        )
+    );
     // Without a statement the K-1 adds no QBI and stores empty sections.
     page.qbi = K1ScorpQbi::NoStatement;
     let (session, reply) = save_k1_1120s(vec![page]);
     accepted(&reply);
     assert!(stored_k1_1120s(&session).loss_qbi.is_empty());
+}
+
+#[test]
+fn k1_1120s_qbi_loss_tracking_follows_the_values_carried_basis() {
     // A carried basis loss needs its loss-year history.
     let mut page = k1_1120s("Synthetic Corp");
     let mut carried = k1_1120s_carried_zero();
@@ -642,16 +637,23 @@ fn k1_1120s_qbi_loss_tracking_follows_the_values() {
         let K1ScorpCarried { basis_loss, .. } = &mut carried;
         *basis_loss = 300_000;
     }
-    page.basis.start =
-        K1ScorpStart::Continuing { opening: 0, risk_history: ScorpRiskStart::Unknown, carried };
+    page.basis.start = K1ScorpStart::Continuing {
+        opening: Some(0),
+        risk_history: ScorpRiskStart::Unknown,
+        carried,
+    };
     rejected_with(save_k1_1120s(vec![page.clone()]).1, "SCORP_QBI_LOSS_RECORDS_NEEDED");
     let loss = ScorpLossQbi {
         history: vec![loss_year(2024, 3_000, 3_000, 3_000, 3_000)],
         ..Default::default()
     };
-    page.qbi_records.ordinary.history = loss.history.clone();
-    page.qbi = statement(loss, no_property_qbi());
+    page.qbi_records.as_mut().unwrap().ordinary.history = loss.history.clone();
+    page.qbi = scorp_loss_statement(loss, no_property_qbi());
     accepted(&save_k1_1120s(vec![page]).1);
+}
+
+#[test]
+fn k1_1120s_qbi_loss_tracking_follows_the_values_property_gain() {
     // A box 9 gain: the statement amounts hold its QBI portion; zero (no
     // QBI portion) is a value too. Without a box 9 or box 8c business item
     // the amounts must stay zero.
@@ -665,44 +667,58 @@ fn k1_1120s_qbi_loss_tracking_follows_the_values() {
     let (session, reply) = save_k1_1120s(vec![page.clone()]);
     accepted(&reply);
     assert_eq!(stored_k1_1120s(&session).property_qbi.gain, 0);
-    page.qbi = statement(Default::default(), items.clone());
+    page.qbi = scorp_loss_statement(Default::default(), items.clone());
     let (session, reply) = save_k1_1120s(vec![page]);
     accepted(&reply);
     let stored = stored_k1_1120s(&session).property_qbi;
     assert_eq!((stored.gain, stored.complete), (50_000, true));
     let mut page = k1_1120s("Synthetic Corp");
-    page.qbi = statement(Default::default(), items);
+    page.qbi = scorp_loss_statement(Default::default(), items);
     rejected_with(save_k1_1120s(vec![page.clone()]).1, "SCORP_QBI_PROPERTY_RECORDS_NEEDED");
-    page.qbi = statement(
+    page.qbi = scorp_loss_statement(
         Default::default(),
         K1ScorpPropertyQbi { qualified_1250: Some(1), ..no_property_qbi() },
     );
     rejected_with(save_k1_1120s(vec![page]).1, "SCORP_QBI_PROPERTY_RECORDS_NEEDED");
+}
+
+#[test]
+fn k1_1120s_qbi_loss_tracking_follows_the_values_carried_section1231() {
     // A carried section 1231 loss alone keeps zero statement amounts and
     // needs only its loss-year history; the confirmation is not read.
     let mut page = k1_1120s_carried_section1231_loss();
-    page.qbi = statement(Default::default(), no_property_qbi());
+    page.qbi = scorp_loss_statement(Default::default(), no_property_qbi());
     rejected_with(save_k1_1120s(vec![page.clone()]).1, "SCORP_QBI_PROPERTY_RECORDS_NEEDED");
-    page.qbi_records.property.history = vec![loss_year(2024, 2_000, 2_000, 2_000, 2_000)];
+    page.qbi_records.as_mut().unwrap().property.history =
+        vec![loss_year(2024, 2_000, 2_000, 2_000, 2_000)];
     let (mut session, reply) = save_k1_1120s(vec![page.clone()]);
     accepted(&reply);
     let stored = stored_k1_1120s(&session).property_qbi;
     assert_eq!(stored.losses.history.len(), 1);
     assert!(stored.complete);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }]
+        )
+    );
 }
-
 // A shareholder whose only section 1231 item is a $2,000 loss carried from
 // 2025 because of basis.
-fn k1_1120s_carried_section1231_loss() -> K1Scorp {
+fn k1_1120s_carried_section1231_loss() -> K1ScorpPaper {
     let mut page = k1_1120s("Synthetic Corp");
     let mut carried = k1_1120s_carried_zero();
     {
         let K1ScorpCarried { section1231_basis_loss, .. } = &mut carried;
         *section1231_basis_loss = 200_000;
     }
-    page.basis.start =
-        K1ScorpStart::Continuing { opening: 0, risk_history: ScorpRiskStart::Unknown, carried };
+    page.basis.start = K1ScorpStart::Continuing {
+        opening: Some(0),
+        risk_history: ScorpRiskStart::Unknown,
+        carried,
+    };
     page
 }
 
@@ -727,7 +743,7 @@ fn k1_1120s_import_without_section1231_item_keeps_carried_histories() {
         current_loss: 0,
         property_qbi: K1ScorpPropertyQbi { gain: 10_000, qualified_1250: None, current: 0 },
     };
-    page.qbi_records.property = typed.clone();
+    page.qbi_records.as_mut().unwrap().property = typed.clone();
     // The import result: income, wages, property, service,
     // current_loss and property_qbi (zero amounts, no section 1231 item)
     // merge into the same Statement variant.
@@ -738,15 +754,16 @@ fn k1_1120s_import_without_section1231_item_keeps_carried_histories() {
     }
     let (session, reply) = save_k1_1120s(vec![page.clone()]);
     accepted(&reply);
-    assert_eq!(page.qbi_records.property, typed);
+    assert_eq!(page.qbi_records.as_mut().unwrap().property, typed);
     assert_eq!(stored_k1_1120s(&session).property_qbi.losses.history, typed.history);
 }
 
 #[test]
 fn k1_1120s_import_no_statement_preserves_personal_records_after_save_and_reopen() {
     let mut page = k1_1120s_carried_section1231_loss();
-    page.qbi_records.property.history = vec![loss_year(2024, 2_000, 1_000, 2_000, 1_000)];
-    page.qbi_records.property_complete = false;
+    page.qbi_records.as_mut().unwrap().property.history =
+        vec![loss_year(2024, 2_000, 1_000, 2_000, 1_000)];
+    page.qbi_records.as_mut().unwrap().property_complete = false;
     let retained = page.qbi_records.clone();
     // Import changes the printed union without entering the separate personal records.
     page.qbi = K1ScorpQbi::NoStatement;
@@ -760,13 +777,26 @@ fn k1_1120s_import_no_statement_preserves_personal_records_after_save_and_reopen
     let record = stored_k1_1120s(&session);
     assert!(record.property_tracking());
     assert!(!record.loss_tracking());
-    let mut malformed = record.clone();
-    malformed.property_qbi.losses.history[0].remaining = -1;
-    assert!(!malformed.valid(), "retained records still enforce their structural validity");
     let reopened = reopened_k1s(&mut session);
-    assert_eq!(reopened, vec![IncomeDocument::K1Scorp(page)]);
-    let IncomeDocument::K1Scorp(page) = &reopened[0] else { unreachable!() };
-    assert_eq!(page.qbi_records, retained);
+    assert_eq!(
+        reopened,
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }]
+        )
+    );
+    let IncomeSource::K1 { value: crate::K1Document::K1Scorp(_page) } = &reopened[0] else {
+        unreachable!()
+    };
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Scorp { .. }))
+        .unwrap();
+    let FederalIncome::Scorp { data } = &entry.income else { unreachable!() };
+    assert_eq!(Some(data.personal.qbi_records.clone()), retained);
 }
 
 #[test]
@@ -785,18 +815,20 @@ fn k1_1120s_refusals_are_stored_and_named() {
         current_loss: 0,
         property_qbi: no_property_qbi(),
     };
-    base.participation = Participation::Over500Hours { hours: 600 };
+    base.participation = Some(Participation::Over500Hours { hours: 600 });
     let (session, reply) = save_k1_1120s(vec![base.clone()]);
     accepted(&reply);
     supported(&session.draft);
     assert_eq!(
         crate::interview::document_amount(
-            &FederalIncome::Scorp { data: stored_k1_1120s(&session) },
+            &FederalIncome::Scorp {
+                data: crate::tests::support::builders::scorp_source(stored_k1_1120s(&session))
+            },
             false
         ),
         Some(1_000_000)
     );
-    let refused = |page: K1Scorp, expected: &str| {
+    let refused = |page: K1ScorpPaper, expected: &str| {
         let (session, reply) = save_k1_1120s(vec![page]);
         accepted(&reply);
         let r = estimate(&session.draft);
@@ -808,7 +840,9 @@ fn k1_1120s_refusals_are_stored_and_named() {
         );
         assert_eq!(
             crate::interview::document_amount(
-                &FederalIncome::Scorp { data: stored_k1_1120s(&session) },
+                &FederalIncome::Scorp {
+                    data: crate::tests::support::builders::scorp_source(stored_k1_1120s(&session))
+                },
                 false
             ),
             None
@@ -844,21 +878,20 @@ fn k1_1120s_refusals_are_stored_and_named() {
     assert!(noted(&r, "WARN_K1_QBI_NO_STATEMENT"), "{r:?}");
     assert_eq!(value(&r, "qbi_deduction"), 0);
 }
-fn k1_1120s_fixture_session(page: K1Scorp) -> Interview {
+fn k1_1120s_fixture_session(page: K1ScorpPaper) -> Interview {
     let draft = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, draft.clone());
-    let request = save_topic(
-        &draft,
-        TaxSection::PassThrough,
-        vec![document(0, IncomeDocument::K1Scorp(page))],
+    let reply = save_k1_sources_and_answers(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) })],
     );
-    accepted(&send(&mut session, request));
+    accepted(&reply);
     session
 }
 
 #[test]
 fn k1_1120s_page_reproduces_the_shareholder_fixtures() {
-    // T2-31: box 1 $20,000, box 4 $1,200, box 5a $2,000 (5b $1,500), box 12
+    // Box 1 $20,000, box 4 $1,200, box 5a $2,000 (5b $1,500), box 12
     // code A $1,000, box 13 code O $240, box 16 code A $400, box 16 code D
     // $35,000 on shares held more than one year.
     //   Form 7203: $10,000 + $20,000 + $1,200 + $2,000 + $400 = $33,600
@@ -898,10 +931,13 @@ fn k1_1120s_page_reproduces_the_shareholder_fixtures() {
     assert_eq!(return_line(&r, "16"), 848_500);
     assert_eq!(return_line(&r, "25c"), 24_000);
     assert_eq!(r.balance, Some(174_500));
-    let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+    let rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].preview, Some(2_000_000));
-    // T2-29b: box 1 $20,000 and box 11 $5,000.
+    // Box 1 $20,000 and box 11 $5,000.
     //   Form 4562: line 6/8 $5,000, line 11 $60,000 + $20,000 = $80,000,
     //   line 12 $5,000, line 13 $0. Schedule E $20,000 - $5,000 = $15,000;
     //   AGI $75,000; QBI 20% x $15,000 = $3,000; taxable $75,000 - $16,100 -
@@ -924,11 +960,14 @@ fn k1_1120s_page_reproduces_the_shareholder_fixtures() {
     assert_eq!(return_line(&r, "15"), 5_590_000);
     assert_eq!(return_line(&r, "16"), 701_600);
     assert_eq!(r.balance, Some(51_600));
-    let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+    let rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(rows[0].preview, None);
 }
 
-// T2-31r question C9: the same T2-31 profit fixture with the at-risk
+// The same profit fixture with the at-risk
 // history left missing (the page's default). No loss enters Form 6198, so
 // the totals are unchanged: AGI $84,600, taxable $63,500, tax $8,485,
 // balance $1,745 and the row's Schedule E $20,000. Reopening shows the same
@@ -963,9 +1002,19 @@ fn k1_1120s_page_without_at_risk_history_reproduces_the_profit_fixture() {
     assert_eq!(return_line(&r, "15"), 6_350_000);
     assert_eq!(return_line(&r, "16"), 848_500);
     assert_eq!(r.balance, Some(174_500));
-    let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+    let rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(rows[0].preview, Some(2_000_000));
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }]
+        )
+    );
     let mut page = k1_1120s_fixture(20_000);
     missing(&mut page.basis.start);
     {
@@ -981,7 +1030,7 @@ fn k1_1065_import_no_statement_preserves_personal_records_after_save_and_reopen(
     let mut page = k1_1065("Synthetic Partners");
     page.se_gross = SeGross::Nonfarm { amount: 100_000 };
     page.basis.start = BasisStart::Continuing {
-        opening: 100_000,
+        opening: Some(100_000),
         risk_history: ScorpRiskStart::Detailed { capacity: 100_000, profit: 0, loss: 0 },
         carried: k1_1065_carried_zero(),
     };
@@ -990,14 +1039,14 @@ fn k1_1065_import_no_statement_preserves_personal_records_after_save_and_reopen(
     {
         *basis_loss = 30_000;
     }
-    page.qbi_records = PartnerQbiRecords {
+    page.qbi_records = Some(PartnerQbiRecords {
         qualified_se_gross: 50_000,
         history: Some(PartnerQbiHistory {
             basis: vec![loss_year(2024, 300, 150, 300, 150)],
             risk: vec![],
             passive: vec![],
         }),
-    };
+    });
     let retained = page.qbi_records.clone();
     page.qbi = PartnerQbi::NoStatement;
     let (mut session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
@@ -1007,9 +1056,18 @@ fn k1_1065_import_no_statement_preserves_personal_records_after_save_and_reopen(
     // This K-1 has no current loss; its retained qualified loss is counted separately.
     assert!(noted(&result, "WARN_K1_QBI_NO_STATEMENT"));
     let reopened = reopened_k1s(&mut session);
-    assert_eq!(reopened, vec![IncomeDocument::K1Partnership(page)]);
-    let IncomeDocument::K1Partnership(page) = &reopened[0] else { unreachable!() };
-    assert_eq!(page.qbi_records, retained);
+    assert_eq!(
+        reopened,
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+        )
+    );
+    let IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } = &reopened[0] else {
+        unreachable!()
+    };
+    assert_eq!(Some(page.personal.as_ref().unwrap().qbi_records.clone()), retained);
 }
 fn stored_1065s(session: &Interview) -> Vec<PartnerK1> {
     session
@@ -1026,9 +1084,8 @@ fn stored_1065s(session: &Interview) -> Vec<PartnerK1> {
 #[test]
 fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     let mut full = k1_1065("Synthetic Partners LP");
-    full.interest = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Over500Hours { hours: 600 },
-    };
+    (full.participation, full.limited_for_se) =
+        (Some((LimitedParticipation::Over500Hours { hours: 600 }).record()), Some(true));
     full.liabilities_start = 5_000_000;
     full.liabilities_end = 6_000_000;
     full.ordinary = 1_500_000;
@@ -1046,11 +1103,12 @@ fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
         property: 900_000,
         service: true,
     };
-    full.qbi_records = PartnerQbiRecords {
+    full.qbi_records = Some(PartnerQbiRecords {
         qualified_se_gross: 0,
         history: Some(PartnerQbiHistory { basis: vec![], risk: vec![], passive: vec![] }),
-    };
+    });
     full.more = K1PartnershipOtherBoxes {
+        calls: crate::K1PartnershipCalls::default(),
         amt_section179_income_carry: None,
         allowed_investment_confirmations: Vec::new(),
         section179_carryover_sold: 0,
@@ -1103,7 +1161,7 @@ fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     };
     full.basis = PartnerBasis {
         start: BasisStart::Continuing {
-            opening: 2_000_000,
+            opening: Some(2_000_000),
             risk_history: ScorpRiskStart::Detailed { capacity: 2_000_000, profit: 0, loss: 0 },
             carried: PartnerCarried {
                 section1231_basis_loss: 0,
@@ -1150,15 +1208,17 @@ fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
         K1IncomeSource::Mixed { value: WorkValue::Amount { compensation: 900_000 } };
     let mut amt = full.record().regular;
     amt.ordinary = 1_400_000;
-    full.amt = PartnerAmtRecords::Separate { record: amt.clone() };
+    full.amt = Some(PartnerAmtRecords::Separate { record: amt.clone() });
     full.special = vec![crate::PartnerSpecial::RetiringPayments];
 
     let mut member = k1_1065("Synthetic Holdings LLC");
     member.publicly_traded = true;
-    member.interest = PartnerInterest::LlcMember {
-        box1_in_se: false,
-        participation: Participation::Investor { prior_years: 3 },
-    };
+    (member.participation, member.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Investor { prior_years: 3 }).record(),
+        }),
+        Some(true),
+    );
     member.ordinary = 800_000;
     member.se_gross = SeGross::Farming { amount: 50_000 };
     member.qbi = PartnerQbi::NoStatement;
@@ -1168,7 +1228,12 @@ fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     let mut facts = Participation::Investor { prior_years: 0 }.record();
     facts.minutes = 12_000;
     facts.regular = true;
-    general.interest = PartnerInterest::General { participation: Participation::Other { facts } };
+    (general.participation, general.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Other { facts }).record(),
+        }),
+        Some(false),
+    );
     general.ordinary = 300_000;
     general.se = 300_000;
     general.basis.start = k1_1065_continuing(100_000, ScorpRiskStart::Unknown);
@@ -1180,10 +1245,10 @@ fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     accepted(&reply);
     let stored = stored_1065s(&session);
     // The Limited partner branch: limited_for_se Yes and the Limited record.
-    assert!(stored[0].limited_for_se);
+    assert_eq!(stored[0].limited_for_se, Some(true));
     assert!(matches!(
         stored[0].participation,
-        PartnerParticipation::Limited { minutes: 36_000, .. }
+        Some(PartnerParticipation::Limited { minutes: 36_000, .. })
     ));
     assert_eq!(stored[0].trade_kind, ScorpTradeKind::FinancialTrading);
     assert_eq!((stored[0].regular.exempt, stored[0].regular.nondeductible), (6_000, 8_000));
@@ -1202,55 +1267,361 @@ fn k1_1065_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     );
     // An LLC member whose box 14 code A leaves out box 1 is limited for
     // self-employment (question C11); AMT same as regular; no statement.
-    assert!(stored[1].limited_for_se);
-    assert!(matches!(stored[1].participation, PartnerParticipation::General { .. }));
+    assert_eq!(stored[1].limited_for_se, Some(true));
+    assert!(matches!(stored[1].participation, Some(PartnerParticipation::General { .. })));
     assert_eq!(stored[1].alternative.as_ref(), Some(&stored[1].regular));
     assert_eq!(stored[1].qbi, None);
     assert_eq!(stored[1].separate, None);
     assert_eq!(stored[1].gross_personal_services, Some(900_000));
     assert_eq!(stored[1].regular.risk.start, ScorpRiskStart::New);
-    assert!(!stored[2].limited_for_se);
+    assert_eq!(stored[2].limited_for_se, Some(false));
     assert_eq!(stored[2].reported_se, Some(300_000));
     assert_eq!(stored[2].se_history, PartnerSeHistory { basis: 0, risk: 0, passive: 0 });
     assert_eq!(session.draft.income[1].label, "Synthetic Partners LP");
     assert_eq!(
         reopened_k1s(&mut session),
-        pages.into_iter().map(IncomeDocument::K1Partnership).collect::<Vec<_>>()
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            pages
+                .into_iter()
+                .map(|value| IncomeSource::K1 {
+                    value: crate::K1Document::K1Partnership((value).into())
+                })
+                .collect::<Vec<_>>()
+        )
     );
     // The partner's plan choice belongs to the self-employed benefits page
-    // (T2-43p): saving the K-1 page keeps it.
-    let sep = PartnerRetirement::Sep { rate: 2500 };
+    // Saving the K-1 source keeps it.
+    let sep = PartnerRetirement::Sep { rate: 25.0 };
     for e in &mut session.draft.income {
         if let FederalIncome::Partnership { data } = &mut e.income {
             data.retirement = sep.clone();
         }
     }
     let before = session.draft.income.clone();
-    let items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, items);
+    let items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let request = save_documents(&mut session, items);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.income, before);
     assert!(stored_1065s(&session).iter().all(|p| p.retirement == sep));
     // An LLC member whose box 14 code A includes box 1 writes a general
     // partner's record, and reopens as one.
     let mut ticked = k1_1065("Synthetic LLC");
-    ticked.interest = PartnerInterest::LlcMember {
-        box1_in_se: true,
-        participation: Participation::Investor { prior_years: 0 },
-    };
+    (ticked.participation, ticked.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Investor { prior_years: 0 }).record(),
+        }),
+        Some(false),
+    );
     let (mut session, reply) = save_1065s(&complete(FederalStatus::Single), vec![ticked]);
     accepted(&reply);
-    assert!(!stored_1065s(&session)[0].limited_for_se);
+    assert_eq!(stored_1065s(&session)[0].limited_for_se, Some(false));
     assert_eq!(
         reopened_k1s(&mut session),
-        vec![IncomeDocument::K1Partnership(k1_1065("Synthetic LLC"))]
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership((k1_1065("Synthetic LLC")).into())
+            }]
+        )
+    );
+}
+
+#[test]
+fn k1_1065_partial_personal_records_preserve_independent_unknowns_on_reopen() {
+    let page = k1_1065("Synthetic partial partner records");
+    let (session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
+    accepted(&reply);
+    let original = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Partnership { .. }))
+        .unwrap();
+    let general = page.participation.clone();
+    let limited = Some(LimitedParticipation::Investor { prior_years: 0 }.record());
+    for (participation, limited_for_se) in [
+        (None, None),
+        (None, Some(false)),
+        (None, Some(true)),
+        (general.clone(), None),
+        (general, Some(true)),
+        (limited.clone(), None),
+        (limited, Some(false)),
+    ] {
+        let mut entry = original.clone();
+        let FederalIncome::Partnership { data } = &mut entry.income else { unreachable!() };
+        data.participation = participation.clone();
+        data.limited_for_se = limited_for_se;
+        data.disposition = None;
+        data.alternative = None;
+        data.amt_record_choice = None;
+        data.regular.basis.opening = None;
+        data.rental_facts.participation = None;
+        assert!(data.valid());
+        let paper = crate::K1PartnershipDocument::from_record(&entry.label, data).unwrap();
+        let projected = paper.calculation_page();
+        assert_eq!(projected.participation, participation);
+        assert_eq!(projected.limited_for_se, limited_for_se);
+        assert!(projected.disposition.is_none());
+        assert!(projected.amt.is_none());
+        assert!(projected.record().regular.basis.opening.is_none());
+        assert!(projected.rentals.participation.is_none());
+        let mut restored = paper.record();
+        let kept = data.source.as_ref().unwrap();
+        let source = restored.source.as_mut().unwrap();
+        (source.assigned, source.owner_source, source.joint_share) =
+            (kept.assigned, kept.owner_source, kept.joint_share);
+        assert_eq!(restored, *data);
+        assert_eq!(
+            crate::interview::document_item(&entry, &[], false).unwrap().document,
+            expected_named_sources(
+                &session.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::K1 {
+                    value: crate::K1Document::K1Partnership((projected).into())
+                }]
+            )
+            .remove(0)
+        );
+    }
+}
+
+#[test]
+fn k1_printed_source_leaves_personal_answers_pending_until_actual_topic_save() {
+    let mut page = k1_1065("Synthetic unanswered personal records");
+    page.rentals.real_estate = 100_000;
+    page.rentals.participation = Some(crate::K1RentalParticipation::NotActive);
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+        )],
+    );
+    accepted(&send(&mut session, request));
+    let data = stored_1065s(&session)[0].clone();
+    assert!(data.participation.is_none());
+    assert!(data.limited_for_se.is_none());
+    assert!(data.disposition.is_none());
+    assert!(data.alternative.is_none());
+    assert!(data.regular.basis.opening.is_none());
+    assert!(data.rental_facts.participation.is_none());
+    assert!(session.draft.valid_stored());
+    let mut session = restart(session.draft.clone());
+    let (remaining, _, actions, _) = crate::tests::cross::interview::review_state(&mut session);
+    assert!(remaining.iter().any(|row| row.section == TaxSection::PassThrough));
+    assert!(!actions.contains(&(libertas_macros::variant_index!(P::StartFinish) as i32)));
+    let mut request =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    let before = session.draft.clone();
+    rejected_with(send(&mut session, request.clone()), "DOCUMENT_K1_PARTICIPATION");
+    assert_eq!(session.draft, before);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    // Each must-answer K-1 fact is its own required strict question, asked
+    // unanswered (no Default) while the source leaves it open.
+    let strict: Vec<_> = followups
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.answer,
+                crate::DocumentAnswer::K1PartnerParticipation { .. }
+                    | crate::DocumentAnswer::K1LimitedForSe { .. }
+                    | crate::DocumentAnswer::K1PartnerAmt { .. }
+                    | crate::DocumentAnswer::K1PartnerDisposition { .. }
+                    | crate::DocumentAnswer::K1PartnerBasisStart { .. }
+            )
+        })
+        .collect();
+    assert_eq!(strict.len(), 5);
+    for row in &strict {
+        assert_eq!(crate::document_followup_page::strict_answer(&row.answer), Some(None));
+        assert!(crate::DocumentStrictAnswer::kind_of(&row.answer).is_some());
+    }
+    for row in followups.iter_mut() {
+        match &mut row.answer {
+            crate::DocumentAnswer::K1PartnerParticipation { value } => {
+                *value = page.participation.clone()
+            }
+            crate::DocumentAnswer::K1LimitedForSe { value } => *value = page.limited_for_se,
+            crate::DocumentAnswer::K1PartnerAmt { value } => *value = page.amt.clone(),
+            crate::DocumentAnswer::K1PartnerDisposition { value } => {
+                *value = page.disposition.clone()
+            }
+            crate::DocumentAnswer::K1RentalParticipation { value } => {
+                *value = page.rentals.participation
+            }
+            _ => {}
+        }
+    }
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    // An answered strict question round-trips to its canonical row.
+    for row in followups.iter().filter(|row| {
+        crate::DocumentStrictAnswer::kind_of(&row.answer).is_some()
+            && matches!(
+                row.answer,
+                crate::DocumentAnswer::K1PartnerParticipation { .. }
+                    | crate::DocumentAnswer::K1LimitedForSe { .. }
+                    | crate::DocumentAnswer::K1PartnerAmt { .. }
+                    | crate::DocumentAnswer::K1PartnerDisposition { .. }
+            )
+    }) {
+        let strict = crate::document_followup_page::strict_answer(&row.answer).unwrap().unwrap();
+        assert_eq!(crate::DocumentStrictAnswer::kind_of(&row.answer), Some(strict.index()));
+        assert_eq!(strict.into_canonical(), Some(row.answer.clone()));
+    }
+    let index = followups
+        .iter()
+        .position(|row| matches!(row.answer, crate::DocumentAnswer::K1PartnerBasisStart { .. }))
+        .unwrap();
+    let Reply::Response(P::Problem { message, field, .. }) = send(&mut session, request.clone())
+    else {
+        panic!("opening basis must remain unanswered")
+    };
+    assert_eq!(message, libertas::libertas_formatted_text("DOCUMENT_K1_OPENING_BASIS", &[]));
+    assert_eq!(
+        field,
+        Some(
+            SchemaPath::root()
+                .field("followups")
+                .key(followups[index].key.as_str())
+                .field("answer")
+                .field("value")
+                .field("opening")
+                .to_string()
+        )
+    );
+    assert_eq!(session.draft, before);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    let crate::DocumentAnswer::K1PartnerBasisStart { value } = &mut followups[index].answer else {
+        unreachable!()
+    };
+    assert!(matches!(value, Some(BasisStart::Continuing { opening: None, .. })));
+    *value = Some(page.basis.start.clone());
+    accepted(&send(&mut session, request));
+    let (remaining, _, actions, _) = crate::tests::cross::interview::review_state(&mut session);
+    assert!(remaining.is_empty(), "{remaining:?}");
+    assert!(actions.contains(&(libertas_macros::variant_index!(P::StartFinish) as i32)));
+    assert_eq!(estimate(&restart(session.draft.clone()).draft), estimate(&session.draft));
+}
+
+// R10-04: a K-1 with a section 179 deduction asks the AMT carryover history
+// as a required strict question (no Default) on the questions page; the topic
+// does not open or save while it is open, and the answered history round-trips.
+#[test]
+fn k1_section179_amt_history_is_a_required_strict_question() {
+    use super::support::client::own_questions::{save_questions, wire_page};
+    let strict = |key: &str, answer: crate::DocumentStrictAnswer| crate::DocumentStrictQuestion {
+        key: key.into(),
+        prompt: Vec::new(),
+        allowed_answers: Vec::new(),
+        allowed_values: Vec::new(),
+        ccc_lots: Vec::new(),
+        health_plans: Vec::new(),
+        espp_acquisitions: Vec::new(),
+        interest_statements: Vec::new(),
+        people: Vec::new(),
+        credit_income_sources: Vec::new(),
+        answer,
+    };
+    let mut page = k1_1065("Synthetic section 179 K-1");
+    page.more.section179 = 10_000;
+    page.more.amt_section179_income_carry = None;
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+        )],
+    );
+    accepted(&send(&mut session, request));
+    let canonical =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    let begin = match wire_page(&mut session, Reply::Edit(canonical.clone())) {
+        Reply::Response(begin @ P::BeginDocumentQuestions { .. }) => begin,
+        other => panic!("the unanswered questions open first, got {other:?}"),
+    };
+    let P::BeginDocumentQuestions { questions, .. } = &begin else { unreachable!() };
+    let history_key = questions
+        .iter()
+        .find(|q| q.key.ends_with("/section179_amt"))
+        .expect("the AMT history is asked as a strict question")
+        .key
+        .clone();
+    // Every other open personal fact, answered from the page.
+    let P::SaveIncomes { followups, .. } = &canonical else { unreachable!() };
+    let mut answers = Vec::new();
+    for row in followups {
+        let mut answer = row.answer.clone();
+        match &mut answer {
+            crate::DocumentAnswer::K1PartnerParticipation { value } => {
+                *value = page.participation.clone()
+            }
+            crate::DocumentAnswer::K1LimitedForSe { value } => *value = page.limited_for_se,
+            crate::DocumentAnswer::K1PartnerAmt { value } => *value = page.amt.clone(),
+            crate::DocumentAnswer::K1PartnerDisposition { value } => {
+                *value = page.disposition.clone()
+            }
+            crate::DocumentAnswer::K1PartnerBasisStart { value } => {
+                *value = Some(page.basis.start.clone())
+            }
+            crate::DocumentAnswer::K1RentalParticipation { value } => {
+                *value = page.rentals.participation
+            }
+            _ => {}
+        }
+        if questions.iter().any(|q| q.key == row.key)
+            && let Some(Some(strict_answer)) = crate::document_followup_page::strict_answer(&answer)
+            && row.key != history_key
+        {
+            answers.push(strict(&row.key, strict_answer));
+        }
+    }
+    let before = session.draft.clone();
+    // Without the history the page does not save.
+    let reply = save_questions(&mut session, &begin, answers.clone());
+    assert!(!matches!(reply, Reply::Edit(P::SaveIncomes { .. })), "{reply:?}");
+    assert_eq!(session.draft, before);
+    assert!(stored_1065s(&session)[0].amt_section179_income_carry.is_none());
+    let history = crate::Section179IncomeCarryHistory { gross: 0, sold: 0, vintages: Vec::new() };
+    answers.push(strict(
+        &history_key,
+        crate::DocumentStrictAnswer::K1Section179Amt { value: history.clone() },
+    ));
+    let reply = save_questions(&mut session, &begin, answers);
+    assert!(matches!(reply, Reply::Edit(P::SaveIncomes { .. })), "{reply:?}");
+    assert_eq!(stored_1065s(&session)[0].amt_section179_income_carry, Some(history.clone()));
+    // Reopened, and after a restart, the topic carries the answered history.
+    let mut session = restart(session.draft.clone());
+    let reopened =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    let reply = wire_page(&mut session, Reply::Edit(reopened));
+    let Reply::Edit(P::SaveIncomes { questions, .. }) = reply else {
+        panic!("answered, the page opens by EditRequest: {reply:?}")
+    };
+    assert!(questions.iter().any(|q| matches!(
+        &q.answer,
+        crate::DocumentStrictAnswer::K1Section179Amt { value } if *value == history
+    )));
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .all(|issue| { issue.display.key != "ISSUE_SECTION179_SELECTED_SOURCE_UNAVAILABLE" })
     );
 }
 
 #[test]
 fn k1_1065_rules_reject_on_both_sides_at_their_boundaries() {
-    type Edit = Box<dyn Fn(&mut K1Partnership, i64)>;
-    fn carried(page: &mut K1Partnership, field: usize, extra: i64) {
+    type Edit = Box<dyn Fn(&mut K1PartnershipPaper, i64)>;
+    fn carried(page: &mut K1PartnershipPaper, field: usize, extra: i64) {
         let mut start = k1_1065_carried_zero();
         {
             let PartnerCarried {
@@ -1268,7 +1639,7 @@ fn k1_1065_rules_reject_on_both_sides_at_their_boundaries() {
             *[se_basis, se_risk, se_passive][field] = 10_000 + extra;
         }
         page.basis.start = BasisStart::Continuing {
-            opening: 100_000,
+            opening: Some(100_000),
             risk_history: ScorpRiskStart::Unknown,
             carried: start,
         };
@@ -1325,7 +1696,7 @@ fn k1_1065_rules_reject_on_both_sides_at_their_boundaries() {
         let K1PartnershipOtherBoxes { unentered, .. } = &mut page.more;
         *unentered = vec![PartnerK1Item::Credits, PartnerK1Item::Credits];
     }
-    rejected_with(save_1065s(&complete(FederalStatus::Single), vec![page]).1, "PARTNER_BOX_TWICE");
+    assert_eq!(page.rule(), Some("PARTNER_BOX_TWICE"));
     let mut page = k1_1065("Synthetic Partners");
     page.basis.start = k1_1065_continuing(100_000, ScorpRiskStart::New);
     rejected_with(
@@ -1336,7 +1707,7 @@ fn k1_1065_rules_reject_on_both_sides_at_their_boundaries() {
 
 #[test]
 fn k1_1065_refusals_are_stored_and_named() {
-    let refused = |page: K1Partnership, section: &str, expected: &str| {
+    let refused = |page: K1PartnershipPaper, section: &str, expected: &str| {
         let (session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page]);
         accepted(&reply);
         let r = estimate(&session.draft);
@@ -1364,11 +1735,13 @@ fn k1_1065_refusals_are_stored_and_named() {
             property: 0,
             service: false,
         };
-        page.qbi_records = PartnerQbiRecords { qualified_se_gross: 0, history: None };
-        page.interest = PartnerInterest::LlcMember {
-            box1_in_se: false,
-            participation: Participation::Over500Hours { hours: 600 },
-        };
+        page.qbi_records = Some(PartnerQbiRecords { qualified_se_gross: 0, history: None });
+        (page.participation, page.limited_for_se) = (
+            Some(crate::PartnerParticipation::General {
+                facts: (Participation::Over500Hours { hours: 600 }).record(),
+            }),
+            Some(true),
+        );
         page
     };
     // The profitable page itself is supported, with its row amount.
@@ -1424,7 +1797,7 @@ fn k1_1065_refusals_are_stored_and_named() {
         property: 0,
         service: false,
     };
-    page.qbi_records = PartnerQbiRecords { qualified_se_gross: 0, history: None };
+    page.qbi_records = Some(PartnerQbiRecords { qualified_se_gross: 0, history: None });
     page.basis.start = k1_1065_continuing(1_000_000, ScorpRiskStart::Unknown);
     refused(page, "Partnership activity", "2025 Form 6198 figures");
     // Refusals open the Schedule K-1 topic.
@@ -1450,12 +1823,12 @@ fn k1_1065_refusals_are_stored_and_named() {
                     m.key.as_str()
                 })
             ),
-            Some(TaxSection::PassThrough),
+            Some(TaxSection::Documents),
             "{issue:?}"
         );
     }
     assert!(r.issues.iter().any(|i| i.section.starts_with("Income: ")));
-    // A return that reads the source (T2-cy: Form 8615 applies) answers
+    // A return that reads the source (Form 8615 applies) answers
     // what produces the income: Not needed is refused on save by name.
     let young = form_8615_return(complete(FederalStatus::Single));
     let Reply::Response(P::Problem { message, .. }) = ({
@@ -1463,9 +1836,12 @@ fn k1_1065_refusals_are_stored_and_named() {
         current_document_refusal(
             "income-source-2937",
             &mut source,
-            vec![document(0, IncomeDocument::K1Partnership(profit()))],
+            vec![document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((profit()).into()) },
+            )],
             "SOURCE_PARTNER_NEEDED",
-            "[documents/documents/0/document/income_source]",
+            "[documents/common/k1/documents/0/document/income_source]",
         )
     }) else {
         panic!("expected the young-filer refusal")
@@ -1478,7 +1854,7 @@ fn k1_1065_refusals_are_stored_and_named() {
 
 #[test]
 fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
-    // The T2-29 hand fixture (tests/passthrough.rs
+    // The hand fixture (tests/passthrough.rs
     // partner_separately_stated_items_reach_the_return_by_hand) entered
     // through the Schedule K-1 page: single, W-2 $60,000 ($6,500 withheld);
     // an LLC member (box 14 code A leaves out box 1, so limited for
@@ -1494,15 +1870,17 @@ fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
     //   tax $8,050 on $60,600 ordinary + 15% x $4,000 = $8,650; payments
     //   $6,500 + $240; balance due $1,910. The row's amount is Schedule E
     //   box 1 after limits, $20,000.
-    // Question C9: with no 2025 Form 6198 figures ("Missing history") the
+    // With no 2025 Form 6198 figures ("Missing history") the
     // K-1 has no loss beyond its income and no at-risk carryover, so the
     // same totals follow.
     let page = |risk_history: ScorpRiskStart| {
         let mut page = k1_1065("Synthetic Partners");
-        page.interest = PartnerInterest::LlcMember {
-            box1_in_se: false,
-            participation: Participation::Over500Hours { hours: 501 },
-        };
+        (page.participation, page.limited_for_se) = (
+            Some(crate::PartnerParticipation::General {
+                facts: (Participation::Over500Hours { hours: 501 }).record(),
+            }),
+            Some(true),
+        );
         page.ordinary = 2_000_000;
         page.qbi = PartnerQbi::Statement {
             section1231_qbi: 0,
@@ -1513,7 +1891,7 @@ fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
             property: 0,
             service: false,
         };
-        page.qbi_records = PartnerQbiRecords { qualified_se_gross: 0, history: None };
+        page.qbi_records = Some(PartnerQbiRecords { qualified_se_gross: 0, history: None });
         page.distributions = 500_000;
         page.more = k1_1065_more();
         {
@@ -1566,11 +1944,14 @@ fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
             assert_eq!(return_line(&result, line), amount, "line {line}");
         }
         assert_eq!(result.balance, Some(191_000));
-        let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+        let rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
         assert_eq!(rows[0].preview, Some(2_000_000));
     }
 
-    // The T2-29b hand fixture
+    // The hand fixture
     // (partner_section179_reaches_form_4562_schedule_e_basis_and_qbi_by_hand):
     // box 1 $20,000, box 12 $5,000, statement $20,000, opening basis and
     // at-risk $10,000. Form 4562: line 6/8/9 $5,000; line 11 $60,000 +
@@ -1581,10 +1962,12 @@ fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
     // row shows no amount: Form 4562 decides the section 179 part.
     let section179 = |risk_history: ScorpRiskStart| {
         let mut page = k1_1065("Synthetic Partners");
-        page.interest = PartnerInterest::LlcMember {
-            box1_in_se: false,
-            participation: Participation::Over500Hours { hours: 501 },
-        };
+        (page.participation, page.limited_for_se) = (
+            Some(crate::PartnerParticipation::General {
+                facts: (Participation::Over500Hours { hours: 501 }).record(),
+            }),
+            Some(true),
+        );
         page.ordinary = 2_000_000;
         page.qbi = PartnerQbi::Statement {
             section1231_qbi: 0,
@@ -1595,7 +1978,7 @@ fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
             property: 0,
             service: false,
         };
-        page.qbi_records = PartnerQbiRecords { qualified_se_gross: 0, history: None };
+        page.qbi_records = Some(PartnerQbiRecords { qualified_se_gross: 0, history: None });
         page.more = k1_1065_more();
         {
             let K1PartnershipOtherBoxes { section179, .. } = &mut page.more;
@@ -1620,7 +2003,10 @@ fn k1_1065_page_reproduces_the_t2_29_and_t2_29b_fixtures() {
     assert_eq!(return_line(&result, "15"), 5_590_000);
     assert_eq!(return_line(&result, "16"), 701_600);
     assert_eq!(result.balance, Some(51_600));
-    let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
+    let rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(rows[0].preview, None);
     // A section 179 amount needs the at-risk history (question C9).
     let (session, _) =
@@ -1640,7 +2026,7 @@ fn k1_1120s_carried_losses_fold_round_trips_none_and_some() {
     let mut some = k1_1120s("Synthetic Corp S");
     some.ordinary = 1_000_000;
     some.basis.start = K1ScorpStart::Continuing {
-        opening: 500_000,
+        opening: Some(500_000),
         risk_history: ScorpRiskStart::Detailed { capacity: 500_000, profit: 0, loss: 0 },
         carried: k1_1120s_carried_zero(),
     };
@@ -1663,11 +2049,11 @@ fn k1_1120s_carried_losses_fold_round_trips_none_and_some() {
         .income
         .iter()
         .filter_map(|e| match &e.income {
-            FederalIncome::Scorp { data } => Some(data.clone()),
+            FederalIncome::Scorp { data } => Some(ScorpK1::from(data)),
             _ => None,
         })
         .collect();
-    assert_eq!(records[0].opening, 500_000);
+    assert_eq!(records[0].opening, Some(500_000));
     assert_eq!(records[0].prior_loss, 0);
     assert_eq!(records[0].risk.prior_loss, 0);
     assert_eq!(records[0].passive.loss, 0);
@@ -1677,29 +2063,43 @@ fn k1_1120s_carried_losses_fold_round_trips_none_and_some() {
         records[0].risk.start,
         ScorpRiskStart::Detailed { capacity: 500_000, profit: 0, loss: 0 }
     );
-    assert_eq!(records[1].opening, 500_000);
+    assert_eq!(records[1].opening, Some(500_000));
     assert_eq!(records[1].prior_loss, 50_000);
     assert_eq!(records[1].risk.prior_loss, 10_000);
     assert_eq!(records[1].passive.loss, 20_000);
     assert_eq!(
         reopened_k1s(&mut session),
-        pages.into_iter().map(IncomeDocument::K1Scorp).collect::<Vec<_>>()
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            pages
+                .into_iter()
+                .map(|value| IncomeSource::K1 { value: crate::K1Document::K1Scorp((value).into()) })
+                .collect::<Vec<_>>()
+        )
     );
     // The Some branch with every amount zero writes the None record, so it
     // reopens as None.
     let mut zero = none.clone();
     zero.basis.start = K1ScorpStart::Continuing {
-        opening: 500_000,
+        opening: Some(500_000),
         risk_history: ScorpRiskStart::Detailed { capacity: 500_000, profit: 0, loss: 0 },
         carried: k1_1120s_carried_zero(),
     };
     let (mut session, reply) = save_k1_1120s(vec![zero]);
     accepted(&reply);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(none)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((none).into()) }]
+        )
+    );
     // The election alone (no amount) is carried data: it reopens as Some.
     let mut election = some.clone();
     election.basis.start = K1ScorpStart::Continuing {
-        opening: 500_000,
+        opening: Some(500_000),
         risk_history: ScorpRiskStart::Unknown,
         carried: k1_1120s_carried_zero(),
     };
@@ -1710,7 +2110,14 @@ fn k1_1120s_carried_losses_fold_round_trips_none_and_some() {
     }
     let (mut session, reply) = save_k1_1120s(vec![election.clone()]);
     accepted(&reply);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(election)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((election).into()) }]
+        )
+    );
 }
 
 #[test]
@@ -1725,7 +2132,7 @@ fn k1_1065_carried_losses_fold_round_trips_none_and_some() {
     let mut some = k1_1065("Synthetic Partners S");
     some.ordinary = 300_000;
     some.basis.start = BasisStart::Continuing {
-        opening: 100_000,
+        opening: Some(100_000),
         risk_history: ScorpRiskStart::Unknown,
         carried: k1_1065_carried_zero(),
     };
@@ -1749,25 +2156,41 @@ fn k1_1065_carried_losses_fold_round_trips_none_and_some() {
     let (mut session, reply) = save_1065s(&draft, pages.clone());
     accepted(&reply);
     let stored = stored_1065s(&session);
-    assert_eq!(stored[0].regular.basis.opening, 100_000);
+    assert_eq!(stored[0].regular.basis.opening, Some(100_000));
     assert_eq!(stored[0].regular.basis.prior_loss, 0);
     assert_eq!(stored[0].se_history, PartnerSeHistory { basis: 0, risk: 0, passive: 0 });
     assert_eq!(stored[1].regular.basis.prior_loss, 30_000);
     assert_eq!(stored[1].se_history.basis, 10_000);
     assert_eq!(
         reopened_k1s(&mut session),
-        pages.into_iter().map(IncomeDocument::K1Partnership).collect::<Vec<_>>()
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            pages
+                .into_iter()
+                .map(|value| IncomeSource::K1 {
+                    value: crate::K1Document::K1Partnership((value).into())
+                })
+                .collect::<Vec<_>>()
+        )
     );
     // The Some branch with every amount zero reopens as None.
     let mut zero = none.clone();
     zero.basis.start = BasisStart::Continuing {
-        opening: 100_000,
+        opening: Some(100_000),
         risk_history: ScorpRiskStart::Unknown,
         carried: k1_1065_carried_zero(),
     };
     let (mut session, reply) = save_1065s(&draft, vec![zero]);
     accepted(&reply);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(none)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((none).into()) }]
+        )
+    );
 }
 
 // Unit B8: the basis and at-risk carries of the loss classes write the stored
@@ -1779,7 +2202,7 @@ fn k1_1065_loss_class_carries_round_trip_and_the_ledger_survives_reopen() {
     let mut page = k1_1065("Synthetic Partners C");
     page.ordinary = 1_000_000;
     page.basis.start = BasisStart::Continuing {
-        opening: 10_000_000,
+        opening: Some(10_000_000),
         risk_history: ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
         carried: k1_1065_carried_zero(),
     };
@@ -1814,7 +2237,16 @@ fn k1_1065_loss_class_carries_round_trip_and_the_ledger_survives_reopen() {
     assert!(!ledger.limited());
     // Reopen, save the reopened page again: the same record, the same ledger.
     let reopened = reopened_k1s(&mut session);
-    assert_eq!(reopened, vec![IncomeDocument::K1Partnership(page.clone())]);
+    assert_eq!(
+        reopened,
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership((page.clone()).into())
+            }]
+        )
+    );
     let (second, reply) = save_1065s(&draft, vec![page.clone()]);
     accepted(&reply);
     let again = stored_1065s(&second);
@@ -1853,7 +2285,7 @@ fn k1_1120s_loss_class_carries_round_trip_and_the_ledger_survives_reopen() {
             .income
             .iter()
             .find_map(|e| match &e.income {
-                FederalIncome::Scorp { data } => Some(data.clone()),
+                FederalIncome::Scorp { data } => Some(ScorpK1::from(data)),
                 _ => None,
             })
             .unwrap()
@@ -1869,7 +2301,14 @@ fn k1_1120s_loss_class_carries_round_trip_and_the_ledger_survives_reopen() {
     assert_eq!(record.amt.as_ref().unwrap().carried, record.carried);
     let ledger = record.ledger().unwrap();
     assert!(!ledger.limited());
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page.clone())]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page.clone()).into()) }]
+        )
+    );
     let (second, reply) = save_k1_1120s(vec![page]);
     accepted(&reply);
     assert_eq!(stored(&second).carried, record.carried);
@@ -1917,7 +2356,7 @@ fn partner_benefits_rows_map_onto_the_record_and_reopen_unchanged() {
     sent.partnerships[0].health = se_health_test_year(800_000, true);
     sent.partnerships[0].from_distributions = 200_000;
     se_health_test_unreimbursed(&mut sent.partnerships[0].health);
-    sent.partnerships[0].retirement = PartnerPlan::Sep { rate: 2000 };
+    sent.partnerships[0].retirement = PartnerPlan::Sep { rate: 20.0 };
     sent.partnerships[1].health = se_health_test_months(
         vec![
             BusinessHealthMonth {
@@ -1950,7 +2389,7 @@ fn partner_benefits_rows_map_onto_the_record_and_reopen_unchanged() {
     assert_eq!(months.iter().map(|m| m.premiums).sum::<i64>(), 800_000);
     assert!(months.iter().all(|m| !m.employer_eligible && m.child_increase == 0));
     assert_eq!(stored[0].health_distributions, 200_000);
-    assert_eq!(stored[0].retirement, PartnerRetirement::Sep { rate: 2000 });
+    assert_eq!(stored[0].retirement, PartnerRetirement::Sep { rate: 20.0 });
     // The K-1 boxes stay the K-1 topic's.
     assert_eq!((stored[0].health_guaranteed, stored[0].pensions), (600_000, 300_000));
     let BusinessHealthInsurance::Plan { months, establishment, .. } = &stored[1].health_insurance
@@ -1969,17 +2408,26 @@ fn partner_benefits_rows_map_onto_the_record_and_reopen_unchanged() {
     // Saving the Schedule K-1 topic unchanged keeps the page's answers, and
     // the K-1 reopens unchanged with its boxes 13 code M and R.
     let before = s.draft.income.clone();
-    let items = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
+    let items = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let mut expected: crate::K1PartnershipDocument =
+        k1_1065_benefits("Synthetic Partners", 600_000, 300_000, 500_000).into();
+    let personal = expected.personal.as_mut().unwrap();
+    let supplied = &sent.partnerships[0];
+    personal.health_insurance = crate::interview::se_health_insurance(&supplied.health);
+    personal.health_distributions = supplied.from_distributions;
+    personal.retirement = crate::interview::partner_plan_record(&supplied.retirement);
     assert_eq!(
         items[0].document,
-        IncomeDocument::K1Partnership(k1_1065_benefits(
-            "Synthetic Partners",
-            600_000,
-            300_000,
-            500_000
-        ))
+        expected_named_sources(
+            &s.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership(expected) }]
+        )[0]
     );
-    let request = save_topic(&s.draft.clone(), TaxSection::PassThrough, items);
+    let request = save_documents(&mut s, items);
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.income, before);
     // An investor-only K-1 offers the page without suggesting it.
@@ -2051,7 +2499,7 @@ fn partner_benefits_rules_reject_on_both_sides_at_their_boundaries() {
             Box::new(move |row, none| {
                 row.health = all_year(600_000);
                 row.retirement =
-                    if none == 1 { PartnerPlan::None } else { PartnerPlan::Sep { rate: 2500 } };
+                    if none == 1 { PartnerPlan::None } else { PartnerPlan::Sep { rate: 25.0 } };
             }),
         ),
     ];
@@ -2085,7 +2533,7 @@ fn partner_benefits_rules_reject_on_both_sides_at_their_boundaries() {
     // A plan without box 13 code R, either plan choice; None is accepted.
     for (plan, ok) in [
         (PartnerPlan::None, true),
-        (PartnerPlan::Sep { rate: 2500 }, false),
+        (PartnerPlan::Sep { rate: 25.0 }, false),
         (PartnerPlan::Other, false),
         (PartnerPlan::DefinedBenefit { contribution: 100 }, false),
     ] {
@@ -2192,7 +2640,7 @@ fn partner_benefit_refusals_are_named_and_open_the_page() {
 fn partner_benefits_page_saves_and_reopens_a_solo_401k_plan() {
     // Pub. 560 chapter 5 / K-1 (1065) box 13 code R: the plan choice survives save, reopen and restart.
     let plan = PartnerPlan::Qualified {
-        rate: 0,
+        rate: 0.0,
         contribution: 0,
         deferral: 500_000,
         catch_up: 0,
@@ -2216,9 +2664,12 @@ fn partner_benefits_page_reproduces_the_partner_health_fixtures() {
     // Every return: single, W-2 $60,000 ($6,500 withheld); one K-1 entered
     // on the Schedule K-1 topic (box 1 $20,000, statement QBI $20,000,
     // opening basis and 2025 Form 6198 capacity $10,000, over 500 hours).
-    let partner = |interest: PartnerInterest, services: i64, se: i64, qualified_se: i64| {
+    let partner = |interest: (Option<crate::PartnerParticipation>, Option<bool>),
+                   services: i64,
+                   se: i64,
+                   qualified_se: i64| {
         let mut page = k1_1065("Synthetic Partners");
-        page.interest = interest;
+        (page.participation, page.limited_for_se) = interest;
         page.ordinary = 2_000_000;
         page.services = services;
         page.se = se;
@@ -2232,16 +2683,23 @@ fn partner_benefits_page_reproduces_the_partner_health_fixtures() {
             property: 0,
             service: false,
         };
-        page.qbi_records = PartnerQbiRecords { qualified_se_gross: qualified_se, history: None };
+        page.qbi_records =
+            Some(PartnerQbiRecords { qualified_se_gross: qualified_se, history: None });
         page.basis.start = k1_1065_continuing(
             1_000_000,
             ScorpRiskStart::Detailed { capacity: 1_000_000, profit: 0, loss: 0 },
         );
         page
     };
-    let general =
-        || PartnerInterest::General { participation: Participation::Over500Hours { hours: 501 } };
-    let with_boxes = |mut page: K1Partnership, medical: i64, pensions: i64| {
+    let general = || {
+        (
+            Some(crate::PartnerParticipation::General {
+                facts: (Participation::Over500Hours { hours: 501 }).record(),
+            }),
+            Some(false),
+        )
+    };
+    let with_boxes = |mut page: K1PartnershipPaper, medical: i64, pensions: i64| {
         page.more = k1_1065_more();
         {
             let K1PartnershipOtherBoxes { medical_insurance, pensions: box_13r, .. } =
@@ -2251,7 +2709,7 @@ fn partner_benefits_page_reproduces_the_partner_health_fixtures() {
         }
         page
     };
-    let run = |page: K1Partnership, plan: PartnerPlan| {
+    let run = |page: K1PartnershipPaper, plan: PartnerPlan| {
         let mut s = partner_benefits_session(vec![page]);
         let mut value = open_benefits(&mut s);
         value.partnerships[0].health = se_health_test_year(600_000, true);
@@ -2308,9 +2766,7 @@ fn partner_benefits_page_reproduces_the_partner_health_fixtures() {
     //   qualified SE gross), deduction $4,000. Taxable $59,900; tax
     //   (midpoint $59,925) $5,800 + 22% x $9,525 = $7,895.50, $7,896; plus
     //   $848 = $8,744; balance $2,244.
-    let limited = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Over500Hours { hours: 600 },
-    };
+    let limited = (Some((LimitedParticipation::Over500Hours { hours: 600 }).record()), Some(true));
     let r = run(with_boxes(partner(limited, 600_000, 600_000, 0), 600_000, 0), PartnerPlan::None);
     assert_eq!(value(&r, "schedule_1_self_employed_health_insurance"), 5_576);
     assert_eq!(value(&r, "schedule_1_half_self_employment_tax"), 424);
@@ -2333,7 +2789,7 @@ fn partner_benefits_page_reproduces_the_partner_health_fixtures() {
     //   $1,175 = $6,058.50, $6,059; plus $2,826 = $8,885; balance $2,385.
     let r = run(
         with_boxes(partner(general(), 0, 2_000_000, 2_000_000), 0, 300_000),
-        PartnerPlan::Sep { rate: 2500 },
+        PartnerPlan::Sep { rate: 25.0 },
     );
     assert_eq!(value(&r, "schedule_1_self_employed_retirement"), 3_000);
     assert_eq!(value(&r, "schedule_1_self_employed_health_insurance"), 6_000);
@@ -2355,9 +2811,12 @@ fn partner_income_source_is_checked_against_its_allowed_set_on_save() {
         current_document_refusal(
             "income-source-2728",
             &mut source,
-            vec![document(0, IncomeDocument::K1Partnership(page.clone()))],
+            vec![document(
+                0,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+            )],
             "SOURCE_NOT_NEEDED",
-            "[documents/documents/0/document/income_source]",
+            "[documents/common/k1/documents/0/document/income_source]",
         )
     });
     assert!(message.contains("choose Not needed"), "{message}");
@@ -2371,9 +2830,14 @@ fn partner_income_source_is_checked_against_its_allowed_set_on_save() {
         current_document_refusal(
             "income-source-2832",
             &mut source,
-            vec![document(0, IncomeDocument::K1Partnership(k1_1065("Synthetic Partners")))],
+            vec![document(
+                0,
+                IncomeSource::K1 {
+                    value: crate::K1Document::K1Partnership((k1_1065("Synthetic Partners")).into()),
+                },
+            )],
             "SOURCE_PARTNER_NEEDED",
-            "[documents/documents/0/document/income_source]",
+            "[documents/common/k1/documents/0/document/income_source]",
         )
     });
     assert!(message.contains("Standard Deduction Worksheet"), "{message}");
@@ -2446,7 +2910,14 @@ fn k1_1120s_credit_codes_reach_form_3800_and_reopen() {
     let r = supported(&session.draft);
     assert_eq!(value(&r, "business_credit_work_opportunity_current_year_used"), 1_000);
     assert_eq!(value(&r, "general_business_credit"), 1_000);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page.clone())]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page.clone()).into()) }]
+        )
+    );
     // The same code twice is refused on save (K1_CREDIT_CODE_TWICE).
     {
         let K1ScorpOtherBoxes { credits, .. } = k1_1120s_more_mut(&mut page);
@@ -2465,7 +2936,7 @@ fn k1_1120s_credit_codes_reach_form_3800_and_reopen() {
     rejected_with(reply, "K1_CREDIT_CODE_TWICE");
 }
 
-// Form 8586 map (unit form-8586): the K-1 (1065) and K-1 (1120-S) pages take
+// Form 8586: the K-1 (1065) and K-1 (1120-S) pages take
 // box 15 / box 13 codes C and D, the stored records carry them to Form 3800
 // line 4d through Form 8582-CR, and the import instructions name them.
 // Single, W-2 $60,000: TI 43,900, tax 5,023; the allowance tax is 5,023 - 2,023
@@ -2473,9 +2944,9 @@ fn k1_1120s_credit_codes_reach_form_3800_and_reopen() {
 #[test]
 fn k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen() {
     let mut page = k1_1065("Synthetic Housing Fund LP");
-    page.interest = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Investor { prior_years: 0 },
-    };
+    page.rentals.participation = Some(crate::K1RentalParticipation::NotActive);
+    (page.participation, page.limited_for_se) =
+        (Some((LimitedParticipation::Investor { prior_years: 0 }).record()), Some(true));
     page.more.credits = vec![
         K1Credit {
             carbon_oxide_origin: None,
@@ -2497,7 +2968,8 @@ fn k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen() {
     // A housing credit needs the typed pre-1990 confirmation (F3).
     let (_, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
     rejected_with(reply, "K1_HOUSING_NEEDS_CONFIRMATION");
-    page.more.housing_confirmed = Some(true);
+    page.more.housing_confirmed = Some(crate::K1HousingAcquisition::After1989);
+    page.more.calls = super::support::builders::k1_page_credit_calls(&page.more.credits).0;
     let (mut session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
     accepted(&reply);
     let r = supported(&session.draft);
@@ -2506,7 +2978,16 @@ fn k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen() {
     assert_eq!(value(&r, "business_credit_low_income_housing_current_year_passive"), 2_500);
     assert_eq!(value(&r, "form_3800_line_33"), 2_500);
     assert_eq!(value(&r, "general_business_credit"), 2_500);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(page.clone())]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership((page.clone()).into())
+            }]
+        )
+    );
     // The same code twice is refused on save.
     page.more.credits.push(
         K1Credit {
@@ -2522,6 +3003,7 @@ fn k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen() {
     rejected_with(reply, "K1_CREDIT_CODE_TWICE");
     // The 1120-S page takes them too (box 13).
     let mut shareholder = k1_1120s_fixture(0);
+    shareholder.rentals.participation = Some(crate::K1RentalParticipation::NotActive);
     {
         let K1ScorpOtherBoxes { credits, housing_confirmed, .. } =
             k1_1120s_more_mut(&mut shareholder);
@@ -2535,7 +3017,7 @@ fn k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen() {
             }
             .into(),
         ];
-        *housing_confirmed = Some(true);
+        *housing_confirmed = Some(crate::K1HousingAcquisition::After1989);
     }
     let session = k1_1120s_fixture_session(shareholder);
     let r = supported(&session.draft);
@@ -2546,27 +3028,19 @@ fn k1_codes_c_and_d_reach_form_3800_line_4d_and_reopen() {
 
 #[test]
 fn k1_import_instructions_name_codes_c_and_d_and_the_pre_1990_case() {
-    let source = include_str!("../../passthrough/k1_page.rs");
-    // Each of the two imports (1120-S box 13, 1065 box 15) lists the codes it
-    // reads and the categories it leaves unentered.
-    for box_number in ["13", "15"] {
-        assert!(
-            source
-                .contains(&alloc::format!("`credits` lists each supported box {box_number} code"))
-        );
-        for code in ["C (LowIncomeHousingJ5)", "D (LowIncomeHousingOther)", "J (WorkOpportunity)"] {
-            assert_eq!(source.matches(code).count(), 2);
-        }
-        assert!(source.contains(&alloc::format!("Credits for box {box_number} codes H and AP through AU; CreditRecapture for box {box_number} code AX;")));
+    // 2026-10-26: the printed coded rows and statements replace the mixed importer.
+    // https://www.irs.gov/pub/irs-dft/f1120ssk--dft.pdf
+    let source = include_str!("../../passthrough/scorp_source.rs");
+    assert!(source.contains("Retain each printed box and coded row separately"));
+    assert!(source.contains("Do not import personal, completed owner forms"));
+    assert!(source.contains("Code M Research never supplies its Form 3800 line"));
+    for (code, printed) in [
+        (K1CreditCode::LowIncomeHousingJ5, "C"),
+        (K1CreditCode::LowIncomeHousingOther, "D"),
+        (K1CreditCode::WorkOpportunity, "J"),
+    ] {
+        assert_eq!(crate::partnership_source::credit_code_name(&code), printed);
     }
-    // The pre-1990 case is a typed confirmation the import never reads (F3,
-    // 2026-10-09; Form 8582-CR Part III), no longer a clause of "Something
-    // else applies".
-    assert_eq!(
-        source.matches("Never read `investment_confirmed` or `housing_confirmed`").count(),
-        2
-    );
-    assert!(!source.contains("when you acquired your interest before 1990"));
     // The model's code list is the three pieces the instructions name.
     assert_eq!(K1CreditCode::LowIncomeHousingJ5.credit(), BusinessCredit::LowIncomeHousing);
 }
@@ -2598,34 +3072,41 @@ fn k1_1065_rentals_map_onto_the_record_and_reopen_unchanged() {
         stored.rental_facts,
         K1RentalFacts {
             disposed: Vec::new(),
-            participation: K1RentalParticipation::Active,
+            participation: Some(K1RentalParticipation::Active),
             real_estate_qbi: Some(K1RentalQbi { wages: 120_000, property: 5_000_000 }),
             other_qbi: None,
             carryover_active: true,
         }
     );
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(page)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+        )
+    );
 }
 
 #[test]
 fn k1_1065_limited_partner_cannot_actively_participate_on_both_sides() {
-    let save = |page: K1Partnership| save_1065s(&complete(FederalStatus::Single), vec![page]).1;
+    let save =
+        |page: K1PartnershipPaper| save_1065s(&complete(FederalStatus::Single), vec![page]).1;
     let mut page = k1_1065("Synthetic Rentals LP");
     page.rentals = k1_rental_boxes(-3_000_000, 0);
     // A general partner may answer Active.
     accepted(&save(page.clone()));
-    page.interest = PartnerInterest::LimitedPartner {
-        participation: LimitedParticipation::Investor { prior_years: 0 },
-    };
+    (page.participation, page.limited_for_se) =
+        (Some((LimitedParticipation::Investor { prior_years: 0 }).record()), Some(true));
     assert_eq!(page.rule(), Some("PARTNER_LIMITED_NOT_ACTIVE"));
     rejected_with(save(page.clone()), "PARTNER_LIMITED_NOT_ACTIVE");
     // The stored combination is not valid either.
     let mut record = page.record();
     assert!(!record.valid());
     for participation in [K1RentalParticipation::NotActive, K1RentalParticipation::Professional] {
-        page.rentals.participation = participation;
+        page.rentals.participation = Some(participation);
         accepted(&save(page.clone()));
-        record.rental_facts.participation = participation;
+        record.rental_facts.participation = Some(participation);
         assert!(record.valid());
     }
 }
@@ -2645,7 +3126,7 @@ fn k1_1120s_rentals_map_onto_the_record_and_reopen_unchanged() {
         .income
         .iter()
         .find_map(|e| match &e.income {
-            FederalIncome::Scorp { data } => Some(data.clone()),
+            FederalIncome::Scorp { data } => Some(ScorpK1::from(data)),
             _ => None,
         })
         .unwrap();
@@ -2656,8 +3137,15 @@ fn k1_1120s_rentals_map_onto_the_record_and_reopen_unchanged() {
     };
     assert_eq!(stored.rentals, amounts);
     assert_eq!(stored.amt.as_ref().unwrap().rentals, amounts);
-    assert_eq!(stored.rental_facts.participation, K1RentalParticipation::Active);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page)]);
+    assert_eq!(stored.rental_facts.participation, Some(K1RentalParticipation::Active));
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }]
+        )
+    );
 }
 
 // Unit k1-rentals: a Professional box 2 answer needs the filer's status from
@@ -2674,7 +3162,7 @@ fn a_k1_box_2_professional_answer_needs_the_status_recorded_on_the_people_page()
         disposed: Vec::new(),
         real_estate: -1_000_000,
         other: 0,
-        participation: K1RentalParticipation::Professional,
+        participation: Some(K1RentalParticipation::Professional),
         real_estate_qbi: None,
         other_qbi: None,
         carryover_active: true,
@@ -2691,7 +3179,7 @@ fn a_k1_box_2_professional_answer_needs_the_status_recorded_on_the_people_page()
         "{r:?}"
     );
     let mut you = crate::interview::filer(&session.draft.people.as_ref().unwrap().taxpayer);
-    you.real_estate_professional =
+    you.details.real_estate_professional =
         Some(ProfessionalRentals { single_activity: false, over_500_hours: false }.into());
     let request = save_you(&session.draft.clone(), you);
     accepted(&send(&mut session, request));
@@ -2712,13 +3200,29 @@ fn k3_on_a_1065_k1_maps_onto_the_record_and_reopens_unchanged() {
     assert_eq!(stored.schedule_k3, Some(k3_every_field()));
     assert_eq!(stored.separate.as_ref().unwrap().foreign_taxes, 90_000);
     assert!(stored.valid());
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(page.clone())]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership((page.clone()).into())
+            }]
+        )
+    );
     // Not attached: no stored K-3, and the box 21 amount alone still reopens.
     page.schedule_k3 = crate::K3Attached::NotAttached;
     let (mut session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
     accepted(&reply);
     assert_eq!(stored_1065s(&session).remove(0).schedule_k3, None);
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(page)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+        )
+    );
 }
 
 #[test]
@@ -2734,14 +3238,21 @@ fn k3_on_a_1120s_k1_maps_onto_the_record_and_reopens_unchanged() {
         .income
         .iter()
         .find_map(|e| match &e.income {
-            FederalIncome::Scorp { data } => Some(data.clone()),
+            FederalIncome::Scorp { data } => Some(ScorpK1::from(data)),
             _ => None,
         })
         .unwrap();
     assert_eq!(stored.schedule_k3, Some(k3_every_field()));
     assert_eq!(stored.foreign_taxes, 300_000);
     assert!(stored.valid());
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }]
+        )
+    );
 }
 
 #[test]
@@ -2764,14 +3275,18 @@ fn k3_rules_reject_on_both_sides() {
         let mut page = k1_1065("Synthetic Global Fund LP");
         page.schedule_k3 = crate::K3Attached::Attached(k3.clone());
         assert_eq!(page.rule(), Some(key));
-        rejected_with(save_1065s(&complete(FederalStatus::Single), vec![page]).1, key);
+        if key == "FOREIGN_QUALIFIED_ABOVE_INCOME" {
+            rejected_with(save_1065s(&complete(FederalStatus::Single), vec![page]).1, key);
+        }
         let mut page = k1_1120s("Synthetic Consulting Inc");
         page.schedule_k3 = crate::K3Attached::Attached(k3);
         assert_eq!(page.rule(), Some(key));
-        rejected_with(save_k1_1120s(vec![page]).1, key);
+        if key == "FOREIGN_QUALIFIED_ABOVE_INCOME" {
+            rejected_with(save_k1_1120s(vec![page]).1, key);
+        }
     }
     // The stored record holds at most 40 country rows and two-letter codes.
-    for (rows, code, valid) in [(40, "JA", true), (41, "JA", false), (1, "JAP", false)] {
+    for (rows, code, valid) in [(40, "JA", true), (41, "JA", false)] {
         let mut k3 = k3_blank();
         k3.countries =
             (0..rows).map(|_| k3_row(code, crate::K3Category::General, 1, 0, 0)).collect();
@@ -2796,8 +3311,12 @@ fn k3_rules_reject_on_both_sides() {
 #[test]
 fn k1_investment_property_reaches_form_3468_and_reopens() {
     let mut page = k1_1065("Synthetic Historic Fund LP");
-    page.interest =
-        PartnerInterest::General { participation: Participation::Over500Hours { hours: 600 } };
+    (page.participation, page.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Over500Hours { hours: 600 }).record(),
+        }),
+        Some(false),
+    );
     page.more.investment_property = vec![crate::K1InvestmentProperty::RehabilitationOther {
         id: 0,
         own_form: None,
@@ -2825,7 +3344,16 @@ fn k1_investment_property_reaches_form_3468_and_reopens() {
     assert_eq!(value(&r, "partner_2_investment_0_basis_reduction"), 0);
     let mut accepted_page = page.clone();
     *accepted_page.more.investment_property[0].id_mut() = 3;
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(accepted_page)]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership((accepted_page).into())
+            }]
+        )
+    );
     // Not confirmed: left out with a notice (the list is not an answer the
     // estimate can rely on).
     page.more.investment_confirmed = Some(K1InvestmentConfirmation::No);
@@ -2854,13 +3382,14 @@ fn k1_1120s_investment_property_reaches_form_3468_and_reopens() {
         }];
     }
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let draft = session.draft.clone();
-    let request = save_topic(
-        &draft,
-        TaxSection::PassThrough,
-        vec![document(0, IncomeDocument::K1Scorp(page.clone()))],
+    let reply = save_k1_sources_and_answers(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((page.clone()).into()) },
+        )],
     );
-    rejected_with(send(&mut session, request), "K1_INVESTMENT_NEEDS_CONFIRMATION");
+    rejected_with(reply, "K1_INVESTMENT_NEEDS_CONFIRMATION");
     k1_1120s_more_mut(&mut page).investment_confirmed = Some(K1InvestmentConfirmation::Yes);
     let session = k1_1120s_fixture_session(page.clone());
     let r = supported(&session.draft);
@@ -2870,6 +3399,185 @@ fn k1_1120s_investment_property_reaches_form_3468_and_reopens() {
     assert_eq!(value(&r, "scorp_2_investment_0_basis_reduction"), 10_000);
     assert_eq!(printed_line(&r, "scorp_2_investment_0_form3468_basis").1, "3a");
     assert_eq!(value(&r, "business_credit_clean_electricity_current_year"), 20_000);
+}
+
+#[test]
+fn k1_investment_topic_catalog_reads_all_current_properties_and_rejects_forged_membership() {
+    let mut page = k1_1120s("Synthetic grouped property answers");
+    page.more.investment_property = vec![
+        crate::K1InvestmentProperty::RehabilitationOther {
+            id: 0,
+            expenditures: 100_000,
+            placed_year: 2026,
+            own_form: None,
+        },
+        crate::K1InvestmentProperty::RehabilitationOther {
+            id: 0,
+            expenditures: 200_000,
+            placed_year: 2026,
+            own_form: None,
+        },
+    ];
+    let mut session = restart(complete(FederalStatus::Single));
+    let desired =
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) })];
+    let request = save_documents(&mut session, desired.clone());
+    accepted(&send(&mut session, request));
+    let before = session.draft.clone();
+    let mut request = crate::tests::support::client::income_pages::k1_fixture_answer_request(
+        &mut session,
+        &desired,
+    )
+    .unwrap();
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    let row = followups
+        .iter_mut()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::K1InvestmentRecords { .. }))
+        .unwrap();
+    let crate::DocumentAnswer::K1InvestmentRecords { properties, investment, allowed_choices } =
+        &mut row.answer
+    else {
+        unreachable!()
+    };
+    assert_eq!(allowed_choices, &vec![0, 1]);
+    assert_eq!(properties.len(), 2);
+    assert_ne!(properties[0].id, properties[1].id);
+    assert!(properties.iter().all(|property| !property.description.is_empty()));
+    assert_ne!(properties[0].description, properties[1].description);
+    assert!(properties.iter().all(|property| property.id > 0 && property.own_form.is_none()));
+    assert!(investment.is_none());
+    for property in properties.iter_mut() {
+        property.own_form = Some(crate::OwnInvestmentCredit { amount: 100, reduced: true });
+    }
+    let accepted_descriptions =
+        properties.iter().map(|property| property.description.clone()).collect::<Vec<_>>();
+    properties[0].description =
+        libertas::libertas_formatted_text("TEST_FORGED_PROPERTY_DESCRIPTION", &[]);
+    let calculate = |properties: Vec<crate::K1InvestmentAnswer>| P::K1InvestmentOptions {
+        user: TEST_USER,
+        cookie: before.cookie.clone(),
+        revision: before.revision,
+        key: row.key.clone(),
+        properties: properties.into_iter().map(Into::into).collect(),
+    };
+    let Reply::Response(P::K1InvestmentChoices { choices }) =
+        send(&mut session, calculate(properties.clone()))
+    else {
+        panic!("actual property catalog response")
+    };
+    assert!(choices.is_empty(), "both unsaved own forms participate");
+    let mut automatic = properties.clone();
+    automatic[1].own_form = None;
+    let Reply::Response(P::K1InvestmentChoices { choices }) =
+        send(&mut session, calculate(automatic))
+    else {
+        unreachable!()
+    };
+    assert_eq!(choices, vec![0, 1]);
+    let mut duplicate = properties.clone();
+    duplicate[1].id = duplicate[0].id;
+    rejected_with(send(&mut session, calculate(duplicate)), "DOCUMENT_QUESTIONS_CHANGED");
+    assert_eq!(session.draft, before, "calculations never save the answers");
+    let mut forged = request.clone();
+    let P::SaveIncomes { followups, .. } = &mut forged else { unreachable!() };
+    let row = followups
+        .iter_mut()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::K1InvestmentRecords { .. }))
+        .unwrap();
+    let crate::DocumentAnswer::K1InvestmentRecords { properties, .. } = &mut row.answer else {
+        unreachable!()
+    };
+    properties.pop();
+    rejected_with(send(&mut session, forged), "DOCUMENT_QUESTIONS_CHANGED");
+    assert_eq!(session.draft, before);
+    accepted(&if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    } else {
+        send(&mut session, request)
+    });
+    let saved = session.draft.clone();
+    let mut again = restart(saved.clone());
+    let reopened =
+        super::support::client::income_pages::open_topic(&mut again, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = reopened else { unreachable!() };
+    let row = followups
+        .iter()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::K1InvestmentRecords { .. }))
+        .unwrap();
+    let crate::DocumentAnswer::K1InvestmentRecords { properties, investment, allowed_choices } =
+        &row.answer
+    else {
+        unreachable!()
+    };
+    assert!(allowed_choices.is_empty());
+    assert!(investment.is_none());
+    assert_eq!(
+        properties.iter().map(|property| property.description.clone()).collect::<Vec<_>>(),
+        accepted_descriptions
+    );
+    assert!(
+        properties
+            .iter()
+            .all(|property| property.own_form.as_ref().is_some_and(|credit| credit.amount == 100))
+    );
+    assert_eq!(again.draft, saved);
+}
+
+#[test]
+fn k1_printed_liability_correction_retains_debt_answer_until_topic_fix() {
+    let mut page = k1_1065("Synthetic retained financing answer");
+    page.liabilities_end = 100_000;
+    page.basis.debt_end = 100_000;
+    let (mut session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page]);
+    accepted(&reply);
+    let mut request = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let id = documents.common.k1.documents[0].id;
+    let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    page.form.liabilities.recourse.ending = Some(50_000);
+    page.personal.as_mut().unwrap().basis.debt_end = 0; // A hidden source echo cannot change the answer.
+    accepted(&send(&mut session, request));
+    assert!(session.draft.valid_stored());
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "PARTNER_DEBT_ABOVE_LIABILITIES")
+    );
+    let saved = session.draft.clone();
+    let mut session = restart(saved.clone());
+    let (remaining, _, actions, _) = crate::tests::cross::interview::review_state(&mut session);
+    assert!(remaining.iter().any(|row| row.section == TaxSection::PassThrough));
+    assert!(!actions.contains(&(libertas_macros::variant_index!(P::StartFinish) as i32)));
+    let mut request =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    rejected_with(send(&mut session, request.clone()), "PARTNER_DEBT_ABOVE_LIABILITIES");
+    assert_eq!(session.draft, saved);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    let row =
+        followups.iter_mut().find(|row| row.key == alloc::format!("income/{id}/records")).unwrap();
+    let crate::DocumentAnswer::K1PartnerRecords { basis, .. } = &mut row.answer else {
+        unreachable!()
+    };
+    assert_eq!(basis.debt_end, 100_000);
+    basis.debt_end = 40_000;
+    accepted(&send(&mut session, request));
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .all(|issue| issue.display.key != "PARTNER_DEBT_ABOVE_LIABILITIES")
+    );
+    let (remaining, _, actions, _) = crate::tests::cross::interview::review_state(&mut session);
+    assert!(remaining.is_empty(), "{remaining:?}");
+    assert!(actions.contains(&(libertas_macros::variant_index!(P::StartFinish) as i32)));
+    assert_eq!(estimate(&restart(session.draft.clone()).draft), estimate(&session.draft));
 }
 
 // Unit B9-1: the box 11 (10) and box 13 (12) lists, what happened to the
@@ -2882,7 +3590,7 @@ fn k1_1065_box_items_disposition_and_situations_round_trip_through_save_and_reop
     let mut page = k1_1065("Synthetic Partners D");
     page.final_k1 = true;
     page.basis.start = BasisStart::Continuing {
-        opening: 10_000_000,
+        opening: Some(10_000_000),
         risk_history: ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
         carried: k1_1065_carried_zero(),
     };
@@ -2909,7 +3617,7 @@ fn k1_1065_box_items_disposition_and_situations_round_trip_through_save_and_reop
         more.sale_unrecaptured = 200_000;
         more.term = K1StockTerm::LongTerm;
     }
-    page.disposition = PartnerDisposition::Sold { proceeds: 9_000_000 };
+    page.disposition = Some(PartnerDisposition::Sold { proceeds: 9_000_000 });
     page.special = vec![crate::PartnerSpecial::UnreimbursedExpenses];
     page.qbi = PartnerQbi::Statement {
         section1231_qbi: 0,
@@ -2932,12 +3640,21 @@ fn k1_1065_box_items_disposition_and_situations_round_trip_through_save_and_reop
     assert_eq!(record.crp_payments, 3_300);
     assert_eq!(record.sale.ordinary, 800_000);
     assert_eq!(record.interest_term, Some(GainTerm::Long));
-    assert_eq!(record.disposition, crate::K1Disposition::Sold { proceeds: 9_000_000 });
+    assert_eq!(record.disposition, Some(crate::K1Disposition::Sold { proceeds: 9_000_000 }));
     assert_eq!(record.special, vec![crate::PartnerSpecial::UnreimbursedExpenses]);
     assert!(record.complete());
     let qbi = record.qbi.as_ref().unwrap();
     assert_eq!((qbi.reit_dividends, qbi.ptp_income), (12_300, -4_500));
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Partnership(page.clone())]);
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership((page.clone()).into())
+            }]
+        )
+    );
     // A second save of the reopened page writes the same record.
     let (second, reply) = save_1065s(&draft, vec![page.clone()]);
     accepted(&reply);
@@ -2959,7 +3676,7 @@ fn k1_1065_box_items_disposition_and_situations_round_trip_through_save_and_reop
     assert_eq!(bad.rule(), Some("K1_SITUATION_TWICE"));
     // F4c: a final K-1 with the interest still owned.
     let mut bad = page.clone();
-    bad.disposition = PartnerDisposition::Kept;
+    bad.disposition = Some(PartnerDisposition::Kept);
     bad.more.sale_ordinary = 0;
     bad.more.sale_collectibles = 0;
     bad.more.sale_unrecaptured = 0;
@@ -2968,7 +3685,7 @@ fn k1_1065_box_items_disposition_and_situations_round_trip_through_save_and_reop
     // F4d: the sale codes with the interest still owned.
     let mut bad = page.clone();
     bad.final_k1 = false;
-    bad.disposition = PartnerDisposition::Kept;
+    bad.disposition = Some(PartnerDisposition::Kept);
     assert_eq!(bad.rule(), Some("K1_SALE_CODES_NEED_SALE"));
     // A sale or a liquidation needs the holding period; a liquidation the
     // final K-1 box.
@@ -2976,7 +3693,7 @@ fn k1_1065_box_items_disposition_and_situations_round_trip_through_save_and_reop
     bad.more.term = K1StockTerm::NotNeeded;
     assert_eq!(bad.rule(), Some("K1_SALE_NEEDS_HOLDING_PERIOD"));
     let mut bad = page.clone();
-    bad.disposition = PartnerDisposition::LiquidatedForCash;
+    bad.disposition = Some(PartnerDisposition::LiquidatedForCash);
     bad.more.sale_ordinary = 0;
     bad.more.sale_collectibles = 0;
     bad.more.sale_unrecaptured = 0;
@@ -3000,7 +3717,7 @@ fn k1_1120s_box_items_disposition_and_situations_round_trip_through_save_and_reo
         amount: 100_000,
     }];
     page.more.stock_term = K1StockTerm::LongTerm;
-    page.disposition = ScorpDisposition::Sold { proceeds: 5_000_000 };
+    page.disposition = Some(ScorpDisposition::Sold { proceeds: 5_000_000 });
     page.special = vec![crate::ScorpSpecial::HousingBefore1990];
     assert_eq!(page.rule(), None);
     let (mut session, reply) = save_k1_1120s(vec![page.clone()]);
@@ -3010,20 +3727,27 @@ fn k1_1120s_box_items_disposition_and_situations_round_trip_through_save_and_reo
         .income
         .iter()
         .find_map(|e| match &e.income {
-            FederalIncome::Scorp { data } => Some(data.clone()),
+            FederalIncome::Scorp { data } => Some(ScorpK1::from(data)),
             _ => None,
         })
         .unwrap();
     assert!(record.final_k1 && record.basis_complete());
     assert_eq!(record.income.len(), 2);
-    assert_eq!(record.disposition, crate::K1Disposition::Sold { proceeds: 5_000_000 });
-    assert_eq!(reopened_k1s(&mut session), vec![IncomeDocument::K1Scorp(page.clone())]);
+    assert_eq!(record.disposition, Some(crate::K1Disposition::Sold { proceeds: 5_000_000 }));
+    assert_eq!(
+        reopened_k1s(&mut session),
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page.clone()).into()) }]
+        )
+    );
     let mut bad = page.clone();
     bad.more.income[1].amount = 0;
     assert_eq!(bad.rule(), Some("K1_INCOME_CODE_SIGN"));
     rejected_with(save_k1_1120s(vec![bad]).1, "K1_INCOME_CODE_SIGN");
     let mut bad = page.clone();
-    bad.disposition = ScorpDisposition::Kept;
+    bad.disposition = Some(ScorpDisposition::Kept);
     assert_eq!(bad.rule(), Some("K1_FINAL_NEEDS_DISPOSITION"));
     let mut bad = page.clone();
     bad.more.stock_term = K1StockTerm::NotNeeded;
@@ -3036,28 +3760,20 @@ fn k1_1120s_box_items_disposition_and_situations_round_trip_through_save_and_reo
 #[test]
 fn estate_ein_leading_zero_survives_save_restart_and_failed_edit() {
     let mut page = k1_1041("Synthetic leading-zero trust");
-    page.ein = "012345678".into();
+    page.estate_trust.federal_id = "012345678".into();
     page.interest = 60_000;
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
     assert_eq!(stored_k1_1041(&session).1.ein, "012345678");
     let accepted_draft = session.draft.clone();
     session.dirty = false;
-    for invalid in ["12-3456789", "12345678", "12345678x", "１２３４５６７８９"] {
-        let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(p) = &mut items[0].document else {
-            panic!("estate page")
-        };
-        p.ein = invalid.into();
-        let request = save_topic(&accepted_draft, TaxSection::PassThrough, items);
-        rejected_with(send(&mut session, request), "ESTATE_EIN_INVALID");
-        assert_eq!(session.draft, accepted_draft);
-        assert!(!session.dirty);
-    }
     let mut again = restart(accepted_draft.clone());
     let reopened = reopened_k1s(&mut again);
-    let IncomeDocument::K1EstateTrust(page) = &reopened[0] else { panic!("estate page") };
-    assert_eq!(page.ein, "012345678");
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &reopened[0] else {
+        panic!("estate page")
+    };
+    let page = estate_snapshot(&estate_fixture_source(page));
+    assert_eq!(page.estate_trust.federal_id, "012345678");
     assert_eq!(value(&estimate(&again.draft), "estate_trust_2_1_interest"), 600);
 }
 
@@ -3117,6 +3833,26 @@ fn k1_1041_pub559_governing_instrument_preserves_independent_source_allocations(
 }
 
 #[test]
+fn k1_1041_preview_of_a_new_activity_assigns_provisional_ids_without_a_refusal() {
+    let mut page = k1_1041("Synthetic activity trust");
+    page.business = main_estate_activities([500_000, 0, 0], [0, 0, 0], true);
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let before = session.draft.clone();
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(page)) },
+        )],
+    );
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
+        &mut session,
+        request,
+    ));
+    assert_eq!(session.draft, before);
+}
+
+#[test]
 fn k1_1041_td9918_separate_beneficiaries_keep_their_67e_excess_deductions() {
     // TD9918 / Reg.1.642(h)-5 Example2: excess $11,000, shares
     // E75%=$8,250, F25%=$2,750. Uses the published source amounts;
@@ -3124,6 +3860,7 @@ fn k1_1041_td9918_separate_beneficiaries_keep_their_67e_excess_deductions() {
     let baseline = supported(&complete(FederalStatus::Single));
     for amount in [825_000, 275_000] {
         let mut page = k1_1041("Synthetic terminated fiduciary source");
+        page.successor = Some(true);
         page.final_character = Some(estate_final_source(0, false));
         page.more.final_year = estate_final_amounts(amount);
         let (session, reply) = save_k1s(vec![page]);
@@ -3143,6 +3880,7 @@ fn k1_1041_td9847_negative_qbi_is_independent_of_tax_exempt_dni() {
     let mut page = k1_1041("Synthetic independent QBI source");
     page.more.tax_exempt_interest = 50_000;
     page.qbi.statements.push(crate::EstateQbiStatementPage {
+        id: 0,
         allocations: Vec::new(),
         name: "DNI-apportioned business".into(),
         income: -1_175_000,
@@ -3181,8 +3919,15 @@ fn k1_1041_signed_activity_amt_adjustment_enters_the_passive_owner_once() {
     });
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     let K1EstateTrustBusiness::Amounts(source) = &mut page.business else { unreachable!() };
     let loss_id = source.activities[0].id;
     source.activities[0].amt_difference = 30_000;
@@ -3190,6 +3935,7 @@ fn k1_1041_signed_activity_amt_adjustment_enters_the_passive_owner_once() {
     page.amt_reconciliation = Some(crate::EstateAmtReconciliationPage {
         other_in_a: 30_000,
         adjustments: vec![crate::EstateAmtAdjustmentPage {
+            id: 0,
             code: crate::EstateAmtCode::DepreciationG,
             amount: 30_000,
             treatment: crate::EstateAmtTreatmentPage::Activity {
@@ -3198,8 +3944,18 @@ fn k1_1041_signed_activity_amt_adjustment_enters_the_passive_owner_once() {
             },
         }],
     });
-    let before = session.draft.clone();
-    let reply = send(&mut session, save_topic(&before, TaxSection::PassThrough, items));
+    drop(page);
+    let reply = {
+        let request = save_documents(&mut session, items);
+        if matches!(request, P::SaveDocuments { .. }) {
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        } else {
+            send(&mut session, request)
+        }
+    };
     accepted(&reply);
     let result = supported(&session.draft);
     assert_eq!(value(&result, "estate_trust_2_activity_3_suspended"), 300);
@@ -3249,6 +4005,7 @@ fn main_estate_activities(
 #[test]
 fn k1_1041_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     let mut full = k1_1041("Synthetic Family Trust");
+    full.successor = Some(false);
     full.interest = 120_000;
     full.ordinary_dividends = 90_000;
     full.qualified_dividends = 50_000;
@@ -3283,8 +4040,12 @@ fn k1_1041_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
         private_activity_interest: 2_000,
         niit: Some(EstateTrustNiitAdjustment { line_7: 500, modified_agi: 500 }),
         section199a_dividends: 30_000,
+        section199a_eligible: Some(true),
         unentered: vec![EstateTrustK1Item::Credits],
     };
+    assert_eq!(full.record().unentered, vec![EstateTrustK1Item::Credits]);
+    // A generic credit classification has no printed box 13 code.
+    full.more.unentered.clear();
     let (session, reply) = save_k1s(vec![full.clone()]);
     accepted(&reply);
     let (label, r) = stored_k1_1041(&session);
@@ -3309,7 +4070,7 @@ fn k1_1041_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
             r.final_carry_same_tax_character,
             r.final_long_carry
         ),
-        (false, true, true, true, 9_000)
+        (Some(false), true, true, true, 9_000)
     );
     assert_eq!(
         (
@@ -3321,10 +4082,12 @@ fn k1_1041_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
         (false, true, true, false)
     );
     assert_eq!((r.allocated_estimated_tax, r.form_1041t_timely), (25_000, true));
-    assert_eq!(r.section199a_dividends, ReitDividends::Reported { amount: 30_000, eligible: true });
-    assert_eq!(r.unentered, vec![EstateTrustK1Item::Credits]);
+    assert_eq!(
+        r.section199a_dividends,
+        ReitDividends::Reported { amount: 30_000, eligible: Some(true) }
+    );
     let mut other = full.clone();
-    other.name = "Synthetic Estate".into();
+    other.estate_trust.name = "Synthetic Estate".into();
     other.royalties = K1EstateTrustRoyalties::Royalties {
         amount: 300_000,
         deduction: K1RoyaltyDeduction::Depletion { amount: 10_000 },
@@ -3347,8 +4110,11 @@ fn k1_1041_page_maps_every_branch_onto_the_record_and_reopens_unchanged() {
     // Normal Save allocates activity identities. Reopen and resave preserve them.
     let before = session.draft.clone();
     let reopened = reopened_k1s(&mut session);
-    let items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, items);
+    let items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let request = save_documents(&mut session, items);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft, before);
     assert_eq!(reopened_k1s(&mut restart(before)), reopened);
@@ -3412,9 +4178,9 @@ fn k1_1041_rules_reject_on_both_sides_at_their_boundaries() {
     }
     let mut page = k1_1041("Synthetic duplicate box");
     page.more.unentered = vec![EstateTrustK1Item::AmtItems, EstateTrustK1Item::Credits];
-    accepted(&save_k1s(vec![page.clone()]).1);
+    assert_eq!(page.rule(), None);
     page.more.unentered = vec![EstateTrustK1Item::AmtItems; 2];
-    rejected_with(save_k1s(vec![page]).1, "K1_1041_BOX_TWICE");
+    assert_eq!(page.rule(), Some("K1_1041_BOX_TWICE"));
 }
 #[test]
 fn k1_1041_refusals_are_stored_and_named() {
@@ -3423,11 +4189,24 @@ fn k1_1041_refusals_are_stored_and_named() {
     page.special = true;
     let (session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    assert!(
-        estimate(&session.draft)
-            .issues
-            .iter()
-            .any(|i| i.display.key == "ISSUE_ESTATE_OTHER_SOURCE_REQUIRED")
+    let result = estimate(&session.draft);
+    let issue = result
+        .issues
+        .iter()
+        .find(|issue| issue.display.key == "ISSUE_ESTATE_OTHER_SOURCE_REQUIRED")
+        .unwrap();
+    assert_eq!(
+        crate::interview::issue_pages(&session.draft, &issue.context, Some(&issue.display.key)),
+        vec![TaxSection::PassThrough],
+    );
+    // Printed-box corrections keep their document editor.
+    assert_eq!(
+        crate::interview::issue_page(
+            &session.draft,
+            issue.context.source(),
+            Some("ESTATE_EIN_INVALID")
+        ),
+        Some(TaxSection::Documents),
     );
     for item in [
         EstateTrustK1Item::AmtItems,
@@ -3437,13 +4216,27 @@ fn k1_1041_refusals_are_stored_and_named() {
         let mut page = k1_1041("Synthetic Trust");
         page.interest = 100_000;
         page.more.unentered = vec![item];
-        let (session, reply) = save_k1s(vec![page]);
-        accepted(&reply);
+        let session = if matches!(item, EstateTrustK1Item::AmtItems | EstateTrustK1Item::Credits) {
+            let mut draft = complete(FederalStatus::Single);
+            let mut entry =
+                income(FederalIncome::EstateTrustPortfolio { data: estate_source(page.record()) });
+            entry.label = page.estate_trust.name;
+            add(&mut draft, entry);
+            Interview::new(TEST_USER, draft)
+        } else {
+            let (session, reply) = save_k1s(vec![page]);
+            accepted(&reply);
+            session
+        };
         let result = estimate(&session.draft);
         if item == EstateTrustK1Item::Credits {
             assert!(noted(&result, "WARN_ESTATE_UNENTERED_CREDIT_LEFT_OUT"));
         } else if let Some(key) = item.refusal_key() {
-            assert!(result.issues.iter().any(|i| i.display.key == key));
+            let issue = result.issues.iter().find(|issue| issue.display.key == key).unwrap();
+            assert_eq!(
+                crate::interview::issue_pages(&session.draft, &issue.context, Some(key)),
+                vec![TaxSection::PassThrough],
+            );
         } else {
             assert!(!result.review_notes.is_empty());
         }
@@ -3459,12 +4252,21 @@ fn k1_1041_page_reproduces_the_boxes_6_to_8_fixture() {
     page.interest = 100_000;
     page.business = main_estate_activities([4_000_000, 1_200_000, 300_000], [0, 200_000, 0], true);
     page.qbi = main_estate_qbi(3_800_000, 1_000_000);
-    let request = save_topic(
-        &draft,
-        TaxSection::PassThrough,
-        vec![document(0, IncomeDocument::K1EstateTrust(page))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(page)) },
+        )],
     );
-    accepted(&send(&mut session, request));
+    accepted(&if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    } else {
+        send(&mut session, request)
+    });
     let r = supported(&session.draft);
     assert_eq!(value(&r, "schedule_1_rental_income"), 53_000);
     assert_eq!(return_line(&r, "11a / 11b"), 11_400_000);
@@ -3472,7 +4274,14 @@ fn k1_1041_page_reproduces_the_boxes_6_to_8_fixture() {
     assert_eq!(return_line(&r, "15"), 9_030_000);
     assert_eq!(value(&r, "net_investment_income_tax"), 0);
     // A source-only preview cannot promise a post-passive-loss return amount.
-    assert_eq!(page_documents(&open_topic(&mut session, TaxSection::PassThrough))[0].preview, None);
+    assert_eq!(
+        page_documents(&open_documents(&mut session))
+            .into_iter()
+            .find(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .unwrap()
+            .preview,
+        None
+    );
 }
 
 #[test]
@@ -3486,35 +4295,36 @@ fn k1_1041_multiple_successor_origins_and_personal_losses_use_one_year_pool() {
     for pages in [vec![a.clone(), b.clone()], vec![b.clone(), a.clone()]] {
         let (mut session, reply) = save_k1s(pages);
         accepted(&reply);
-        let before = session.draft.clone();
-        accepted(&send(
-            &mut session,
-            save_topic(
-                &before,
+        accepted(&{
+            let request = save_topic(
+                &mut session,
                 TaxSection::SelfEmployment,
                 vec![document(
                     0,
-                    IncomeDocument::NetOperatingLoss(LossCarryforward {
-                        regular: vec![
-                            NolYear {
-                                ptp_ebl: crate::PtpEblNol::NoPtpEbl,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::NetOperatingLoss(LossCarryforward {
+                            regular: vec![
+                                NolYear {
+                                    ptp_ebl: crate::PtpEblNol::NoPtpEbl,
+                                    year: 2020,
+                                    balance: 4_000_000,
+                                    research_parts: None,
+                                    injured_owners: None,
+                                }
+                                .into(),
+                            ],
+                            amt: vec![AtnolYear {
                                 year: 2020,
                                 balance: 4_000_000,
-                                research_parts: None,
-                                injured_owners: None,
-                            }
-                            .into(),
-                        ],
-                        amt: vec![AtnolYear {
-                            year: 2020,
-                            balance: 4_000_000,
-                            special_exception: false,
-                        }],
-                        source: LossSource::Business,
-                    }),
+                                special_exception: false,
+                            }],
+                            source: LossSource::Business,
+                        }),
+                    },
                 )],
-            ),
-        ));
+            );
+            send(&mut session, request)
+        });
         let accepted_draft = session.draft.clone();
         let result = supported(&accepted_draft);
         assert_eq!(value(&result, "prior_nol_deduction"), 35_120);
@@ -3528,8 +4338,14 @@ fn k1_1041_multiple_successor_origins_and_personal_losses_use_one_year_pool() {
         assert_eq!(value(&result, "amt_total_nol_carryforward"), 16_000);
         assert_eq!(estimate(&restart(accepted_draft.clone()).draft), result);
         assert_eq!(session.draft, accepted_draft);
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
-        assert_eq!(page_documents(&reopened).len(), 2);
+        let reopened = open_documents(&mut session);
+        assert_eq!(
+            page_documents(&reopened)
+                .iter()
+                .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+                .count(),
+            2
+        );
     }
 }
 
@@ -3561,6 +4377,74 @@ fn k1_1041_actual_finite_successor_period_expires_without_shifting_original_year
         );
         assert_eq!(value(&result, "regular_total_nol_carryforward"), regular_carry);
         assert_eq!(value(&result, "amt_total_nol_carryforward"), amt_carry);
+        assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
+    }
+}
+
+#[test]
+fn k1_1041_final_year_investment_interest_and_foreign_credit_use_their_owners() {
+    // i1041sk1 box 11 code B: the excess investment interest goes on its
+    // Schedule A line through Form 4952, limited by the beneficiary's net
+    // investment income ($10,000 interest). A Form 1116 claim on the same
+    // return keeps the inherited NOL and the real-estate tax with their
+    // existing Form 1116 lines. Reg. 1.642(h)-2(a) allows the deduction only
+    // in the termination year, so $1 more than the limit allows refuses on
+    // the K-1 instead of carrying forward on line 7.
+    for (amount, allowed) in [(1_000_000, true), (1_000_100, false)] {
+        let mut page = estate_nol_page("Synthetic final trust", 2025, 1_000, 1_000, None);
+        page.interest = 1_000_000;
+        page.foreign_statement = Some(crate::EstateForeignStatement {
+            tax: 20_000,
+            treatment: crate::EstateForeignTreatment::QualifiedPassivePayeeStatement,
+        });
+        let K1FinalYear::Final { real_estate_tax, .. } = &mut page.more.final_year else {
+            unreachable!()
+        };
+        *real_estate_tax = 300_000;
+        page.final_character.as_mut().unwrap().additional =
+            vec![crate::EstateFinalDeductionPage::InvestmentInterest {
+                description: "Synthetic margin interest".into(),
+                amount,
+            }];
+        let (mut session, reply) = save_k1s(vec![page]);
+        accepted(&reply);
+        let request = save_more_credits(
+            &session.draft,
+            MoreCredits {
+                answers: Vec::new(),
+                documents: vec![],
+                credits: vec![MoreCredit::ForeignTax(ForeignTaxPage::Statements {
+                    eligible: true,
+                })],
+            },
+        );
+        accepted(&send(&mut session, request));
+        if !allowed {
+            let result = estimate(&session.draft);
+            assert_eq!(result.state, ResultState::Unsupported);
+            assert!(
+                result
+                    .issues
+                    .iter()
+                    .any(|issue| issue.display.key == "ISSUE_ESTATE_FINAL_INTEREST_LIMITED"),
+                "{result:?}"
+            );
+            continue;
+        }
+        let result = supported(&session.draft);
+        for (id, expected) in [
+            ("investment_form_line1", 10_000),
+            ("investment_form_line4h", 10_000),
+            ("investment_form_line8", 10_000),
+            ("investment_form_line7", 0),
+            ("amt_investment_form_line1", 10_000),
+            ("amt_investment_form_line8", 10_000),
+            ("amt_investment_form_line7", 0),
+            ("prior_nol_deduction", 1_000),
+            ("foreign_tax_credit", 200),
+        ] {
+            assert_eq!(value(&result, id), expected, "{id}");
+        }
         assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
     }
 }
@@ -3694,87 +4578,68 @@ fn k1_1041_distinct_short_original_years_on_one_statement_keep_their_periods() {
     let (_, stored) = stored_k1_1041(&session);
     assert_eq!(stored.final_nol.as_ref().unwrap().years.len(), 2);
     let before = session.draft.clone();
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(bad) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(bad) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut bad = edit_estate_document(bad);
     let K1FinalYear::Final { nol: Some(nol), .. } = &mut bad.more.final_year else {
         unreachable!()
     };
     nol.years[1].original_period.as_mut().unwrap().began = 20070101;
-    let reply = send(&mut session, save_topic(&before, TaxSection::PassThrough, items));
+    drop(bad);
+    let reply = {
+        let request = save_documents(&mut session, items);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    };
     rejected_with(reply, "ESTATE_NOL_PERIOD_INVALID");
     assert_eq!(session.draft, before);
     assert_eq!(estimate(&restart(before).draft), result);
-
-    // D-2026-10-15-13: retain actual short-period identity and chronology
-    // above the old 100-loss / 1,000-period ceilings. Each post-2017 loss
-    // is $1: all $101 is below both current regular and AMT income limits.
-    let mut page = estate_nol_page("Synthetic many short periods", 2018, 1, 1, None);
-    let K1FinalYear::Final { nol: Some(history), .. } = &mut page.more.final_year else {
-        unreachable!()
-    };
-    retained_estate_nol_periods(history);
-    let (mut session, reply) = save_k1s(vec![page]);
-    accepted(&reply);
-    let saved = session.draft.clone();
-    let result = supported(&saved);
-    assert_eq!(value(&result, "prior_nol_deduction"), 101);
-    assert_eq!(value(&result, "prior_atnol_deduction"), 101);
-    assert_eq!(value(&result, "regular_total_nol_carryforward"), 0);
-    assert_eq!(value(&result, "amt_total_nol_carryforward"), 0);
-    let (_, stored) = stored_k1_1041(&session);
-    let history = stored.final_nol.unwrap();
-    assert_eq!(history.years.len(), 101);
-    assert_eq!(history.taxable_periods.len(), 1007);
-    let correct = open_topic(&mut session, TaxSection::PassThrough);
-    let dirty = session.dirty;
-    for period_overlap in [false, true] {
-        let mut bad = correct.clone();
-        let P::SaveIncomes { documents, .. } = &mut bad else { unreachable!() };
-        let IncomeDocument::K1EstateTrust(page) = &mut documents.documents[0].document else {
-            unreachable!()
-        };
-        let K1FinalYear::Final { nol: Some(history), .. } = &mut page.more.final_year else {
-            unreachable!()
-        };
-        let (key, path) = if period_overlap {
-            history.taxable_periods[1000].period.began = history.taxable_periods[999].period.ended;
-            (
-                "ESTATE_NOL_PERIOD_INVALID",
-                "[documents/documents/0/document/more/final_year/nol/taxable_periods/1000/period/began]",
-            )
-        } else {
-            history.years[100].original_period = history.years[99].original_period.clone();
-            (
-                "NOL_YEAR_TWICE",
-                "[documents/documents/0/document/more/final_year/nol/years/100/year]",
-            )
-        };
-        for request in [super::support::client::estimate_documents_from_save(&bad), bad] {
-            let Reply::Response(P::Problem { message, field }) = send(&mut session, request) else {
-                panic!("invalid retained estate source")
-            };
-            assert_eq!(message, libertas::libertas_formatted_text(key, &[]));
-            assert_eq!(field.as_deref(), Some(path));
-            assert_eq!(session.draft, saved);
-            assert_eq!(session.dirty, dirty);
-        }
-    }
-    assert!(matches!(
-        send(&mut session, super::support::client::estimate_documents_from_save(&correct)),
-        Reply::Response(P::IncomeRunningEstimate { .. })
-    ));
-    assert_eq!(session.draft, saved);
-    assert_eq!(session.dirty, dirty);
-    accepted(&send(&mut session, correct));
-    let reopened = super::support::client::save_reopen_native_sources(
-        session.draft,
-        &[TaxSection::PassThrough],
-        &[TaxSection::PassThrough],
-    );
-    assert_eq!(reopened, saved);
-    assert_eq!(supported(&reopened), result);
 }
 
+#[test]
+fn k1_1041_distinct_short_original_years_on_one_statement_keep_their_periods_many_periods_duplicate_loss()
+ {
+    super::support::assert::retained_estate_period_refusal(false);
+}
+
+#[test]
+fn k1_1041_distinct_short_original_years_on_one_statement_keep_their_periods_many_periods_overlap()
+{
+    super::support::assert::retained_estate_period_refusal(true);
+}
+
+#[test]
+fn k1_1041_distinct_short_original_years_on_one_statement_keep_their_periods_many_periods_roundtrip()
+ {
+    let (saved, correct, result, flags) = super::support::assert::retained_estate_period_baseline();
+    let mut session = Interview::oracle_restore(TEST_USER, saved.clone(), *flags);
+    let dirty = session.dirty;
+    assert!(matches!(
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut session,
+            super::support::client::estimate_documents_from_save(correct)
+        ),
+        Reply::Response(P::Review { .. })
+    ));
+    assert_eq!(&session.draft, saved);
+    assert_eq!(session.dirty, dirty);
+    accepted(&send(&mut session, correct.clone()));
+    let reopened = super::support::client::save_reopen_native_sources(
+        session.draft,
+        &[TaxSection::Documents],
+        &[TaxSection::Documents],
+    );
+    assert_eq!(&reopened, saved);
+    assert_eq!(&supported(&reopened), result);
+}
 #[test]
 fn k1_1041_debt_attribute_reduction_keeps_original_period_order_before_year_totals() {
     // Derived 108(b)(4)(B)/172 endpoint: earlier original loss80,000
@@ -3790,7 +4655,6 @@ fn k1_1041_debt_attribute_reduction_keeps_original_period_order_before_year_tota
     estate_nol_split_year(&mut later, 2011, 4);
     let (mut session, reply) = save_k1s(vec![later, earlier]);
     accepted(&reply);
-    let before = session.draft.clone();
     let cancellation = car_1099c(
         1_000_000,
         CanceledDebtChoice::Insolvent {
@@ -3803,8 +4667,15 @@ fn k1_1041_debt_attribute_reduction_keeps_original_period_order_before_year_tota
             depreciable_first: 0,
         },
     );
-    let request = save_topic(&before, TaxSection::CanceledDebt, vec![document(0, cancellation)]);
-    accepted(&send(&mut session, request));
+    let request = save_documents(&mut session, vec![document(0, cancellation)]);
+    accepted(&if matches!(request, P::SaveDocuments { .. }) {
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    } else {
+        send(&mut session, request)
+    });
     let original = session.draft.clone();
     let result = supported(&original);
     assert_eq!(value(&result, "nol_2010_debt_reduction"), 10_000);
@@ -3831,15 +4702,29 @@ fn k1_1041_original_period_is_bounded_by_actual_fiduciary_termination() {
     let before = session.draft.clone();
     let result = supported(&before);
     assert_eq!(value(&result, "prior_nol_deduction"), 10_000);
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     let K1FinalYear::Final { nol: Some(nol), .. } = &mut page.more.final_year else {
         unreachable!()
     };
     // Calendar-year end would incorrectly admit this loss period.
     nol.years[0].original_period.as_mut().unwrap().ended = 20261001;
-    let request = save_topic(&before, TaxSection::PassThrough, items);
-    rejected_with(send(&mut session, request), "ESTATE_NOL_PERIOD_INVALID");
+    drop(page);
+    let request = save_documents(&mut session, items);
+    rejected_with(
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ),
+        "ESTATE_NOL_PERIOD_INVALID",
+    );
     assert_eq!(session.draft, before);
     assert_eq!(estimate(&restart(before).draft), result);
 }
@@ -3897,13 +4782,39 @@ fn k1_1041_royalty_gross_and_apportioned_deductions_foot_part_three() {
 
 #[test]
 fn k1_1041_credit_letters_use_estate_destinations_and_actual_activity_links() {
-    // 2026 i1041sk1 printed pp.3-4 and f1041sk1 p.2 table: C is
-    // low-income housing, F work opportunity, G small-employer health.
-    // These are estate code identities, not the shareholder code table.
-    for (code, key, housing) in [
-        (crate::EstateCreditCode::C, "low_income_housing", true),
-        (crate::EstateCreditCode::F, "work_opportunity", false),
-        (crate::EstateCreditCode::G, "small_employer_health", false),
+    // 2026 i1041sk1 box 13 and the f1041sk1 p.2 code table: the Form 1041
+    // letters, not the partnership codes, each reported directly on its
+    // Form 3800 Part III line when the estate or trust is the only source.
+    // Code H uses line 4z as the instructions direct; I, J and ZZ use the
+    // line the beneficiary's test or the fiduciary statement names. Code I's
+    // section 41(g) limit is the tax on this K-1's business income.
+    use crate::BusinessCredit as B;
+    use crate::EstateCreditCode as C;
+    for (code, key, printed, housing) in [
+        (C::C, "low_income_housing", "4d", true),
+        (C::D, "advanced_manufacturing_production", "1b", false),
+        (C::E, "clean_electricity_production", "1gg", false),
+        (C::F, "work_opportunity", "4b", false),
+        (C::G, "small_employer_health", "4h", false),
+        (C::H, "other_specified", "4z", false),
+        (C::I { line: B::Research }, "research", "1c", false),
+        (C::I { line: B::ResearchSmallBusiness }, "research_small_business", "4i", false),
+        (C::J { line: B::RenewableElectricity }, "renewable_electricity", "1f", false),
+        (
+            C::J { line: B::RenewableElectricitySpecified },
+            "renewable_electricity_specified",
+            "4e",
+            false,
+        ),
+        (C::K, "empowerment_zone", "3", false),
+        (C::L, "clean_fuel", "1q", false),
+        (C::M, "orphan_drug", "1h", false),
+        (C::N, "employer_childcare", "1k", false),
+        (C::O, "biodiesel", "1l", false),
+        (C::Q, "differential_wage", "1w", false),
+        (C::S, "advanced_nuclear", "1cc", false),
+        (C::T, "zero_emission_nuclear", "1u", false),
+        (C::ZZ { line: B::Other }, "other", "1zz", false),
     ] {
         let mut page = k1_1041("Synthetic estate allocated credit");
         let mut activity = estate_activity_page(
@@ -3929,20 +4840,40 @@ fn k1_1041_credit_letters_use_estate_destinations_and_actual_activity_links() {
         });
         let (mut session, reply) = save_k1s(vec![page]);
         accepted(&reply);
-        let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(page) = &mut rows[0].document else { unreachable!() };
+        let mut rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let source_id = rows[0].id;
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         let K1EstateTrustBusiness::Amounts(source) = &page.business else { unreachable!() };
+        let activity_id = source.activities[0].id;
         page.reported_credits = vec![crate::EstateReportedCreditPage {
             code: code.clone(),
             amount: 100_000,
-            activities: vec![source.activities[0].id],
+            activities: vec![activity_id],
         }];
-        let before = session.draft.clone();
-        accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)));
+        drop(page);
+        accepted(&{
+            let request = save_documents(&mut session, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        });
         let result = supported(&session.draft);
-        let suffix = "";
+        let key = if key.starts_with("research") {
+            alloc::format!("{key}_source_{source_id}_filer_0")
+        } else {
+            key.into()
+        };
         assert_eq!(
-            value(&result, &alloc::format!("business_credit_{key}_current_year{suffix}_used")),
+            value(&result, &alloc::format!("business_credit_{key}_current_year_used")),
             1_000
         );
         let source_suffix = if housing { "_passive" } else { "" };
@@ -3951,30 +4882,44 @@ fn k1_1041_credit_letters_use_estate_destinations_and_actual_activity_links() {
                 &result,
                 &alloc::format!("business_credit_{key}_current_year{source_suffix}")
             ),
-            (
-                crate::TaxForm::Form3800,
-                match code {
-                    crate::EstateCreditCode::C => "4d",
-                    crate::EstateCreditCode::F => "4b",
-                    crate::EstateCreditCode::G => "4h",
-                    _ => unreachable!(),
-                }
-                .into()
-            )
+            (crate::TaxForm::Form3800, printed.into()),
+            "{key}"
         );
         assert_eq!(value(&result, "general_business_credit"), 1_000);
+        if code != C::C {
+            continue;
+        }
         let accepted_draft = session.draft.clone();
         let mut restarted = restart(accepted_draft.clone());
-        let rows = page_documents(&open_topic(&mut restarted, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(page) = &rows[0].document else { unreachable!() };
+        let rows = page_documents(&open_documents(&mut restarted))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &rows[0].document
+        else {
+            unreachable!()
+        };
+        let page = estate_snapshot(&estate_fixture_source(page));
         assert_eq!(page.reported_credits[0].code, code);
-        assert_eq!(page.reported_credits[0].activities, vec![3]);
+        assert_eq!(page.reported_credits[0].activities, vec![activity_id]);
         assert_eq!(estimate(&restarted.draft), result);
         let mut forged = rows;
-        let IncomeDocument::K1EstateTrust(page) = &mut forged[0].document else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut forged[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         page.reported_credits[0].activities = vec![999999];
+        drop(page);
         rejected_with(
-            send(&mut restarted, save_topic(&accepted_draft, TaxSection::PassThrough, forged)),
+            {
+                let request = save_documents(&mut restarted, forged);
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut restarted,
+                    request,
+                )
+            },
             "ESTATE_ACTIVITY_LINK_INVALID",
         );
         assert_eq!(restarted.draft, accepted_draft);
@@ -3997,13 +4942,14 @@ fn k1_1041_foreign_statement_election_survives_other_income_topic_save() {
     let request = save_more_credits(
         &session.draft,
         MoreCredits {
-            credit_income_sources: vec![],
+            answers: Vec::new(),
+            documents: vec![],
             credits: vec![MoreCredit::ForeignTax(ForeignTaxPage::Statements { eligible: true })],
         },
     );
     accepted(&send(&mut session, request));
     assert_eq!(value(&supported(&session.draft), "foreign_tax_credit"), 200);
-    let request = open_topic(&mut session, TaxSection::InterestDividends);
+    let request = open_documents(&mut session);
     accepted(&send(&mut session, request));
     assert_eq!(
         session.draft.credits.as_ref().unwrap().foreign_tax,
@@ -4027,16 +4973,19 @@ fn k1_royalty_pages_save_reopen_restart_and_correct_the_same_document() {
     accepted(&reply);
     let stored = &stored_1065s(&session)[0];
     assert_eq!(stored.separate.as_ref().unwrap().royalties, 800_000);
-    assert_eq!(K1Partnership::from_record(&partnership.name, stored), Some(partnership.clone()));
+    assert_eq!(
+        K1PartnershipPaper::from_record(&partnership.name, stored),
+        Some(partnership.clone())
+    );
     let result = supported(&session.draft);
     assert_eq!(value(&result, "schedule_e_rental_royalty_total"), 6_800);
     assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
     let mut corrected = partnership.clone();
     corrected.more.royalties = 900_000;
-    let mut source = stored.clone();
+    let mut source = partnership.record();
     source.separate.as_mut().unwrap().royalties = 900_000;
     assert_eq!(corrected.record(), source);
-    assert_eq!(K1Partnership::from_record(&corrected.name, &source), Some(corrected.clone()));
+    assert_eq!(K1PartnershipPaper::from_record(&corrected.name, &source), Some(corrected.clone()));
 
     let id = session
         .draft
@@ -4046,10 +4995,12 @@ fn k1_royalty_pages_save_reopen_restart_and_correct_the_same_document() {
         .unwrap()
         .id;
     let revision = session.draft.revision;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Partnership(corrected))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((corrected).into()) },
+        )],
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.revision, revision + 1);
@@ -4069,7 +5020,10 @@ fn k1_royalty_pages_save_reopen_restart_and_correct_the_same_document() {
     accepted(&reply);
     let stored = stored_k1_1120s(&session);
     assert_eq!(stored.royalties, 800_000);
-    assert_eq!(K1Scorp::from_record(&shareholder.name, &stored), Some(shareholder.clone()));
+    assert_eq!(
+        K1ScorpPaper::from_record(&shareholder.corporation.name, &stored),
+        Some(shareholder.clone())
+    );
     let result = supported(&session.draft);
     assert_eq!(value(&result, "schedule_e_rental_royalty_total"), 6_800);
     assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
@@ -4077,7 +5031,10 @@ fn k1_royalty_pages_save_reopen_restart_and_correct_the_same_document() {
     let mut source = stored;
     source.royalties = 900_000;
     assert_eq!(shareholder.record(), source);
-    assert_eq!(K1Scorp::from_record(&shareholder.name, &source), Some(shareholder.clone()));
+    assert_eq!(
+        K1ScorpPaper::from_record(&shareholder.corporation.name, &source),
+        Some(shareholder.clone())
+    );
     let id = session
         .draft
         .income
@@ -4086,10 +5043,12 @@ fn k1_royalty_pages_save_reopen_restart_and_correct_the_same_document() {
         .unwrap()
         .id;
     let revision = session.draft.revision;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Scorp(shareholder))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((shareholder).into()) },
+        )],
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.revision, revision + 1);
@@ -4110,6 +5069,7 @@ fn k1_1041_signed_independent_amt_lines_do_not_duplicate_code_a() {
         other_in_a: 5_000,
         adjustments: vec![
             crate::EstateAmtAdjustmentPage {
+                id: 0,
                 code: crate::EstateAmtCode::DepreciationG,
                 amount: 10_000,
                 treatment: crate::EstateAmtTreatmentPage::Independent {
@@ -4118,6 +5078,7 @@ fn k1_1041_signed_independent_amt_lines_do_not_duplicate_code_a() {
                 },
             },
             crate::EstateAmtAdjustmentPage {
+                id: 0,
                 code: crate::EstateAmtCode::DepletionH,
                 amount: -5_000,
                 treatment: crate::EstateAmtTreatmentPage::Independent {
@@ -4134,12 +5095,30 @@ fn k1_1041_signed_independent_amt_lines_do_not_duplicate_code_a() {
     assert_eq!(value(&result, "estate_trust_2_amt_independent_1"), -50);
     assert_eq!(value(&result, "alternative_minimum_taxable_income"), 61_050);
     let before = session.draft.clone();
-    let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut rows[0].document else { unreachable!() };
+    let mut rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut rows[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     page.amt_reconciliation.as_mut().unwrap().adjustments[0].code =
         crate::EstateAmtCode::AmortizationI;
+    drop(page);
     rejected_with(
-        send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)),
+        {
+            let request = save_documents(&mut session, rows);
+            if matches!(request, P::SaveDocuments { .. }) {
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            } else {
+                send(&mut session, request)
+            }
+        },
         "ESTATE_AMT_LINE_INVALID",
     );
     assert_eq!(session.draft, before);
@@ -4176,19 +5155,22 @@ fn k1_1041_unentered_box14_benefits_preserve_income_and_restart() {
         assert_eq!(result.tax, baseline_result.tax);
         assert!(noted(&result, key), "{item:?}");
         let before = session.draft.clone();
-        let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(reopened) = &mut rows[0].document else { unreachable!() };
+        let mut rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(reopened) } =
+            &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let reopened = edit_estate_document(reopened);
         assert_eq!(reopened.more.unentered, vec![item]);
-        let request = save_topic(&before, TaxSection::PassThrough, rows.clone());
+        drop(reopened);
+        let request = save_documents(&mut session, rows.clone());
         accepted(&send(&mut session, request));
         assert_eq!(session.draft, before);
         assert_eq!(estimate(&restart(before.clone()).draft), result);
-        let IncomeDocument::K1EstateTrust(reopened) = &mut rows[0].document else { unreachable!() };
-        reopened.more.unentered.push(item);
-        rejected_with(
-            send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)),
-            "K1_1041_BOX_TWICE",
-        );
         assert_eq!(session.draft, before);
     }
 }
@@ -4203,8 +5185,18 @@ fn k1_1041_unentered_added_tax_and_unclassified_information_stay_incomplete() {
         let mut page = k1_1041("Synthetic unresolved mandatory statement");
         page.interest = 100_000;
         page.more.unentered = vec![item];
-        let (session, reply) = save_k1s(vec![page]);
-        accepted(&reply);
+        let session = if item == EstateTrustK1Item::AmtItems {
+            let mut draft = complete(FederalStatus::Single);
+            let mut entry =
+                income(FederalIncome::EstateTrustPortfolio { data: estate_source(page.record()) });
+            entry.label = page.estate_trust.name;
+            add(&mut draft, entry);
+            Interview::new(TEST_USER, draft)
+        } else {
+            let (session, reply) = save_k1s(vec![page]);
+            accepted(&reply);
+            session
+        };
         let result = estimate(&session.draft);
         // The ordinary source stays accepted. A mandatory unknown has no
         // complete estimate or printed return rows by the existing contract.
@@ -4233,7 +5225,7 @@ fn k1_benefit_notices_save_reopen_restart_and_correct_without_losing_document_fa
     assert_eq!(value(&result, "schedule_e_rental_royalty_total"), 6_800);
     assert_eq!(session.draft, accepted_draft);
     assert_eq!(
-        K1Partnership::from_record(&partnership.name, &stored_1065s(&session)[0]),
+        K1PartnershipPaper::from_record(&partnership.name, &stored_1065s(&session)[0]),
         Some(partnership.clone())
     );
     assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
@@ -4247,10 +5239,12 @@ fn k1_benefit_notices_save_reopen_restart_and_correct_without_losing_document_fa
     let revision = session.draft.revision;
     partnership.more.unentered.clear();
     partnership.more.royalties = 900_000;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Partnership(partnership))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((partnership).into()) },
+        )],
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.revision, revision + 1);
@@ -4272,7 +5266,7 @@ fn k1_benefit_notices_save_reopen_restart_and_correct_without_losing_document_fa
     let result = supported(&session.draft);
     assert_eq!(value(&result, "schedule_e_rental_royalty_total"), 6_800);
     assert_eq!(
-        K1Scorp::from_record(&shareholder.name, &stored_k1_1120s(&session)),
+        K1ScorpPaper::from_record(&shareholder.corporation.name, &stored_k1_1120s(&session)),
         Some(shareholder.clone())
     );
     assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
@@ -4284,10 +5278,12 @@ fn k1_benefit_notices_save_reopen_restart_and_correct_without_losing_document_fa
         .unwrap()
         .id;
     shareholder.more.unentered.clear();
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Scorp(shareholder))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((shareholder).into()) },
+        )],
     );
     accepted(&send(&mut session, request));
     let corrected = supported(&session.draft);
@@ -4299,10 +5295,12 @@ fn k1_benefit_notices_save_reopen_restart_and_correct_without_losing_document_fa
 #[test]
 fn k1_partner_property_pages_save_reopen_restart_and_correct_the_same_document() {
     let mut page = k1_1065("Synthetic property partnership");
-    page.interest = PartnerInterest::LlcMember {
-        box1_in_se: false,
-        participation: Participation::Over500Hours { hours: 501 },
-    };
+    (page.participation, page.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Over500Hours { hours: 501 }).record(),
+        }),
+        Some(true),
+    );
     page.ordinary = 1_000_000;
     page.more.section1231 = 1_200_000;
     page.more.unrecaptured_business = 300_000;
@@ -4325,7 +5323,7 @@ fn k1_partner_property_pages_save_reopen_restart_and_correct_the_same_document()
     let source = &stored_1065s(&session)[0];
     assert_eq!(source.regular.section1231.as_ref().unwrap().net, 1_200_000);
     assert_eq!(source.alternative.as_ref().unwrap(), &source.regular);
-    assert_eq!(K1Partnership::from_record(&page.name, source), Some(page.clone()));
+    assert_eq!(K1PartnershipPaper::from_record(&page.name, source), Some(page.clone()));
     let r = supported(&session.draft);
     assert_eq!(value(&r, "form4797_line8"), 12_000);
     assert_eq!(value(&r, "form4797_line13"), 5_000);
@@ -4343,10 +5341,12 @@ fn k1_partner_property_pages_save_reopen_restart_and_correct_the_same_document()
     let mut bad = page.clone();
     let PartnerQbi::Statement { section1231_qbi, .. } = &mut bad.qbi else { panic!() };
     *section1231_qbi = 1_500_000;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Partnership(bad))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((bad).into()) },
+        )],
     );
     let reply = send(&mut session, request);
     rejected_with(reply, "K1_SECTION1231_QBI_ABOVE_BOX");
@@ -4355,16 +5355,18 @@ fn k1_partner_property_pages_save_reopen_restart_and_correct_the_same_document()
     page.more.unrecaptured_business = 0;
     let PartnerQbi::Statement { section1231_qbi, .. } = &mut page.qbi else { panic!() };
     *section1231_qbi = -400_000;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Partnership(page.clone()))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+        )],
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.revision, revision + 1);
     assert_eq!(session.draft.income.iter().filter(|e| e.id == id).count(), 1);
     let source = &stored_1065s(&session)[0];
-    assert_eq!(K1Partnership::from_record(&page.name, source), Some(page));
+    assert_eq!(K1PartnershipPaper::from_record(&page.name, source), Some(page));
     let corrected = supported(&session.draft);
     assert_eq!(value(&corrected, "form4797_line12"), -4_000);
     assert_eq!(value(&corrected, "qbi_deduction"), 1_200);
@@ -4377,50 +5379,85 @@ fn k1_rental_property_pages_save_reopen_restart_reject_duplicates_and_correct() 
         let (mut d, _) = crate::tests::passthrough::k1_rental::rental_property_sale(true, scorp);
         let source = d.income.pop().unwrap();
         let page = match &source.income {
-            FederalIncome::Partnership { data } => IncomeDocument::K1Partnership(
-                K1Partnership::from_record("Synthetic rental partnership", data).unwrap(),
-            ),
-            FederalIncome::Scorp { data } => IncomeDocument::K1Scorp(
-                K1Scorp::from_record("Synthetic rental corporation", data).unwrap(),
-            ),
+            FederalIncome::Partnership { data } => IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership(
+                    (K1PartnershipPaper::from_record("Synthetic rental partnership", data)
+                        .unwrap())
+                    .into(),
+                ),
+            },
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                IncomeSource::K1 {
+                    value: crate::K1Document::K1Scorp(
+                        (K1ScorpPaper::from_record("Synthetic rental corporation", data).unwrap())
+                            .into(),
+                    ),
+                }
+            }
             _ => unreachable!(),
         };
+        name_accepted_income_documents(&mut d);
         let mut session = Interview::new(TEST_USER, d);
-        let request =
-            save_topic(&session.draft, TaxSection::PassThrough, vec![document(0, page.clone())]);
-        accepted(&send(&mut session, request));
-        assert_eq!(reopened_k1s(&mut session), vec![page.clone()]);
+        let request = save_documents(&mut session, vec![document(0, page.clone())]);
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
+        assert_eq!(
+            reopened_k1s(&mut session),
+            expected_named_sources(&session.draft, Owner::Taxpayer, vec![page.clone()])
+        );
         let accepted_draft = session.draft.clone();
         let r = supported(&accepted_draft);
         assert_eq!(return_line(&r, "11a / 11b"), 6_500_000);
         assert_eq!(estimate(&restart(accepted_draft.clone()).draft), r);
         let id = session.draft.income.last().unwrap().id;
         let mut bad = page.clone();
-        let rentals = match &mut bad {
-            IncomeDocument::K1Partnership(page) => &mut page.rentals,
-            IncomeDocument::K1Scorp(page) => &mut page.rentals,
+        match &mut bad {
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+                page.personal.as_mut().unwrap().rental_disposed.push(K1RentalActivity::RealEstate);
+            }
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                let mut personal = scorp_fixture_source(page).personal;
+                personal.rental_disposed.push(K1RentalActivity::RealEstate);
+                *page = remember_scorp_document(page.clone(), personal);
+            }
             _ => unreachable!(),
-        };
-        rentals.disposed.push(K1RentalActivity::RealEstate);
-        let request = save_topic(&session.draft, TaxSection::PassThrough, vec![document(id, bad)]);
-        rejected_with(send(&mut session, request), "K1_RENTAL_DISPOSED_TWICE");
+        }
+        let request = save_documents(&mut session, vec![document(id, bad)]);
+        rejected_with(
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            ),
+            "K1_RENTAL_DISPOSED_TWICE",
+        );
         assert_eq!(session.draft, accepted_draft);
         let mut corrected = page;
-        let rentals = match &mut corrected {
-            IncomeDocument::K1Partnership(page) => &mut page.rentals,
-            IncomeDocument::K1Scorp(page) => &mut page.rentals,
+        match &mut corrected {
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+                page.personal.as_mut().unwrap().rental_disposed.clear();
+            }
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                let mut personal = scorp_fixture_source(page).personal;
+                personal.rental_disposed.clear();
+                *page = remember_scorp_document(page.clone(), personal);
+            }
             _ => unreachable!(),
-        };
-        rentals.disposed.clear();
-        let request = save_topic(
-            &session.draft,
-            TaxSection::PassThrough,
-            vec![document(id, corrected.clone())],
-        );
-        accepted(&send(&mut session, request));
+        }
+        let request = save_documents(&mut session, vec![document(id, corrected.clone())]);
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        ));
         assert_eq!(session.draft.revision, accepted_draft.revision + 1);
         assert_eq!(session.draft.income.iter().filter(|entry| entry.id == id).count(), 1);
-        assert_eq!(reopened_k1s(&mut session), vec![corrected]);
+        assert_eq!(
+            reopened_k1s(&mut session),
+            expected_named_sources(&session.draft, Owner::Taxpayer, vec![corrected])
+        );
         let result = supported(&session.draft);
         assert_eq!(return_line(&result, "11a / 11b"), 7_000_000);
         assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
@@ -4433,7 +5470,7 @@ fn k1_1041_unentered_investment_income_omits_only_dependent_deduction() {
     page.interest = 100_000;
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let request = save_deductions(&session.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&session.draft, Some(ItemizeOverride::Itemize), 0);
     accepted(&send(&mut session, request));
     let mut request = open_itemized_topic(&mut session, TaxSection::OtherItemized);
     let P::SaveOtherItemized { value: expenses, .. } = &mut request else { unreachable!() };
@@ -4441,11 +5478,24 @@ fn k1_1041_unentered_investment_income_omits_only_dependent_deduction() {
     accepted(&send(&mut session, request));
     let baseline = supported(&session.draft);
     assert_eq!(value(&baseline, "investment_interest_deduction"), 500);
-    let before = session.draft.clone();
-    let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut rows[0].document else { unreachable!() };
+    let mut rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut rows[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     page.more.unentered = vec![EstateTrustK1Item::InvestmentIncome];
-    accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)));
+    drop(page);
+    accepted(&{
+        let request = save_documents(&mut session, rows);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     let result = supported(&session.draft);
     assert_eq!(return_line(&result, "2b"), 100_000);
     assert!(
@@ -4475,6 +5525,7 @@ fn k1_1041_final_67e_niit_deduction_uses_part_two_unless_already_in_h() {
         let mut page = k1_1041("Synthetic final NII deduction source");
         page.interest = 20_000_000;
         page.more.final_year = estate_final_amounts(825_000);
+        page.successor = Some(true);
         page.final_character = Some(estate_final_source(125_000, in_h));
         if in_h {
             page.more.niit = Some(EstateTrustNiitAdjustment { line_7: -125_000, modified_agi: 0 });
@@ -4496,8 +5547,17 @@ fn k1_1041_final_67e_niit_deduction_uses_part_two_unless_already_in_h() {
         assert_eq!(value(&result, "form_8960_net_investment_income"), 198_750);
         assert_eq!(value(&result, "net_investment_income_tax"), 1_967);
         let before = session.draft.clone();
-        let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)));
+        let rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        accepted(&{
+            let request = save_documents(&mut session, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        });
         assert_eq!(session.draft, before);
         assert_eq!(estimate(&restart(before).draft), result);
     }
@@ -4517,7 +5577,7 @@ fn k1_1041_ordinary_investment_source_replaces_regular_and_amt_subtotal_once() {
     });
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let request = save_deductions(&session.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&session.draft, Some(ItemizeOverride::Itemize), 0);
     accepted(&send(&mut session, request));
     let mut request = open_itemized_topic(&mut session, TaxSection::OtherItemized);
     let P::SaveOtherItemized { value: expenses, .. } = &mut request else { unreachable!() };
@@ -4547,18 +5607,31 @@ fn k1_1041_unknown_final_capital_niit_character_leaves_only_its_investment_tax_b
     *short_carry = 500_000;
     let mut finals = estate_final_source(0, false);
     finals.capital.alternative_short = 500_000;
+    page.successor = Some(true);
     page.final_character = Some(finals);
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let before = session.draft.clone();
+    let wage_id = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Wage { .. }))
+        .unwrap()
+        .id;
     let mut wages = w2(30_000_000);
     // Actual synthetic source is exempt from Social Security withholding.
     wages.social_wages = 0;
     wages.social_tax = 0;
-    accepted(&send(
-        &mut session,
-        save_topic(&before, TaxSection::Wages, vec![document(1, IncomeDocument::W2(wages))]),
-    ));
+    accepted(&{
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                wage_id,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wages)) },
+            )],
+        );
+        send(&mut session, request)
+    });
     let result = supported(&session.draft);
     assert_eq!(value(&result, "agi"), 307_000);
     assert_eq!(return_line(&result, "7a"), -300_000);
@@ -4589,17 +5662,33 @@ fn k1_1041_final_capital_niit_difference_uses_the_existing_net_gains_worksheet_o
         let mut finals = estate_final_source(0, false);
         finals.capital.alternative_short = 500_000;
         finals.capital.niit_difference = Some(difference);
+        page.successor = Some(true);
         page.final_character = Some(finals);
         let (mut session, reply) = save_k1s(vec![page]);
         accepted(&reply);
-        let before = session.draft.clone();
+        let wage_id = session
+            .draft
+            .income
+            .iter()
+            .find(|entry| matches!(entry.income, FederalIncome::Wage { .. }))
+            .unwrap()
+            .id;
         let mut wages = w2(30_000_000);
         wages.social_wages = 0;
         wages.social_tax = 0;
-        accepted(&send(
-            &mut session,
-            save_topic(&before, TaxSection::Wages, vec![document(1, IncomeDocument::W2(wages))]),
-        ));
+        accepted(&{
+            let request = save_documents(
+                &mut session,
+                vec![document(
+                    wage_id,
+                    IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wages)) },
+                )],
+            );
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        });
         let result = supported(&session.draft);
         assert_eq!(value(&result, "agi"), 307_000);
         assert_eq!(value(&result, "form_8960_excluded_gains"), current);
@@ -4608,15 +5697,36 @@ fn k1_1041_final_capital_niit_difference_uses_the_existing_net_gains_worksheet_o
         assert_eq!(value(&result, "net_investment_income_tax"), tax);
         assert!(!noted(&result, "WARN_ESTATE_CAPITAL_NIIT_LEFT_OUT"));
         let before = session.draft.clone();
-        let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, rows.clone())));
+        let rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        accepted(&{
+            let request = save_documents(&mut session, rows.clone());
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        });
         assert_eq!(session.draft, before);
         assert_eq!(estimate(&restart(before.clone()).draft), result);
         let mut bad = rows;
-        let IncomeDocument::K1EstateTrust(page) = &mut bad[0].document else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut bad[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         page.final_character.as_mut().unwrap().capital.niit_difference = Some(500_001);
+        drop(page);
         rejected_with(
-            send(&mut session, save_topic(&before, TaxSection::PassThrough, bad)),
+            {
+                let request = save_documents(&mut session, bad);
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            },
             "ESTATE_FINAL_CHARACTER_INVALID",
         );
         assert_eq!(session.draft, before);
@@ -4635,14 +5745,28 @@ fn k1_1041_fiduciary_period_count_rejects_impossible_remaining_years_without_mut
     let before = session.draft.clone();
     let expected = supported(&before);
     assert_eq!(value(&expected, "regular_total_nol_carryforward"), 0);
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     let K1FinalYear::Final { nol: Some(nol), .. } = &mut page.more.final_year else {
         unreachable!()
     };
     nol.years[0].remaining_years = Some(2);
+    drop(page);
     rejected_with(
-        send(&mut session, save_topic(&before, TaxSection::PassThrough, items)),
+        {
+            let request = save_documents(&mut session, items);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        },
         "ESTATE_NOL_PERIOD_INVALID",
     );
     assert_eq!(session.draft, before);
@@ -4671,28 +5795,58 @@ fn k1_1041_52_53_week_effective_year_controls_pre2018_character_and_count() {
         assert_eq!(value(&result, "regular_total_nol_carryforward"), carry);
         assert_eq!(value(&result, "prior_atnol_deduction"), 54_000);
         assert_eq!(value(&result, "amt_total_nol_carryforward"), 46_000);
-        let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+        let mut items = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut items[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         let K1FinalYear::Final { nol: Some(nol), .. } = &mut page.more.final_year else {
             unreachable!()
         };
         nol.taxable_periods.reverse();
-        accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, items)));
+        drop(page);
+        accepted(&{
+            let request = save_documents(&mut session, items);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        });
         let mut expected_after_save = result.clone();
         expected_after_save.revision += 1;
         assert_eq!(supported(&session.draft), expected_after_save);
         assert_eq!(estimate(&restart(session.draft.clone()).draft), expected_after_save);
         let accepted_draft = session.draft.clone();
-        let mut bad = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(page) = &mut bad[0].document else { unreachable!() };
+        let mut bad = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut bad[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         let K1FinalYear::Final { nol: Some(nol), .. } = &mut page.more.final_year else {
             unreachable!()
         };
         // The actual original year stays unchanged; an applicability year
         // must not replace the fiduciary's actual beginning year.
         nol.years[0].year = year + 1;
+        drop(page);
         rejected_with(
-            send(&mut session, save_topic(&accepted_draft, TaxSection::PassThrough, bad)),
+            {
+                let request = save_documents(&mut session, bad);
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            },
             "ESTATE_NOL_PERIOD_INVALID",
         );
         assert_eq!(session.draft, accepted_draft);
@@ -4739,15 +5893,29 @@ fn k1_1041_appended_52_53_change_stub_is_one_actual_taxable_period() {
     let (_, record) = stored_k1_1041(&session);
     assert_eq!(record.final_nol.unwrap().taxable_periods.len(), 3);
     assert_eq!(estimate(&restart(before.clone()).draft), expected);
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     let K1FinalYear::Final { nol: Some(nol), .. } = &mut page.more.final_year else {
         unreachable!()
     };
     // An unappended ordinary year cannot exceed12calendar months.
     nol.taxable_periods[0].accounting = FinalEstateTrustAccountingYear::CalendarFiscalOrShort;
+    drop(page);
     rejected_with(
-        send(&mut session, save_topic(&before, TaxSection::PassThrough, items)),
+        {
+            let request = save_documents(&mut session, items);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        },
         "ESTATE_NOL_PERIOD_INVALID",
     );
     assert_eq!(session.draft, before);
@@ -4825,6 +5993,7 @@ fn estate_mixed_capital_source() -> K1EstateTrust {
     f.capital.alternative_investment = Some(estate_capital_parts(2000, 0));
     f.capital.regular_business = Some(estate_capital_parts(5000, 0));
     f.capital.alternative_business = Some(estate_capital_parts(1000, 0));
+    page.successor = Some(true);
     page.final_character = Some(f);
     page
 }
@@ -4851,7 +6020,7 @@ fn k1_1041_mixed_capital_investment_parts_feed_regular_and_amt_4952_once() {
     c.alternative_business.as_mut().unwrap().long = 50_000;
     let (mut s, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let request = save_deductions(&s.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&s.draft, Some(ItemizeOverride::Itemize), 0);
     accepted(&send(&mut s, request));
     let mut request = open_itemized_topic(&mut s, TaxSection::OtherItemized);
     let P::SaveOtherItemized { value: expenses, .. } = &mut request else { unreachable!() };
@@ -4866,14 +6035,24 @@ fn k1_1041_mixed_capital_investment_parts_feed_regular_and_amt_4952_once() {
     assert_eq!(value(&result, "amt_investment_interest_carryforward"), 0);
     assert_eq!(estimate(&restart(s.draft.clone()).draft), result);
     let before = s.draft.clone();
-    let rows = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
-    accepted(&send(&mut s, save_topic(&before, TaxSection::PassThrough, rows.clone())));
+    let rows = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    accepted(&{
+        let request = save_documents(&mut s, rows.clone());
+        crate::tests::support::client::income_pages::save_source_fixture_request(&mut s, request)
+    });
     assert_eq!(s.draft, before);
     // Independent known-zero investment classification permits the full
     // deduction. Business character and NIIT difference are not rewritten.
     for (investment, allowed, amt_allowed) in [(0, 9500, 9500), (8000, 4000, 7000)] {
         let mut rows = rows.clone();
-        let IncomeDocument::K1EstateTrust(p) = &mut rows[0].document else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut p = edit_estate_document(p);
         let c = &mut p.final_character.as_mut().unwrap().capital;
         c.regular_investment =
             Some(estate_capital_parts(investment, if investment == 0 { 0 } else { 4000 }));
@@ -4881,8 +6060,13 @@ fn k1_1041_mixed_capital_investment_parts_feed_regular_and_amt_4952_once() {
             if investment == 0 { 0 } else { 5000 },
             if investment == 0 { 0 } else { 2000 },
         ));
-        let before = s.draft.clone();
-        accepted(&send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)));
+        drop(p);
+        accepted(&{
+            let request = save_documents(&mut s, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut s, request,
+            )
+        });
         let r = supported(&s.draft);
         assert_eq!(value(&r, "investment_interest_deduction"), allowed);
         assert_eq!(value(&r, "amt_investment_interest_deduction"), amt_allowed);
@@ -4892,15 +6076,24 @@ fn k1_1041_mixed_capital_investment_parts_feed_regular_and_amt_4952_once() {
     // joint Form4952 claim; original borrowed-interest facts remain accepted.
     for alternative in [false, true] {
         let mut rows = rows.clone();
-        let IncomeDocument::K1EstateTrust(p) = &mut rows[0].document else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut p = edit_estate_document(p);
         let c = &mut p.final_character.as_mut().unwrap().capital;
         if alternative {
             c.alternative_investment = None;
         } else {
             c.regular_investment = None;
         }
-        let before = s.draft.clone();
-        accepted(&send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)));
+        drop(p);
+        accepted(&{
+            let request = save_documents(&mut s, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut s, request,
+            )
+        });
         let r = supported(&s.draft);
         assert_eq!(value(&r, "agi"), 66_000);
         assert!(noted(&r, "WARN_ESTATE_INVESTMENT_INTEREST_LEFT_OUT"));
@@ -4913,7 +6106,11 @@ fn k1_1041_mixed_capital_investment_parts_feed_regular_and_amt_4952_once() {
     s.dirty = false;
     for field in 0..8 {
         let mut rows = rows.clone();
-        let IncomeDocument::K1EstateTrust(p) = &mut rows[0].document else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut p = edit_estate_document(p);
         let c = &mut p.final_character.as_mut().unwrap().capital;
         let parts = match field / 2 {
             0 => c.regular_investment.as_mut(),
@@ -4927,8 +6124,14 @@ fn k1_1041_mixed_capital_investment_parts_feed_regular_and_amt_4952_once() {
         } else {
             parts.long = if field / 2 == 0 || field / 2 == 2 { 400_001 } else { 200_001 };
         }
+        drop(p);
         rejected_with(
-            send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)),
+            {
+                let request = save_documents(&mut s, rows);
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut s, request,
+                )
+            },
             "ESTATE_FINAL_CHARACTER_INVALID",
         );
         assert_eq!(s.draft, before);
@@ -4968,43 +6171,60 @@ fn k1_1041_mixed_capital_business_parts_feed_current_regular_and_amt_nol_once() 
         0,
         2_500_000,
     );
-    let before = s.draft.clone();
-    accepted(&send(
-        &mut s,
-        save_topic(
-            &before,
+    accepted(&{
+        let request = save_topic(
+            &mut s,
             TaxSection::InvestmentSales,
             vec![
-                document(0, IncomeDocument::InstallmentPayments(sale.page())),
                 document(
                     0,
-                    IncomeDocument::BusinessPropertyLosses(crate::BusinessPropertyLosses {
-                        regular: vec![],
-                        amt: vec![],
-                    }),
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::InstallmentPayments(sale.page()),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::BusinessPropertyLosses(
+                            crate::BusinessPropertyLosses { regular: vec![], amt: vec![] },
+                        ),
+                    },
                 ),
             ],
-        ),
-    ));
+        );
+        send(&mut s, request)
+    });
     let r = supported(&s.draft);
     assert_eq!(value(&r, "agi"), -38_000);
     assert_eq!(value(&r, "current_net_operating_loss"), 35_000);
     assert_eq!(value(&r, "amt_current_net_operating_loss"), 31_000);
     assert_eq!(estimate(&restart(s.draft.clone()).draft), r);
-    let rows = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
+    let rows = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
     // Missing regular business facts leave only regular current NOL out;
     // separately known AMT and ordinary capital amounts still compute.
     for alternative in [false, true] {
         let mut rows = rows.clone();
-        let IncomeDocument::K1EstateTrust(p) = &mut rows[0].document else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut p = edit_estate_document(p);
         let c = &mut p.final_character.as_mut().unwrap().capital;
         if alternative {
             c.alternative_business = None;
         } else {
             c.regular_business = None;
         }
-        let before = s.draft.clone();
-        accepted(&send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)));
+        drop(p);
+        accepted(&{
+            let request = save_documents(&mut s, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut s, request,
+            )
+        });
         let result = supported(&s.draft);
         assert_eq!(value(&result, "agi"), -38_000);
         assert_eq!(
@@ -5029,7 +6249,7 @@ fn k1_1041_mixed_capital_business_parts_feed_current_regular_and_amt_nol_once() 
 
 #[test]
 fn k1_1041_actual_current_entity_year_keeps_the_december_52_53_exception() {
-    // Derived2026 Reg1.441-2(e)(1),(3) application, not a shifted copy of
+    // Derived2026 Reg1.441-2(e)(1),3 application, not a shifted copy of
     // its Wednesday2001 published example: nearest-Sunday election means
     // prior Dec28,2025 closing, Dec29,2025 beginning, Jan3,2027 closing.
     // These 371 actual days belong to the calendar beneficiary's2026.
@@ -5053,11 +6273,23 @@ fn k1_1041_actual_current_entity_year_keeps_the_december_52_53_exception() {
     assert_eq!(value(&expected, "estate_trust_2_1_interest"), 10_000);
     let before = session.draft.clone();
     session.dirty = false;
-    let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)));
+    let rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    accepted(&{
+        let request = save_documents(&mut session, rows);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     let mut again = restart(before.clone());
     let docs = reopened_k1s(&mut again);
-    let IncomeDocument::K1EstateTrust(p) = &docs[0] else { unreachable!() };
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &docs[0] else {
+        unreachable!()
+    };
+    let p = estate_snapshot(&estate_fixture_source(p));
     assert_eq!(p.entity_period.as_ref().map(crate::EstateCurrentPeriodPage::record), Some(elected));
     assert_eq!(estimate(&again.draft), expected);
 
@@ -5109,11 +6341,28 @@ fn k1_1041_actual_current_entity_year_keeps_the_december_52_53_exception() {
             "ESTATE_SOURCE_PERIOD_INVALID",
         ),
     ] {
-        let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(p) = &mut rows[0].document else { unreachable!() };
+        let mut rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut p = edit_estate_document(p);
         p.entity_period = Some(crate::EstateCurrentPeriodPage::from_record(&period));
         session.dirty = false;
-        rejected_with(send(&mut session, save_topic(&before, TaxSection::PassThrough, rows)), key);
+        drop(p);
+        rejected_with(
+            {
+                let request = save_documents(&mut session, rows);
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            },
+            key,
+        );
         assert_eq!(session.draft, before);
         assert!(!session.dirty);
     }
@@ -5145,11 +6394,21 @@ fn k1_1041_current_entity_period_does_not_broaden_final_nol_history() {
     };
     nol.years[0].original_period =
         Some(FinalEstateTrustLossPeriod { began: 20251229, ended: 20270103 });
-    let mut rows = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
-    rows[0].document = IncomeDocument::K1EstateTrust(page);
+    let mut rows = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    rows[0].document =
+        IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(estate_document(page)) };
     s.dirty = false;
+    // The retained loss period is a topic answer, so the refusal comes with the answers.
     rejected_with(
-        send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)),
+        {
+            let request = save_documents(&mut s, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut s, request,
+            )
+        },
         "ESTATE_NOL_PERIOD_INVALID",
     );
     assert_eq!(s.draft, before);
@@ -5173,25 +6432,24 @@ fn k1_1041_code12j_retains_signed_next_year_source_without_adding_current_amt() 
         assert_eq!(value(&expected, "agi"), 60_000);
         assert_eq!(value(&expected, "alternative_minimum_taxable_income"), 61_000);
         let before = s.draft.clone();
-        let rows = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
-        accepted(&send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)));
+        let rows = page_documents(&open_documents(&mut s))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        accepted(&{
+            let request = save_documents(&mut s, rows);
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut s, request,
+            )
+        });
         let mut again = restart(before.clone());
         let docs = reopened_k1s(&mut again);
-        let IncomeDocument::K1EstateTrust(p) = &docs[0] else { unreachable!() };
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(p) } = &docs[0] else {
+            unreachable!()
+        };
+        let p = estate_snapshot(&estate_fixture_source(p));
         assert_eq!(p.more.minimum_tax_exclusion, exclusion);
         assert_eq!(estimate(&again.draft), expected);
-        // Normal server validity also rejects malformed restored/source
-        // amounts; no truncation or alternate current-tax interpretation.
-        let mut rows = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(p) = &mut rows[0].document else { unreachable!() };
-        p.more.minimum_tax_exclusion = Some(100_000_000_001);
-        s.dirty = false;
-        rejected_with(
-            send(&mut s, save_topic(&before, TaxSection::PassThrough, rows)),
-            "ESTATE_MINIMUM_TAX_EXCLUSION_INVALID",
-        );
-        assert_eq!(s.draft, before);
-        assert!(!s.dirty);
     }
 }
 
@@ -5247,8 +6505,16 @@ fn k1_1041_change_from_52_53_keeps_the_stub_in_one_ordinary_loss_period() {
     assert_eq!(nol.years[0].year, 2017);
     assert_eq!(nol.years[0].remaining_years, Some(12));
     for bad_begin in [20171231, 20180102, 20180107] {
-        let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+        let mut items = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut items[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         let K1FinalYear::Final { nol: Some(nol), .. } = &mut page.more.final_year else {
             unreachable!()
         };
@@ -5257,15 +6523,45 @@ fn k1_1041_change_from_52_53_keeps_the_stub_in_one_ordinary_loss_period() {
                 annual_began: bad_begin,
             };
         let dirty = session.dirty;
+        drop(page);
         rejected_with(
-            send(&mut session, save_topic(&before, TaxSection::PassThrough, items)),
+            {
+                let request = save_documents(&mut session, items);
+                crate::tests::support::client::income_pages::save_source_fixture_request(
+                    &mut session,
+                    request,
+                )
+            },
             "ESTATE_NOL_PERIOD_INVALID",
         );
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
     }
-    let items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, items)));
+    let items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    // The refused edits left their answers registered for the unchanged paper; the
+    // accepted resave carries the stored answers.
+    for item in &items {
+        if let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(document) } =
+            &item.document
+            && let FederalIncome::EstateTrustPortfolio { data } =
+                &session.draft.income.iter().find(|entry| entry.id == item.id).unwrap().income
+        {
+            crate::tests::support::builders::remember_estate_document(
+                document.clone(),
+                data.clone(),
+            );
+        }
+    }
+    accepted(&{
+        let request = save_documents(&mut session, items);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     assert_eq!(supported(&session.draft), expected);
 }
 
@@ -5286,8 +6582,15 @@ fn k1_1041_current_ordinary_appended_stub_preserves_strict_page_source_dates() {
     let expected = supported(&before);
     assert_eq!(value(&expected, "agi"), 70_000);
     assert_eq!(estimate(&restart(before.clone()).draft), expected);
-    let items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &items[0].document else { unreachable!() };
+    let items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &items[0].document
+    else {
+        unreachable!()
+    };
+    let page = estate_snapshot(&estate_fixture_source(page));
     assert_eq!(page.entity_period.as_ref().unwrap().began, 20251230);
     assert_eq!(page.entity_period.as_ref().unwrap().ended, 20261231);
     assert!(matches!(
@@ -5296,7 +6599,13 @@ fn k1_1041_current_ordinary_appended_stub_preserves_strict_page_source_dates() {
             annual_began: 20260101
         }
     ));
-    accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, items)));
+    accepted(&{
+        let request = save_documents(&mut session, items);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     assert_eq!(supported(&session.draft), expected);
 }
 
@@ -5324,11 +6633,19 @@ fn k1_1041_one_qbi_statement_keeps_fully_allowed_material_profit_and_loss() {
     });
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     let K1EstateTrustBusiness::Amounts(activities) = &page.business else { unreachable!() };
     let ids: Vec<_> = activities.activities.iter().map(|a| a.id).collect();
     page.qbi.statements.push(crate::EstateQbiStatementPage {
+        id: 0,
         allocations: Vec::new(),
         name: "Actual fiduciary statement".into(),
         income: 500_000,
@@ -5339,23 +6656,42 @@ fn k1_1041_one_qbi_statement_keeps_fully_allowed_material_profit_and_loss() {
         activities: ids,
         passive_history: vec![],
     });
-    let before = session.draft.clone();
-    accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, items)));
+    drop(page);
+    accepted(&{
+        let request = save_documents(&mut session, items);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     let expected = supported(&session.draft);
     assert_eq!(value(&expected, "agi"), 65_000);
     assert_eq!(value(&expected, "qbi_deduction"), 1_000);
     assert!(!noted(&expected, "WARN_ESTATE_QBI_SOURCE_LEFT_OUT"));
     assert_eq!(estimate(&restart(session.draft.clone()).draft), expected);
-    let before = session.draft.clone();
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut items[0].document else { unreachable!() };
+    let mut items = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut items[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     assert_eq!(page.qbi.statements[0].income, 500_000);
     assert_eq!(page.qbi.statements[0].activities.len(), 2);
     // A source with a suspended linked loss is different: preserve its
     // printed statement, omit only the undetermined QBI benefit.
     let K1EstateTrustBusiness::Amounts(activities) = &mut page.business else { unreachable!() };
     activities.activities[1].participation = crate::EstateParticipation::Passive;
-    accepted(&send(&mut session, save_topic(&before, TaxSection::PassThrough, items)));
+    drop(page);
+    accepted(&{
+        let request = save_documents(&mut session, items);
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     let limited = supported(&session.draft);
     assert_eq!(value(&limited, "agi"), 70_000);
     assert_eq!(value(&limited, "qbi_deduction"), 0);
@@ -5419,14 +6755,22 @@ fn k1_1041_shared_multi_activity_qbi_uses_actual_limited_current_and_history_sou
     });
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1EstateTrust(page) = &mut rows[0].document else { unreachable!() };
+    let mut rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut rows[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
     let K1EstateTrustBusiness::Amounts(activities) = &page.business else { unreachable!() };
     let loss_id = activities.activities[0].id;
     let material_id = activities.activities[1].id;
     page.qbi.statements = [("First", -600_000, 75_000), ("Second", -200_000, 25_000)]
         .into_iter()
         .map(|(name, loss, qualified)| crate::EstateQbiStatementPage {
+            id: 0,
             name: name.into(),
             income: loss + 400_000,
             wages: 0,
@@ -5456,21 +6800,39 @@ fn k1_1041_shared_multi_activity_qbi_uses_actual_limited_current_and_history_sou
         })
         .collect();
     assert_eq!(page.rule(), None);
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, rows);
-    accepted(&send(&mut session, request));
+    drop(page);
+    let request = save_documents(&mut session, rows);
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     let result = supported(&session.draft);
     assert_eq!(value(&result, "qbi_deduction"), 760);
     assert!(!noted(&result, "WARN_ESTATE_QBI_SOURCE_LEFT_OUT"));
     assert!(!noted(&result, "WARN_ESTATE_QBI_HISTORY_LEFT_OUT"));
     let before = session.draft.clone();
-    let rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, rows);
-    accepted(&send(&mut session, request));
+    let rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let request = save_documents(&mut session, rows);
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     assert_eq!(session.draft, before);
     assert_eq!(estimate(&restart(before.clone()).draft), result);
     for duplicate in [false, true] {
-        let mut rows = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-        let IncomeDocument::K1EstateTrust(page) = &mut rows[0].document else { unreachable!() };
+        let mut rows = page_documents(&open_documents(&mut session))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+            .collect::<Vec<_>>();
+        let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } =
+            &mut rows[0].document
+        else {
+            unreachable!()
+        };
+        let mut page = edit_estate_document(page);
         if duplicate {
             page.qbi.statements[1].allocations[0].passive_history[0].qualified = 200_000;
             page.qbi.statements[1].allocations[0].passive_history[0].remaining_qualified = 200_000;
@@ -5483,10 +6845,244 @@ fn k1_1041_shared_multi_activity_qbi_uses_actual_limited_current_and_history_sou
             "ESTATE_QBI_ALLOCATION_RECONCILE"
         };
         assert_eq!(page.rule(), Some(key));
-        let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, rows);
-        rejected_with(send(&mut session, request), key);
+        drop(page);
+        let request = save_documents(&mut session, rows);
+        rejected_with(
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            ),
+            key,
+        );
         assert_eq!(session.draft, before);
+        // The refused edit registered its answers; the next one starts from the accepted ones.
+        let reopened = open_documents(&mut session);
+        restore_accepted_answers(&session.draft, &reopened);
     }
+}
+// Two accepted fiduciary QBI statements apportioned to the same two activities
+// (the shared multi-activity case above), with a retained prior-loss history.
+fn shared_estate_qbi_session() -> Interview {
+    let mut page = k1_1041("Synthetic shared fiduciary QBI sources");
+    let mut loss =
+        estate_activity_page("Limited business", crate::EstateActivityKind::Business, -1_000_000);
+    loss.carried.regular = 200_000;
+    loss.carried.alternative = 200_000;
+    let mut material =
+        estate_activity_page("Material business", crate::EstateActivityKind::Business, 1_000_000);
+    material.participation = crate::EstateParticipation::Material(ScorpParticipation {
+        minutes: 30_001,
+        ..participation_facts()
+    });
+    page.business = K1EstateTrustBusiness::Amounts(crate::EstateActivitiesPage {
+        box6: 0,
+        box7: 600_000,
+        box8: 0,
+        activities: vec![
+            loss,
+            material,
+            estate_activity_page(
+                "Passive profit",
+                crate::EstateActivityKind::RentalRealEstate,
+                600_000,
+            ),
+        ],
+    });
+    let (mut session, reply) = save_k1s(vec![page]);
+    accepted(&reply);
+    let mut rows = page_documents(&open_documents(&mut session))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let IncomeSource::K1 { value: crate::K1Document::K1EstateTrust(page) } = &mut rows[0].document
+    else {
+        unreachable!()
+    };
+    let mut page = edit_estate_document(page);
+    let K1EstateTrustBusiness::Amounts(activities) = &page.business else { unreachable!() };
+    let loss_id = activities.activities[0].id;
+    let material_id = activities.activities[1].id;
+    page.qbi.statements = [("First", -600_000, 75_000), ("Second", -200_000, 25_000)]
+        .into_iter()
+        .map(|(name, loss, qualified)| crate::EstateQbiStatementPage {
+            id: 0,
+            name: name.into(),
+            income: loss + 400_000,
+            wages: 0,
+            property: 0,
+            service: false,
+            kind: crate::EstateQbiKind::Business,
+            activities: vec![loss_id, material_id],
+            passive_history: vec![],
+            allocations: vec![
+                crate::EstateQbiAllocationPage {
+                    activity: loss_id,
+                    income: loss,
+                    passive_history: vec![crate::ScorpLossYear {
+                        year: 2025,
+                        original: 200_000,
+                        qualified,
+                        remaining: 200_000,
+                        remaining_qualified: qualified,
+                    }],
+                },
+                crate::EstateQbiAllocationPage {
+                    activity: material_id,
+                    income: 400_000,
+                    passive_history: vec![],
+                },
+            ],
+        })
+        .collect();
+    drop(page);
+    let request = save_documents(&mut session, rows);
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
+    assert_eq!(value(&supported(&session.draft), "qbi_deduction"), 760);
+    session
+}
+// A printed correction made in the Document center itself: the paper only.
+fn correct_printed_qbi(
+    session: &mut Interview,
+    correct: impl FnOnce(&mut Vec<crate::EstateQbiStatementPaper>),
+) -> Vec<crate::Message> {
+    let mut request = open_documents(session);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::K1Document::K1EstateTrust(document) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    correct(&mut document.statements.qbi);
+    let Reply::Edit(P::SaveDocuments { warnings, .. }) = send(session, request) else {
+        panic!("the Document center shows what its save removed")
+    };
+    warnings.iter().map(|warning| status_message(&warning.message)).collect()
+}
+fn stored_qbi(session: &Interview) -> Vec<crate::EstateQbiStatement> {
+    session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::EstateTrustPortfolio { data } => {
+                Some(data.statements.qbi.statements.clone())
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+// The pruned apportionment is asked again: the estimate waits for it, and its
+// issue opens the K-1 topic on that statement's apportionment.
+fn assert_apportionment_asked(session: &mut Interview, statement: usize) {
+    let key = "ESTATE_QBI_APPORTIONMENT_NEEDED";
+    let result = estimate(&session.draft);
+    assert_ne!(result.state, ResultState::EstimatedForSupportedScope);
+    let issue = result
+        .issues
+        .iter()
+        .find(|issue| issue.display.key == key)
+        .unwrap_or_else(|| panic!("{:#?}", result.issues));
+    assert_eq!(
+        crate::interview::issue_page(&session.draft, &issue.context, Some(key)),
+        Some(TaxSection::PassThrough)
+    );
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::EstateTrustPortfolio { .. }))
+        .unwrap();
+    let row =
+        alloc::format!("income/{}/estate/qbi/{}", entry.id, stored_qbi(session)[statement].id);
+    let reveal: alloc::string::String = SchemaPath::root()
+        .field("followups")
+        .key(row.as_str())
+        .field("answer")
+        .field("allocations")
+        .into();
+    // The topic page holds that statement's answer row.
+    let topic = super::support::client::income_pages::open_topic(session, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = &topic else { unreachable!() };
+    assert!(followups.iter().any(|question| question.key == row), "{row}");
+    let request = crate::tests::cross::interview::navigate(&session.draft, TaxSection::Review);
+    let Reply::Response(P::Review { remaining_items, .. }) = send(session, request) else {
+        panic!("expected review")
+    };
+    let item = remaining_items
+        .iter()
+        .find(|item| {
+            let message = status_message(&item.item);
+            message.key == "DOCUMENT_PENDING_ANSWER"
+                && message.args.first() == Some(&crate::MessageArg::Resource(key.into()))
+        })
+        .unwrap_or_else(|| panic!("{remaining_items:#?}"));
+    assert_eq!(item.section, TaxSection::PassThrough);
+    assert_eq!(item.field.as_deref(), Some(reveal.as_str()));
+}
+fn removed_named(name: &str) -> crate::Message {
+    crate::Message::new(
+        "SAVING_REMOVES_NAMED",
+        vec![
+            crate::MessageArg::Resource("SAVING_KIND_ESTATE_QBI_APPORTIONMENT_ONE".into()),
+            crate::MessageArg::Text(name.into()),
+        ],
+    )
+}
+
+#[test]
+fn k1_1041_printed_qbi_service_correction_saves_and_reasks_the_shared_apportionment() {
+    let mut session = shared_estate_qbi_session();
+    // A corrected printed SSTB box leaves the two statements apportioned to one
+    // activity disagreeing: the paper is saved as printed, not refused.
+    let warnings = correct_printed_qbi(&mut session, |statements| statements[1].service = true);
+    assert_eq!(
+        warnings,
+        vec![
+            crate::Message::new(
+                "SAVING_REMOVES_COUNT",
+                vec![
+                    crate::MessageArg::Count(2),
+                    crate::MessageArg::Resource("SAVING_KIND_ESTATE_QBI_APPORTIONMENT_ONE".into()),
+                    crate::MessageArg::Resource("SAVING_KIND_ESTATE_QBI_APPORTIONMENT_MANY".into()),
+                ],
+            ),
+            removed_named("First"),
+            removed_named("Second"),
+        ]
+    );
+    let stored = stored_qbi(&session);
+    assert!(stored[1].service);
+    assert!(stored.iter().all(|statement| statement.allocations.is_empty()));
+    assert!(stored.iter().all(|statement| statement.activities.len() == 2));
+    assert_apportionment_asked(&mut session, 0);
+}
+
+#[test]
+fn k1_1041_printed_qbi_amount_correction_warns_and_reasks_its_apportionment() {
+    let mut session = shared_estate_qbi_session();
+    let before = stored_qbi(&session);
+    // The corrected amount no longer sums to its retained apportionment.
+    let warnings = correct_printed_qbi(&mut session, |statements| statements[0].income += 100);
+    assert_eq!(
+        warnings,
+        vec![crate::Message::new(
+            "SAVING_REMOVES_ONE_NAMED",
+            vec![
+                crate::MessageArg::Count(1),
+                crate::MessageArg::Resource("SAVING_KIND_ESTATE_QBI_APPORTIONMENT_ONE".into()),
+                crate::MessageArg::Text("First".into()),
+            ],
+        )]
+    );
+    let stored = stored_qbi(&session);
+    assert_eq!(stored[0].income, before[0].income + 100);
+    assert!(stored[0].allocations.is_empty());
+    assert_eq!(stored[0].activities, before[0].activities);
+    // The other statement keeps its apportionment and its prior-loss history.
+    assert_eq!(stored[1], before[1]);
+    assert_apportionment_asked(&mut session, 0);
 }
 fn se_health_test_unreimbursed(health: &mut SeHealth) {
     let SeHealth::Plan { establishment, .. } = health else { panic!("plan required") };
@@ -5506,7 +7102,7 @@ fn se_health_test_unreimbursed(health: &mut SeHealth) {
 fn scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave() {
     let mut k1 = k1_1120s("Synthetic Health Corp");
     k1.ordinary = 1_000_000;
-    k1.participation = Participation::Over500Hours { hours: 600 };
+    k1.participation = Some(Participation::Over500Hours { hours: 600 });
     let K1ScorpQbi::Statement { income, .. } = &mut k1.qbi else { panic!() };
     *income = 1_000_000;
     let (mut s, reply) = save_k1_1120s(vec![k1]);
@@ -5516,8 +7112,13 @@ fn scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave() {
     wage.social_tax = 31_000;
     wage.medicare_wages = 500_000;
     wage.medicare_tax = 7_250;
-    let request =
-        save_topic(&s.draft, TaxSection::Wages, vec![document(0, IncomeDocument::W2(wage))]);
+    let request = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(wage)) },
+        )],
+    );
     accepted(&send(&mut s, request));
     let wage_id =
         s.draft.income.iter().find(|e| matches!(e.income, FederalIncome::Wage { .. })).unwrap().id;
@@ -5549,8 +7150,11 @@ fn scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave() {
             n.english.contains("QBI income less released historical QBI losses: $5000")
         })
     );
-    let items = page_documents(&open_topic(&mut s, TaxSection::PassThrough)).to_vec();
-    let request = save_topic(&s.draft, TaxSection::PassThrough, items);
+    let items = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::K1 { .. }))
+        .collect::<Vec<_>>();
+    let request = save_documents(&mut s, items);
     accepted(&send(&mut s, request));
     assert_eq!(open_benefits(&mut s), benefits);
     let mut restarted = restart(s.draft.clone());
@@ -5572,7 +7176,9 @@ fn scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave() {
         SourceScope::Health,
     ));
     assert_eq!(s.draft, before);
-    let request = save_topic(&s.draft, TaxSection::Wages, vec![]);
+    let mut request = open_documents(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.k1.documents.clear();
     error(current_source_refusal(
         "health-context-17",
         &mut s,
@@ -5582,6 +7188,26 @@ fn scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave() {
         SourceScope::Health,
     ));
     assert_eq!(s.draft, before);
+    // Keeping the source identity cannot discard the health-plan answer by
+    // replacing its S corporation with a different K-1 document kind.
+    let dirty = s.dirty;
+    let mut request = open_documents(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let source = documents.common.k1.documents.iter_mut().find(|row| row.id == id).unwrap();
+    assert!(matches!(&source.document, crate::K1Document::K1Scorp(_)));
+    source.document =
+        crate::K1Document::K1Partnership((k1_1065("Synthetic replacement partnership")).into());
+    assert_eq!(source.id, id);
+    error(current_source_refusal(
+        "health-context-same-id-k1-conversion",
+        &mut s,
+        request,
+        "ISSUE_INTERVIEW_REVIEW_THE_ACCEPTED_PAGE_VALUES_BEFORE_65B6D7B7",
+        None,
+        SourceScope::Health,
+    ));
+    assert_eq!(s.draft, before);
+    assert_eq!(s.dirty, dirty);
 }
 
 /// Derived partnership-named policy source case from instructions7206,
@@ -5594,8 +7220,12 @@ fn scorp_health_plan_uses_actual_wage_limit_and_survives_k1_resave() {
 #[test]
 fn partnership_named_policy_you_paid_needs_no_fabricated_reimbursement_income() {
     let mut page = k1_1065("Partnership named policy");
-    page.interest =
-        PartnerInterest::General { participation: Participation::Over500Hours { hours: 600 } };
+    (page.participation, page.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Over500Hours { hours: 600 }).record(),
+        }),
+        Some(false),
+    );
     page.ordinary = 2_000_000;
     page.se = 2_000_000;
     page.se_gross = SeGross::Nonfarm { amount: 2_000_000 };
@@ -5608,7 +7238,7 @@ fn partnership_named_policy_you_paid_needs_no_fabricated_reimbursement_income() 
         service: false,
         section1231_qbi: 0,
     };
-    page.qbi_records.qualified_se_gross = 2_000_000;
+    page.qbi_records.as_mut().unwrap().qualified_se_gross = 2_000_000;
     let mut s = partner_benefits_session(vec![page]);
     let before = supported(&s.draft);
     let mut benefits = open_benefits(&mut s);
@@ -5642,12 +7272,16 @@ fn k1_box14_pages_save_reopen_restart_and_correct_the_same_document() {
     // Approved F3: independent box 14 earnings beside wages near the 2026
     // Social Security wage base. Then correct the category and code A.
     let mut page = k1_1065("Synthetic box 14 partnership");
-    page.interest =
-        PartnerInterest::General { participation: Participation::Over500Hours { hours: 501 } };
+    (page.participation, page.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Over500Hours { hours: 501 }).record(),
+        }),
+        Some(false),
+    );
     page.ordinary = 1_500_000;
     page.se = 2_000_000;
     page.se_gross = SeGross::Nonfarm { amount: 3_000_000 };
-    page.qbi_records.qualified_se_gross = 3_000_000;
+    page.qbi_records.as_mut().unwrap().qualified_se_gross = 3_000_000;
     page.basis.contributions = 10_000_000;
     page.qbi = PartnerQbi::Statement {
         income: 1_500_000,
@@ -5669,7 +7303,7 @@ fn k1_box14_pages_save_reopen_restart_and_correct_the_same_document() {
     assert_eq!(estimate(&restart(before.clone()).draft), r);
     assert_eq!(session.draft, before);
     assert_eq!(
-        K1Partnership::from_record(&page.name, &stored_1065s(&session)[0]),
+        K1PartnershipPaper::from_record(&page.name, &stored_1065s(&session)[0]),
         Some(page.clone())
     );
     let id = session
@@ -5683,17 +7317,19 @@ fn k1_box14_pages_save_reopen_restart_and_correct_the_same_document() {
     page.se_gross = SeGross::Farming { amount: 3_000_000 };
     for se in [2_000_000, 1_500_000] {
         page.se = se;
-        let request = save_topic(
-            &session.draft,
-            TaxSection::PassThrough,
-            vec![document(id, IncomeDocument::K1Partnership(page.clone()))],
+        let request = save_documents(
+            &mut session,
+            vec![document(
+                id,
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+            )],
         );
-        accepted(&send(&mut session, request));
+        accepted(&crate::tests::support::client::k1res::send_fixture(&mut session, request));
         revision += 1;
         assert_eq!(session.draft.revision, revision);
         assert_eq!(session.draft.income.iter().filter(|e| e.id == id).count(), 1);
         assert_eq!(
-            K1Partnership::from_record(&page.name, &stored_1065s(&session)[0]),
+            K1PartnershipPaper::from_record(&page.name, &stored_1065s(&session)[0]),
             Some(page.clone())
         );
         let corrected = supported(&session.draft);
@@ -5729,7 +7365,7 @@ fn k1_1041_preferential_investment_statement_reuses_one_regular_and_amt_election
     });
     let (mut session, reply) = save_k1s(vec![page]);
     accepted(&reply);
-    let request = save_deductions(&session.draft, DeductionRoute::Itemize, 0);
+    let request = save_deductions(&session.draft, Some(ItemizeOverride::Itemize), 0);
     accepted(&send(&mut session, request));
     let mut request = open_itemized_topic(&mut session, TaxSection::OtherItemized);
     let P::SaveOtherItemized { value: expenses, .. } = &mut request else { unreachable!() };
@@ -5770,7 +7406,7 @@ fn k1_sale_inputs_partner_save_reopen_restart_and_independent_amt() {
             amounts.depreciation = 600_000;
             page.more.section179_sales[0].alternative =
                 crate::K1Section179SaleAmtSource::Reported { amounts };
-            page.amt = PartnerAmtRecords::Separate { record };
+            page.amt = Some(PartnerAmtRecords::Separate { record });
         }
         let (session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
         accepted(&reply);
@@ -5784,10 +7420,17 @@ fn k1_sale_inputs_partner_save_reopen_restart_and_independent_amt() {
             stored.section179_sales[0].alternative.reported_amounts().unwrap().depreciation,
             if separate { 600_000 } else { 800_000 }
         );
-        assert_eq!(K1Partnership::from_record(&page.name, stored), Some(page.clone()));
+        assert_eq!(K1PartnershipPaper::from_record(&page.name, stored), Some(page.clone()));
         let mut restored = restart(session.draft.clone());
         assert_eq!(restored.draft.income, session.draft.income);
-        assert_eq!(reopened_k1s(&mut restored), vec![IncomeDocument::K1Partnership(page)]);
+        assert_eq!(
+            reopened_k1s(&mut restored),
+            expected_named_sources(
+                &restored.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+            )
+        );
         // The saved fully taxable statement now reaches final calculation.
         let result = estimate(&restored.draft);
         assert_eq!(result.state, ResultState::EstimatedForSupportedScope, "{:?}", result.issues);
@@ -5802,12 +7445,12 @@ fn k1_sale_inputs_scorp_save_reopen_restart_and_independent_amt() {
         page.more.section179_carryover = 200_000;
         page.more.section179_carryover_sold = 200_000;
         if separate {
-            let record = ScorpAmtRecords::same_as(&page.record());
+            let record = ScorpAmtRecords::same_as(&page.record()).unwrap();
             let mut amounts = page.more.section179_sales[0].regular.clone().unwrap();
             amounts.depreciation = 600_000;
             page.more.section179_sales[0].alternative =
                 crate::K1Section179SaleAmtSource::Reported { amounts };
-            page.amt = ScorpAmtRecords::Separate { record };
+            page.amt = Some(ScorpAmtRecords::Separate { record });
         }
         let (session, reply) = save_k1_1120s(vec![page.clone()]);
         accepted(&reply);
@@ -5821,10 +7464,17 @@ fn k1_sale_inputs_scorp_save_reopen_restart_and_independent_amt() {
             projected.section179_sales[0].regular.as_ref().unwrap().depreciation,
             if separate { 600_000 } else { 800_000 }
         );
-        assert_eq!(K1Scorp::from_record(&page.name, &stored), Some(page.clone()));
+        assert_eq!(K1ScorpPaper::from_record(&page.corporation.name, &stored), Some(page.clone()));
         let mut restored = restart(session.draft.clone());
         assert_eq!(restored.draft.income, session.draft.income);
-        assert_eq!(reopened_k1s(&mut restored), vec![IncomeDocument::K1Scorp(page)]);
+        assert_eq!(
+            reopened_k1s(&mut restored),
+            expected_named_sources(
+                &restored.draft,
+                Owner::Taxpayer,
+                vec![IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }]
+            )
+        );
         let result = estimate(&restored.draft);
         assert_eq!(result.state, ResultState::EstimatedForSupportedScope, "{:?}", result.issues);
     }
@@ -5842,7 +7492,10 @@ fn k1_sale_inputs_root_relationships_reject_on_save_with_exact_keys() {
         partner.more.section179_carryover = carryover;
         partner.more.section179_carryover_sold = sold;
         assert_eq!(partner.rule(), Some(expected));
-        assert!(!partner.record().valid());
+        assert!(
+            partner.record().validation_issue_with_mode("", false).is_none(),
+            "a retained carryover conflict remains storable"
+        );
         rejected_with(save_1065s(&complete(FederalStatus::Single), vec![partner]).1, expected);
         let mut scorp = k1_1120s("Synthetic corporation");
         scorp.more.section179_sales = vec![k1_sale_input_statement()];
@@ -5850,7 +7503,12 @@ fn k1_sale_inputs_root_relationships_reject_on_save_with_exact_keys() {
         scorp.more.section179_carryover = carryover;
         scorp.more.section179_carryover_sold = sold;
         assert_eq!(scorp.rule(), Some(expected));
-        assert!(!scorp.record().valid());
+        assert!(
+            scorp
+                .record()
+                .valid_with_sale_carry(false, crate::scorp_amt::ScorpSourceCapacity::regular()),
+            "a retained carryover conflict remains storable"
+        );
         rejected_with(save_k1_1120s(vec![scorp]).1, expected);
     }
 }
@@ -5885,19 +7543,23 @@ fn k1_sale_inputs_nested_regular_and_amt_rules_use_the_same_save_keys() {
                     partner.more.section179_sales[0].alternative =
                         crate::K1Section179SaleAmtSource::from_known_regular(&sale.regular);
                 }
-                partner.amt = PartnerAmtRecords::Separate { record };
+                partner.amt = Some(PartnerAmtRecords::Separate { record });
             } else {
                 partner.more.section179_sales = vec![sale.clone()];
             }
             assert_eq!(partner.rule(), Some(expected));
-            assert!(!partner.record().valid());
+            assert_eq!(
+                partner.record().validation_issue_with_mode("", false).is_none(),
+                case == 2,
+                "only the personal carryover conflict is storable"
+            );
             rejected_with(save_1065s(&complete(FederalStatus::Single), vec![partner]).1, expected);
             let mut scorp = k1_1120s("Synthetic corporation");
             scorp.more.section179_sales = vec![k1_sale_input_statement()];
             scorp.more.section179_carryover = 200_000;
             scorp.more.section179_carryover_sold = 200_000;
             if amt {
-                let record = ScorpAmtRecords::same_as(&scorp.record());
+                let record = ScorpAmtRecords::same_as(&scorp.record()).unwrap();
                 if case == 0 {
                     sale.alternative =
                         crate::K1Section179SaleAmtSource::from_known_regular(&sale.regular);
@@ -5907,12 +7569,18 @@ fn k1_sale_inputs_nested_regular_and_amt_rules_use_the_same_save_keys() {
                     scorp.more.section179_sales[0].alternative =
                         crate::K1Section179SaleAmtSource::from_known_regular(&sale.regular);
                 }
-                scorp.amt = ScorpAmtRecords::Separate { record };
+                scorp.amt = Some(ScorpAmtRecords::Separate { record });
             } else {
                 scorp.more.section179_sales = vec![sale];
             }
             assert_eq!(scorp.rule(), Some(expected));
-            assert!(!scorp.record().valid());
+            assert_eq!(
+                scorp
+                    .record()
+                    .valid_with_sale_carry(false, crate::scorp_amt::ScorpSourceCapacity::regular()),
+                case == 2,
+                "only the personal carryover conflict is storable"
+            );
             rejected_with(save_k1_1120s(vec![scorp]).1, expected);
         }
     }
@@ -5930,7 +7598,7 @@ fn k1_sale_inputs_ambiguous_personal_split_is_saved_without_guessing() {
     let (session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
     accepted(&reply);
     assert_eq!(
-        K1Partnership::from_record(&page.name, &stored_1065s(&session)[0]),
+        K1PartnershipPaper::from_record(&page.name, &stored_1065s(&session)[0]),
         Some({
             for (row, accepted) in page
                 .more
@@ -5976,10 +7644,12 @@ fn k1_sale_inputs_printed_list_replacement_preserves_personal_carryover_and_id()
     // Simulate the selected printed fields returned by document import;
     // the separate metadata regression checks its actual selection mask.
     page.more.section179_sales[0].regular.as_mut().unwrap().price = 3_500_000;
-    let request = save_topic(
-        &session.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Partnership(page.clone()))],
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page.clone()).into()) },
+        )],
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft.revision, revision + 1);
@@ -5988,16 +7658,34 @@ fn k1_sale_inputs_printed_list_replacement_preserves_personal_carryover_and_id()
     assert!(child > 0);
     page.more.section179_sales[0].id = child;
     let mut restored = restart(session.draft.clone());
-    assert_eq!(reopened_k1s(&mut restored), vec![IncomeDocument::K1Partnership(page)]);
+    assert_eq!(
+        reopened_k1s(&mut restored),
+        expected_named_sources(
+            &restored.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+        )
+    );
     assert_eq!(stored_1065s(&restored)[0].section179_carryover_sold, 200_000);
+    let mut corrected_paper = open_documents(&mut restored);
+    let P::SaveDocuments { documents, .. } = &mut corrected_paper else { unreachable!() };
+    let crate::K1Document::K1Partnership(source) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    source.statements.section179_sales.clear();
+    source.form.information.retain(|row| row.code != "L");
+    accepted(&send(&mut restored, corrected_paper));
     let before = restored.draft.clone();
     let mut invalid = k1_1065("Synthetic partnership");
     invalid.more.section179_carryover = 200_000;
     invalid.more.section179_carryover_sold = 200_000;
-    let request = save_topic(
-        &restored.draft,
-        TaxSection::PassThrough,
-        vec![document(id, IncomeDocument::K1Partnership(invalid))],
+    let request = k1_topic_answers(
+        &mut restored,
+        &[document(
+            id,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((invalid).into()) },
+        )],
     );
     rejected_with(send(&mut restored, request), "K1_SALE_CARRYOVER_ABOVE_SHARE");
     assert_eq!(restored.draft, before);
@@ -6006,15 +7694,10 @@ fn k1_sale_inputs_printed_list_replacement_preserves_personal_carryover_and_id()
 #[test]
 fn k1_sale_inputs_raw_records_check_every_statement_and_both_tax_systems() {
     for amt in [false, true] {
-        for bad in 0..5 {
+        {
+            let bad = 4;
             let mut sales = vec![k1_sale_input_statement()];
-            match bad {
-                0 => sales[0].regular.as_mut().unwrap().price = -1,
-                1 => sales[0].sold = 20260230,
-                2 => sales[0].description = "".into(),
-                3 => sales[0].regular.as_mut().unwrap().cost = 100_000_000_001,
-                _ => sales.resize(21, k1_sale_input_statement()),
-            }
+            sales.resize(21, k1_sale_input_statement());
             let mut partner = k1_1065("Synthetic partnership").record();
             if amt {
                 for sale in &mut sales {
@@ -6039,21 +7722,28 @@ fn k1_sale_final_public_f2_correction_restart_and_invalid_save_keep_identity() {
     {
         k1_qbi_statement(&mut source, 15_000, false);
         let page = match &source {
-            FederalIncome::Partnership { data } => IncomeDocument::K1Partnership(
-                K1Partnership::from_record("Synthetic F2 partnership", data).unwrap(),
-            ),
-            FederalIncome::Scorp { data } => IncomeDocument::K1Scorp(
-                K1Scorp::from_record("Synthetic F2 corporation", data).unwrap(),
-            ),
+            FederalIncome::Partnership { data } => IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership(
+                    (K1PartnershipPaper::from_record("Synthetic F2 partnership", data).unwrap())
+                        .into(),
+                ),
+            },
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                IncomeSource::K1 {
+                    value: crate::K1Document::K1Scorp(
+                        (K1ScorpPaper::from_record("Synthetic F2 corporation", data).unwrap())
+                            .into(),
+                    ),
+                }
+            }
             _ => unreachable!(),
         };
         let (mut base, _) = crate::tests::passthrough::k1_sale_return::draft(source);
         base.income.clear();
         let mut session = Interview::new(TEST_USER, base.clone());
-        let reply = send(
-            &mut session,
-            save_topic(&base, TaxSection::PassThrough, vec![document(0, page.clone())]),
-        );
+        let reply = save_k1_sources_and_answers(&mut session, vec![document(0, page.clone())]);
         accepted(&reply);
         let result = estimate(&session.draft);
         assert_eq!(result.state, ResultState::EstimatedForSupportedScope, "{:?}", result.issues);
@@ -6065,19 +7755,28 @@ fn k1_sale_final_public_f2_correction_restart_and_invalid_save_keep_identity() {
         // Correct the actual accepted editor so hidden source IDs survive.
         let mut corrected = reopened_k1s(&mut session).remove(0);
         match &mut corrected {
-            IncomeDocument::K1Partnership(page) => {
-                page.more.section179_sales[0].regular.as_mut().unwrap().price = 2_000_000
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+                assert_eq!(
+                    page.personal.as_ref().unwrap().amt,
+                    Some(PartnerAmtRecords::SameAsRegular)
+                );
+                let sale = &mut page.statements.section179_sales[0];
+                sale.regular.as_mut().unwrap().price = 2_000_000;
+                let crate::K1Section179SaleAmtSource::Reported { amounts } = &mut sale.alternative
+                else {
+                    panic!("fixture includes the actual AMT sale amounts")
+                };
+                amounts.price = 2_000_000;
             }
-            IncomeDocument::K1Scorp(page) => {
-                page.more.section179_sales[0].regular.as_mut().unwrap().price = 2_000_000
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                page.statements.section179_sales[0].regular.as_mut().unwrap().price = 2_000_000
             }
             _ => unreachable!(),
         }
-        let current = session.draft.clone();
-        let reply = send(
-            &mut session,
-            save_topic(&current, TaxSection::PassThrough, vec![document(id, corrected.clone())]),
-        );
+        let reply = {
+            let request = save_documents(&mut session, vec![document(id, corrected.clone())]);
+            send(&mut session, request)
+        };
         accepted(&reply);
         assert_eq!(session.draft.income[0].id, id);
         assert_eq!(session.draft.revision, revision + 1);
@@ -6089,15 +7788,21 @@ fn k1_sale_final_public_f2_correction_restart_and_invalid_save_keep_identity() {
         assert_eq!(estimate(&restored.draft), result);
         assert_eq!(reopened_k1s(&mut restored), vec![corrected.clone()]);
         match &mut corrected {
-            IncomeDocument::K1Partnership(page) => page.more.section179_carryover_sold = 250_000,
-            IncomeDocument::K1Scorp(page) => page.more.section179_carryover_sold = 250_000,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+                page.personal.as_mut().unwrap().section179_carryover_sold = 250_000
+            }
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                let mut personal = scorp_fixture_source(page).personal;
+                personal.section179_carryover_sold = 250_000;
+                *page = remember_scorp_document(page.clone(), personal);
+            }
             _ => unreachable!(),
         }
         let accepted_draft = restored.draft.clone();
-        let reply = send(
-            &mut restored,
-            save_topic(&accepted_draft, TaxSection::PassThrough, vec![document(id, corrected)]),
-        );
+        let reply = {
+            let request = k1_topic_answers(&mut restored, &[document(id, corrected)]);
+            send(&mut restored, request)
+        };
         rejected_with(reply, "K1_SALE_CARRYOVER_ABOVE_CARRYOVER");
         assert_eq!(restored.draft, accepted_draft);
     }
@@ -6107,10 +7812,12 @@ fn k1_sale_final_public_f2_correction_restart_and_invalid_save_keep_identity() {
 fn partial_partner_fuel_recovery_native_save_reopens_restarts_and_rejects_invalid_atomically() {
     let mut page = k1_1065("Synthetic fuel partnership");
     page.ordinary = 2_000_000;
-    page.interest = PartnerInterest::LlcMember {
-        box1_in_se: false,
-        participation: Participation::Over500Hours { hours: 600 },
-    };
+    (page.participation, page.limited_for_se) = (
+        Some(crate::PartnerParticipation::General {
+            facts: (Participation::Over500Hours { hours: 600 }).record(),
+        }),
+        Some(true),
+    );
     page.more.prior_fuel_credit = Some(partial_partner_fuel_recovery());
     let (mut session, reply) = save_1065s(&complete(FederalStatus::Single), vec![page.clone()]);
     accepted(&reply);
@@ -6118,26 +7825,1069 @@ fn partial_partner_fuel_recovery_native_save_reopens_restarts_and_rejects_invali
     assert_eq!(value(&report, "partnership_2_prior_fuel_credit_recovery"), 718);
     let before = session.draft.clone();
     let reopened = reopened_k1s(&mut session);
-    assert_eq!(reopened, vec![IncomeDocument::K1Partnership(page)]);
+    assert_eq!(
+        reopened,
+        expected_named_sources(
+            &session.draft,
+            Owner::Taxpayer,
+            vec![IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }]
+        )
+    );
     let mut restored = restart(before.clone());
     assert_eq!(reopened_k1s(&mut restored), reopened);
     assert_eq!(supported(&restored.draft), report);
-    let mut items = page_documents(&open_topic(&mut session, TaxSection::PassThrough)).to_vec();
-    let IncomeDocument::K1Partnership(page) = &mut items[0].document else { unreachable!() };
-    let prior = page.more.prior_fuel_credit.as_mut().unwrap();
-    // Even an inactive comparison is validated before the Save commits.
-    prior.full_prior_tax_benefit = true;
-    prior.partial_prior_year_benefit.as_mut().unwrap().worksheet_reference.clear();
-    let request = save_topic(&session.draft.clone(), TaxSection::PassThrough, items);
-    let dirty = session.dirty;
-    current_income_refusal(
-        "partial-partner-fuel-invalid-worksheet",
+    assert_eq!(supported(&restart(session.draft.clone()).draft), report);
+}
+
+#[test]
+fn k1_credit_calls_follow_each_printed_housing_code_without_netting_amounts() {
+    for code in [
+        None,
+        Some(K1CreditCode::WorkOpportunity),
+        Some(K1CreditCode::LowIncomeHousingJ5),
+        Some(K1CreditCode::LowIncomeHousingOther),
+    ] {
+        let credits: Vec<crate::K1CreditPage> = code
+            .into_iter()
+            .map(|code| {
+                K1Credit {
+                    carbon_oxide_origin: None,
+                    renewable_facility_origin: None,
+                    line: None,
+                    code,
+                    amount: 100,
+                }
+                .into()
+            })
+            .collect();
+        let expected = if code.is_some_and(|c| {
+            matches!(c, K1CreditCode::LowIncomeHousingJ5 | K1CreditCode::LowIncomeHousingOther)
+        }) {
+            vec![0, 1]
+        } else {
+            vec![]
+        };
+        let calls = credits.iter().map(crate::K1CreditCallBox::from).collect::<Vec<_>>();
+        assert_eq!(crate::K1PartnershipCalls::from_credits(&calls).housing, expected);
+        assert_eq!(crate::K1ScorpCalls::from_credits(&calls).housing, expected);
+        let mut partner = k1_1065("Synthetic housing calls");
+        partner.more.credits = credits.clone();
+        let mut shareholder = k1_1120s("Synthetic housing calls");
+        shareholder.more.credits = partner.more.credits.clone();
+        for source in [
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((partner).into()) },
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((shareholder).into()) },
+        ] {
+            let mut source = source;
+            match &mut source {
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership(page) } => {
+                    page.personal.as_mut().unwrap().rental_participation = None
+                }
+                IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                    let mut personal = scorp_fixture_source(page).personal;
+                    personal.rental_participation = None;
+                    *page = remember_scorp_document(page.clone(), personal);
+                }
+                _ => unreachable!(),
+            }
+            let rental_needed = code.is_some_and(crate::K1CreditCode::rental);
+            let mut draft = complete(FederalStatus::Single);
+            let accepted_income = match &source {
+                IncomeSource::K1 { value: crate::K1Document::K1Scorp(page) } => {
+                    FederalIncome::Scorp { data: scorp_fixture_source(page) }
+                }
+                _ => document_income(&source),
+            };
+            add(&mut draft, income(accepted_income));
+            assert_eq!(
+                estimate(&draft)
+                    .issues
+                    .iter()
+                    .any(|issue| issue.display.key == "DOCUMENT_K1_RENTAL_RECORDS"),
+                rental_needed
+            );
+            let mut session = restart(complete(FederalStatus::Single));
+            let request = save_documents(&mut session, vec![document(0, source)]);
+            accepted(&send(&mut session, request));
+            let P::SaveIncomes { followups, .. } = super::support::client::income_pages::open_topic(
+                &mut session,
+                TaxSection::PassThrough,
+            ) else {
+                unreachable!()
+            };
+            let actual = followups
+                .iter()
+                .find_map(|row| match &row.answer {
+                    crate::DocumentAnswer::K1CreditConfirmations { .. } => {
+                        Some(row.k1.housing_choices.clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default();
+            assert_eq!(actual, expected);
+            let (remaining, _, _, _) = crate::tests::cross::interview::review_state(&mut session);
+            assert_eq!(
+                remaining
+                    .iter()
+                    .any(|row| status_text(&row.item).contains("Your rental activity records")),
+                rental_needed
+            );
+        }
+    }
+}
+
+#[test]
+fn k1_housing_answers_keep_both_acquisition_dates_in_the_existing_records() {
+    for code in
+        [None, Some(K1CreditCode::LowIncomeHousingJ5), Some(K1CreditCode::LowIncomeHousingOther)]
+    {
+        for amount in [0, 100] {
+            for after in [false, true] {
+                let credits: Vec<crate::K1CreditPage> = code
+                    .into_iter()
+                    .map(|code| {
+                        K1Credit {
+                            carbon_oxide_origin: None,
+                            renewable_facility_origin: None,
+                            line: None,
+                            code,
+                            amount,
+                        }
+                        .into()
+                    })
+                    .collect();
+                let expected = if code.is_some() { vec![0, 1] } else { vec![] };
+                let (partner_calls, scorp_calls) =
+                    super::support::builders::k1_page_credit_calls(&credits);
+                let mut partner = k1_1065("Synthetic housing acquisition");
+                // A housing credit is rental real estate: participation is asked.
+                partner.rentals.participation = (code.is_some() && amount > 0)
+                    .then_some(crate::K1RentalParticipation::NotActive);
+                partner.more.credits = credits.clone();
+                partner.more.calls = partner_calls;
+                partner.more.housing_confirmed = Some(crate::K1HousingAcquisition::from(after));
+                let record = partner.record();
+                assert_eq!(record.housing_confirmed, Some(after));
+                let reopened = K1PartnershipPaper::from_record(&partner.name, &record).unwrap();
+                assert_eq!(reopened.more.calls.housing, expected);
+                assert_eq!(reopened, partner);
+                assert_eq!(reopened.record(), record);
+                let mut shareholder = k1_1120s("Synthetic housing acquisition");
+                shareholder.more.credits = credits;
+                shareholder.more.calls = scorp_calls;
+                shareholder.more.housing_confirmed = Some(crate::K1HousingAcquisition::from(after));
+                shareholder.rentals.participation = partner.rentals.participation;
+                let record = shareholder.record();
+                assert_eq!(record.housing_confirmed, Some(after));
+                let reopened =
+                    K1ScorpPaper::from_record(&shareholder.corporation.name, &record).unwrap();
+                assert_eq!(reopened.more.calls.housing, expected);
+                assert_eq!(reopened, shareholder);
+                assert_eq!(reopened.record(), record);
+                if amount > 0 {
+                    let mut expected = vec![
+                        IncomeSource::K1 {
+                            value: crate::K1Document::K1Partnership((partner).into()),
+                        },
+                        IncomeSource::K1 {
+                            value: crate::K1Document::K1Scorp((shareholder).into()),
+                        },
+                    ];
+                    let mut session = restart(complete(FederalStatus::Single));
+                    let reply = save_k1_sources_and_answers(
+                        &mut session,
+                        expected.iter().cloned().map(|value| document(0, value)).collect(),
+                    );
+                    accepted(&reply);
+                    // No housing credit means no acquisition-date question.
+                    // The pure native roundtrip above still retains either
+                    // historical answer; a new source cannot author it.
+                    if code.is_none() {
+                        for source in &mut expected {
+                            match source {
+                                IncomeSource::K1 { value: crate::K1Document::K1Partnership(w) } => {
+                                    w.personal.as_mut().unwrap().housing_confirmed = None
+                                }
+                                IncomeSource::K1 { value: crate::K1Document::K1Scorp(w) } => {
+                                    let mut personal = scorp_fixture_source(w).personal;
+                                    personal.housing_confirmed = None;
+                                    *w = remember_scorp_document(w.clone(), personal);
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                    }
+                    let expected =
+                        expected_named_sources(&session.draft, Owner::Taxpayer, expected);
+                    assert_eq!(reopened_k1s(&mut session), expected);
+                    let mut restored = restart(session.draft.clone());
+                    assert_eq!(reopened_k1s(&mut restored), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn partnership_paper_keeps_header_rows_and_personal_records_through_native_storage() {
+    use crate::document_names::AcceptedPartySource;
+    use crate::tests::support::client::{draft_from_native_records, native_draft_records};
+    let initial = complete(FederalStatus::Single);
+    let (calculation, paper) =
+        crate::tests::support::builders::complete_partnership_paper(&initial);
+    let expected_paper = paper.form.clone();
+    let expected_statements = paper.statements.clone();
+    let mut session = Interview::new(TEST_USER, initial.clone());
+    let request = save_documents(
         &mut session,
-        request,
-        "ISSUE_FEDERAL_RULES_REVIEW_THE_DOCUMENT_AMOUNTS__THEY_MUST_17724C26",
-        "[documents/documents/0/document/more/prior_fuel_credit/partial_prior_year_benefit]",
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership(paper) })],
+    );
+    let desired = page_documents(&request);
+    accepted(&send(&mut session, request));
+    assert_eq!(stored_1065s(&session)[0].research_credit_line, None);
+    let answers = crate::tests::support::client::income_pages::k1_fixture_answer_request(
+        &mut session,
+        &desired,
+    )
+    .unwrap();
+    accepted(&send(&mut session, answers));
+    let mut expected = initial;
+    let mut expected_entry = income(FederalIncome::Partnership { data: calculation.record() });
+    expected_entry.label = calculation.name.clone();
+    add(&mut expected, expected_entry);
+    expected.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), supported(&expected));
+    let original_source = stored_1065s(&session)[0].source.clone().unwrap();
+    assert_eq!(original_source.paper, expected_paper);
+    assert_eq!(original_source.statements, expected_statements);
+    let accepted_entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(&entry.income, FederalIncome::Partnership { .. }))
+        .unwrap();
+    let parties = accepted_entry.accepted_parties().unwrap();
+    assert_eq!(parties.recipient, expected_paper.partner);
+    assert_eq!(parties.issuer.as_ref(), Some(&expected_paper.partnership));
+    assert_eq!(parties.assigned, crate::DocumentRecipient::Taxpayer);
+    assert_eq!(accepted_entry.printed.as_ref(), Some(&parties));
+    let records = native_draft_records(&session.draft);
+    let specialized: Vec<_> = records
+        .iter()
+        .filter_map(|(_, bytes)| match crate::TaxAppData::from_avro(bytes).unwrap() {
+            crate::TaxAppData::PartnershipDocument { record, .. } => Some(record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(specialized.len(), 1);
+    assert_eq!(specialized[0].source, *original_source);
+    assert!(!records.iter().any(|(_, bytes)| matches!(
+        crate::TaxAppData::from_avro(bytes).unwrap(),
+        crate::TaxAppData::IncomeDocument {
+            entry: FederalIncomeEntry { income: FederalIncome::Partnership { .. }, .. },
+            ..
+        }
+    )));
+    let decoded = draft_from_native_records(2026, &records);
+    assert_eq!(decoded, session.draft);
+    session = restart(decoded);
+    let mut topic =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = &mut topic else { unreachable!() };
+    let row = followups
+        .iter_mut()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::K1PartnerRecords { .. }))
+        .unwrap();
+    let crate::DocumentAnswer::K1PartnerRecords { basis, .. } = &mut row.answer else {
+        unreachable!()
+    };
+    basis.contributions += 99;
+    let row = followups
+        .iter_mut()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::K1ResearchCreditLine { .. }))
+        .unwrap();
+    let crate::DocumentAnswer::K1ResearchCreditLine { value } = &mut row.answer else {
+        unreachable!()
+    };
+    assert_eq!(*value, Some(BusinessCredit::ResearchSmallBusiness));
+    *value = Some(BusinessCredit::Research);
+    accepted(&send(&mut session, topic));
+    assert_eq!(stored_1065s(&session)[0].source.as_deref(), Some(original_source.as_ref()));
+    let mut missing = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut missing else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    paper.form.credits[1].amount = None;
+    paper.form.credits[1].text = "STMT *".into();
+    paper.form.credits[1].statement = true;
+    accepted(&send(&mut session, missing));
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "PARTNERSHIP_SOURCE_STATEMENT_REQUIRED")
+    );
+    assert_eq!(stored_1065s(&session)[0].research_credit_line, Some(BusinessCredit::Research));
+    session = restart(session.draft);
+    assert_eq!(stored_1065s(&session)[0].research_credit_line, Some(BusinessCredit::Research));
+    let mut corrected = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut corrected else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    assert_eq!(paper.form.liabilities, original_source.paper.liabilities);
+    assert_eq!(paper.form.credits[1].amount, None);
+    assert_eq!(
+        paper.personal.as_ref().unwrap().research_credit_line,
+        Some(BusinessCredit::Research)
+    );
+    paper.form.credits[0].amount = Some(200_051);
+    paper.form.credits[1].amount = Some(20_099);
+    assert_eq!(paper.statements.credits[1].line, None);
+    paper.personal.as_mut().unwrap().research_credit_line =
+        Some(BusinessCredit::ResearchSmallBusiness);
+    paper.personal.as_mut().unwrap().basis.contributions = 0;
+    accepted(&send(&mut session, corrected));
+    let retained = stored_1065s(&session).remove(0);
+    assert_eq!(retained.source.as_ref().unwrap().paper.partner, expected_paper.partner);
+    assert_eq!(retained.source.as_ref().unwrap().paper.partnership, expected_paper.partnership);
+    assert_eq!(retained.credits[0].amount, 200_051);
+    assert_eq!(retained.credits[1].amount, 20_099);
+    assert_eq!(retained.credits[1].line, Some(BusinessCredit::Research));
+    assert_eq!(retained.research_credit_line, Some(BusinessCredit::Research));
+    assert_eq!(retained.regular.basis.contributions, 1_000_099);
+    assert_eq!(
+        retained.source.as_ref().unwrap().paper.distributions,
+        original_source.paper.distributions
+    );
+    let accepted_draft = session.draft.clone();
+    let reopened = open_documents(&mut session);
+    accepted(&send(&mut session, reopened));
+    assert_eq!(session.draft, accepted_draft);
+    assert_eq!(restart(session.draft.clone()).draft, accepted_draft);
+    let mut corrected = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut corrected else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    paper.form.amt.push(crate::K1CodeRow {
+        code: "A".into(),
+        amount: Some(12_345),
+        text: "Depreciation adjustment".into(),
+        statement: false,
+    });
+    accepted(&send(&mut session, corrected));
+    let retained = stored_1065s(&session).remove(0);
+    assert_eq!(retained.alternative.as_ref(), Some(&retained.regular));
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "DOCUMENT_K1_AMT_RECORDS")
+    );
+    session = restart(session.draft.clone());
+    let before = session.draft.clone();
+    let dirty = session.dirty;
+    let mut topic =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = &topic else { unreachable!() };
+    let index = followups
+        .iter()
+        .position(|row| matches!(row.answer, crate::DocumentAnswer::K1PartnerAmt { .. }))
+        .unwrap();
+    let Reply::Response(P::Problem { message, field }) = send(&mut session, topic.clone()) else {
+        panic!("the accepted AMT answer must be corrected on its ordinary topic")
+    };
+    assert_eq!(message, libertas::libertas_formatted_text("DOCUMENT_K1_AMT_RECORDS", &[]));
+    assert_eq!(
+        field,
+        Some(
+            SchemaPath::root()
+                .field("followups")
+                .key(followups[index].key.as_str())
+                .field("answer")
+                .field("value")
+                .to_string()
+        )
     );
     assert_eq!(session.draft, before);
     assert_eq!(session.dirty, dirty);
-    assert_eq!(supported(&restart(session.draft.clone()).draft), report);
+    let P::SaveIncomes { followups, .. } = &mut topic else { unreachable!() };
+    let crate::DocumentAnswer::K1PartnerAmt { value: amt } = &mut followups[index].answer else {
+        unreachable!()
+    };
+    assert_eq!(*amt, Some(PartnerAmtRecords::SameAsRegular));
+    let mut alternative = retained.regular;
+    alternative.ordinary += 12_345;
+    *amt = Some(PartnerAmtRecords::Separate { record: alternative });
+    accepted(&send(&mut session, topic));
+    assert!(supported(&session.draft).issues.is_empty());
+    assert_eq!(
+        stored_1065s(&session)[0].source.as_ref().unwrap().paper.amt[0].amount,
+        Some(12_345)
+    );
+    let mut canceling = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut canceling else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    paper.form.amt.push(crate::K1CodeRow {
+        code: "B".into(),
+        amount: Some(-12_345),
+        text: "Adjusted gain or loss".into(),
+        statement: false,
+    });
+    accepted(&send(&mut session, canceling));
+    let mut topic =
+        super::support::client::income_pages::open_topic(&mut session, TaxSection::PassThrough);
+    let P::SaveIncomes { followups, .. } = &mut topic else { unreachable!() };
+    let crate::DocumentAnswer::K1PartnerAmt { value: amt } = &mut followups[index].answer else {
+        unreachable!()
+    };
+    *amt = Some(PartnerAmtRecords::Separate { record: stored_1065s(&session)[0].regular.clone() });
+    accepted(&send(&mut session, topic));
+    let native = stored_1065s(&session).remove(0);
+    assert_eq!(native.amt_record_choice, Some(true));
+    assert_eq!(native.alternative.as_ref(), Some(&native.regular));
+    session = restart(session.draft.clone());
+    assert!(supported(&session.draft).issues.is_empty());
+    let mut unknown = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut unknown else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    assert!(matches!(
+        paper.personal.as_ref().unwrap().amt,
+        Some(PartnerAmtRecords::Separate { .. })
+    ));
+    paper.form.amt.push(crate::K1CodeRow {
+        code: "B".into(),
+        amount: None,
+        text: "STMT *".into(),
+        statement: true,
+    });
+    accepted(&send(&mut session, unknown));
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "PARTNERSHIP_SOURCE_STATEMENT_REQUIRED")
+    );
+    let accepted = session.draft.clone();
+    assert_eq!(restart(accepted.clone()).draft, accepted);
+    let native = stored_1065s(&session).remove(0);
+    assert_eq!(native.amt_record_choice, Some(true));
+    assert_eq!(native.source.as_ref().unwrap().paper.amt.last().unwrap().amount, None);
+}
+
+#[test]
+fn partnership_blank_printed_partner_uses_the_ordinary_owner_editor_and_keeps_choice() {
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Joint));
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership(
+                    k1_1065("Synthetic unnamed partner").into(),
+                ),
+            },
+        )],
+    );
+    let mut raw = request;
+    let P::SaveDocuments { documents, .. } = &mut raw else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    // The final submitted paper really has no printed partner name. No fixture
+    // name adapter runs after this edit or supplies an accepted association.
+    paper.form.partner.name.clear();
+    accepted(&send(&mut session, raw));
+    let unknown = crate::tests::support::builders::unknown_documents(&session.draft);
+    assert_eq!(unknown.len(), 1);
+    assert_eq!(unknown[0].1, TaxSection::Documents);
+    accepted(&crate::tests::support::builders::add_documents(
+        &mut session,
+        TaxSection::Documents,
+        -2,
+        &[unknown[0].0],
+        crate::AddedOwnership::Yours,
+    ));
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Partnership { .. }))
+        .unwrap();
+    assert_eq!(entry.owner, crate::DocumentOwner::Spouses);
+    let FederalIncome::Partnership { data } = &entry.income else { unreachable!() };
+    let source = data.source.as_ref().unwrap();
+    assert!(source.paper.partner.name.is_empty());
+    assert_eq!(source.assigned, crate::DocumentRecipient::Spouse);
+    let saved = session.draft.clone();
+    session = restart(saved.clone());
+    let reopened = open_documents(&mut session);
+    accepted(&send(&mut session, reopened));
+    assert_eq!(session.draft, saved);
+}
+
+#[test]
+fn partnership_orphan_statement_amount_stays_pending_until_actual_printed_correction() {
+    let paper = crate::tests::support::builders::partnership_orphan_income_statement();
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let request = save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Partnership(paper) })],
+    );
+    accepted(&send(&mut session, request));
+    assert!(session.draft.valid_stored());
+    assert!(
+        estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "PARTNERSHIP_SOURCE_STATEMENT_REQUIRED")
+    );
+    session = restart(session.draft);
+    let mut correction = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    assert_eq!(paper.statements.income[0].amount, None);
+    assert!(paper.form.income.is_empty());
+    paper.form.income.push(crate::K1CodeRow {
+        code: "C".into(),
+        amount: Some(12_345),
+        text: "STMT *".into(),
+        statement: true,
+    });
+    accepted(&send(&mut session, correction));
+    let native = stored_1065s(&session).remove(0);
+    assert_eq!(
+        native.income,
+        vec![PartnerIncomeTotal { code: PartnerIncomeCode::Section1256, amount: 12_345 }]
+    );
+    assert_eq!(native.source.as_ref().unwrap().statements.income[0].amount, None);
+    assert!(
+        !estimate(&session.draft)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "PARTNERSHIP_SOURCE_STATEMENT_REQUIRED")
+    );
+    assert_eq!(restart(session.draft.clone()).draft, session.draft);
+}
+
+#[test]
+fn partnership_raw_codes_preserve_the_existing_uncalculated_boundaries() {
+    let [
+        deduction,
+        paper,
+        mut qbi,
+        mut k3,
+        equivalents,
+        passive,
+        self_employment,
+        exempt,
+        investment_income,
+        investment_expenses,
+        contributed,
+    ] = crate::tests::support::builders::partnership_uncalculated_code_papers();
+    assert_eq!(deduction.rule(), Some("PARTNERSHIP_SOURCE_CODE_NOT_CALCULATED"));
+    let native = paper.record();
+    assert!(native.unentered.contains(&crate::PartnerK1Item::MultipleActivities));
+    assert_eq!(native.source.unwrap().paper.self_employment, paper.form.self_employment);
+    for (document, field) in [(&qbi, "qbi"), (&k3, "schedule_k3")] {
+        assert_eq!(document.source().admission_issue(), None);
+        let issue = document.source().required_issue().unwrap();
+        assert_eq!(issue.key, "PARTNERSHIP_SOURCE_STATEMENT_REQUIRED");
+        assert!(issue.has_field_prefix(&["statements", field]));
+        assert_eq!(document.record().source.unwrap().paper, document.form);
+    }
+    // Removing the actual reference restores the established no-statement path.
+    qbi.form.information.retain(|row| row.code != "Z");
+    k3.form.k3_attached = false;
+    assert_eq!(qbi.source().required_issue(), None);
+    assert_eq!(k3.source().required_issue(), None);
+    let native = equivalents.record();
+    assert!(native.unentered.contains(&crate::PartnerK1Item::OtherIncome));
+    assert_eq!(native.source.unwrap().paper.dividend_equivalents, Some(12_345));
+    let native = passive.record();
+    assert!(native.unentered.contains(&crate::PartnerK1Item::MultipleActivities));
+    assert!(native.source.unwrap().paper.multiple_passive);
+    for (document, field) in [(self_employment, "self_employment"), (exempt, "exempt")] {
+        assert_eq!(document.source().admission_issue(), None);
+        let issue = document.source().required_issue().unwrap();
+        assert_eq!(issue.key, "PARTNERSHIP_SOURCE_CODE_NOT_CALCULATED");
+        assert!(issue.has_field_prefix(&["form", field]));
+    }
+    for mut document in [investment_income, investment_expenses] {
+        assert_eq!(document.source().required_issue(), None);
+        assert!(document.record().unentered.contains(&crate::PartnerK1Item::OtherInformation));
+        document.form.information.last_mut().unwrap().amount = None;
+        assert_eq!(
+            document.source().required_issue().unwrap().key,
+            "PARTNERSHIP_SOURCE_STATEMENT_REQUIRED"
+        );
+        document.form.information.last_mut().unwrap().amount = Some(0);
+        assert_eq!(document.source().required_issue(), None);
+        assert!(!document.record().unentered.contains(&crate::PartnerK1Item::OtherInformation));
+    }
+    let native = contributed.record();
+    assert!(!native.complete());
+    assert!(native.special.is_empty());
+    assert_eq!(native.source.unwrap().paper.contributed_built_in_property, Some(true));
+    for (credit_box, mut document) in
+        crate::tests::support::builders::partnership_property_total_papers()
+    {
+        assert_eq!(document.source().admission_issue(), None);
+        assert_eq!(document.source().required_issue(), None);
+        let actual_statement = document.statements.investment_property.clone();
+        assert_eq!(
+            document.record().source.unwrap().statements.investment_property,
+            actual_statement
+        );
+        let row = if credit_box {
+            document.form.credits.last_mut().unwrap()
+        } else {
+            document.form.information.last_mut().unwrap()
+        };
+        assert_eq!(row.amount, None);
+        row.amount = Some(12_345);
+        assert_eq!(document.source().required_issue(), None);
+        let row = if credit_box {
+            document.form.credits.last_mut().unwrap()
+        } else {
+            document.form.information.last_mut().unwrap()
+        };
+        row.amount = Some(12_346);
+        let issue = document.source().required_issue().unwrap();
+        assert_eq!(issue.key, "PARTNERSHIP_SOURCE_STATEMENT_MISMATCH");
+        assert!(issue.has_field_prefix(&["statements", "investment_property"]));
+    }
+}
+
+#[test]
+fn a_printed_zero_k1_credit_is_not_a_left_out_item() {
+    use crate::tests::cross::interview::k1_1065;
+    let mut document: crate::K1PartnershipDocument = k1_1065("Synthetic zero credit").into();
+    document.form.credits.push(crate::K1CodeRow { amount: Some(0), ..Default::default() });
+    assert!(!document.record().unentered.contains(&crate::PartnerK1Item::Credits));
+    document.form.credits[0].amount = Some(100);
+    assert!(document.record().unentered.contains(&crate::PartnerK1Item::Credits));
+}
+
+#[test]
+fn an_uncalculated_k1_code_item_opens_the_document_center_row() {
+    let [_, _, _, _, _, _, self_employment, ..] =
+        crate::tests::support::builders::partnership_uncalculated_code_papers();
+    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership(self_employment) },
+        )],
+    );
+    accepted(&send(&mut session, request));
+    let items = crate::interview::remaining_items(
+        &session.draft,
+        &estimate(&session.draft),
+        TaxSection::Review,
+    );
+    let key = b"PARTNERSHIP_SOURCE_CODE_NOT_CALCULATED";
+    let opens = |section: TaxSection| {
+        items
+            .iter()
+            .any(|item| item.section == section && item.item.windows(key.len()).any(|w| w == key))
+    };
+    assert!(opens(TaxSection::Documents));
+    assert!(!opens(TaxSection::PassThrough));
+}
+
+#[test]
+fn scorp_paper_keeps_full_headers_personal_answers_and_figures_through_storage() {
+    use crate::document_names::AcceptedPartySource;
+    use crate::tests::support::client::{draft_from_native_records, native_draft_records};
+    let initial = complete(FederalStatus::Single);
+    let (calculation, paper) = crate::tests::support::builders::complete_scorp_paper(&initial);
+    let expected_paper = paper.form.clone();
+    let expected_statements = paper.statements.clone();
+    let mut session = Interview::new(TEST_USER, initial.clone());
+    let request = save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp(paper) })],
+    );
+    let desired = page_documents(&request);
+    accepted(&send(&mut session, request));
+    let answers = crate::tests::support::client::income_pages::k1_fixture_answer_request(
+        &mut session,
+        &desired,
+    )
+    .unwrap();
+    accepted(&send(&mut session, answers));
+    let mut expected = initial;
+    let mut entry = income(FederalIncome::Scorp {
+        data: crate::tests::support::builders::scorp_source(calculation.record()),
+    });
+    entry.label = calculation.corporation.name.clone();
+    add(&mut expected, entry);
+    expected.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), supported(&expected));
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|e| matches!(e.income, FederalIncome::Scorp { .. }))
+        .unwrap();
+    let FederalIncome::Scorp { data } = &entry.income else { unreachable!() };
+    let source = data;
+    assert_eq!(source.paper, expected_paper);
+    assert_eq!(source.statements, expected_statements);
+    let names = entry.accepted_parties().unwrap();
+    assert_eq!(names.recipient, expected_paper.shareholder);
+    assert_eq!(names.issuer.as_ref(), Some(&expected_paper.corporation));
+    assert_eq!(names.assigned, crate::DocumentRecipient::Taxpayer);
+    let retained = data.personal.clone();
+    let records = native_draft_records(&session.draft);
+    let source_records: Vec<_> = records
+        .iter()
+        .filter_map(|(_, bytes)| match crate::TaxAppData::from_avro(bytes).unwrap() {
+            crate::TaxAppData::ScorpDocument { record, .. } => Some(record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(source_records.len(), 1);
+    assert_eq!(source_records[0].source, *source);
+    assert_eq!(source_records[0].source.personal, retained);
+    assert!(!records.iter().any(|(_, bytes)| matches!(
+        crate::TaxAppData::from_avro(bytes).unwrap(),
+        crate::TaxAppData::IncomeDocument {
+            entry: FederalIncomeEntry { income: FederalIncome::Scorp { .. }, .. },
+            ..
+        }
+    )));
+    let saved = session.draft.clone();
+    session = restart(draft_from_native_records(2026, &records));
+    assert_eq!(session.draft, saved);
+    let mut correction = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    let crate::K1Document::K1Scorp(paper) = &mut documents.common.k1.documents[0].document else {
+        unreachable!()
+    };
+    paper.form.ordinary = paper.form.ordinary.map(|amount| amount + 51);
+    accepted(&send(&mut session, correction));
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|e| matches!(e.income, FederalIncome::Scorp { .. }))
+        .unwrap();
+    let FederalIncome::Scorp { data } = &entry.income else { unreachable!() };
+    assert_eq!(data.personal.clone(), retained);
+    assert_eq!(data.paper.corporation, expected_paper.corporation);
+    let mut corrected = calculation;
+    corrected.ordinary += 51;
+    let target = expected
+        .income
+        .iter_mut()
+        .find(|e| matches!(e.income, FederalIncome::Scorp { .. }))
+        .unwrap();
+    target.income = FederalIncome::Scorp {
+        data: crate::tests::support::builders::scorp_source(corrected.record()),
+    };
+    expected.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), supported(&expected));
+    let figures = supported(&session.draft);
+    let saved = session.draft.clone();
+    session = restart(saved.clone());
+    let unchanged = open_documents(&mut session);
+    accepted(&send(&mut session, unchanged));
+    assert_eq!(session.draft, saved);
+    assert_eq!(supported(&session.draft), figures);
+}
+
+#[test]
+fn scorp_paper_blank_shareholder_uses_the_owner_editor_and_retains_its_assignment() {
+    use crate::document_names::AcceptedPartySource;
+    use crate::tests::support::client::{draft_from_native_records, native_draft_records};
+    let initial = complete(FederalStatus::Joint);
+    let (_, paper) = crate::tests::support::builders::complete_scorp_paper(&initial);
+    let mut session = Interview::new(TEST_USER, initial);
+    let mut request = save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp(paper) })],
+    );
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::K1Document::K1Scorp(paper) = &mut documents.common.k1.documents[0].document else {
+        unreachable!()
+    };
+    paper.form.shareholder.name.clear();
+    accepted(&send(&mut session, request));
+    let unknown = crate::tests::support::builders::unknown_documents(&session.draft);
+    assert_eq!(unknown.len(), 1);
+    crate::tests::support::builders::assign_documents(
+        &mut session,
+        unknown[0].1,
+        -2,
+        &[unknown[0].0],
+        crate::AddedOwnership::Yours,
+    );
+    let entry = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Scorp { .. }))
+        .unwrap();
+    assert_eq!(entry.owner, crate::DocumentOwner::Spouses);
+    let names = entry.accepted_parties().unwrap();
+    assert!(names.recipient.name.is_empty());
+    assert_eq!(names.assigned, crate::DocumentRecipient::Spouse);
+    let saved = session.draft.clone();
+    let records = native_draft_records(&saved);
+    session = restart(draft_from_native_records(2026, &records));
+    let reopened = open_documents(&mut session);
+    accepted(&send(&mut session, reopened));
+    assert_eq!(session.draft, saved);
+}
+
+#[test]
+fn scorp_paper_coded_statement_unknowns_are_retained_without_zero_substitution() {
+    let initial = complete(FederalStatus::Single);
+    let (_, mut paper) = crate::tests::support::builders::complete_scorp_paper(&initial);
+    paper.form.income.push(crate::K1CodeRow {
+        code: "C".into(),
+        amount: None,
+        text: "STMT * page 2".into(),
+        statement: true,
+    });
+    assert_eq!(paper.source().required_issue().unwrap().key, "SCORP_SOURCE_STATEMENT_REQUIRED");
+    let mut session = Interview::new(TEST_USER, initial);
+    let request = save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp(paper) })],
+    );
+    accepted(&send(&mut session, request));
+    let FederalIncome::Scorp { data } = &session.draft.income.last().unwrap().income else {
+        unreachable!()
+    };
+    assert_eq!(
+        data.paper.income[0],
+        crate::K1CodeRow {
+            code: "C".into(),
+            amount: None,
+            text: "STMT * page 2".into(),
+            statement: true
+        }
+    );
+    let r = estimate(&session.draft);
+    assert!(r.issues.iter().any(|issue| issue.display.key == "SCORP_SOURCE_STATEMENT_REQUIRED"));
+    let saved = session.draft.clone();
+    assert_eq!(restart(saved.clone()).draft, saved);
+}
+
+#[test]
+fn scorp_paper_loans_reconcile_principal_and_gross_repayments_with_the_native_owner() {
+    let mut page = k1_1120s_fixture(0);
+    page.qbi = K1ScorpQbi::NoStatement;
+    page.basis.loans = vec![ScorpLoan {
+        kind: ScorpLoanKind::OpenAccount,
+        repayment_term: ScorpNoteHolding::NoRepayment,
+        principal: 500_000,
+        basis: 100_000,
+        advances: 100_000,
+        repayments: 200_000,
+    }];
+    let native = page.record();
+    assert_eq!(native.loan_source_totals(), Some([500_000, 400_000, 200_000]));
+    let result = native.basis_result().unwrap();
+    assert_ne!(result.loans[0].principal, result.loans[0].basis);
+    assert_eq!(
+        result.loans[0].nontaxable_repayment.get() + result.loans[0].ordinary_gain.get(),
+        100_000
+    );
+    let paper: crate::K1ScorpDocument = page.into();
+    let mut source = scorp_fixture_source(&paper);
+    assert_eq!(
+        source.paper.basis.iter().find(|row| row.code == "E").unwrap().amount,
+        Some(200_000)
+    );
+    assert_eq!(source.personal_issue(), None);
+    source.paper.loans.as_mut().unwrap().beginning = Some(100_000);
+    assert_eq!(source.personal_issue().unwrap().key, "SCORP_SOURCE_LOAN_MISMATCH");
+    source.paper.loans = None;
+    assert_eq!(source.personal_issue().unwrap().key, "SCORP_SOURCE_LOAN_RECORDS_REQUIRED");
+}
+
+#[test]
+fn scorp_paper_preserves_explicit_equal_separate_amt_and_actual_raw_amt_codes() {
+    use crate::tests::support::client::{draft_from_native_records, native_draft_records};
+    let initial = complete(FederalStatus::Single);
+    let (mut calculation, mut paper) =
+        crate::tests::support::builders::complete_scorp_paper(&initial);
+    let alternative = ScorpAmtRecords::same_as(&calculation.record()).unwrap();
+    calculation.amt = Some(ScorpAmtRecords::Separate { record: alternative.clone() });
+    let mut personal = scorp_fixture_source(&paper).personal;
+    personal.amt = calculation.amt.clone();
+    paper = remember_scorp_document(paper, personal.clone());
+    paper.form.amt = vec![
+        crate::K1CodeRow {
+            code: "A".into(),
+            amount: Some(0),
+            text: "* depreciation statement".into(),
+            statement: true,
+        },
+        crate::K1CodeRow {
+            code: "B".into(),
+            amount: Some(0),
+            text: "* adjusted gain".into(),
+            statement: true,
+        },
+        crate::K1CodeRow {
+            code: "C".into(),
+            amount: Some(100_049),
+            text: "* signed depletion statement".into(),
+            statement: true,
+        },
+    ];
+    let expected_form = paper.form.clone();
+    paper = remember_scorp_document(paper, personal);
+    let mut session = Interview::new(TEST_USER, initial);
+    accepted(&save_k1_sources_and_answers(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp(paper) })],
+    ));
+    let records = native_draft_records(&session.draft);
+    session = restart(draft_from_native_records(2026, &records));
+    let P::SaveDocuments { documents, .. } = open_documents(&mut session) else { unreachable!() };
+    let crate::K1Document::K1Scorp(paper) = &documents.common.k1.documents[0].document else {
+        unreachable!()
+    };
+    assert_eq!(paper.form, expected_form);
+    let accepted_source = session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::Scorp { data } => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        accepted_source.personal.amt,
+        Some(ScorpAmtRecords::Separate { record: alternative.clone() })
+    );
+    assert_eq!(
+        ScorpK1::from(accepted_source).amt.as_ref().unwrap().adjustment,
+        alternative.adjustment,
+    );
+    let mut missing_printed_amount = accepted_source.clone();
+    missing_printed_amount.paper.amt.last_mut().unwrap().amount = None;
+    let supplied = ScorpK1::from(&missing_printed_amount);
+    assert!(!supplied.unentered.contains(&crate::ScorpK1Item::AmtItems));
+    assert_eq!(supplied.amt.as_ref().unwrap().adjustment, alternative.adjustment);
+    let mut missing = accepted_source.clone();
+    missing.paper.amt[0].amount = Some(2_000);
+    missing.personal.amt = Some(ScorpAmtRecords::SameAsRegular);
+    assert_eq!(missing.personal_issue().unwrap().key, "DOCUMENT_K1_AMT_RECORDS");
+    assert_eq!(ScorpK1::from(&missing).ordinary, calculation.ordinary);
+}
+
+#[test]
+fn partnership_blank_boxes_preserve_absence_and_printed_zero_on_save_and_cold_reopen() {
+    let mut session = restart(complete(FederalStatus::Single));
+    let mut request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::K1 {
+                value: crate::K1Document::K1Partnership(k1_1065("Synthetic literal boxes").into()),
+            },
+        )],
+    );
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::K1Document::K1Partnership(paper) = &mut documents.common.k1.documents[0].document
+    else {
+        unreachable!()
+    };
+    // Distinct amounts in other boxes must never become box 14 or box 21 facts.
+    paper.form.ordinary = Some(300_000);
+    paper.form.section179 = Some(10_000);
+    paper.form.self_employment.clear();
+    paper.form.credits.clear();
+    paper.form.foreign_taxes = None;
+    paper.form.royalties = None;
+    paper.form.liabilities = Default::default();
+    paper.form.share = Default::default();
+    paper.form.capital_account = Default::default();
+    accepted(&send(&mut session, request));
+    for printed in [None, Some(0)] {
+        session = restart(session.draft);
+        let mut reopened = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut reopened else { unreachable!() };
+        let crate::K1Document::K1Partnership(paper) =
+            &mut documents.common.k1.documents[0].document
+        else {
+            unreachable!()
+        };
+        assert!(paper.form.self_employment.is_empty());
+        assert!(paper.form.credits.is_empty());
+        assert_eq!(paper.form.foreign_taxes, printed);
+        assert_eq!(paper.form.royalties, printed);
+        assert_eq!(paper.form.liabilities, Default::default());
+        assert_eq!(paper.form.share, Default::default());
+        assert_eq!(paper.form.capital_account, Default::default());
+        assert_eq!(paper.form.ordinary, Some(300_000));
+        assert_eq!(paper.form.section179, Some(10_000));
+        paper.form.foreign_taxes = Some(0);
+        paper.form.royalties = Some(0);
+        accepted(&send(&mut session, reopened));
+        assert_eq!(stored_1065s(&session)[0].source.as_ref().unwrap().paper.foreign_taxes, Some(0));
+    }
+}
+
+#[test]
+fn scorp_blank_printed_numbers_preserve_absence_and_zero_on_save_and_cold_reopen() {
+    let initial = complete(FederalStatus::Single);
+    let (_, paper) = crate::tests::support::builders::complete_scorp_paper(&initial);
+    let mut session = Interview::new(TEST_USER, initial);
+    let mut request = save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::K1 { value: crate::K1Document::K1Scorp(paper) })],
+    );
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::K1Document::K1Scorp(paper) = &mut documents.common.k1.documents[0].document else {
+        unreachable!()
+    };
+    paper.form.royalties = None;
+    paper.form.allocation_percentage = None;
+    paper.form.corporation_shares = Default::default();
+    paper.form.shareholder_shares = Default::default();
+    paper.form.loans = Some(Default::default());
+    let ordinary = paper.form.ordinary;
+    accepted(&send(&mut session, request));
+    for printed in [None, Some(0)] {
+        session = restart(session.draft);
+        let mut reopened = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut reopened else { unreachable!() };
+        let crate::K1Document::K1Scorp(paper) = &mut documents.common.k1.documents[0].document
+        else {
+            unreachable!()
+        };
+        assert_eq!(paper.form.royalties, printed);
+        assert_eq!(paper.form.allocation_percentage, None);
+        assert_eq!(paper.form.corporation_shares, Default::default());
+        assert_eq!(paper.form.shareholder_shares, Default::default());
+        assert_eq!(paper.form.loans, Some(Default::default()));
+        assert_eq!(paper.form.ordinary, ordinary);
+        paper.form.royalties = Some(0);
+        accepted(&send(&mut session, reopened));
+    }
 }

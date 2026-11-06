@@ -1,13 +1,13 @@
 // Bounded traditional IRA funding and annual basis lifecycle.
 use crate::tests::cross::interview::{
-    accepted, hsa_account, hsa_page_value, open_hsa_page, open_topic, rejected_with,
+    accepted, hsa_account, hsa_page_value, open_hsa_page, rejected_with,
 };
 use super::*;
 
 fn fixture(value: i64) -> FederalDraft {
     let mut draft = hsa_prior_basis_funding(1500, 200, value, 200, 0);
     let source = draft.adjustments.as_ref().unwrap().hsa[0].funding[0].income;
-    let FederalIncome::Retirement { data } = &mut draft
+    let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } = &mut draft
         .income
         .iter_mut()
         .find(|row| row.id == source)
@@ -16,7 +16,7 @@ fn fixture(value: i64) -> FederalDraft {
     else {
         unreachable!()
     };
-    data.ordinary_distribution = RetirementTreatment::Ordinary;
+    data.code = Some(DistributionCode::Normal { what_happened: Disposition::Kept });
     add(
         &mut draft,
         basis_distribution(Owner::Taxpayer, 300, RetirementTreatment::Ordinary),
@@ -159,11 +159,12 @@ fn unit46_qhfd_zero_basis_normal_save_reopen_restart_and_forged_source_are_atomi
         "HSA_FUNDING_SOURCE_NOT_OFFERED",
     );
     assert_eq!(restored.draft, saved);
-    let mut removal = open_topic(&mut restored, TaxSection::Retirement);
-    let P::SaveIncomes { documents, .. } = &mut removal else {
+    let mut removal =
+        crate::tests::support::client::income_pages::open_document_center(&mut restored);
+    let P::SaveDocuments { documents, .. } = &mut removal else {
         unreachable!()
     };
-    documents.documents.retain(|row| row.id != funding.income);
+    documents.common.retirement.documents.retain(|row| row.id != funding.income);
     rejected_with(
         send(&mut restored, removal),
         "HSA_FUNDING_SOURCE_NOT_OFFERED",

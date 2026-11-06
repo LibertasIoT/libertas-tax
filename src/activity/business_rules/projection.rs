@@ -1,7 +1,8 @@
 // Transient PRINT projection of the actual section199A calculation. Every
 // amount comes from its source owner; no eligibility or allocation is rerun.
 use super::QbiLines;
-use crate::kernel::lines::{LineValue, form_value};
+use crate::kernel::lines::LineValue;
+use crate::line_emission::form_value;
 use crate::{FederalResult, FormLine, TaxForm};
 
 pub(crate) fn emit(r: &mut FederalResult, form: TaxForm, lines: &QbiLines) {

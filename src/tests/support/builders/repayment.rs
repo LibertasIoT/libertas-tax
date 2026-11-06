@@ -5,25 +5,16 @@ pub(in crate::tests) fn government_unemployment(
     repaid: &[i64],
     withholding: i64,
 ) -> FederalIncomeEntry {
-    income(FederalIncome::Unemployment {
-        data: FederalUnemployment {
-            amount: gross * 100,
-            withholding: withholding * 100,
-            repayments: repaid
-                .iter()
-                .map(|v| UnemploymentRepayment { received_year: 2026, amount: v * 100 })
-                .collect(),
-            ordinary: true,
-            taxable_grants: 0,
-            agriculture_payment: 0,
-            agriculture_farm: None,
-            grant_use: None,
-            rtaa: 0,
-            market_gain: 0,
-            family_leave: 0,
-            family_leave_includes_medical: false,
-        },
-    })
+    let mut data = GovernmentPaymentSource::printed(government_document(Form1099G {
+        amount: gross * 100,
+        withholding: withholding * 100,
+        ..Default::default()
+    }));
+    data.repayments = repaid
+        .iter()
+        .map(|v| UnemploymentRepayment { received_year: 2026, amount: v * 100 })
+        .collect();
+    income(FederalIncome::GovernmentPayment { data })
 }
 
 pub(in crate::tests) fn prior_unemployment_repayment(
@@ -31,8 +22,8 @@ pub(in crate::tests) fn prior_unemployment_repayment(
     owner: Owner,
 ) -> FederalIncomeEntry {
     let mut entry = government_unemployment(0, &[], 0);
-    entry.owner = owner;
-    let FederalIncome::Unemployment { data } = &mut entry.income else { panic!() };
+    entry.owner = crate::DocumentOwner::from(owner);
+    let FederalIncome::GovernmentPayment { data } = &mut entry.income else { panic!() };
     data.repayments = vec![UnemploymentRepayment { received_year: 2025, amount }];
     entry
 }
@@ -85,7 +76,7 @@ pub(in crate::tests) fn repayment_eic_draft() -> FederalDraft {
 pub(in crate::tests) fn repayment_senior_draft(year: u32) -> FederalDraft {
     let mut d = repayment_comparison_draft(RepaymentMethod::Automatic);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19580615;
-    let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
+    let FederalIncome::GovernmentPayment { data } = &mut d.income[1].income else { panic!() };
     data.repayments[0].received_year = year;
     let years = repayment_years_mut(&mut d);
     years[0].year = year;
@@ -179,7 +170,7 @@ pub(in crate::tests) fn historical_capital(
 
 pub(in crate::tests) fn repayment_carry_chain() -> FederalDraft {
     let mut d = repayment_comparison_draft(RepaymentMethod::Credit);
-    let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
+    let FederalIncome::GovernmentPayment { data } = &mut d.income[1].income else { panic!() };
     data.repayments[0].received_year = 2024;
     let years = repayment_years_mut(&mut d);
     let mut later = years[0].clone();
@@ -243,7 +234,7 @@ pub(in crate::tests) fn repayment_minimum_source(year: u32) -> MinimumTaxHistory
 pub(in crate::tests) fn repayment_minimum_chain() -> FederalDraft {
     let mut d = repayment_comparison_draft(RepaymentMethod::Credit);
     for e in &mut d.income {
-        if let FederalIncome::Unemployment { data } = &mut e.income {
+        if let FederalIncome::GovernmentPayment { data } = &mut e.income {
             data.repayments[0].received_year = 2024;
         }
     }
@@ -279,7 +270,7 @@ pub(in crate::tests) fn repayment_deferral_capital() -> FederalDraft {
 
 pub(in crate::tests) fn repayment_exclusion_loss_chain() -> FederalDraft {
     let mut d = repayment_carry_chain();
-    let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
+    let FederalIncome::GovernmentPayment { data } = &mut d.income[1].income else { panic!() };
     data.repayments[0].amount = 400000;
     let years = repayment_years_mut(&mut d);
     years[0].benefits = 400000;
@@ -308,31 +299,11 @@ pub(in crate::tests) fn add_repayment_inferred_capital(draft: &mut FederalDraft)
     // same7000 actual carry from those source records, without duplicate entry.
     let source = repayment_restoration_draft(RepaymentMethod::Credit);
     for entry in source.income {
-        if matches!(entry.income, FederalIncome::Unemployment { .. }) {
+        if matches!(entry.income, FederalIncome::GovernmentPayment { .. }) {
             add(draft, entry);
         }
     }
     draft.deductions.as_mut().unwrap().repayment = source.deductions.unwrap().repayment;
-}
-
-pub(in crate::tests) fn loan_claim(forms: Vec<Form1098E>, no_form: i64) -> StudentLoanClaim {
-    StudentLoanClaim { student_loan_interest: no_form, forms, employer_paid_interest: 0 }
-}
-
-pub(in crate::tests) fn box_2(interest: i64, additional_interest: i64) -> Form1098E {
-    Form1098E { interest, box_2: Form1098EBox2::Checked { additional_interest } }
-}
-
-pub(in crate::tests) fn employer_paid(
-    mut claim: StudentLoanClaim,
-    amount: i64,
-) -> StudentLoanClaim {
-    claim.employer_paid_interest = amount;
-    claim
-}
-
-pub(in crate::tests) fn box_1(interest: i64) -> Form1098E {
-    Form1098E { interest, box_2: Form1098EBox2::NotChecked }
 }
 
 pub(in crate::tests) fn repayment_years_mut(d: &mut FederalDraft) -> &mut Vec<RepaymentTaxYear> {

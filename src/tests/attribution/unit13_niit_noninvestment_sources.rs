@@ -7,9 +7,9 @@ fn check_noninvestment_source(mut source: FederalIncomeEntry, gross: i64, adjust
     let mut draft = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     add(&mut draft, income(savings_income(5000, 0)));
     let mut interest = income(savings_income(15_000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, interest);
-    source.owner = Owner::Spouse;
+    source.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, source);
     // Native ordinary-source treatment changes MAGI, not the actual interest
     // recipients. The joint ceiling exceeds the unchanged20,000 NII pool.
@@ -82,11 +82,11 @@ fn unit13_niit_casual_gambling_retains_actual_investment_owners() {
 #[test]
 fn unit13_niit_actual_1099g_other_boxes_are_counted_at_their_native_source_once() {
     let mut entry = government_unemployment(10_000, &[2000], 0);
-    let FederalIncome::Unemployment { data } = &mut entry.income else { unreachable!() };
-    data.rtaa = 100_000;
-    data.taxable_grants = 300_000;
-    data.grant_use = Some(FederalGrantUse::You);
-    data.family_leave = 200_000;
+    let FederalIncome::GovernmentPayment { data } = &mut entry.income else { unreachable!() };
+    data.form.rtaa_payments = Some(100_000);
+    data.form.taxable_grants = Some(300_000);
+    data.grant_use = Some(GrantUse::You);
+    data.form.family_leave_benefits = 200_000;
     //8,000 actual unemployment +1,000 RTAA +3,000 personal grant +2,000 leave.
     check_noninvestment_source(entry, 14_000, 0);
 }
@@ -96,13 +96,13 @@ fn unit13_niit_repaid_benefit_cents_retain_selected_owner_annual_rounding() {
     let mut draft = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     add(&mut draft, income(savings_income(5000, 0)));
     let mut interest = income(savings_income(15_000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, interest);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = government_unemployment(1000, &[1000], 0);
-        let FederalIncome::Unemployment { data } = &mut entry.income else { unreachable!() };
-        data.amount += 49;
-        entry.owner = owner;
+        let FederalIncome::GovernmentPayment { data } = &mut entry.income else { unreachable!() };
+        data.form.unemployment_compensation += 49;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut draft, entry);
     }
     //Two49-cent native net benefits aggregate to one annual dollar.
@@ -123,7 +123,7 @@ fn unit13_niit_repaid_benefit_cents_retain_selected_owner_annual_rounding() {
 #[test]
 fn unit13_niit_noninvestment_actual_client_save_reopen_restart() {
     extern crate std;
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::{accepted, open_documents, open_topic};
     let selected = std::env::var("TAX_UNIT13_NII_NONINV_PROFILE").ok();
     for profile in ["unemployment", "jury"] {
         if selected.as_deref().is_some_and(|value| value != profile) {
@@ -132,7 +132,7 @@ fn unit13_niit_noninvestment_actual_client_save_reopen_restart() {
         let mut draft = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
         add(&mut draft, income(savings_income(5000, 0)));
         let mut interest = income(savings_income(15_000, 0));
-        interest.owner = Owner::Spouse;
+        interest.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, interest);
         let mut source = if profile == "unemployment" {
             government_unemployment(10_000, &[2000], 0)
@@ -141,15 +141,21 @@ fn unit13_niit_noninvestment_actual_client_save_reopen_restart() {
                 data: JuryPay { received: 1_000_000, remitted: 200_000 },
             })
         };
-        source.owner = Owner::Spouse;
+        source.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, source);
+        let source_id = draft.income.last().unwrap().id;
+        let source_editor = profile == "unemployment";
         let mut session = Interview::new(TEST_USER, draft);
         let topic = if profile == "unemployment" {
             TaxSection::GovernmentBenefits
         } else {
             TaxSection::OtherIncome
         };
-        let mut page = open_topic(&mut session, topic);
+        let mut page = if source_editor {
+            open_documents(&mut session)
+        } else {
+            open_topic(&mut session, topic)
+        };
         let native = NativeInterviewCase("TAX_UNIT13_NII_NONINV");
         if native.required_checked_calculation(&mut session) {
             return;
@@ -160,23 +166,51 @@ fn unit13_niit_noninvestment_actual_client_save_reopen_restart() {
         let request = if let Some(request) = native.checked_input("PAYLOAD") {
             request
         } else {
-            let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-            let row = documents.documents.iter_mut().find(|row| row.id == 5).unwrap();
-            row.owner = Owner::Taxpayer;
-            match &mut row.document {
-                IncomeDocument::Form1099G(data) => {
-                    data.amount = 1_200_000;
-                    data.more.repayments[0].amount = 300_000;
-                }
-                IncomeDocument::JuryPay(data) => {
-                    data.received = 1_200_000;
-                    data.remitted = 300_000;
-                }
-                _ => panic!(),
+            if source_editor {
+                let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+                let row = documents
+                    .common
+                    .government_payments
+                    .documents
+                    .iter_mut()
+                    .find(|row| row.id == source_id)
+                    .unwrap();
+                row.owner = crate::DocumentOwner::Yours;
+                let data = &mut row.document;
+                data.unemployment_compensation = 1_200_000;
+            } else {
+                let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
+                let row = documents.documents.iter_mut().find(|row| row.id == source_id).unwrap();
+                row.owner = Owner::Taxpayer;
+                let crate::IncomeRecord::JuryPay(data) = &mut row.document else { panic!() };
+                data.received = 1_200_000;
+                data.remitted = 300_000;
             }
-            page
+            fixture_owner_inputs(&session.draft, page)
         };
-        accepted(&send(&mut session, request));
+        accepted(&if matches!(request, P::SaveDocuments { .. }) {
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        } else {
+            send(&mut session, request)
+        });
+        if source_editor {
+            let mut answers = open_topic(&mut session, topic);
+            let P::SaveIncomes { followups, .. } = &mut answers else { panic!() };
+            let row = followups
+                .iter_mut()
+                .find(|row| {
+                    row.key.starts_with(&alloc::format!("income/{source_id}/"))
+                        && matches!(row.answer, crate::DocumentAnswer::GovernmentRepayments { .. })
+                })
+                .expect("unemployment repayments are answered on their topic");
+            row.answer = crate::DocumentAnswer::GovernmentRepayments {
+                value: alloc::vec![UnemploymentRepayment { received_year: 2026, amount: 300_000 }],
+            };
+            accepted(&send(&mut session, answers));
+        }
         let check = |draft: &FederalDraft| {
             let result = supported(draft);
             assert_eq!(value(&result, "agi"), 279_000);
@@ -199,7 +233,11 @@ fn unit13_niit_noninvestment_actual_client_save_reopen_restart() {
         let draft = draft_from_native_records(tax_year, &stored);
         assert_eq!(draft, session.draft);
         let mut reopened = restart(draft);
-        let shown = open_topic(&mut reopened, topic);
+        let shown = if source_editor {
+            open_documents(&mut reopened)
+        } else {
+            open_topic(&mut reopened, topic)
+        };
         native.output(&shown, &stored);
         let accepted_draft = reopened.draft.clone();
         accepted(&send(&mut reopened, shown));

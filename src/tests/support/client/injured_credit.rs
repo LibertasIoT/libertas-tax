@@ -28,7 +28,7 @@ pub(in crate::tests) mod business_credit_owner_sources {
         for _ in 0..2 {
             save_native_credit_sources(
                 &mut session,
-                &[TaxSection::Wages, TaxSection::SelfEmployment],
+                &[TaxSection::Documents, TaxSection::SelfEmployment],
             );
             money(&session.draft);
             assert_eq!(source(&session.draft, owner), original_source);
@@ -79,12 +79,13 @@ pub(in crate::tests) mod business_credit_owner_sources {
             residual_fixture(family, owner, injured, reverse)
         };
         let mut s = restart(draft);
+        crate::tests::support::client::admit_native_fixture_facts(&mut s);
         let ids: Vec<_> = s.draft.income.iter().map(|e| e.id).collect();
         let source_credits = s.draft.credits.clone();
         for _ in 0..2 {
             super::super::income::save_native_income_topics(
                 &mut s,
-                &[TaxSection::Wages, TaxSection::SelfEmployment],
+                &[TaxSection::Documents, TaxSection::SelfEmployment],
             );
             if matches!(family, ResidualFamily::ForeignTax) {
                 let page = open_topic(&mut s, TaxSection::InterestDividends);
@@ -241,7 +242,7 @@ pub(in crate::tests) mod business_credit_owner_sources {
         for _ in 0..2 {
             save_native_credit_sources(
                 &mut s,
-                &[TaxSection::Wages, TaxSection::SelfEmployment, TaxSection::InterestDividends],
+                &[TaxSection::Documents, TaxSection::SelfEmployment, TaxSection::InterestDividends],
             );
             payee_limit_money(&s.draft, case);
             assert_eq!(payee_limit_sources(&s.draft, case, business_owner), sources);
@@ -280,7 +281,10 @@ pub(in crate::tests) mod elective_credit_mixed_sources {
         let ids: Vec<_> = s.draft.income.iter().map(|e| e.id).collect();
         let links = source_links(&s.draft, family);
         for _ in 0..2 {
-            save_native_credit_sources(&mut s, &[TaxSection::Wages, TaxSection::SelfEmployment]);
+            save_native_credit_sources(
+                &mut s,
+                &[TaxSection::Documents, TaxSection::SelfEmployment],
+            );
             money(&s.draft, family);
             assert_eq!(source_links(&s.draft, family), links);
             assert_eq!(s.draft.income.iter().map(|e| e.id).collect::<Vec<_>>(), ids);
@@ -391,7 +395,10 @@ pub(in crate::tests) mod elective_credit_mixed_sources {
             .retain(|row| row.form_line.as_ref().is_none_or(|line| line.form != TaxForm::Form8379));
         projected.injured_spouse = None;
         crate::injured_spouse::allocate(
-            d,
+            crate::related_forms::RelatedFormContext::original(
+                d,
+                &crate::related_forms::effective_claimants(d),
+            ),
             &mut projected,
             d.injured_spouse.as_ref().unwrap(),
             &facts,
@@ -543,19 +550,20 @@ pub(in crate::tests) mod foreign_credit_ordinary_sources {
         injured: Owner,
         reverse: bool,
     ) -> FederalDraft {
-        let mut s = restart(fixture(family, owner, injured, reverse));
+        let draft = known_fact_partnership_draft(fixture(family, owner, injured, reverse));
+        let mut s = restart(draft);
         let sources = s.draft.income.clone();
         let credits = s.draft.credits.clone();
         for _ in 0..2 {
             let topics: &[TaxSection] = match family {
-                Family::K3 { .. } | Family::K3Pair => &[TaxSection::Wages, TaxSection::PassThrough],
+                Family::K3 { .. } | Family::K3Pair => &[TaxSection::Documents],
                 Family::BusinessExcluded => {
-                    &[TaxSection::Wages, TaxSection::WorkAbroad, TaxSection::SelfEmployment]
+                    &[TaxSection::Documents, TaxSection::WorkAbroad, TaxSection::SelfEmployment]
                 }
                 Family::MixedCategories | Family::HighTax => {
-                    &[TaxSection::Wages, TaxSection::WorkAbroad, TaxSection::InterestDividends]
+                    &[TaxSection::Documents, TaxSection::WorkAbroad, TaxSection::InterestDividends]
                 }
-                _ => &[TaxSection::Wages, TaxSection::WorkAbroad],
+                _ => &[TaxSection::Documents, TaxSection::WorkAbroad],
             };
             save_native_credit_sources(&mut s, topics);
             money(&s.draft, family);
@@ -606,7 +614,7 @@ pub(in crate::tests) mod fuel_credit_owner_sources {
     ) -> FederalResult {
         let mut session = restart(draft);
         for _ in 0..2 {
-            save_native_credit_sources(&mut session, &[TaxSection::Wages, TaxSection::PassThrough]);
+            save_native_credit_sources(&mut session, &[TaxSection::Documents]);
             let result = supported(&session.draft);
             ordinary(&result, raw_credit, annual_credit);
             for (owner, amount) in [Owner::Taxpayer, Owner::Spouse].into_iter().zip(business) {
@@ -615,7 +623,7 @@ pub(in crate::tests) mod fuel_credit_owner_sources {
                     .income
                     .iter()
                     .find(|row| {
-                        row.owner == owner
+                        row.owner == crate::DocumentOwner::from(owner)
                             && matches!(row.income, FederalIncome::Partnership { .. })
                     })
                     .unwrap();
@@ -684,35 +692,41 @@ pub(in crate::tests) mod r8_category_rounding {
         };
         let mut d = injured_return((30000, 0), (0, 0), 0, a);
         let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
+        let mut data = edit_wage(data);
         data.withholding = 49;
+        drop(data);
         let kind = if sale {
             let mut kind = ordinary_investment_sale(10000, 10000, GainTerm::Long);
             let FederalIncome::Sale { data } = &mut kind else { panic!() };
-            data.withholding = 49;
+            data.form.withholding = 49;
             kind
         } else {
             let mut kind = savings_income(0, 0);
             let FederalIncome::Interest { data } = &mut kind else { panic!() };
+            let mut data = edit_interest(data);
             data.taxable = 49;
             data.withholding = 49;
+            drop(data);
             kind
         };
         let mut e = income(kind);
-        e.owner = Owner::Spouse;
+        e.owner = crate::DocumentOwner::Spouses;
         add(&mut d, e);
         for e in &mut d.income {
             e.community = CommunityShare::Community;
         }
         let p = d.payments.as_mut().unwrap();
-        p.estimated = Some(10000);
-        p.estimated_payments = vec![crate::DatedPayment {
-            date: 20260415,
-            amount: 10000,
-            payer: PaymentPayer::Taxpayer,
-            refund_property: Some(RefundSourcePropertyFacts::Community {
-                management: RefundManagement::NotApplicable,
-            }),
-        }];
+
+        p.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+            payments: vec![crate::DatedPayment {
+                date: 20260415,
+                amount: 10000,
+                payer: PaymentPayer::Taxpayer,
+                refund_property: Some(RefundSourcePropertyFacts::Community {
+                    management: RefundManagement::NotApplicable,
+                }),
+            }],
+        };
         let check = |d: &FederalDraft| {
             let r = supported(d);
             assert_eq!(value(&r, "agi"), 30000);
@@ -782,7 +796,7 @@ pub(in crate::tests) mod r8_credit_relevance {
 }
 
 pub(in crate::tests) mod r8_employee_withholding {
-    use crate::tests::cross::interview::{accepted, from_review, open_topic};
+    use crate::tests::cross::interview::{accepted, from_review};
     use crate::tests::support::assert::injured_credit::r8_employee_withholding::money;
     use crate::tests::*;
     pub(in crate::tests) fn employee_id(d: &FederalDraft) -> i64 {
@@ -797,7 +811,8 @@ pub(in crate::tests) mod r8_employee_withholding {
         money(&d, owner);
         let old = d.income.clone();
         let mut s = restart(d);
-        let p = open_topic(&mut s, TaxSection::Wages);
+        crate::tests::support::client::admit_native_fixture_facts(&mut s);
+        let p = crate::tests::support::client::income_pages::open_document_center(&mut s);
         accepted(&send(&mut s, p));
         let reply = native_editor(from_review(&mut s, TaxSection::InjuredSpouse), &[]);
         let Reply::Edit(p) = reply else { panic!() };
@@ -808,7 +823,7 @@ pub(in crate::tests) mod r8_employee_withholding {
         }
         let draft = roundtrip_native_draft(s.draft.clone());
         let mut s = restart(draft);
-        let p = open_topic(&mut s, TaxSection::Wages);
+        let p = crate::tests::support::client::income_pages::open_document_center(&mut s);
         accepted(&send(&mut s, p));
         money(&s.draft, owner);
         s.draft
@@ -823,8 +838,12 @@ pub(in crate::tests) mod r8_sale_withholding {
         money(&d, owner);
         let original = d.income.clone();
         let mut s = restart(d);
-        for topic in [TaxSection::Wages, TaxSection::InvestmentSales] {
-            let p = open_topic(&mut s, topic);
+        crate::tests::support::client::admit_native_fixture_facts(&mut s);
+        let p = crate::tests::support::client::income_pages::open_document_center(&mut s);
+        accepted(&send(&mut s, p));
+        let p = open_topic(&mut s, TaxSection::InvestmentSales);
+        let P::SaveIncomes { documents, .. } = &p else { unreachable!() };
+        if !documents.documents.is_empty() {
             accepted(&send(&mut s, p));
         }
         let reply = native_editor(from_review(&mut s, TaxSection::InjuredSpouse), &[]);
@@ -836,8 +855,13 @@ pub(in crate::tests) mod r8_sale_withholding {
         assert_eq!(s.draft.income.len(), original.len());
         let draft = roundtrip_native_draft(s.draft.clone());
         let mut s = restart(draft);
-        let p = open_topic(&mut s, TaxSection::InvestmentSales);
+        let p = crate::tests::support::client::income_pages::open_document_center(&mut s);
         accepted(&send(&mut s, p));
+        let p = open_topic(&mut s, TaxSection::InvestmentSales);
+        let P::SaveIncomes { documents, .. } = &p else { unreachable!() };
+        if !documents.documents.is_empty() {
+            accepted(&send(&mut s, p));
+        }
         money(&s.draft, owner);
         s.draft
     }
@@ -858,7 +882,14 @@ pub(in crate::tests) mod original_map_boundaries {
         assert_eq!(response.to_avro(), bytes);
         assert_eq!(session.draft, before);
         let P::BeginInjuredSpouse {
-            cookie, revision, page, previous, review, value: initial, ..
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            value: initial,
+            followups,
+            ..
         } = response
         else {
             unreachable!()
@@ -877,10 +908,12 @@ pub(in crate::tests) mod original_map_boundaries {
             page,
             previous,
             review,
-            estimate: vec![],
+            estimate: None,
             warnings: vec![],
             progress: vec![],
             value,
+            followups,
+            questions: Vec::new(),
         }
     }
 }

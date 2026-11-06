@@ -7,7 +7,7 @@ pub(super) fn draft(filer: CarryFiler) -> FederalDraft {
         let mut data = ordinary_partner_source(0, false);
         data.deferred_compensation_tax = tax;
         let mut entry = income(FederalIncome::Partnership { data });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         entry.label = "Synthetic same-name partnership".into();
         add(&mut d, entry);
     }
@@ -54,18 +54,25 @@ fn unit16_r4_native_deferred_tax_owners_drive_both_carry_caps_without_a_claim() 
 
 #[test]
 fn unit16_r4_actual_k1_owner_correction_changes_cap_and_preserves_joint_tax_source() {
-    use crate::tests::cross::interview::{accepted, open_topic, page_documents};
+    use crate::tests::cross::interview::{accepted, open_document_center};
     let d = draft(CarryFiler::You);
     let before = supported(&d);
     assert_eq!(value(&before, "general_business_credit"), 4618);
     let mut session = Interview::new(TEST_USER, d);
-    let mut request = open_topic(&mut session, TaxSection::PassThrough);
-    let original_ids = page_documents(&request).iter().map(|v| v.id).collect::<Vec<_>>();
-    let P::SaveIncomes { documents, .. } = &mut request else { panic!() };
-    assert_eq!(documents.documents.len(), 2);
-    for row in &mut documents.documents {
-        row.owner = if row.owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let mut request = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut request else { panic!() };
+    let rows = &mut documents.common.k1.documents;
+    let original_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        row.owner = if row.owner == crate::DocumentOwner::Yours {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
     }
+    let request = fixture_owner_inputs(&session.draft, request);
     accepted(&send(&mut session, request));
     assert!(session.draft.injured_spouse.is_none());
     let after = supported(&session.draft);
@@ -76,9 +83,14 @@ fn unit16_r4_actual_k1_owner_correction_changes_cap_and_preserves_joint_tax_sour
     assert_eq!(value(&after, "form_3800_line_16"), 5243);
     assert_eq!(value(&after, "k1_deferred_compensation_tax"), 400);
     assert_eq!(value(&after, "general_business_credit"), 4798);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
-    assert_eq!(page_documents(&reopened).iter().map(|v| v.id).collect::<Vec<_>>(), original_ids);
+    let reopened = open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &reopened else { panic!() };
+    assert_eq!(
+        documents.common.k1.documents.iter().map(|row| row.id).collect::<Vec<_>>(),
+        original_ids
+    );
     let saved = session.draft.clone();
+    let reopened = fixture_owner_inputs(&session.draft, reopened);
     accepted(&send(&mut session, reopened));
     assert_eq!(session.draft, saved);
     assert_eq!(supported(&restart(saved.clone()).draft), after);

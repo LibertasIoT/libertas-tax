@@ -26,7 +26,7 @@ fn fixture() -> FederalDraft {
     add(&mut d, first);
     let source = d.income.last().unwrap().id;
     let mut second = income(royalty(20_000, 4_000));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     let FederalIncome::Royalty { data } = &mut second.income else { panic!() };
     data.kind = RoyaltyKind::Mineral { rate: RoyaltyMineralRate::Ten };
     data.depletion = RoyaltyDepletion::Percentage {
@@ -78,7 +78,7 @@ fn unit13_royalty_cents_follow_native_annual_interest_rounding_once() {
     let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(royalty(1000, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::Royalty { data } = &mut entry.income else { panic!() };
         data.receipts += 49;
         add(&mut d, entry);
@@ -106,7 +106,7 @@ fn unit13_royalty_signed_nii_preserves_named_unavailable_tax_boundary() {
     let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     add(&mut d, income(royalty(1000, 2000)));
     let mut other = income(royalty(3000, 0));
-    other.owner = Owner::Spouse;
+    other.owner = crate::DocumentOwner::Spouses;
     add(&mut d, other);
     let r = supported(&d);
     assert_eq!(value(&r, "schedule_e_rental_royalty_total"), 2000);
@@ -125,7 +125,7 @@ fn unit13_royalty_source_uses_final_aggregate_oil_depletion_limit() {
     let mut d = injured_return((30_000, 20_000), (30_000, 0), 0, allocation());
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(royalty(20_000, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::Royalty { data } = &mut entry.income else { panic!() };
         data.kind = RoyaltyKind::OilGas;
         data.depletion = RoyaltyDepletion::Percentage {
@@ -206,7 +206,7 @@ fn actual_client_save_reopen_restart(profile: &str) {
         if profile == "royalty" {
             let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
             documents.documents[0].owner = Owner::Spouse;
-            let IncomeDocument::Royalties(data) = &mut documents.documents[0].document else {
+            let crate::IncomeRecord::Royalties(data) = &mut documents.documents[0].document else {
                 panic!()
             };
             data.receipts = 1_200_000;

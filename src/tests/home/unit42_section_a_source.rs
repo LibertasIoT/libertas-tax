@@ -171,7 +171,7 @@ fn hypothetical_property_allowance_preserves_one_odd_cent_across_owners() {
     add_actual_office(&mut d, source, actual_office(1000, 2000, HomeFixture::Rented { rent: 0 }));
     add(&mut d, income(cash_business(100_000)));
     let spouse_entry = d.income.last_mut().unwrap();
-    spouse_entry.owner = Owner::Spouse;
+    spouse_entry.owner = crate::DocumentOwner::Spouses;
     let spouse_source = spouse_entry.id;
     let site = &mut d.home_sites[0];
     let mut spouse = site.claims[0].clone();
@@ -274,9 +274,10 @@ fn home_interest_and_points_join_before_the_personal_whole_dollar_rounding() {
         actual_office(1000, 2000, owned_office_home(99, 0, 0, 0, 0, 20200101)),
     );
     office_itemize(&mut draft, 0, 0, 99, 0);
-    let loan = &mut draft.deductions.as_mut().unwrap().mortgage[0];
+    let mut loan = edit_mortgage(&mut draft.deductions.as_mut().unwrap().mortgage[0]);
     loan.incurred = 20260101;
     loan.points = MortgagePoints::Purchase { amount: 1 };
+drop(loan);
     // 2026-10-17 approved HOME3.3/Money precision: 50% of99c interest
     // plus1c points leaves exactly50c personal, reported once as1dollar.
     // Rounding the separate business operands first would leave49c and0.
@@ -312,7 +313,7 @@ fn partial_home_gross_uses_schedule_c_income_after_inventory_cost() {
     .unwrap();
     assert_eq!((inputs.gross_cents, inputs.operating_cents), (40_000, 10_000));
     let activity = &mut draft.home_sites[0].claims[0].activities[0];
-    activity.gross_share = 5000;
+    activity.gross_share = 50.0;
     activity.attribution_reason = "Half of the income arose from work in this home".into();
     // 2026-10-17 HOME3.2: 50% of line7 ($400) is $200. COGS has
     // already reduced line7 and must not also reduce the line28 operand.
@@ -351,14 +352,14 @@ fn home_salt_iteration_keeps_the_preceding_cap_at_one_dollar_magi_tolerance() {
     let initial =
         crate::home_office::HomeContext { salt_cap_cents: 1_000_000, ..Default::default() };
     let first =
-        crate::home_office::next_context(&draft, 500_000, 505_000, 4_040_000, None, &initial)
+        crate::home_office::next_context(&draft, 500_000, 505_000, 4_040_000, 0, None, &initial)
             .unwrap();
     assert!(!initial.stable_with(&first));
     assert_eq!(first.salt_cap_cents, 4_040_000);
     let second =
-        crate::home_office::next_context(&draft, 500_000, 505_001, 4_039_970, None, &first)
+        crate::home_office::next_context(&draft, 500_000, 505_001, 4_039_970, 0, None, &first)
             .unwrap();
-    // Approved map3.3: stop at a $1 successive SALT-MAGI difference,
+    // Form 8829 iteration instructions: stop at a $1 successive SALT-MAGI difference,
     // retaining this return pass's preceding cap instead of the new cap.
     assert!(first.stable_with(&second));
     assert_eq!(second.salt_cap_cents, 4_040_000);
@@ -448,14 +449,12 @@ fn simplified_owned_home_needs_no_building_recovery_records() {
 
 #[test]
 fn home_hypothetical_agi_preserves_actual_nonhome_expenses() {
-    // 2026-10-17 D06; 2026 draft i8829 printed p3 line9 Step1/p4 MIP
+    // 2026 draft i8829 printed p3 line9 Step1/p4 MIP
     // Step1. Home gross50,000/home-use deductions5,000 are excluded;
     // nonhome costs10,000 remain in observed actual AGI145,000. The prior
     // limit-net reuse incorrectly produced110,000 instead of100,000.
-    let mut draft = office_return(
-        50_000,
-        actual_office(1000, 2000, HomeFixture::Rented { rent: 1_000_000 }),
-    );
+    let mut draft =
+        office_return(50_000, actual_office(1000, 2000, HomeFixture::Rented { rent: 1_000_000 }));
     let FederalIncome::Business { data } = &mut draft.income[0].income else { unreachable!() };
     data.expenses = vec![ordinary_business_expense(
         BusinessExpenseCategory::Other { label: "Nonhome business costs".into() },
@@ -466,9 +465,9 @@ fn home_hypothetical_agi_preserves_actual_nonhome_expenses() {
         salt_cap_cents: 1_000_000,
         ..Default::default()
     };
-    let next = crate::home_office::next_context(
-        &draft, 145_000, 145_000, 1_000_000, None, &observed,
-    ).unwrap();
+    let next =
+        crate::home_office::next_context(&draft, 145_000, 145_000, 1_000_000, 0, None, &observed)
+            .unwrap();
     let modified = next.modified_agi_cents[&draft.home_sites[0].id];
     assert_eq!(modified, 10_000_000);
     assert_eq!(next.agi_dollars, 145_000);
@@ -479,7 +478,9 @@ fn home_hypothetical_agi_preserves_actual_nonhome_expenses() {
     assert_eq!(crate::mortgage_limit::insurance_phaseout_cents(100_000, agi, false), 100_000);
     let casualty = event(
         CasualtyDeclaration::Federal { reference: "EM-4999".into() },
-        2_000_000, 2_000_000, 0,
+        2_000_000,
+        2_000_000,
+        0,
     );
     assert_eq!(section_a(core::slice::from_ref(&casualty), 110_000).ordinary_deduction, 8_900);
     assert_eq!(section_a(core::slice::from_ref(&casualty), agi).ordinary_deduction, 9_900);
@@ -490,12 +491,10 @@ fn site_mortgage_premium_phaseout_rounds_modified_agi_half_up() {
     // Modified AGI $100,000.60 is $100,001 like every other premium phase-out caller, one
     // step over the $100,000 start; truncating to $100,000 would take no reduction. A $300
     // profit is below the $500 business premium, so the reduction shows in the deduction.
-    let mut draft = office_return(
-        300,
-        actual_office(1000, 2000, owned_office_home(99, 0, 0, 0, 0, 20200101)),
-    );
+    let mut draft =
+        office_return(300, actual_office(1000, 2000, owned_office_home(99, 0, 0, 0, 0, 20200101)));
     office_itemize(&mut draft, 0, 0, 99, 100_000);
-    draft.deductions.as_mut().unwrap().mortgage[0].incurred = 20260101;
+    edit_mortgage(&mut draft.deductions.as_mut().unwrap().mortgage[0]).incurred = 20260101;
     let site = draft.home_sites[0].id;
     let modified = |cents: i64| {
         let observed = crate::home_office::HomeContext {
@@ -504,7 +503,7 @@ fn site_mortgage_premium_phaseout_rounds_modified_agi_half_up() {
             modified_agi_cents: [(site, cents)].into(),
             ..Default::default()
         };
-        crate::home_office::next_context(&draft, 100_001, 100_001, 1_000_000, None, &observed)
+        crate::home_office::next_context(&draft, 100_001, 100_001, 1_000_000, 0, None, &observed)
             .unwrap()
             .modified_agi_cents[&site]
     };

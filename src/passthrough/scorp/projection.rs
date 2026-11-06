@@ -46,3 +46,18 @@ impl ScorpK1 {
         Ok(rows)
     }
 }
+
+impl ScorpK1 {
+    pub(crate) fn loan_source_totals(&self) -> Option<[i64; 3]> {
+        let opening =
+            self.loans.iter().try_fold(0i64, |sum, loan| sum.checked_add(loan.principal))?;
+        let repayments =
+            self.loans.iter().try_fold(0i64, |sum, loan| sum.checked_add(loan.repayments))?;
+        let result = self.basis_result().ok()?;
+        let ending = result
+            .loans
+            .iter()
+            .try_fold(0i64, |sum, loan| sum.checked_add(loan.principal.get()))?;
+        Some([opening, ending, repayments])
+    }
+}

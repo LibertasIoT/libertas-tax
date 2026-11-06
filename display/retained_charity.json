@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 139000, "rule": {"select": "^<CharityCarryoverPage>.research_parts", "when_single_choice": "hide"}}
+  ]
+}

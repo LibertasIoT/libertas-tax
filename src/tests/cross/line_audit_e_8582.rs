@@ -60,8 +60,11 @@ fn home(rent: i64, fair: u32, personal: u32, overlap: u32, prior: [i64; 2]) -> F
     };
     v.home_operating_carryover = prior[0] * 100;
     //2026-10-19: both synthetic tax worksheets explicitly carry depreciation only.
-    v.home_depreciation_carryover = crate::SourceCents::Reported { amount: prior[1] * 100 };
-    v.amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: prior[1] * 100 };
+    v.prior_home_carry.get_or_insert(crate::RentalHomeCarries::NONE).home_depreciation_carryover =
+        crate::SourceCents::Reported { amount: prior[1] * 100 };
+    v.prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: prior[1] * 100 };
     income(FederalIncome::Rental { data: v })
 }
 
@@ -83,14 +86,18 @@ fn profit_rental(profit: i64, active: bool, prior: i64) -> FederalIncomeEntry {
 fn farm_loss() -> FederalIncome {
     FederalIncome::FarmRental {
         data: FederalFarmRental {
+            improvement_buildings: Vec::new(),
+            interest_limit_election: None,
             farm: FarmIncome {
+                related: vec![],
                 specials: farm_specials(),
                 land_basis: vec![],
                 header: None,
                 accounting: FarmAccounting::Cash {
                     receipts: vec![FarmReceipt::Raised { amount: 8_000 * 100 }],
                 },
-                insurance: FarmInsurance::None,
+                insurance_papers: Default::default(),
+                insurance: FarmInsuranceRecords::None,
                 ccc: None,
                 crp: vec![],
                 supplies: None,
@@ -238,7 +245,7 @@ fn d1_a_day_rented_and_used_is_a_rental_day_for_expenses_and_a_personal_day_for_
 fn d2_line_22_includes_the_prior_loss_the_propertys_own_income_used() {
     // Active participation: line 21 +5,000, prior loss 8,000. Part IV (a) 5,000,
     // (c) 8,000; lines 1d and 3 (3,000); line 9 3,000; Part VIII (a) 8,000,
-    // (b) 0, (c) 8,000. Line 22 (8,000); line 26 = 5,000 - 8,000 = (3,000).
+    // (b) 0, c 8,000. Line 22 (8,000); line 26 = 5,000 - 8,000 = (3,000).
     let mut d = complete(FederalStatus::Single);
     add(&mut d, profit_rental(5_000, true, 8_000));
     let r = supported(&d);
@@ -354,7 +361,7 @@ fn d6_estate_box_5_royalties_are_not_on_line_26() {
     let mut d = estate_trust_code_c_draft(0, 0);
     d.income[0] = wage(1, Owner::Taxpayer, 60_000 * 100, 0);
     {
-        let data = estate_trust_code_d_data(&mut d);
+        let mut data = estate_trust_code_d_data(&mut d);
         data.royalty_income = 1_000 * 100;
         data.box_5_royalty_only = true;
     }
@@ -381,7 +388,7 @@ fn d7_line_42_is_printed_without_a_form_4835() {
     {
         let child_id = d.next_id;
         d.next_id += 1;
-        let data = estate_trust_code_d_data(&mut d);
+        let mut data = estate_trust_code_d_data(&mut d);
         data.activities.box6 = 1_000_000;
         data.activities.activities.push(crate::EstateActivity {
             id: child_id,
@@ -489,7 +496,7 @@ fn d11_line_8_rounds_the_half_dollar_up() {
 fn d13_a_ptp_loss_is_outside_the_common_pool() {
     for (ptp, agi) in [(true, 65_000), (false, 60_000)] {
         let mut data = ordinary_partner_source(-5_000, false);
-        data.regular.basis.opening = 5_000_000;
+        data.regular.basis.opening = Some(5_000_000);
         data.regular.risk.start =
             ScorpRiskStart::Detailed { capacity: 5_000_000, profit: 0, loss: 0 };
         data.publicly_traded = ptp;

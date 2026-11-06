@@ -1,6 +1,8 @@
 // Fix unit F9 (2026-10-10): the line audit of Forms 6251, 8801, 4952, 8960, 8959 and 1116.
 use super::*;
-use crate::tests::cross::interview::{accepted, rejected_with, save_whole_return};
+use crate::tests::cross::interview::{
+    accepted, rejected_with, save_whole_return, save_your_situations,
+};
 
 // A printed form line's amount in whole dollars.
 fn printed(r: &FederalResult, form: TaxForm, line: &str) -> i64 {
@@ -83,10 +85,19 @@ fn amt_d1_property_tax_refund_on_line_8z_is_subtracted_on_line_2b() {
     let mut d = complete(FederalStatus::Single);
     add(
         &mut d,
-        income(FederalIncome::TaxRefund {
-            amount: 150_000,
-            history: property_tax_refund_history(500_000),
-            withholding: 0,
+        income(FederalIncome::GovernmentPayment {
+            data: crate::GovernmentPaymentSource {
+                form: refund_paper(Refund1099G {
+                    payer: Default::default(),
+                    recipient: Default::default(),
+                    state_details: Default::default(),
+                    amount: 150_000,
+                    year: 2025,
+                    withholding: 0,
+                }),
+                history: property_tax_refund_history(500_000),
+                ..GovernmentPaymentSource::printed(Default::default())
+            },
         }),
     );
     let r = supported(&d);
@@ -196,14 +207,18 @@ fn ii_d2_publicly_traded_partnership_net_passive_income_is_investment_income() {
 
 fn farm_rental_data(rent: i64) -> FederalFarmRental {
     FederalFarmRental {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
         farm: FarmIncome {
+            related: vec![],
             specials: farm_specials(),
             land_basis: vec![],
             header: None,
             accounting: FarmAccounting::Cash {
                 receipts: vec![FarmReceipt::Raised { amount: rent * 100 }],
             },
-            insurance: FarmInsurance::None,
+            insurance_papers: Default::default(),
+            insurance: FarmInsuranceRecords::None,
             ccc: None,
             crp: vec![],
             supplies: None,
@@ -238,7 +253,7 @@ fn press_sold(proceeds: i64) -> BusinessAsset {
         disposal: crate::AssetDisposal::Disposed {
             date: 20260701,
             how: crate::DisposalKind::Sold {
-                livestock: crate::Livestock::No,
+                livestock: crate::SoldLivestock::No,
                 proceeds: proceeds * 100,
                 selling_expenses: 0,
                 payment: crate::SalePayment::InFull,
@@ -357,7 +372,7 @@ fn amed_d1_additional_medicare_explanations_name_the_2026_form_8959_parts() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, wage(0, Owner::Taxpayer, 13_000_000, 0));
     let mut e = income(cash_business(151_597));
-    e.owner = Owner::Spouse;
+    e.owner = crate::DocumentOwner::Spouses;
     add(&mut d, e);
     let r = supported(&d);
     assert_eq!(value(&r, "additional_medicare_self_employment"), 180);
@@ -388,9 +403,9 @@ fn nonresident_spouse_return(elected: bool, spouse_wages: i64) -> FederalDraft {
     add(&mut d, wage(0, Owner::Taxpayer, 10_000_000, 0));
     add(&mut d, income(savings_income(100_000, 0)));
     add(&mut d, wage(0, Owner::Spouse, spouse_wages * 100, 0));
-    d.checklist.whole_return |= WholeReturnTopics::NONRESIDENT_SPOUSE.0;
+    d.set_situations(SpouseSituations::NONRESIDENT_SPOUSE.0, true);
     if elected {
-        d.checklist.whole_return |= WholeReturnTopics::NIIT_JOINT_ELECTION.0;
+        d.set_situations(SpouseSituations::NIIT_JOINT_ELECTION.0, true);
     }
     d
 }
@@ -408,7 +423,7 @@ fn niit_d4_nonresident_spouse_return_defaults_to_the_separate_treatment() {
     assert!(noted(&r, "NOTE_NIIT_NONRESIDENT_SPOUSE_SEPARATE"));
     // With the nonresident spouse the taxpayer: the spouse's own figures (here none) apply.
     let mut d = nonresident_spouse_return(false, 50_000);
-    d.checklist.whole_return |= WholeReturnTopics::YOU_WERE_THE_NONRESIDENT.0;
+    d.set_situations(SpouseSituations::YOU_WERE_THE_NONRESIDENT.0, true);
     let r = estimate(&d);
     assert_eq!(printed(&r, TaxForm::Schedule2, "6"), 0);
 }
@@ -437,23 +452,24 @@ fn niit_d4_items_need_the_resident_choice_and_a_joint_return() {
     // The election rides on the resident choice.
     let before = s.draft.checklist;
     rejected_with(
-        save_whole_return(&mut s, WholeReturnTopics::NIIT_JOINT_ELECTION.0),
+        save_whole_return(&mut s, SpouseSituations::NIIT_JOINT_ELECTION.0),
         "WHOLE_RETURN_NIIT_NEEDS_THE_RESIDENT_CHOICE",
     );
     assert_eq!(s.draft.checklist, before);
     accepted(&save_whole_return(
         &mut s,
-        WholeReturnTopics::NONRESIDENT_SPOUSE.0 | WholeReturnTopics::NIIT_JOINT_ELECTION.0,
+        SpouseSituations::NONRESIDENT_SPOUSE.0 | SpouseSituations::NIIT_JOINT_ELECTION.0,
     ));
     assert!(noted(&estimate(&s.draft), "NOTE_NIIT_NONRESIDENT_SPOUSE_ELECTED"));
-    // A return that is not joint cannot hold it.
+    // A return that is not joint has no spouse page: About you does not
+    // offer the items.
     let mut single = Interview::new(TEST_USER, complete(FederalStatus::Single));
     rejected_with(
-        save_whole_return(
+        save_your_situations(
             &mut single,
-            WholeReturnTopics::NONRESIDENT_SPOUSE.0 | WholeReturnTopics::NIIT_JOINT_ELECTION.0,
+            SpouseSituations::NONRESIDENT_SPOUSE.0 | SpouseSituations::NIIT_JOINT_ELECTION.0,
         ),
-        "WHOLE_RETURN_NEEDS_A_JOINT_RETURN",
+        "MESSAGE_CHOOSE_ONLY_THE_LISTED_ITEMS",
     );
 }
 

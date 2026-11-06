@@ -18,31 +18,35 @@ pub struct ChildAnnuity {
     /// Temporary annuity starting date
     #[libertas_date_only]
     pub started: u32,
-    /// Payment months from the starting date until this child reaches age 22
-    /// Use the original month count from the plan's benefit dates, not the months remaining now.
+    /// Payment period from the starting date until this child reaches age 22
+    /// Use the original count from the plan's benefit dates, not what remains now.
     // Tax structure: this temporary child-survivor annuity ends at age 22 (22 × 12 months).
     #[libertas_number(min = 1, max = 264)]
+    #[libertas_physical_unit("month")]
     pub term: u32,
     /// Cost allocated to this temporary annuity at its starting date
     /// Employee contributions available for recovery; for a retiree's survivor, exclude cost already recovered before this temporary annuity began.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
     /// Cost actually recovered before 2026 under this temporary annuity
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub recovered: i64,
     /// Unused exclusion carried into 2026
     /// Retain from the prior worksheet. This is unrecovered cost, not an extra investment or an amount already excluded.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub deferred: i64,
     /// Monthly 2026 payments, in order
     /// Include every entitled month of 2026, including zero payments; begin with January or the starting month for a new annuity. Stop at the documented early ending month when applicable. Their sum must equal the retirement gross. Do not combine several months into a single payment entry.
-    /// ----
-    /// Monthly payment
     // Tax structure: one payment row for each entitled month of this tax year.
     #[libertas_size(min = 1, max = 12)]
+    /// ----
+    /// Monthly payment
     pub payments: Vec<ChildAnnuityPayment>,
     /// Complete temporary-annuity records and eligibility confirmed
     /// CSRS/FERS temporary survivor annuity for this one nondisabled child, without a surviving-spouse annuity or other annuitants. The original recovery period ends at age 22; any earlier last entitled payment date is separately documented. All entitled months and actual payments are present, with no changed recovery divisor, foreign/treaty rule, estate-tax deduction, unentered final lump sum or other adjustment. Use the death exception for the retirement distribution. No taxes the whole payment, with no cost recovered.
@@ -54,7 +58,8 @@ pub struct ChildAnnuity {
 pub struct ChildAnnuityPayment {
     /// Gross payment
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
 }
 impl ChildAnnuity {
@@ -70,7 +75,11 @@ impl ChildAnnuity {
     fn last_month(&self) -> u32 {
         self.ended.map_or_else(|| self.normal_last_month(), |ended| ended / 100 % 100)
     }
+    #[cfg(test)]
     pub(crate) fn valid(&self, gross: i64) -> bool {
+        self.valid_with_source_alignment(gross, true)
+    }
+    pub(crate) fn valid_with_source_alignment(&self, gross: i64, source_alignment: bool) -> bool {
         valid_birth(self.started)
             && (20040101..=20261231).contains(&self.started)
             && (1..=264).contains(&self.term)
@@ -88,7 +97,7 @@ impl ChildAnnuity {
             && self.payments.len()
                 == self.last_month().saturating_sub(self.first_month()) as usize + 1
             && self.payments.iter().all(|p| (0..=100000000000).contains(&p.amount))
-            && self.payments.iter().map(|p| p.amount).sum::<i64>() == gross
+            && (!source_alignment || self.payments.iter().map(|p| p.amount).sum::<i64>() == gross)
             && (self.started < 20260101 || (self.recovered == 0 && self.deferred == 0))
             && self.recovered + self.deferred
                 == (self.monthly() * i64::from(self.elapsed())).min(self.cost)

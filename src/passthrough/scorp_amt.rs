@@ -10,7 +10,8 @@ pub struct ScorpAmtDebt {
     pub loan: u32,
     /// Opening AMT debt basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: i64,
 }
 
@@ -18,9 +19,11 @@ pub struct ScorpAmtDebt {
 /// Keep AMT balances even when they currently equal regular-tax balances. Omission does not mean no AMT difference.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct ScorpAmt {
-    /// Ordinary-business depreciation adjustment for AMT
-    /// From K-1 box 15 code A and its activity statement. Add the signed adjustment to regular box 1. Include only this ordinary business's adjustment.
+    /// Ordinary-business adjustment for AMT
+    /// From this activity's AMT statement, including applicable box 15 adjustments. Add this signed total to regular box 1. Separate records already include depletion adjustments; do not add printed code C again.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub adjustment: i64,
     /// Separate AMT portfolio capital amounts and loss histories
     /// Required when the regular source has portfolio capital records, even if all AMT values are zero or equal regular tax. Use the AMT activity statement and retained AMT balances.
@@ -38,16 +41,19 @@ pub struct ScorpAmt {
     pub section1231: Option<crate::K1Section1231>,
     /// Opening AMT stock basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub stock: i64,
     /// Prior ordinary losses suspended by AMT basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_loss: i64,
     /// Prior nondeductible carryforward for AMT
     /// Only under the continuing losses-first election; otherwise zero.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub prior_nondeductible: i64,
     /// Opening AMT debt bases
     /// Supply one entry for every shareholder loan, including a zero basis. Actual principal, advances and repayments come from the same loan source records.
@@ -60,11 +66,9 @@ pub struct ScorpAmt {
     pub passive: ScorpPassiveHistory,
     /// AMT rental amounts and carryovers
     /// Boxes 2 and 3 after each activity's box 15 code A adjustment, with the AMT Form 8582 carryovers.
-    #[libertas_foldable(initially_open = false)]
     pub rentals: crate::K1RentalAmounts,
     /// AMT losses carried because of your AMT basis or amount at risk
     /// Your AMT balances; never substitute the regular-tax ones.
-    #[libertas_foldable(initially_open = false)]
     pub carried: crate::K1LossCarryforwards,
     /// Complete ordinary-business AMT differences
     /// Check the K-1 box 15 AMT items. No uses the regular-tax records for AMT instead, with a notice; other AMT differences are not supported. Confirm no AMT differences outside these depreciation, portfolio capital, section 1231, tax-exempt-interest and retained-balance records, including other K-1 preference items, property contributions, dispositions or additional expense adjustments. Entered noncapital nondeductible expenses are shared with regular tax; retained AMT at-risk expense balances are separate. Entered tax-exempt income increases basis; its separately entered specified private-activity interest is included in the return-level AMT calculation. Current cash transactions, separately entered portfolio interest/dividends and participation facts are shared with the regular records; no additional portfolio AMT differences are included in this supported path.
@@ -99,7 +103,7 @@ impl ScorpAmt {
         amt.section1231 = self.section1231.clone();
         // Retain the physical sources for structural validation. Their regular
         // amounts are not an AMT monetary projection.
-        amt.opening = self.stock;
+        amt.opening = Some(self.stock);
         amt.prior_loss = self.prior_loss;
         amt.prior_nondeductible = self.prior_nondeductible;
         amt.risk = self.risk.clone();
@@ -113,8 +117,7 @@ impl ScorpAmt {
     }
 
     pub(crate) fn valid(&self, owner: &ScorpK1) -> bool {
-        self.validation_record(owner)
-            .is_some_and(|v| v.valid_with_sale_carry(false, ScorpSourceCapacity::amt()))
+        self.source_valid(owner)
             && crate::K1Section179Sale::views(&owner.section179_sales, true).map_or(true, |sales| {
                 crate::K1Section179Sale::carryover_rule(
                     &sales,
@@ -123,6 +126,11 @@ impl ScorpAmt {
                 )
                 .is_none()
             })
+    }
+
+    pub(crate) fn source_valid(&self, owner: &ScorpK1) -> bool {
+        self.validation_record(owner)
+            .is_some_and(|v| v.valid_with_sale_carry(false, ScorpSourceCapacity::amt()))
     }
 
     pub(crate) fn source(

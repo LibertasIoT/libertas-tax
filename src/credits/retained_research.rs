@@ -1,3 +1,6 @@
+pub use crate::retained_research_model::{
+    ResearchCapitalPart, ResearchCapitalParts, ResearchLossPart, ResearchLossParts,
+};
 use crate::validation::ValidationIssue;
 // Retained source identity belongs to the existing loss owner. These portions
 // never change its deduction, absorption, carryover or AMT calculation.
@@ -5,28 +8,15 @@ use crate::{CapitalLossOrigin, InvestmentCapitalParts, PriorAmtCapitalReturn, Pr
 use alloc::{collections::BTreeMap, vec::Vec};
 use libertas_macros::*;
 
-/// Retained operating-loss portions belonging to actual current businesses
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ResearchLossParts {
-    /// Identified business portions
-    Parts { sources: Vec<ResearchLossPart> },
-}
-/// One business's portion of a retained operating loss
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ResearchLossPart {
-    pub source: i64,
-    #[libertas_money("USD", 2)]
-    pub amount: i64,
-}
 /// Retained operating-loss portions belonging to current businesses
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum ResearchLossPartsPage {
     /// Identified business portions
     Parts {
         /// Portions of the existing balance; the remainder belongs to other operating businesses
+        #[libertas_size(min = 1)]
         /// ----
         /// Business portion
-        #[libertas_size(min = 1)]
         sources: Vec<ResearchLossPartPage>,
     },
 }
@@ -38,12 +28,13 @@ pub struct ResearchLossPartPage {
     pub source: i64,
     /// Part of this year's unused regular loss
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 100)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 100, max = 100000000000)]
     pub amount: i64,
 }
 /// Regular loss from a retained return
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
+#[libertas_calculation_root("RetainedLossSourceOptions")]
 pub struct NolYearPage {
     /// Calendar loss year
     // Tax-year source window: only the stated current or prior tax years apply.
@@ -51,7 +42,8 @@ pub struct NolYearPage {
     pub year: u32,
     /// Unused regular-tax loss entering 2026
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_calculation_request("RetainedLossSourceOptions")]
     pub balance: i64,
     /// Each spouse's actual surviving regular loss
@@ -126,7 +118,10 @@ pub(crate) fn available(d: &crate::FederalDraft) -> Vec<i32> {
         crate::FederalIncome::Partnership { data } => {
             data.credits.iter().any(|c| c.credit().research())
         }
-        crate::FederalIncome::Scorp { data } => data.credits.iter().any(|c| c.credit().research()),
+        crate::FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
+            data.credits.iter().any(|c| c.credit().research())
+        }
         crate::FederalIncome::PartnershipActivities { data } => {
             data.entity.credits.iter().any(|c| c.credit().research())
         }
@@ -255,28 +250,13 @@ pub(crate) fn rule(d: &crate::FederalDraft) -> Option<&'static str> {
 
 /// Retained regular capital-loss portions belonging to actual businesses
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ResearchCapitalParts {
-    /// Identified business portions
-    Parts { sources: Vec<ResearchCapitalPart> },
-}
-/// One business's regular short- and long-term carryover portions
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ResearchCapitalPart {
-    pub source: i64,
-    #[libertas_money("USD", 2)]
-    pub short: i64,
-    #[libertas_money("USD", 2)]
-    pub long: i64,
-}
-/// Retained regular capital-loss portions belonging to actual businesses
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum ResearchCapitalPartsPage {
     /// Identified business portions
     Parts {
         /// Portions of the calculated carryover; the remainder is unrelated to current research businesses
+        #[libertas_size(min = 1)]
         /// ----
         /// Business portion
-        #[libertas_size(min = 1)]
         sources: Vec<ResearchCapitalPartPage>,
     },
 }
@@ -289,17 +269,19 @@ pub struct ResearchCapitalPartPage {
     pub source: i64,
     /// Regular short-term portion
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub short: i64,
     /// Regular long-term portion
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub long: i64,
 }
 /// 2025 return with a regular or AMT capital loss
 /// Copy the filed return's amounts. The App calculates the carryovers.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
+#[libertas_calculation_root("RetainedCapitalSourceOptions")]
 pub struct PriorCapitalReturnPage {
     /// Who filed this 2025 return
     pub owners: PriorReturnOwners,
@@ -307,11 +289,14 @@ pub struct PriorCapitalReturnPage {
     pub status: crate::FederalStatus,
     /// 2025 Form 1040 line 11b adjusted gross income
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_calculation_request("RetainedCapitalSourceOptions")]
     pub agi: i64,
     /// 2025 Form 1040 line 14 total deductions
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_calculation_request("RetainedCapitalSourceOptions")]
     pub deductions: i64,
     /// 2025 Schedule 1-A line 37 enhanced deduction for seniors
@@ -344,7 +329,8 @@ pub struct PriorCapitalReturnPage {
     /// Part of the loss carried to 2026 that came from section 1256 contracts
     /// Enter the part of your 2025 capital loss carryover that came from a net section 1256 contracts loss (Form 6781, Publication 550 "Net section 1256 contracts loss"), as a positive amount, or zero when none of it did. A 2026 carryback election can then count it as a 2026 section 1256 loss.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section_1256: i64,
     /// Separate 2025 AMT capital-loss worksheet
@@ -377,7 +363,8 @@ pub struct PriorCapitalReturnPage {
     /// [SetText]
     /// The prior Form 8960 excluded capital-loss difference is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub niit_difference: Option<i64>,
     /// Each spouse’s surviving capital-loss amounts
     /// Only for a Form 8379 claim. Use actual source records; this never changes the joint calculation.

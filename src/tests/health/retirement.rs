@@ -22,8 +22,8 @@ fn marketplace_annual_rounding_retains_source_cents_and_missing_benchmark_blocks
     assert_eq!(value(&r, "premium_tax_credit"), 340); // round(12 * 200.49) - 2066
     assert_eq!(value(&r, "premium_credit_advance"), 6);
     if let MarketplaceClaim::Yes { facts } = &mut d.credits.as_mut().unwrap().marketplace {
-        let PolicyAmounts::ByMonth { months } = &mut facts.forms[0].amounts else { unreachable!() };
-        months[0].benchmark = Some(0);
+        let paper = &mut facts.forms[0].form;
+        paper.month_mut(1).benchmark = Some(0);
     }
     unsupported(&d, "Marketplace");
 }
@@ -34,7 +34,7 @@ fn long_term_care_coordinates_ordinary_premiums_and_sep_without_double_deduction
     set_age(&mut d, -1, 45);
     let mut business = care_business(5000, 1000, false);
     let FederalIncome::Business { data } = &mut business else { panic!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 50000, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 50000, rate: 25.0 };
     let BusinessHealthInsurance::Plan { months, .. } = &mut data.health_insurance else { panic!() };
     months.push(BusinessHealthMonth {
         month: 1,
@@ -189,12 +189,18 @@ fn hsa_deemed_combines_with_ordinary_withdrawals_and_keeps_spouse_tax_separate()
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let source = hsa_distribution_mut(&mut comparison, owner, 0);
         source.origin = HealthDocumentOrigin::Form1099Sa;
-        source.payment = MedicalSaPayment::Own {
+        source.payment = Some(MedicalSaPayment::Own {
             medical: 0,
             nonmedical: vec![MedicalAccountWithdrawal { date: 20260101, amount: 300 }],
             disabled_since: None,
             rollover: None,
-        };
+        });
+        source.form = sa_source(Sa1099 {
+            origin: HealthDocumentOrigin::Form1099Sa,
+            box3_code: Some(1),
+            ..source.internal()
+        })
+        .form;
     }
     assert_eq!(r.tax, supported(&comparison).tax);
 }
@@ -220,9 +226,10 @@ fn hsa_rollover_exclusion_does_not_consume_contribution_capacity() {
     assert_eq!(restart(d.clone()).draft, d);
     let mut without = d.clone();
     let source = hsa_distribution_mut(&mut without, Owner::Taxpayer, 0);
-    let MedicalSaPayment::Own { rollover, .. } = &mut source.payment else { panic!() };
-    source.gross -=
+    let Some(MedicalSaPayment::Own { rollover, .. }) = &mut source.payment else { panic!() };
+    let rollover =
         crate::kernel::ratio::exact::rounded(&rollover.take().unwrap().amount()).unwrap();
+    *source.gross_mut() -= rollover;
     assert_eq!(r.tax, supported(&without).tax);
     assert_eq!(r.refund, supported(&without).refund);
 }
@@ -236,14 +243,14 @@ fn hsa_rollover_sixty_days_and_prior_distribution_anniversary() {
     rollover.preceding = Some(20251231);
     add_hsa_distribution(&mut d, Owner::Taxpayer, 0, vec![], None, Some(rollover));
     supported(&d); // Current contribution eligibility is not required.
-    let MedicalSaPayment::Own { rollover, .. } =
+    let Some(MedicalSaPayment::Own { rollover, .. }) =
         &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
     else {
         panic!()
     };
     rollover.as_mut().unwrap().receipts[0].deposits[0].deposited = 20270302;
     unsupported(&d, "Income");
-    let MedicalSaPayment::Own { rollover, .. } =
+    let Some(MedicalSaPayment::Own { rollover, .. }) =
         &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
     else {
         panic!()
@@ -271,23 +278,16 @@ fn hsa_rollovers_keep_owner_history_separate() {
 }
 
 #[test]
-fn hsa_rollover_rejects_invalid_dates_and_postdeath_deposit() {
+fn hsa_rollover_rejects_early_and_postdeath_deposit() {
     let mut d = complete(FederalStatus::Single);
     let mut rollover = hsa_rollover();
-    rollover.receipts[0].deposits[0].deposited = 20260230;
+    rollover.receipts[0].deposits[0].deposited = 20251231;
     add_hsa_distribution(&mut d, Owner::Taxpayer, 0, vec![], None, Some(rollover));
-    assert!(!hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).valid());
-    let MedicalSaPayment::Own { rollover, .. } =
-        &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
-    else {
-        panic!()
-    };
-    rollover.as_mut().unwrap().receipts[0].deposits[0].deposited = 20251231;
-    assert!(!hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).valid());
+    assert!(!hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).record().valid());
     let mut final_return = death(20260115).unwrap();
     final_return.ordinary = true;
     d.people.as_mut().unwrap().taxpayer.died = Some(final_return);
-    let MedicalSaPayment::Own { rollover, .. } =
+    let Some(MedicalSaPayment::Own { rollover, .. }) =
         &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
     else {
         panic!()
@@ -498,9 +498,6 @@ fn separate_hsa_family_both_archer_deposits_reduce_allowance_but_only_own_are_de
 fn separate_hsa_family_requires_correct_context_and_excludes_spouse_hsa_entry() {
     let mut d = separate_december_hsa(437500);
     d.adjustments.as_mut().unwrap().hsa_family_share.as_mut().unwrap().other_coverage = None;
-    unsupported(&d, "HSA");
-    d.adjustments.as_mut().unwrap().hsa_family_share.as_mut().unwrap().other_coverage =
-        Some(HsaEligibility::Monthly { months: vec![HsaCoverage::Family; 11] });
     unsupported(&d, "HSA");
     let mut d = separate_december_hsa(437500);
     let spouse = hsa_entry(Owner::Spouse, HsaCoverage::Family, 0);

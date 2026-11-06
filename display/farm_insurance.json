@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 448000, "rule": {"select": "^<FarmInsuranceRecords>", "flatten": true}},
+    {"order": 449000, "rule": {"select": "^<CropPayment>", "flatten": true}}
+  ]
+}

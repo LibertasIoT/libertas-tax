@@ -1,17 +1,18 @@
-// Fix unit F14 (2026-10-10): the merge review's defects D1-D5 (community-property withholding of a
-// routed Form 1099, Form 8958 rows, a publicly traded partnership's prior loss on Form 8582,
-// Schedule 1 lines 3 and 6, the Form 2210 waiver labels) and its suspected rows S1 and S2.
+// Community-property withholding, Form 8958 rows, passive-loss carryovers,
+// Schedule 1 lines and estimated-tax waiver regressions.
 use super::*;
 
-fn nec_form(compensation: i64, withholding: i64, belongs: IncomeUse) -> FederalIncome {
+fn nec_form(compensation: i64, withholding: i64, belongs: Option<IncomeUse>) -> FederalIncome {
     FederalIncome::Nec1099 {
-        data: FederalForm1099Nec {
+        data: nec_source(FederalForm1099Nec {
+            cash_tips: 0,
+            tip_occupation_codes: Default::default(),
+            overtime: 0,
             compensation: compensation * 100,
             withholding: withholding * 100,
             golden_parachute: 0,
             belongs,
-            business: None,
-        },
+        }),
     }
 }
 fn named_business(name: &str, receipts: i64, supplies: i64) -> FederalIncomeEntry {
@@ -33,7 +34,7 @@ fn community(d: &mut FederalDraft, rule: CommunityRule) {
 }
 fn base(rule: CommunityRule) -> FederalDraft {
     let mut d = complete(FederalStatus::Separate);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.next_id = 2;
     community(&mut d, rule);
@@ -44,7 +45,7 @@ fn base(rule: CommunityRule) -> FederalDraft {
 fn nec_return(rule: CommunityRule) -> FederalDraft {
     let mut d = base(rule);
     add(&mut d, named_business("Lee Design", 5_000, 3_000));
-    add(&mut d, income(nec_form(20_000, 4_800, IncomeUse::Business)));
+    add(&mut d, income(nec_form(20_000, 4_800, None)));
     community(&mut d, rule);
     d
 }
@@ -72,10 +73,10 @@ fn d1_a_halves_return_still_divides_the_withholding_on_the_nec() {
 fn d1_the_withholding_on_a_spouses_routed_nec_is_not_this_returns_under_section_879() {
     let mut d = base(CommunityRule::LivingApartAllYear);
     let mut business = named_business("Lee Design", 5_000, 3_000);
-    business.owner = Owner::Spouse;
+    business.owner = crate::DocumentOwner::Spouses;
     add(&mut d, business);
-    let mut nec = income(nec_form(20_000, 4_800, IncomeUse::Business));
-    nec.owner = Owner::Spouse;
+    let mut nec = income(nec_form(20_000, 4_800, None));
+    nec.owner = crate::DocumentOwner::Spouses;
     add(&mut d, nec);
     community(&mut d, CommunityRule::LivingApartAllYear);
     let r = supported(&d);
@@ -88,9 +89,9 @@ fn d1_the_withholding_on_a_grant_routed_to_a_business_follows_the_earner() {
     let mut d = base(CommunityRule::LivingApartAllYear);
     add(&mut d, named_business("Lee Design", 5_000, 3_000));
     let mut g = government_unemployment(0, &[], 1_000);
-    if let FederalIncome::Unemployment { data } = &mut g.income {
-        data.taxable_grants = 1_000_000;
-        data.grant_use = Some(FederalGrantUse::Business { business: None });
+    if let FederalIncome::GovernmentPayment { data } = &mut g.income {
+        data.form.taxable_grants = Some(1_000_000);
+        data.grant_use = None;
     }
     add(&mut d, g);
     community(&mut d, CommunityRule::LivingApartAllYear);
@@ -132,7 +133,7 @@ fn profit_rental(profit: i64) -> FederalIncomeEntry {
 fn ptp(ordinary: i64, prior_passive: i64, opening_basis: i64) -> PartnerK1 {
     let mut data = ordinary_partner_source(ordinary, false);
     data.regular.passive_loss = prior_passive * 100;
-    data.regular.basis.opening = opening_basis * 100;
+    data.regular.basis.opening = Some(opening_basis * 100);
     data.regular.risk.start =
         ScorpRiskStart::Detailed { capacity: 500_000_000, profit: 0, loss: 0 };
     data.publicly_traded = true;
@@ -182,7 +183,7 @@ fn d3_lines_10_and_11_do_not_count_a_ptps_prior_loss_as_income() {
 
 fn community_base() -> FederalDraft {
     let mut d = complete(FederalStatus::Separate);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.setup.as_mut().unwrap().community_property = community_arizona();
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.income[0].community = CommunityShare::Community;
@@ -207,7 +208,7 @@ fn d4_schedule_1_line_3_is_the_community_share_of_the_profit() {
 fn d4_a_spouses_business_is_this_returns_share_on_line_3() {
     let mut d = community_base();
     let mut business = income(cash_business(20_000));
-    business.owner = Owner::Spouse;
+    business.owner = crate::DocumentOwner::Spouses;
     business.community = CommunityShare::Community;
     add(&mut d, business);
     let r = supported(&d);
@@ -233,13 +234,14 @@ fn waiver_return() -> FederalDraft {
     let pay = d.payments.as_mut().unwrap();
     pay.prior_year =
         Some(PriorYearTax { full_year: true, tax: 800_000, agi: Some(10_000_000), spouse_tax: 0 });
-    pay.estimated_payments = vec![DatedPayment {
-        date: 20260610,
-        amount: 150_000,
-        payer: PaymentPayer::Taxpayer,
-        refund_property: None,
-    }];
-    pay.refresh_estimated_projection();
+    pay.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: vec![DatedPayment {
+            date: 20260610,
+            amount: 150_000,
+            payer: PaymentPayer::Taxpayer,
+            refund_property: None,
+        }],
+    };
     pay.waiver = Some(PenaltyWaiver::Full {
         reason: PenaltyWaiverReason::CasualtyOrDisasterOrUnusual,
         explanation: "A house fire destroyed our records in October 2026.".into(),
@@ -308,5 +310,5 @@ fn s2_the_special_allowance_amounts_are_one_set_of_constants() {
     for literal in ["75_000", "150_000", "12_500", "25_000"] {
         assert!(!rules.contains(literal), "{literal} repeats a constant");
     }
-    assert!(!include_str!("../../federal/federal_rules.rs").contains("12_500"));
+    assert!(!crate::federal_rules::HUB_SOURCE.contains("12_500"));
 }

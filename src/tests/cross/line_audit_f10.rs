@@ -36,9 +36,9 @@ fn d8606_1_line_6_is_less_a_current_year_repayment_of_a_current_year_disaster_di
     // 60,000 = 3,333; line 14 = 6,667; line 15a = 15b = 16,667.
     let mut d = complete(FederalStatus::Single);
     let mut e = basis_distribution(Owner::Taxpayer, 20_000, RetirementTreatment::Early);
-    if let FederalIncome::Retirement { data } = &mut e.income {
-        data.box7 = crate::DistributionCodes::CODE_1.0;
-        data.disaster = qdd(2_000_000, 20260506, 1_000_000, 1_000_000);
+    if let Some(data) = e.income.r1099_source_mut() {
+        data.form.box7 = crate::DistributionCodes::CODE_1.0;
+        data.disaster = Some(qdd(2_000_000, 20260506, 1_000_000, 1_000_000));
     }
     add(&mut d, e);
     d.adjustments.as_mut().unwrap().ira_basis =
@@ -56,8 +56,8 @@ fn d8606_1_line_6_is_less_a_current_year_repayment_of_a_current_year_disaster_di
     assert_eq!(amt(&r, "form_8915_taxpayer_2026_line_26"), Some(833_350));
     assert_eq!(return_line(&r, "4b"), 833_400);
     // A repayment made after December 31, 2026 is not in the year-end value.
-    if let FederalIncome::Retirement { data } = &mut d.income[1].income {
-        data.disaster = qdd(2_000_000, 20260506, 1_000_000, 0);
+    if let Some(data) = d.income[1].income.r1099_source_mut() {
+        data.disaster = Some(qdd(2_000_000, 20260506, 1_000_000, 0));
     }
     let r = supported(&d);
     assert_eq!(amt(&r, "taxpayer_ira_basis_recovered"), Some(285_700));
@@ -98,14 +98,14 @@ fn code_g_box_2a_is_taxable_for_a_rollover_to_a_roth() {
     // retirement-special-codes F2: a 401(k) Form 1099-R with box 1 30,000, box 2a 30,000
     // and code G (an in-plan Roth rollover). Line 5a 30,000, line 5b 30,000, and no
     // Form 5329 tax (sections 402A(c)(4)(B), 408A(d)(3)(A)(ii)).
-    use crate::interview::document_income;
     use crate::tests::cross::interview::r1099;
     let code = DistributionCode::DirectRollover { to: RolloverTarget::Roth };
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19840701;
     add(
         &mut d,
-        income(document_income(&IncomeDocument::R1099(r1099(3_000_000, code.clone(), false)))),
+        // The accepted source: the paper plus its code G treatment answer.
+        income(r1099(3_000_000, code.clone(), false).into_source().income()),
     );
     let r = supported(&d);
     assert_eq!(return_line(&r, "5a"), 3_000_000);
@@ -115,9 +115,9 @@ fn code_g_box_2a_is_taxable_for_a_rollover_to_a_roth() {
     assert!(!noted(&r, "WARN_CODE_G_BOX_2A_TAXED_AS_ROTH_ROLLOVER"));
     // (b) After-tax money sent to a Roth IRA prints box 2a 0: line 5a 10,000, line 5b 0.
     let mut after_tax = r1099(1_000_000, code, false);
-    after_tax.taxable = 0;
+    after_tax.source_mut().form.taxable = Some(0);
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(document_income(&IncomeDocument::R1099(after_tax))));
+    add(&mut d, income(after_tax.into_source().income()));
     let r = supported(&d);
     assert_eq!(return_line(&r, "5a"), 1_000_000);
     assert_eq!(return_line(&r, "5b"), 0);
@@ -130,20 +130,31 @@ fn ira_early(birth: u32, box7: u32, treatment: RetirementTreatment) -> FederalDr
     add(
         &mut d,
         income(FederalIncome::Retirement {
-            data: FederalRetirement {
+            data: retirement_source(FederalRetirement {
+                form_boxes: Default::default(),
+                trump: false,
+                box_2a: 1_000_000,
+                box_3: 0,
+                box_6: 0,
+                box_8a: 0,
+                box_8b_percent: None,
+                box_9a_percent: None,
+                ira: (RetirementKind::Ira).ira()
+                    && (box7) & crate::DistributionCodes::CODE_N.0 == 0,
                 box_9b: None,
                 box_10: 0,
+                box_10_basis: None,
                 disability: DisabilityIncome::None,
                 kind: RetirementKind::Ira,
                 disability_wages: crate::DisabilityWages::None,
                 gross: 1_000_000,
-                taxable: RetirementTaxable::Payer { amount: 1_000_000 },
+                taxable: Some(RetirementTaxable::Payer),
                 withholding: 0,
                 box7,
-                ordinary_distribution: treatment,
+                ordinary_distribution: Some(treatment),
                 disaster: crate::DisasterDistribution::No,
                 after_death: None,
-            },
+            }),
         }),
     );
     d
@@ -216,21 +227,11 @@ fn d5329_2_periodic_payments_exception_02_and_the_modification_refusal() {
     assert!(r.issues.iter().any(|i| i.display.key == "ISSUE_SEPP_RECAPTURE"));
 }
 
-fn item(owner: Owner, document: IncomeDocument) -> IncomeDocumentItem {
+fn item(owner: Owner, document: IncomeSource) -> IncomeDocumentItem {
     unanswered_document(owner, 0, document)
 }
-fn retirement_page(s: &mut Interview) -> P {
-    match crate::tests::cross::interview::from_review(s, TaxSection::Retirement) {
-        Reply::Edit(request @ P::SaveIncomes { .. }) => request,
-        other => panic!("expected the retirement topic, got {other:?}"),
-    }
-}
 fn save_documents_on_page(s: &mut Interview, documents: Vec<IncomeDocumentItem>) {
-    let mut request = retirement_page(s);
-    let P::SaveIncomes { documents: page, .. } = &mut request else { unreachable!() };
-    page.documents = documents;
-    let reply = send(s, request);
-    assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
+    crate::tests::support::client::income_pages::save_each_topic(s, documents);
 }
 
 #[test]
@@ -247,35 +248,27 @@ fn d5329_3_a_disabled_roth_owner_has_form_5329_lines_1_and_2() {
             reason: RothReason::Disabled { since: 20250101 },
         },
     };
-    let roth = R1099 {
-        state_details: Default::default(),
-        gross: 800_000,
-        taxable: 800_000,
-        withholding: 0,
-        box7: box7_of(&code),
-        allowed_treatments: DistributionCodes::treatments(box7_of(&code), false, false),
-        allowed_methods: vec![0],
-        code,
-        ira: false,
-        trump: false,
-        more: RMore::default(),
-        disaster: DisasterDistribution::No,
-        public_safety: vec![],
-        after_death: None,
-    };
+    let roth = crate::tests::cross::interview::r1099(800_000, code, false);
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19800101;
     let mut s = Interview::new(TEST_USER, d);
     save_documents_on_page(
         &mut s,
         vec![
-            item(Owner::Taxpayer, IncomeDocument::R1099(roth)),
             item(
                 Owner::Taxpayer,
-                IncomeDocument::RothHistory(RothIraHistory {
-                    first_year: 2024,
-                    amounts: Some(RothOrdering { regular: 500_000, conversions: vec![] }),
-                }),
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(roth)),
+                },
+            ),
+            item(
+                Owner::Taxpayer,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::RothHistory(RothIraHistory {
+                        first_year: 2024,
+                        amounts: Some(RothOrdering { regular: 500_000, conversions: vec![] }),
+                    }),
+                },
             ),
         ],
     );
@@ -448,6 +441,7 @@ fn d2210_3_the_trump_account_line_63_tax_is_on_form_2210_line_2_and_form_1040_es
         contributions: 720_000,
         exempt: 120_000,
         returns: vec![TrumpExcessReturn {
+            document_id: None,
             principal: 60_000,
             earnings: 2_000,
             received: 20261201,
@@ -486,16 +480,17 @@ fn d2210_4_household_tax_stays_on_line_2_when_estimated_payments_were_required()
         agi: Some(10_000_000),
         spouse_tax: 0,
     });
-    pay.estimated_payments = [20260415, 20260615, 20260915, 20270115]
-        .iter()
-        .map(|&date| DatedPayment {
-            payer: crate::PaymentPayer::Joint,
-            refund_property: None,
-            date,
-            amount: 100_000,
-        })
-        .collect();
-    pay.refresh_estimated_projection();
+    pay.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: [20260415, 20260615, 20260915, 20270115]
+            .iter()
+            .map(|&date| DatedPayment {
+                payer: crate::PaymentPayer::Joint,
+                refund_property: None,
+                date,
+                amount: 100_000,
+            })
+            .collect(),
+    };
     let r = supported(&d);
     assert_eq!(amt(&r, "form_2210_line_2"), Some(310_200));
     assert_eq!(amt(&r, "form_2210_line_4"), Some(692_500));

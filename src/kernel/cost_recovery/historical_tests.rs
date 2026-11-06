@@ -1,6 +1,80 @@
 use super::*;
 
 #[test]
+fn ads_residential_thirty_years_keeps_midmonth_placement_and_final_window() {
+    // Pub. 946's 30-year ADS life, mid-month: $720,000 placed July 2018
+    // recovers $11,000 first, $24,000 annually, then $13,000 in 2048.
+    // https://www.irs.gov/publications/p946
+    let recovery = RentalBuildingRecovery::Ads30;
+    for (year, expected) in
+        [(2017, 0), (2018, 1_100_000), (2026, 2_400_000), (2048, 1_300_000), (2049, 0)]
+    {
+        assert_eq!(
+            rental_building_amount(recovery, 72_000_000, 20180701, year, 24, None)
+                .unwrap()
+                .rounded_cents(),
+            expected
+        );
+    }
+    assert_eq!(
+        (2018..=2048)
+            .map(|year| {
+                rental_building_amount(recovery, 72_000_000, 20180701, year, 24, None)
+                    .unwrap()
+                    .rounded_cents()
+            })
+            .sum::<i64>(),
+        72_000_000
+    );
+}
+
+#[test]
+fn ads_residential_disposal_uses_actual_midmonth_slice() {
+    // September disposal admits 17 half-months of the $24,000 annual amount.
+    assert_eq!(
+        rental_building_amount(RentalBuildingRecovery::Ads30, 72_000_000, 20180701, 2026, 17, None)
+            .unwrap()
+            .rounded_cents(),
+        1_700_000
+    );
+}
+
+#[test]
+fn ads_residential_casualty_preserves_original_thirty_year_endpoint() {
+    // Actual opening depreciation $179,000, through-event $191,000 and
+    // post-event basis $474,900 imply $54,100 casualty basis reduction.
+    // The remaining 541 half-months at the start of 2026 recover $486,900:
+    // $21,600 annually, ending with $11,700 in July 2048.
+    // https://www.irs.gov/publications/p946 (Basis adjustment due to casualty loss)
+    let reduction = DatedBasisReduction {
+        event_date: 20260810,
+        adjusted_basis_cents: 47_490_000,
+        depreciation_through_event_cents: 19_100_000,
+        prior_depreciation_cents: 17_900_000,
+    };
+    for (year, prior, expected) in [
+        (2026, 17_900_000, 2_160_000),
+        (2027, 20_060_000, 2_160_000),
+        (2048, 65_420_000, 1_170_000),
+        (2049, 66_590_000, 0),
+    ] {
+        assert_eq!(
+            rental_building_amount(
+                RentalBuildingRecovery::Ads30,
+                72_000_000,
+                20180701,
+                year,
+                24,
+                Some(DatedBasisReduction { prior_depreciation_cents: prior, ..reduction })
+            )
+            .unwrap()
+            .rounded_cents(),
+            expected
+        );
+    }
+}
+
+#[test]
 fn casualty_continues_original_mid_month_clock_from_actual_basis_history() {
     // Synthetic independent source record: July2015, $660,000 building;
     // $251,000 allowed/allowable before2026, $266,000 through August event,

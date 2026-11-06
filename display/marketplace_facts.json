@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {"order": 120000, "rule": {"select": "^<MarketplaceFactsPage>.forms", "layout": "summary", "paths": ["value.issuer", "value.policy_number", "value.void", "value.corrected"]}},
+    {"order": 300000, "rule": {"select": "^<MarketplaceFactsPage>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_MARKETPLACE_STATEMENTS", "fields": ["residence", "forms"]}, {"title": "DISPLAY_MARKETPLACE_PEOPLE", "fields": ["other_families", "covered", "memberships", "attestations", "dependents"]}, {"title": "DISPLAY_MARKETPLACE_COVERAGE", "fields": ["income_qualification", "eligibility", "benchmarks"]}, {"title": "DISPLAY_MARKETPLACE_SPECIAL", "fields": ["qsehra", "employee_qsehra_facts", "dependent_qsehra_employees", "marriage", "separate"]}]}},
+    {"order": 301000, "rule": {"select": "^<MarketplaceFactsPage>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_MARKETPLACE_STATEMENTS", "fields": ["residence", "forms"]}, {"title": "DISPLAY_MARKETPLACE_PEOPLE", "fields": ["other_families", "covered", "memberships", "attestations", "dependents"]}, {"title": "DISPLAY_MARKETPLACE_COVERAGE", "fields": ["income_qualification", "eligibility", "benchmarks"]}, {"title": "DISPLAY_MARKETPLACE_SPECIAL", "fields": ["qsehra", "employee_qsehra_facts", "dependent_qsehra_employees", "marriage", "separate"]}]}},
+    {"order": 306000, "rule": {"select": "^<MarketplaceFactsPage>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["residence", "income_qualification", "forms"]}, {"ratio": 1, "fields": ["other_families", "covered", "memberships", "attestations", "eligibility", "benchmarks", "qsehra", "employee_qsehra_facts", "dependent_qsehra_employees", "marriage", "separate", "dependents"]}]}},
+    {"order": 559000, "rule": {"select": "^<MarketplaceAllocationKindPage>", "flatten": true}},
+    {"order": 650000, "rule": {"select": "^<MarketplaceAllocationPeriodPage>", "flatten": true}},
+    {"order": 762000, "rule": {"select": "^<MarketplaceFactsPage>.forms", "promote": true}},
+    {"order": 764000, "rule": {"select": "^<MarketplaceBenchmarkMonthPage>.month", "promote": true}},
+    {"order": 765000, "rule": {"select": "^<MarketplaceEligibilityMonthPage>.month", "promote": true}}
+  ]
+}

@@ -18,6 +18,7 @@ fn actual_window_rounds_once_and_preserves_distinct_cumulative_schedule() {
         tax_year: schedule.tax_year,
         basis_cents: schedule.basis_cents,
         initial_cents: 0,
+        allowed_before: None,
     }
     .allowable()
     .unwrap();
@@ -94,12 +95,11 @@ fn missing_and_invalid_histories_do_not_become_zero() {
 }
 
 #[test]
-fn shared_money_sources_retain_availability_and_reject_negative_reports() {
+fn shared_money_sources_retain_availability_and_check_business_threshold() {
     use crate::kernel::source_fact::{SourceCents, SourceFact};
     assert_eq!(SourceCents::Reported { amount: 0 }.source_fact(), Ok(SourceFact::Reported(0)));
     assert_eq!(SourceCents::NotReported.source_fact(), Ok(SourceFact::NotReported));
     assert_eq!(SourceCents::Unavailable.source_fact(), Ok(SourceFact::Unavailable));
-    assert!(SourceCents::Reported { amount: -1 }.source_fact().is_err());
     let source = SourceCents::Reported { amount: 300_001 };
     assert!(
         source

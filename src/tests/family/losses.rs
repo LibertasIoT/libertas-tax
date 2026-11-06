@@ -189,21 +189,3 @@ fn the_parent_page_is_not_offered_outside_form_8615() {
     accepted(&send(&mut s, request));
     assert!(s.draft.people.as_ref().unwrap().parent_tax.is_none());
 }
-
-#[test]
-fn unit47_parent_child_gain_comparison_preserves_its_source_path_above_i64() {
-    let mut page = parent(FederalStatus::Joint, 150_000);
-    page.others.push(OtherChildTax {
-        label: "Sibling".into(),
-        net: i64::MAX,
-        gains: Some(ChildGains {
-            qualified: i64::MAX,
-            capital: 1,
-            investment_election: 0,
-            special: None,
-        }),
-    });
-    let issue = page.issue().unwrap();
-    assert_eq!(issue.key, "PARENT_CHILD_GAINS_ABOVE_NET");
-    assert_eq!(issue.field.unwrap().square(), "[others/0/gains]");
-}

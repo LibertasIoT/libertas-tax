@@ -28,32 +28,39 @@ pub struct EmployeeStockSale {
     /// Amount paid for these shares, excluding acquisition fees
     /// Include the exercise cost and any option purchase price allocable to this lot. Enter zero for an award received without payment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub paid: i64,
     /// Fair market value of these shares when compensation was recognized
     /// Total value of this sold lot from the compensation-date record, not today's value or a computed taxable gain. For section 83(b), use transfer-date fair market value determined without lapse restrictions; later vesting does not reset basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub market_value: i64,
     /// Acquisition commissions allocated to this lot
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub fees: i64,
     /// Net sale proceeds after selling fees
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub proceeds: i64,
     /// Disallowed wash-sale loss from replacement-share records
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub wash_sale: i64,
     /// Federal income tax withheld on the sale, not already entered elsewhere
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub withholding: i64,
     /// Basis the Form 1099-B printed in box 1e, when it shows one
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub reported_basis: Option<i64>,
     /// Whether the broker reported the basis to the IRS (box 12)
@@ -157,16 +164,40 @@ pub(crate) fn lot_amount(shares: f64, per_share: i64) -> i64 {
 /// Shares from a nonqualified stock option, restricted stock units or another stock award from your employer, sold in 2026. Enter the sale here with its 1099-B, not again as a 1099-B sale; the App adds the compensation already taxed as wages to the basis.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read the 1099-B sale of these employee stock shares exactly. Check its tax year against the supplied year; report a mismatch. The statement must show exactly one sale of these shares; if it shows several sales, report an error asking for only this sale. Return the box 1a description, or an empty string when it is blank. The box 1c date sold and box 1d proceeds must show values; report a blank one as an error. Return zero for a clearly blank box 4. Report illegible or conflicting values as errors. Return box 1e as reported_basis exactly as printed, even when a supplemental statement shows an adjusted basis, or leave it empty when the box is blank, and return box 12 as reporting; do not return box 1b, and do not infer the date the shares were taxed, their value then, the amount paid, commissions, a wash sale, special treatment or other facts absent from the 1099-B. The file may hold several copies of this form, such as Copy B and Copy 2; copies of the same form are one form.",
+    instruction = "Read each printed party block into source_issuer, source_recipient. Copy names, identification numbers and addresses exactly as printed, preserving masking, punctuation and leading zeros; use empty text for absent identity fields. Never infer a recipient from household names. Read the 1099-B sale of these employee stock shares exactly. Check its tax year against the supplied year; report a mismatch. The statement must show exactly one sale of these shares; if it shows several sales, report an error asking for only this sale. Return the box 1a description, or an empty string when it is blank. The box 1c date sold and box 1d proceeds must show values; report a blank one as an error. Return zero for a clearly blank box 4. Report illegible or conflicting values as errors. Return box 1e as reported_basis exactly as printed, even when a supplemental statement shows an adjusted basis, or leave it empty when the box is blank, and return box 12 as reporting. Read taxed, value and paid from the employer's stock plan record or supplemental statement supplied with the 1099-B for these shares: the date the shares vested or were otherwise taxed as wages, the value of the sold shares taxed as wages on that date, and the amount the employee paid for them, zero when the record shows nothing was paid. When no such record is supplied, report an error asking for the stock plan record that shows the date and value taxed as wages. Do not infer commissions, a wash sale, special treatment or other facts absent from these pages. The file may hold several copies of this form, such as Copy B and Copy 2; copies of the same form are one form. Read the printed calendar year as an integer such as 2026, or zero when blank. Read the account number exactly as printed, or empty text when blank. Read box 1b date acquired as the printed date, VARIOUS, INHERITED or another notation, or null when blank. Read the Form 8949 box letter printed on the statement, or null when none is printed, and box 2 short-term, long-term and ordinary as printed checkboxes (true only when checked).",
     validation = "$.document_facts",
-    doc_type = "application/pdf,image/*"
+    doc_type = "application/pdf,image/*",
+    duplicate_identity = "@.source_issuer.federal_id,@.source_recipient.federal_id,@.description,@.sold,@.taxed,@.proceeds,@.reported_basis,@.withholding,@.value,@.paid",
+    form_date_order = "MonthDayYear"
 )]
 pub struct EmployeeShareSale {
+    /// Calendar year
+    #[libertas_llm_doc_field]
+    #[libertas_default(0)]
+    pub calendar_year: u32,
+    /// Source document issuer as printed
+    #[libertas_llm_doc_field]
+    pub source_issuer: crate::PrintedParty,
+    /// Source document recipient as printed
+    #[libertas_llm_doc_field]
+    pub source_recipient: crate::PrintedParty,
+    /// Account number
+    #[libertas_llm_doc_field(allow_empty = true)]
+    #[libertas_default("")]
+    pub account_number: String,
     /// 1099-B box 1a description
     #[libertas_llm_doc_field(allow_empty = true)]
     #[libertas_size(min = 0)]
     #[libertas_default("")]
     pub description: String,
+    /// 1b — Date acquired
+    /// [NullText]
+    /// This box is blank
+    /// [SetText]
+    /// The printed date or notation is
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_default($null)]
+    pub box_1b_acquired: Option<crate::BrokerAcquisitionDate>,
     /// 1099-B box 1c date sold
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_date_only]
@@ -175,7 +206,8 @@ pub struct EmployeeShareSale {
     /// Net of selling fees, as the 1099-B reports them.
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub proceeds: i64,
     /// 1099-B box 1e cost or other basis
     /// As printed, before any correction: the broker's figure leaves out the compensation of an option or award granted after 2013, which the App adds with Form 8949 code B. Leave empty when the box is blank.
@@ -185,7 +217,8 @@ pub struct EmployeeShareSale {
     /// The cost basis printed in box 1e is
     #[libertas_llm_doc_field(blank = $null)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub reported_basis: Option<i64>,
     /// 1099-B box 12 basis reported to the IRS
@@ -193,25 +226,51 @@ pub struct EmployeeShareSale {
     #[libertas_llm_doc_field]
     #[libertas_default(ReportedToIrs)]
     pub reporting: crate::BasisReporting,
+    /// Applicable checkbox on Form 8949
+    /// [NullText]
+    /// This box is blank
+    /// [SetText]
+    /// The printed code is
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_default($null)]
+    pub form_8949_checkbox: Option<crate::Form1099B8949Checkbox>,
+    /// 2 — Short-term gain or loss
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box_2_short_term: bool,
+    /// 2 — Long-term gain or loss
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box_2_long_term: bool,
+    /// 2 — Ordinary
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box_2_ordinary: bool,
     /// 1099-B box 4 federal income tax withheld
     #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub withholding: i64,
     /// Date the shares were taxed as wages
     /// The exercise date of a nonqualified option, or the date restricted stock or units vested. With a section 83(b) election, the date you received the shares. Your employer's stock plan statement shows it.
+    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_date_only]
     pub taxed: u32,
     /// Value of the shares sold on that date
     /// For only the shares sold: the market value your employer used for your W-2 wages (box 12 code V for an option), not today's value.
+    #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub value: i64,
     /// Amount you paid for the shares sold
     /// The option's exercise price for these shares; zero for restricted stock units or an award you did not pay for.
+    #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub paid: i64,
     /// About this sale
@@ -225,13 +284,15 @@ pub struct EmployeeShareSale {
 pub struct EmployeeShareSaleMore {
     /// Commissions paid when you exercised, for these shares
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub fees: i64,
     /// Wash sale loss disallowed
     /// When you bought the same stock within 30 days before or after selling these shares at a loss, including shares that vested in that window. Box 1g shows the broker's figure for this account.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub wash_sale: i64,
     /// Compensation not in a W-2, a section 83(i) or deferred settlement, a forfeiture, or another special treatment
@@ -292,6 +353,15 @@ impl EmployeeShareSale {
     // The reverse of record.
     pub(crate) fn from_record(label: &str, v: &EmployeeStockSale) -> Self {
         Self {
+            calendar_year: Default::default(),
+            account_number: Default::default(),
+            box_1b_acquired: Default::default(),
+            form_8949_checkbox: Default::default(),
+            box_2_short_term: Default::default(),
+            box_2_long_term: Default::default(),
+            box_2_ordinary: Default::default(),
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             description: label.into(),
             sold: v.sold,
             proceeds: v.proceeds,

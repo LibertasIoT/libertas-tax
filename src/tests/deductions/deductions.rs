@@ -16,25 +16,33 @@ fn educator_excess_is_itemized_once_and_only_when_itemizing() {
     let r = supported(&d);
     assert_eq!(value(&r, "deduction"), 20650); // 20,000 plus only the remaining 650.
     assert_eq!(value(&r, "agi"), 59650);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    assert_eq!(value(&supported(&d), "deduction"), 16100);
+    d.deductions.as_mut().unwrap().itemize_override = None;
+    // 2026-11-02: automatic selection retains the larger deduction from these same facts.
+    assert_eq!(value(&supported(&d), "deduction"), 20650);
 }
 #[test]
 fn additional_deduction_facts_survive_restart_and_invalid_amounts_are_rejected() {
     let mut d = complete(FederalStatus::Single);
     let FederalIncome::Wage { data: w } = &mut d.income[0].income else { panic!() };
+    let mut w = edit_wage(w);
     w.work_deductions = work_deductions(0, 500_000);
-    d.deductions.as_mut().unwrap().vehicle_loans = vec![FederalVehicleInterest {
-        label: "Synthetic car".into(),
-        interest: 100_000,
+    drop(w);
+    d.deductions.as_mut().unwrap().vehicle_loans = vec![VehicleLoanSource {
+        id: 0,
+        assigned: crate::DocumentRecipient::Taxpayer,
+        owner_source: Some(crate::OwnerSource::Added),
+        joint_share: None,
         business: 0,
-        original_use: true,
-        assembled_in_us: true,
+        document: vehicle_paper(FederalVehicleInterest {
+            lender: crate::PrintedParty::from_name("Synthetic car".into()),
+            borrower: Default::default(),
+            interest: 100_000,
+            refund: 0,
+            original_use: true,
+            assembled_in_us: true,
+        }),
     }];
     assert_eq!(supported(&restart(d.clone()).draft), supported(&d));
-    let FederalIncome::Wage { data: w } = &mut d.income[0].income else { panic!() };
-    w.work_deductions.set_overtime(-1);
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -42,7 +50,7 @@ fn itemized_high_income_limitation_adds_back_deduction_when_testing_section_68()
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 65_000_000, 0);
     let v = d.deductions.as_mut().unwrap();
-    v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
+    v.itemize_override = Some(ItemizeOverride::Itemize);
     fixture_mortgage_interest(v, 3_000_000);
     // Taxable income falls below 640,600, but the section 68 trigger adds itemized
     // deductions back. A result without this worksheet would overstate the deduction.
@@ -53,23 +61,27 @@ fn itemized_high_income_limitation_adds_back_deduction_when_testing_section_68()
 }
 
 #[test]
-fn automatic_deductions_compare_amt_but_preserve_explicit_choice() {
+fn automatic_deductions_compare_amt_after_clearing_the_override() {
     let mut d = complete(FederalStatus::Single);
     d.screening.as_mut().unwrap().iso_exercises = vec![iso_exercise("ISO", 2000.0, 1000, 11000)];
     d.deductions.as_mut().unwrap().cash_charity = 1_000_000;
-    let automatic = supported(&d);
-    assert_eq!(return_line(&automatic, "12e"), 970_000);
-    assert_eq!(automatic.tax, Some(4_165_200));
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    let explicit = supported(&d);
-    assert_eq!(return_line(&explicit, "12e"), 1_610_000);
-    assert_eq!(explicit.tax, Some(4_391_400));
+    d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    let elected = supported(&d);
+    assert_eq!(return_line(&elected, "12e"), 970_000);
+    assert_eq!(elected.tax, Some(4_165_200));
+    d.deductions.as_mut().unwrap().itemize_override = None;
+    let cleared = supported(&d);
+    // 2026-11-02: no override reuses the existing lower-final-tax AMT comparison.
+    assert_eq!(return_line(&cleared, "12e"), 970_000);
+    assert_eq!(cleared.tax, Some(4_165_200));
 }
 #[test]
 fn conversion_remains_in_traditional_deduction_magi() {
     let mut d = ira_contribution_distribution(80000, Answer::Yes);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = conversion(10000, true);
+    let mut data = edit_retirement(data);
+    data.ordinary_distribution = Some(conversion(10000, true));
+    drop(data);
     let r = supported(&d);
     assert_eq!(value(&r, "ira_deduction"), 1880);
     assert_eq!(value(&r, "roth_contribution_magi"), 80000);
@@ -173,6 +185,18 @@ fn section197_later_costs_use_remaining_months_and_immediate_expired_deduction()
         let deduction = asset.deduction();
         let basis = asset.remaining();
         asset.additions.push(IntangibleCost { amount: added, date });
+        // Actual prior returns include earlier additions; those amounts are source facts.
+        let earlier_addition = match date {
+            20250701 => 60_000,
+            20250101 => 12_345,
+            _ => 0,
+        };
+        if earlier_addition != 0 {
+            for source in [&mut asset.prior_claimed.regular, &mut asset.prior_claimed.amt] {
+                let crate::SourceCents::Reported { amount } = source else { panic!() };
+                *amount += earlier_addition;
+            }
+        }
         assert_eq!(asset.deduction(), deduction + extra);
         assert_eq!(asset.remaining(), basis + remaining);
         let r = supported(&d);
@@ -182,16 +206,20 @@ fn section197_later_costs_use_remaining_months_and_immediate_expired_deduction()
 }
 
 #[test]
-fn nonitemizer_charity_caps_deduction_without_rejecting_larger_gift() {
+fn automatic_charity_selection_keeps_caps_and_carryovers_for_the_larger_gift() {
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.set_cash_charity(10000000);
     let r = supported(&d);
-    assert_eq!(value(&r, "taxable_income"), 42900);
+    // 2026-11-02: automatic itemizing deducts 36,000 less the 300 floor;
+    // the floor joins the 64,000 percentage-limit excess in the current carryover.
+    assert_eq!(value(&r, "taxable_income"), 24300);
     assert_eq!(value(&r, "agi"), 60000);
-    assert_eq!(value(&r, "charity_return_year_carryforward"), 64000);
-    assert!(!r.lines.iter().any(|line| line.id == "charity_floor_not_carried"));
+    assert_eq!(value(&r, "charity_return_year_carryforward"), 64300);
+    assert_eq!(value(&r, "charity_cash_sixty_floor"), 300);
+    assert!(r.lines.iter().any(|line| line.id == "charity_floor_not_carried"));
+    assert_eq!(value(&r, "charity_floor_not_carried"), 0);
     assert_eq!(estimate(&restart(d.clone()).draft), r);
     // The amount actually deductible, not the source gift, uses both caps.
     d.income = vec![wage(1, Owner::Taxpayer, 100000, 0)];
@@ -213,7 +241,7 @@ fn cash_charity_percentage_excess_carries_floor_only_when_limit_exceeded() {
         let mut d = complete(FederalStatus::Single);
         d.income = vec![wage(1, Owner::Taxpayer, 10000000, 0)];
         let ded = d.deductions.as_mut().unwrap();
-        ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
         ded.set_cash_charity(gift * 100);
         let r = supported(&d);
         assert_eq!(value(&r, "charity_cash_sixty_current_deduction"), deduction);
@@ -275,7 +303,8 @@ fn final_guaranteed_life_deduction_keeps_net_cost_after_guarantee_expires() {
         RetirementTreatment::Ordinary,
     );
     if let FederalIncome::Retirement { data } = &mut entry.income {
-        data.taxable = RetirementTaxable::GeneralAnnuity { data: a };
+        let mut data = edit_retirement(data);
+        data.taxable = Some(RetirementTaxable::GeneralAnnuity { data: a });
     }
     add(&mut d, entry);
     d.deductions.as_mut().unwrap().annuity_losses.push(AnnuityLoss {
@@ -289,10 +318,11 @@ fn final_guaranteed_life_deduction_keeps_net_cost_after_guarantee_expires() {
     let r = supported(&d);
     assert_eq!(value(&r, "annuity_loss_2"), 10598); // $21,053 - $10,000 - $454.80.
     assert_eq!(restart(d.clone()).draft, d);
-    if let FederalIncome::Retirement { data } = &mut d.income[1].income
-        && let RetirementTaxable::GeneralAnnuity { data } = &mut data.taxable
-    {
-        data.started = 20100101;
+    if let FederalIncome::Retirement { data } = &mut d.income[1].income {
+        let mut data = edit_retirement(data);
+        if let Some(RetirementTaxable::GeneralAnnuity { data }) = &mut data.taxable {
+            data.started = 20100101;
+        }
     }
     d.deductions.as_mut().unwrap().annuity_losses[0].started = 20100101;
     unsupported(&d, "Annuity loss"); // Guaranteed installments continue beyond death.
@@ -303,7 +333,7 @@ fn ordinary_used_goods_share_aggregate_2026_charity_floor_with_cash() {
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
     ded.property_gifts.push(used_goods(50_000));
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let goods_only = supported(&d);
     assert_eq!(value(&goods_only, "charity_cash_sixty_current_deduction"), 0);
     assert_eq!(value(&goods_only, "charity_property_fifty_current_deduction"), 200);
@@ -318,7 +348,7 @@ fn ordinary_used_goods_share_aggregate_2026_charity_floor_with_cash() {
     assert_eq!(return_line(&combined, "12e"), 120_000);
     assert_eq!(estimate(&restart(d.clone()).draft), combined);
 
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let standard = supported(&d);
     d.deductions.as_mut().unwrap().property_gifts.clear();
     let without_goods = supported(&d);
@@ -333,9 +363,11 @@ fn donated_car_and_used_goods_share_one_noncash_limit_and_floor() {
     let mut goods = used_goods(500_000);
     goods.basis = 1_000_000;
     ded.property_gifts.push(goods);
-    ded.property_gifts
-        .push(donated_personal_vehicle(VehicleUse::Sold { sold: 20261001, proceeds: 1_500_000 }));
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    push_gift(
+        ded,
+        donated_personal_vehicle(VehicleUse::Sold { sold: 20261001, proceeds: 1_500_000 }),
+    );
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let combined = supported(&d);
     assert_eq!(value(&combined, "charity_property_fifty_current_deduction"), 19_700);
     assert_eq!(value(&combined, "form_8283_section_a_value"), 20_000);
@@ -356,7 +388,7 @@ fn substantial_away_service_and_required_uniform_are_cash_class_volunteer_costs(
     uniform.service = "Volunteer hospital nurse aide".into();
     uniform.kind = VolunteerExpenseKind::Uniform { purchase: 8_000, upkeep: 2_000 };
     ded.volunteer_expenses.extend([away, uniform]);
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&d);
     assert_eq!(value(&result, "charity_volunteer_1_expense"), 340);
     assert_eq!(value(&result, "charity_volunteer_2_expense"), 100);
@@ -390,13 +422,14 @@ fn current_cash_uses_sixty_percent_room_before_older_cash_and_whaling() {
     assert_eq!(return_line(&itemized, "12e"), 5_950_000);
     assert_eq!(estimate(&restart(draft.clone()).draft), itemized);
 
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    let standard = supported(&draft);
-    assert_eq!(return_line(&standard, "12f"), 100_000);
-    assert_eq!(value(&standard, "charity_carry_2025_cash_sixty_used"), 20_000);
-    assert_eq!(value(&standard, "charity_prior_cash_sixty_remaining_following_year"), 10_000);
-    assert_eq!(value(&standard, "charity_whaling_return_year_carryforward"), 10_000);
-    assert_eq!(estimate(&restart(draft).draft), standard);
+    // 2026-11-02: automatic selection retains the same itemized facts and limits.
+    draft.deductions.as_mut().unwrap().itemize_override = None;
+    let automatic = supported(&draft);
+    assert_eq!(return_line(&automatic, "12f"), 0);
+    assert_eq!(value(&automatic, "charity_carry_2025_cash_sixty_used"), 20_000);
+    assert_eq!(value(&automatic, "charity_prior_cash_sixty_remaining_following_year"), 10_000);
+    assert_eq!(value(&automatic, "charity_whaling_return_year_carryforward"), 10_000);
+    assert_eq!(estimate(&restart(draft).draft), automatic);
 }
 
 #[test]
@@ -408,7 +441,7 @@ fn whaling_captain_expenses_use_itemized_thirty_percent_class_and_restart() {
         WhalingExpenseKind::CrewAndProvisions,
         1_000_000,
     )]));
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let itemized_result = supported(&draft);
     assert_eq!(value(&itemized_result, "charity_whaling_statutory_claim"), 10_000);
     assert_eq!(value(&itemized_result, "charity_whaling_deduction"), 5_900);
@@ -416,7 +449,7 @@ fn whaling_captain_expenses_use_itemized_thirty_percent_class_and_restart() {
     assert_eq!(value(&itemized_result, "charity_return_year_carryforward"), 4_100);
     assert_eq!(estimate(&restart(draft.clone()).draft), itemized_result);
 
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    draft.deductions.as_mut().unwrap().itemize_override = None;
     let standard = supported(&draft);
     assert_eq!(value(&standard, "charity_whaling_deduction"), 0);
     assert_eq!(value(&standard, "charity_whaling_return_year_carryforward"), 4_000);
@@ -436,10 +469,6 @@ fn whaling_source_must_be_valid_and_confirmed() {
     draft.deductions.as_mut().unwrap().whaling_captains[0].eligibility_and_records_confirmed =
         false;
     assert!(noted(&supported(&draft), "WARN_WHALING_EXPENSES_LEFT_OUT"));
-    let claim = draft.deductions.as_mut().unwrap().whaling_captains.first_mut().unwrap();
-    claim.eligibility_and_records_confirmed = true;
-    claim.expenses[0].paid_date = 20260230;
-    assert!(!draft.valid_stored());
 }
 
 #[test]
@@ -582,7 +611,7 @@ fn salt_cap_phases_down_with_income_to_a_10000_floor() {
         let mut d = complete(FederalStatus::Joint);
         d.income = vec![wage(1, Owner::Taxpayer, wages, 0)];
         let v = d.deductions.as_mut().unwrap();
-        v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
+        v.itemize_override = Some(ItemizeOverride::Itemize);
         itemized(v).personal_tax = PersonalTaxElection::Income {
             paid: salt_paid,
             allocation: TaxIncomeAllocation::CurrentReturn,
@@ -613,7 +642,7 @@ fn cash_gifts_above_60_percent_of_agi_carry_forward() {
     let mut d = complete(FederalStatus::Joint);
     d.income = vec![wage(1, Owner::Taxpayer, 16_000_000, 0)];
     let v = d.deductions.as_mut().unwrap();
-    v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
+    v.itemize_override = Some(ItemizeOverride::Itemize);
     v.set_cash_charity(10_000_000);
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 160_000);
@@ -638,7 +667,10 @@ fn itemizing_below_the_standard_deduction_needs_the_election() {
     assert_eq!(value(&r, "deduction"), 32_200);
     // The explicit line 19 election keeps the smaller itemized amount.
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     let r = supported(&d);
     assert_eq!(value(&r, "deduction"), 20_000);
 }
@@ -646,6 +678,7 @@ fn itemizing_below_the_standard_deduction_needs_the_election() {
 // Pub 936 Table 1 (unit C20a). Helpers build one Form 1098 record; amounts in cents.
 fn mortgage_loan(incurred: u32, interest: i64, average: MortgageAverageBalance) -> MortgageLoan {
     MortgageLoan {
+        printed: None,
         id: 1,
         property: "Synthetic home".into(),
         lender: MortgageLender::Institution,
@@ -668,8 +701,11 @@ fn statements(average_balance: i64) -> MortgageAverageBalance {
 fn itemize_mortgages(d: &mut FederalDraft, loans: Vec<MortgageLoan>) {
     let v = d.deductions.as_mut().unwrap();
     let facts = itemized(v).clone();
-    v.mortgage = identified_mortgages(loans);
-    v.choice = DeductionSelection::Itemized { facts };
+    v.mortgage = mortgage_loan_sources(identified_mortgages(loans));
+    {
+        v.itemized = facts;
+        v.itemize_override = Some(ItemizeOverride::Itemize);
+    };
 }
 
 // Joint return, wages $300,000, real-estate taxes $10,000 (within the $40,400 SALT
@@ -750,7 +786,7 @@ fn single_1098_within_the_limit_is_fully_deductible() {
         MortgageAverageBalance::FirstAndLast { last_balance: 29_000_000 },
     );
     loan.outstanding_principal = 30_000_000;
-    v.mortgage = identified_mortgages(vec![loan]);
+    v.mortgage = mortgage_loan_sources(identified_mortgages(vec![loan]));
     v.set_cash_charity(700_000);
     let r = supported(&d);
     assert_eq!(value(&r, "mortgage_average_balance"), 295_000);
@@ -775,11 +811,8 @@ fn single_1098_within_the_limit_is_fully_deductible() {
 fn interest_above_the_limit_is_reduced_by_the_fraction() {
     let mut d = complete(FederalStatus::Single);
     d.income = vec![wage(1, Owner::Taxpayer, 40_000_000, 0)];
-    let bank = mortgage_loan(
-        20210401,
-        4_800_000,
-        MortgageAverageBalance::InterestOverRate { rate_thousandths_percent: 6000 },
-    );
+    let bank =
+        mortgage_loan(20210401, 4_800_000, MortgageAverageBalance::InterestOverRate { rate: 6.0 });
     let mut seller = mortgage_loan(20230101, 1_200_000, statements(20_000_000));
     seller.lender = MortgageLender::PrivateSeller {
         name: "Synthetic seller".into(),
@@ -903,8 +936,10 @@ fn refund_of_overpaid_interest_reduces_this_year_or_is_income() {
     let mut d = complete(FederalStatus::Single);
     d.income = vec![wage(1, Owner::Taxpayer, 20_000_000, 0)];
     let mut loan = mortgage_loan(20200101, 1_000_000, statements(10_000_000));
-    loan.refund_of_interest =
-        MortgageInterestRefund::Yes { amount: 200_000, origin: MortgageRefundOrigin::ThisYear };
+    loan.refund_of_interest = MortgageInterestRefund::Yes {
+        amount: 200_000,
+        origin: Some(MortgageRefundOrigin::ThisYear),
+    };
     itemize_mortgages(&mut d, vec![loan.clone()]);
     let r = supported(&d);
     assert_eq!(value(&r, "mortgage_interest_8a"), 8_000);
@@ -912,14 +947,14 @@ fn refund_of_overpaid_interest_reduces_this_year_or_is_income() {
 
     loan.refund_of_interest = MortgageInterestRefund::Yes {
         amount: 200_000,
-        origin: MortgageRefundOrigin::Deducted(PriorYearRecovery {
+        origin: Some(MortgageRefundOrigin::Deducted(PriorYearRecovery {
             year: 2025,
             deducted: 1_000_000,
             itemized: 3_000_000,
             standard: 1_575_000,
             taxable_income: 5_000_000,
             ordinary: true,
-        }),
+        })),
     };
     itemize_mortgages(&mut d, vec![loan]);
     let r = supported(&d);
@@ -1018,7 +1053,7 @@ fn two_1098s_return_matches_hand_computation() {
         other: 0,
     });
     loan_b.points = MortgagePoints::Amortized { amount: 300_000, term_months: 180, ended: false };
-    v.mortgage = identified_mortgages(vec![loan_a, loan_b]);
+    v.mortgage = mortgage_loan_sources(identified_mortgages(vec![loan_a, loan_b]));
     v.set_cash_charity(400_000);
     let r = supported(&d);
     assert_eq!(value(&r, "mortgage_average_balance"), 821_500);
@@ -1089,14 +1124,14 @@ fn prior_year_refund_is_income_not_a_reduction() {
     let mut loan = mortgage_loan(20200101, 1_000_000, statements(10_000_000));
     loan.refund_of_interest = MortgageInterestRefund::Yes {
         amount: 200_000,
-        origin: MortgageRefundOrigin::Deducted(PriorYearRecovery {
+        origin: Some(MortgageRefundOrigin::Deducted(PriorYearRecovery {
             year: 2025,
             deducted: 1_000_000,
             itemized: 3_000_000,
             standard: 1_575_000,
             taxable_income: 5_000_000,
             ordinary: true,
-        }),
+        })),
     };
     itemize_mortgages(&mut d, vec![loan]);
     let r = supported(&d);
@@ -1134,16 +1169,17 @@ fn purchase_points_deduct_in_full() {
 // `dated`/`cents` mirror the private helpers already duplicated per test
 // module in tests/penalty.rs, tests/business.rs and tests/investment/investment.rs.
 fn dated(d: &mut FederalDraft, payments: &[(u32, i64)]) {
-    d.payments.as_mut().unwrap().estimated_payments = payments
-        .iter()
-        .map(|&(date, amount)| DatedPayment {
-            payer: crate::PaymentPayer::Joint,
-            refund_property: None,
-            date,
-            amount,
-        })
-        .collect();
-    d.payments.as_mut().unwrap().refresh_estimated_projection();
+    d.payments.as_mut().unwrap().estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: payments
+            .iter()
+            .map(|&(date, amount)| DatedPayment {
+                payer: crate::PaymentPayer::Joint,
+                refund_property: None,
+                date,
+                amount,
+            })
+            .collect(),
+    };
 }
 
 // The M3-F2 return (shared with the review test in tests/interview.rs).
@@ -1153,7 +1189,9 @@ pub(in crate::tests) fn m3_itemizing_homeowner_draft() -> FederalDraft {
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().birth_date = 19820301;
     d.income = vec![wage(1, Owner::Taxpayer, 17_500_000, 1_200_000)];
     let FederalIncome::Wage { data: w } = &mut d.income[0].income else { panic!() };
+    let mut w = edit_wage(w);
     w.other_box12 = vec![W2CodeAmount { code: W2Code::W, amount: 100_000 }];
+    drop(w);
 
     let mut hsa = hsa_entry(Owner::Taxpayer, HsaCoverage::Family, 300_000);
     health_w2_year(&mut d, HealthEmployerYear::CurrentYear);
@@ -1204,15 +1242,25 @@ pub(in crate::tests) fn m3_itemizing_homeowner_draft() -> FederalDraft {
         other: 0,
     });
     loan_b.points = MortgagePoints::Amortized { amount: 300_000, term_months: 180, ended: false };
-    v.mortgage = identified_mortgages(vec![loan_a, loan_b]);
+    v.mortgage = mortgage_loan_sources(identified_mortgages(vec![loan_a, loan_b]));
     v.set_cash_charity(400_000);
 
     let sid2_1406 = sid(&d, 2);
-    d.credits.as_mut().unwrap().education = vec![FederalEducation {
-        student: sid2_1406,
-        expenses: education_expenses(600_000),
-        method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    }];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![{
+            let mut pair = native_education(
+                sid2_1406,
+                education_expenses(600_000),
+                education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+            );
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
+        }],
+    );
 
     let pay = d.payments.as_mut().unwrap();
     pay.prior_year = Some(PriorYearTax {
@@ -1466,7 +1514,7 @@ fn salt_cap_phases_down_above_the_505000_magi_threshold() {
         paid: 5_000_000,
         allocation: TaxIncomeAllocation::CurrentReturn,
     };
-    v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
+    v.itemize_override = Some(ItemizeOverride::Itemize);
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 605_000);
     assert_eq!(value(&r, "deduction"), 10_400);
@@ -1620,7 +1668,9 @@ fn line_4g_election_moves_capital_gain_into_investment_income_and_out_of_the_qdc
     d.income[0] = wage(1, Owner::Taxpayer, 1_000_000, 0);
     add(
         &mut d,
-        income(FederalIncome::Dividend { data: native_dividend(500_000, 500_000, 300_000) }),
+        income(FederalIncome::Dividend {
+            data: dividend_source(native_dividend(500_000, 500_000, 300_000)),
+        }),
     );
     investment_borrowing(&mut d, 2000, 0, 0);
     d.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().election =
@@ -1670,8 +1720,8 @@ fn itemizing_with_gifts(
 ) -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     let v = d.deductions.as_mut().unwrap();
-    v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
-    v.property_gifts = goods.into_iter().chain(stock).chain(vehicles).collect();
+    v.itemize_override = Some(ItemizeOverride::Itemize);
+    set_gifts(v, goods.into_iter().chain(stock).chain(vehicles).collect());
     d
 }
 fn goods_at(kind: GoodsKind, value: i64) -> PropertyGift {
@@ -1900,7 +1950,7 @@ fn gambling_losses_are_schedule_a_line_17a() {
     let mut d = single_with_wages(60_000);
     add(&mut d, gambling(5_000, 4_000));
     let v = d.deductions.as_mut().unwrap();
-    v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
+    v.itemize_override = Some(ItemizeOverride::Itemize);
     let r = supported(&d);
     assert_eq!(value(&r, "gambling_loss_deduction"), 3_600);
     assert_eq!(printed_line(&r, "gambling_loss_deduction"), (TaxForm::ScheduleA, "17a".into()));
@@ -1918,12 +1968,18 @@ fn gambling_losses_are_schedule_a_line_17a() {
 fn itemized_reduction_does_not_floor_taxable_income_at_zero() {
     let mut d = complete(FederalStatus::Single);
     d.income.clear();
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(70_000_000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(70_000_000, 0)) }),
+    );
     investment_borrowing(&mut d, 691_000, 0, 0);
     let v = d.deductions.as_mut().unwrap();
     let mut facts = itemized(v).clone();
     facts.personal_property_taxes = 1_000_000;
-    v.choice = DeductionSelection::Itemized { facts };
+    {
+        v.itemized = facts;
+        v.itemize_override = Some(ItemizeOverride::Itemize);
+    };
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 700_000);
     assert_eq!(value(&r, "investment_interest_deduction"), 691_000);

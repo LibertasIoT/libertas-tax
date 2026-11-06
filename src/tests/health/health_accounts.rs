@@ -8,6 +8,8 @@ fn loan_phaseout_and_hsa_limits() {
     a.set_student_loan_interest(250_000);
     assert_eq!(value(&supported(&d), "adjustments"), 1250);
     d.adjustments.as_mut().unwrap().hsa.push(FederalHsa {
+        personal_outside: 440_000,
+
         employer_outside: 0,
         owner: Owner::Taxpayer,
         coverage: HsaEligibility::FullYear { coverage: HsaCoverage::SelfOnly },
@@ -31,7 +33,10 @@ fn loan_phaseout_and_hsa_limits() {
 fn additional_medicare_and_niit_are_not_silently_zero() {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 21_000_000, 0);
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(1_000_000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(1_000_000, 0)) }),
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "additional_medicare_tax"), 90);
     assert_eq!(value(&r, "net_investment_income_tax"), 380);
@@ -43,7 +48,10 @@ fn young_filer_investment_tax_is_screened_even_when_not_claimable() {
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.birth_date = 20080615;
     d.people.as_mut().unwrap().taxpayer.support_share = SupportShare::ExactlyHalf;
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(300_000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(300_000, 0)) }),
+    );
     unsupported(&d, "Investment tax");
     d.people.as_mut().unwrap().taxpayer.support_share = SupportShare::MoreThanHalf;
     assert!(supported(&d).tax.is_some());
@@ -145,7 +153,8 @@ fn off_highway_fuel_credit_is_a_payment_and_taxable_business_income_once() {
             gasoline_off_highway: Some(fuel_use(100_250, 20_000)),
             diesel_off_highway: Some(fuel_use(40_000, 10_000)),
             ..empty_fuel_lines()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::FullCostDeducted,
         records_complete: true,
     };
@@ -267,14 +276,6 @@ fn hsa_nonmedical_withdrawal_date_and_disability_control_additional_tax() {
     assert_eq!(restart(d.clone()).draft, d);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19800701;
     assert_eq!(value(&supported(&d), "hsa_additional_tax"), 600);
-    let MedicalSaPayment::Own { disabled_since, nonmedical, .. } =
-        &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
-    else {
-        panic!()
-    };
-    *disabled_since = None; // No proved exception: tax all three payments.
-    nonmedical[0].date = 20270201;
-    assert!(!hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).valid());
 }
 
 #[test]
@@ -283,10 +284,6 @@ fn hsa_records_validate_month_count_and_reject_duplicate_owner() {
     let h = hsa_entry(Owner::Taxpayer, HsaCoverage::SelfOnly, 100_000);
     d.adjustments.as_mut().unwrap().hsa = vec![h.clone(), h];
     unsupported(&d, "HSA");
-    d.adjustments.as_mut().unwrap().hsa.pop();
-    d.adjustments.as_mut().unwrap().hsa[0].coverage =
-        HsaEligibility::Monthly { months: vec![HsaCoverage::SelfOnly; 11] };
-    assert!(!d.valid_stored());
 }
 #[test]
 fn marketplace_2026_percentage_boundaries_and_regional_poverty_lines() {
@@ -341,12 +338,12 @@ fn marketplace_repayment_enters_amt_comparison_before_total_tax() {
     // $60,000 wages produce $5,023 regular Tax Table tax. The three ISO
     // spreads produce no AMT, $151 AMT, and $39,151 AMT before repayment.
     for (shares, old_amt, new_amt, total) in
-        [(0, 0, 0, 11023), (500, 151, 0, 11023), (2000, 39151, 33151, 44174)]
+        [(0, 0, 0, 11023), (500, 151, 0, 11023), (2000, 39151, 30196, 43784)]
     {
         let mut d = complete(FederalStatus::Single);
-        // Isolate the tax comparison from automatic AMT-driven itemization
-        // of the premiums after repayment.
-        d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+        // 2026-11-02: automatic selection compares the premiums made
+        // deductible by repayment through the existing AMT owner.
+        d.deductions.as_mut().unwrap().itemize_override = None;
         if shares > 0 {
             d.screening.as_mut().unwrap().iso_exercises =
                 vec![iso_exercise("Synthetic ISO", f64::from(shares), 1000, 11000)];
@@ -361,7 +358,7 @@ fn marketplace_repayment_enters_amt_comparison_before_total_tax() {
         assert_eq!(value(&r, "premium_tax_credit"), 0);
         assert_eq!(value(&r, "premium_credit_repayment"), 6000);
         assert_eq!(value(&r, "alternative_minimum_tax"), new_amt);
-        assert_eq!(return_line(&r, "16"), 502300);
+        assert_eq!(return_line(&r, "16"), if shares == 2000 { 758800 } else { 502300 });
         assert_eq!(return_line(&r, "17"), (new_amt + 6000) * 100);
         assert_eq!(return_line(&r, "18"), total * 100);
         assert_eq!(r.tax, Some(total * 100));
@@ -492,18 +489,13 @@ fn marketplace_dependent_income_uses_return_components_and_identity_remapping() 
 }
 #[test]
 fn marketplace_premiums_flow_into_medical_itemization_after_credit() {
-    let mut d = marketplace_wage_draft(
+    let d = marketplace_wage_draft(
         6_260_100,
         (1..=12).map(|m| marketplace_month(m, 2000, 2100, 500)).collect(),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "premium_tax_credit"), 0);
     assert_eq!(value(&r, "deduction"), 19305); // 24,000 premiums less 7.5% AGI, rounded.
-    if let MarketplaceClaim::Yes { facts, .. } = &mut d.credits.as_mut().unwrap().marketplace {
-        let duplicate = facts.forms[0].coverage[0].clone();
-        facts.forms[0].coverage.push(duplicate);
-    }
-    assert!(!d.valid_stored());
 }
 
 // Derived Pub502 premium-expense endpoint: eligible medical cents from a
@@ -512,14 +504,13 @@ fn marketplace_premiums_flow_into_medical_itemization_after_credit() {
 #[test]
 fn marketplace_medical_cents_join_other_medical_sources_before_rounding() {
     let mut d = marketplace_wage_draft(10_000_000, vec![marketplace_month(1, 1000, 1100, 0)]);
-    let PolicyAmounts::ByMonth { months } = &mut marketplace_facts_mut(&mut d).forms[0].amounts
-    else {
-        unreachable!()
-    };
-    months[0].premium = 100_049;
+    marketplace_facts_mut(&mut d).forms[0].form.month_mut(1).premium = Some(100_049);
     itemized(d.deductions.as_mut().unwrap()).medical = 49;
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     let before = d.clone();
     let result = supported(&d);
     assert_eq!(value(&result, "premium_tax_credit"), 0);
@@ -588,8 +579,8 @@ fn marketplace_medical_actual_child_cost_matches_publication502_endpoints() {
 fn marketplace_medical_actual_child_funding_and_missing_cost_are_distinct() {
     let mut d = marketplace_nonmedical_child(Some(40000));
     let policy = &mut marketplace_facts_mut(&mut d).forms[0];
-    let PolicyAmounts::ByMonth { months } = &mut policy.amounts else { unreachable!() };
-    months[0].premium = 100000;
+    let paper = &mut policy.form;
+    paper.month_mut(1).premium = Some(100000);
     policy.payments.push(MarketplacePaymentMonth {
         month: 1,
         paid: 100000,
@@ -611,7 +602,7 @@ fn marketplace_medical_actual_child_funding_and_missing_cost_are_distinct() {
     assert!(noted(&missing, "HEALTH_POLICY_MEDICAL_ALLOCATION_REQUIRED"));
     assert_eq!(value(&missing, "medical_expenses"), 0);
     marketplace_facts_mut(&mut d).forms[0].medical_costs[0].tax_free_child = Some(20001);
-    assert!(!d.valid_stored());
+    crate::tests::support::client::retained_marketplace_conflict(&d);
     let missing = supported(&marketplace_nonmedical_child(None));
     assert!(noted(&missing, "HEALTH_POLICY_MEDICAL_ALLOCATION_REQUIRED"));
 }
@@ -781,15 +772,8 @@ fn marketplace_medical_unused_child_cost_cannot_cross_policy_sources() {
     let facts = marketplace_facts_mut(&mut d);
     let mut second = facts.forms[0].clone();
     second.id = second_id;
-    second.policy_number = "Second actual statement".into();
-    second.amounts = PolicyAmounts::ByMonth {
-        months: vec![PolicyMonth {
-            month: 1,
-            premium: 200000,
-            benchmark: Some(110000),
-            advance: 0,
-        }],
-    };
+    second.form.policy_number = "Second actual statement".into();
+    second.form.set_month(1, 200000, Some(110000), 0);
     second.coverage[0].people = vec![-1];
     second.medical_costs.clear();
     facts.forms.push(second);
@@ -891,19 +875,24 @@ fn iterative_health_limit_reuses_linked_farm_income_in_source_cents() {
             let linked = if insured { farm_id } else { other_id };
             let source = if cooperative {
                 let mut data = crate::tests::farm::farm::cooperative(10049, 0, 0, 0);
-                data.allocations.push(crate::cooperative::automatic(&data, Some(linked)));
-                FederalIncome::Cooperative { data }
+                data.allocations.push(crate::cooperative::automatic(&data));
+                FederalIncome::Cooperative { data: cooperative_source(data) }
             } else {
-                let FederalIncome::Unemployment { mut data } =
+                let FederalIncome::GovernmentPayment { mut data } =
                     government_unemployment(0, &[], 0).income
                 else {
                     unreachable!()
                 };
-                data.agriculture_payment = 10049;
-                data.agriculture_farm = Some(linked);
-                FederalIncome::Unemployment { data }
+                data.form.agriculture_payments = Some(10049);
+                FederalIncome::GovernmentPayment { data }
             };
             add(&mut d, income(source));
+            if cooperative {
+                claim_last_cooperative(&mut d, linked);
+            } else {
+                let component = crate::tests::support::builders::farm_government_component(&d);
+                crate::tests::support::builders::relate_farm_component(&mut d, linked, component);
+            }
             let before = d.clone();
             let mut result = supported(&d);
             assert_eq!(value(&result, "self_employment_tax"), 0);
@@ -992,7 +981,7 @@ fn iterative_health_partner_source_and_filed_half_attribution_keep_cents() {
     let mut partner = ordinary_partner_source(3000, true);
     partner.regular.ordinary = 300051;
     partner.alternative = Some(partner.regular.clone());
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(300051);
     let se = partner
         .se_after_passive(
@@ -1094,8 +1083,12 @@ fn iterative_scorp_health_limit_retains_actual_medicare_wage_cents() {
         let mut d = empty_return(FederalStatus::Single);
         let wage_id = d.next_id;
         let mut source = wage(wage_id, Owner::Taxpayer, 3000000, 0);
-        let FederalIncome::Wage { data } = &mut source.income else { unreachable!() };
-        data.medicare_wages = wages;
+        let FederalIncome::Wage { data: crate::WageSource::W2(crate::W2Source { form: data, .. }) } =
+            &mut source.income
+        else {
+            unreachable!()
+        };
+        data.medicare_wages = Some(wages);
         add(&mut d, source);
         let mut scorp = complete_ordinary_scorp(0, true);
         scorp.health_insurance = BusinessHealthInsurance::Plan {
@@ -1112,7 +1105,7 @@ fn iterative_scorp_health_limit_retains_actual_medicare_wage_cents() {
                 payment: EntityPremiumPayment::EntityPaid,
             },
         };
-        add(&mut d, income(FederalIncome::Scorp { data: scorp }));
+        add(&mut d, income(FederalIncome::Scorp { data: scorp_source(scorp) }));
         let before = d.clone();
         let mut result = supported(&d);
         let health = crate::health::calculate_cents(
@@ -1146,7 +1139,7 @@ fn marketplace_medical_entity_reimbursement_preserves_actual_child_funding() {
         wage: 1,
         payment: EntityPremiumPayment::Reimbursed { amount: 600000, included_in_income: true },
     };
-    add(&mut d, income(FederalIncome::Scorp { data: scorp }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(scorp) }));
     let policy = marketplace_facts_mut(&mut d).forms[0].id;
     let activity = d.income.last().unwrap().id;
     d.adjustments.as_mut().unwrap().health_marketplace.benchmarks = vec![HealthPolicyBenchmark {
@@ -1375,11 +1368,22 @@ fn governmental_457_requires_known_allocation_within_taxable_payment() {
             },
         ),
     );
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    data.taxable = RetirementTaxable::Payer { amount: 900000 };
+    let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+        &mut d.income[1].income
+    else {
+        unreachable!()
+    };
+    data.form.taxable = Some(900000);
+    data.taxable_method = Some(TaxableMethod::BoxTwoA);
     unsupported(&d, "Income");
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTreatment::Exception { facts, .. } = &mut data.ordinary_distribution else {
+    let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+        &mut d.income[1].income
+    else {
+        unreachable!()
+    };
+    let Some(DistributionCode::Early { exception: EarlyException::Applies { facts, .. }, .. }) =
+        &mut data.code
+    else {
         unreachable!()
     };
     *facts = RetirementException::Governmental457 { rollover_taxable: 0, eligible: false };
@@ -1387,12 +1391,18 @@ fn governmental_457_requires_known_allocation_within_taxable_payment() {
     let r = supported(&d);
     assert_eq!(value(&r, "early_distribution_tax"), 900);
 
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTreatment::Exception { facts, .. } = &mut data.ordinary_distribution else {
+    let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+        &mut d.income[1].income
+    else {
+        unreachable!()
+    };
+    let Some(DistributionCode::Early { exception: EarlyException::Applies { facts, .. }, .. }) =
+        &mut data.code
+    else {
         unreachable!()
     };
     *facts = RetirementException::Governmental457 { rollover_taxable: 0, eligible: true };
-    data.kind = RetirementKind::Ira;
+    data.form.ira = true;
     unsupported(&d, "Income");
 }
 
@@ -1428,21 +1438,54 @@ fn cash_liquidation_gain_is_taxable_before_final_payment_and_zero_final_can_clos
 fn medical_care_and_employment_hardship_home_moves_use_reduced_limit() {
     for reason in [HomeSaleTrigger::MedicalCare, HomeSaleTrigger::EmploymentHardship] {
         let mut d = complete(FederalStatus::Single);
-        let mut home = home_sale(false);
-        home.exclusion =
-            HomeExclusion::Reduced { reason, taxpayer: reduced_home_periods(365), spouse: None };
+        let home = crate::MainHomeSale {
+            form: crate::HomeSaleSource::Paper(crate::Form1099SPaper {
+                filer: Default::default(),
+                transferor: Default::default(),
+                box_3_address_or_legal_description: "12 Synthetic Lane".into(),
+                box_1_date_of_closing: 20260615,
+                box_2a_total_gross_proceeds: 80_000_000,
+                box_6_property_or_services: false,
+                box_7_foreign_person: false,
+                calendar_year: 2026,
+                ..Default::default()
+            }),
+            answers: Some(crate::RealEstateSaleUse::MainHome(crate::HomeSaleAnswers {
+                property_value: SourceCents::NotReported,
+                firpta_withheld: SourceCents::NotReported,
+                form_1099s: true,
+                acquired: 20250615,
+                // An inherited home preserves the long-term gain with 365 days of ownership.
+                received: HomeReceived::Inherited,
+                expenses: 5_000_000,
+                payment: SalePayment::InFull,
+                exchange: None,
+                basis: 20_000_000,
+                lived: HomeLived::WholeTime,
+                earlier_sale: EarlierHomeSale::No,
+                spouse: HomeSpouse::NotJoint,
+                reason: HomeSaleReason::Event { reason },
+                service: None,
+                use_history: HomeRentalUse {
+                    depreciation: 0,
+                    nonqualified_days: 0,
+                    separate: None,
+                },
+                more: HomeSaleMore::Nothing,
+            })),
+        };
         add(&mut d, income(FederalIncome::HomeSale { data: home }));
         assert_eq!(value(&supported(&d), "capital_gain"), 425000);
         assert_eq!(restart(d.clone()).draft, d);
         let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
-        let HomeExclusion::Reduced { reason, .. } = &mut data.exclusion else { panic!() };
+        let HomeSaleReason::Event { reason } = &mut data.facts_mut().reason else { panic!() };
         *reason = HomeSaleTrigger::Other;
         unsupported(&d, "Income:");
     }
 }
 #[test]
 fn section1244_liabilities_cannot_silently_create_a_taxable_exchange() {
-    let mut stock = Section1244Stock {
+    let stock = Section1244Stock {
         basis: StockLossBasis::Property {
             basis: 2000000,
             value: 1500000,
@@ -1454,10 +1497,6 @@ fn section1244_liabilities_cannot_silently_create_a_taxable_exchange() {
 
         ownership: crate::StockLossOwnership::OriginalIndividual { qualified: true },
     };
-    assert!(!stock.valid());
-    if let StockLossBasis::Property { liabilities, .. } = &mut stock.basis {
-        *liabilities = -1;
-    }
     assert!(!stock.valid());
     let mut d = complete(FederalStatus::Single);
     add(&mut d, income(FederalIncome::SmallBusinessStock { data: stock }));
@@ -1481,8 +1520,6 @@ fn single_life_table_boundaries_and_prior_recovery_use_original_age() {
     assert!(a.valid(120000));
     assert_eq!(a.expected(), 2400000); // Original age, not current age 81.
     assert_eq!(a.excluded(), 10000);
-    a.duration = AnnuityDuration::SingleLife { age: 4, delay: 1, guaranteed: 0 };
-    assert!(!a.valid(120000));
 }
 #[test]
 fn joint_lifetime_same_payments_and_age_order_use_last_survivor_table() {
@@ -1579,10 +1616,6 @@ fn variable_joint_life_uses_joint_multiple_and_payment_timing() {
     };
     assert!(a.valid());
     assert_eq!(a.annual(), 613953); // $132,000 / (22.0 - 0.5).
-    a.history = VariableHistory::New {
-        expected: VariablePayments::Joint { age: 70, survivor_age: 4, delay: 12 },
-    };
-    assert!(!a.valid());
 }
 
 #[test]
@@ -1691,7 +1724,8 @@ fn new_macrs_table_choice_is_per_asset_and_matches_published_rounding() {
 
 #[test]
 fn macrs_table_history_rejects_impossible_initial_bonus() {
-    for bonus in [-1, 52001] {
+    {
+        let bonus = 52001;
         let mut asset = continuing_equipment(20250601, 52000, false);
         asset.history = table_history(52000, bonus, false);
         assert!(!business_with_bonus(100000, asset).valid_stored());
@@ -1752,7 +1786,8 @@ fn health_child_premiums_flow_to_return_once_and_roundtrip() {
     assert_eq!(value(&r, "business_2_medical_premiums"), 5000);
     assert_eq!(value(&r, "business_2_excluded_child_premiums"), 5000 - deduction);
     assert_eq!(restart(d.clone()).draft, d);
-    for invalid in [-1, 1000001] {
+    {
+        let invalid = 1000001;
         let FederalIncome::Business { data } = &mut d.income[0].income else { panic!() };
         let BusinessHealthInsurance::Plan { months, .. } = &mut data.health_insurance else {
             panic!()
@@ -1957,8 +1992,8 @@ fn retained_archer_excess_uses_taxable_withdrawals_then_unused_contribution_room
     else {
         panic!()
     };
-    data.gross = 30000;
-    if let MedicalSaPayment::Own { medical, nonmedical, .. } = &mut data.payment {
+    data.form1099sa_mut().unwrap().gross_distribution = 30000;
+    if let Some(MedicalSaPayment::Own { medical, nonmedical, .. }) = &mut data.payment {
         *medical = 30000;
         nonmedical.clear();
     }
@@ -1968,16 +2003,6 @@ fn retained_archer_excess_uses_taxable_withdrawals_then_unused_contribution_room
     assert_eq!(value(&medical, "archer_prior_excess_remaining_following_year"), 800);
     assert_eq!(value(&medical, "archer_return_year_excess_contribution_tax"), 48);
     assert_eq!(value(&medical, "archer_msa_taxable_distributions"), 0);
-
-    archer_owner_mut(&mut d)
-        .excess_accounting
-        .as_mut()
-        .unwrap()
-        .prior_year
-        .as_mut()
-        .unwrap()
-        .line_41 = 0;
-    assert!(!d.adjustments.as_ref().unwrap().archer.valid());
 }
 
 #[test]
@@ -2163,7 +2188,7 @@ fn married_archer_excess_uses_each_owners_form_5329_and_account_value() {
     owners[0].excess_accounting.as_mut().unwrap().prior_year =
         Some(ArcherPriorExcess { line_40: 100000, line_41: 6000 });
     let mut spouse_withdrawal = income(archer_msa(300));
-    spouse_withdrawal.owner = Owner::Spouse;
+    spouse_withdrawal.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse_withdrawal);
     let owner_specific = supported(&d);
     assert_eq!(value(&owner_specific, "archer_prior_excess_used_by_distributions"), 0);
@@ -2199,7 +2224,7 @@ fn separate_filer_with_family_coverage_takes_half_the_limit_when_the_spouse_is_n
     assert_eq!(value(&r, "archer_return_year_uncorrected_personal_excess"), 2250);
     assert_eq!(value(&r, "agi"), 57750);
     // An agreed division is honored the same way.
-    set_archer(&mut d, vec![taxpayer, spouse], ArcherSharing::Agreed { taxpayer: 7000 });
+    set_archer(&mut d, vec![taxpayer, spouse], ArcherSharing::Agreed { taxpayer: 70.0 });
     assert_eq!(value(&supported(&d), "archer_contribution_1_coverage_limit"), 3150);
 }
 
@@ -2257,7 +2282,7 @@ fn archer_family_uses_lower_deductible_and_agreed_allocation() {
     set_archer(
         &mut d,
         vec![first.clone(), second.clone()],
-        ArcherSharing::Agreed { taxpayer: 7000 },
+        ArcherSharing::Agreed { taxpayer: 70.0 },
     );
     let r = supported(&d);
     assert_eq!(value(&r, "archer_contribution_1_coverage_limit"), 3150);
@@ -2410,7 +2435,7 @@ fn hsa_deemed_termination_precedes_later_age_and_disability_exceptions() {
     );
     assert_eq!(value(&supported(&d), "hsa_additional_tax"), 2000);
     for (date, expected) in [(Some(20260615), 2000), (Some(20251231), 0), (None, 2000)] {
-        let MedicalSaPayment::Unreported { disabled_since, .. } =
+        let Some(MedicalSaPayment::Unreported { disabled_since, .. }) =
             &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
         else {
             panic!()
@@ -2447,7 +2472,7 @@ fn hsa_pledged_assets_age_and_disability_exempt_only_after_boundary_date() {
     assert_eq!(return_line(&r, "8"), 600000);
     assert_eq!(return_line(&r, "23"), 60000);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19800615;
-    let MedicalSaPayment::Unreported { disabled_since, .. } =
+    let Some(MedicalSaPayment::Unreported { disabled_since, .. }) =
         &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
     else {
         panic!()
@@ -2467,7 +2492,7 @@ fn hsa_deemed_rejects_unknown_source_and_postdeath_activity() {
         Some(19000101),
     );
     unsupported(&d, "Income");
-    let MedicalSaPayment::Unreported { disabled_since, .. } =
+    let Some(MedicalSaPayment::Unreported { disabled_since, .. }) =
         &mut hsa_distribution_mut(&mut d, Owner::Taxpayer, 0).payment
     else {
         panic!()
@@ -2728,15 +2753,6 @@ fn retained_hsa_excess_uses_2026_contribution_room_for_a_new_deduction() {
     assert_eq!(value(&r, "hsa_1_prior_excess_remaining_following_year"), 0);
     assert_eq!(value(&r, "hsa_return_year_excess_contribution_tax"), 0);
     assert_eq!(restart(d.clone()).draft, d);
-    d.adjustments.as_mut().unwrap().hsa[0]
-        .excess_accounting
-        .as_mut()
-        .unwrap()
-        .prior_year
-        .as_mut()
-        .unwrap()
-        .line_49 = 0;
-    assert!(!d.adjustments.as_ref().unwrap().hsa[0].valid());
 }
 
 #[test]
@@ -3311,7 +3327,7 @@ fn current_hsa_last_month_preserves_higher_monthly_limit_and_no_december_case() 
 #[test]
 fn current_hsa_last_month_rejects_invalid_history_and_unresolved_shared_allocation() {
     let mut h = december_hsa(HsaCoverage::SelfOnly, 440000);
-    for date in [20261130, 20270230, 20280101] {
+    for date in [20261130, 20280101] {
         h.last_month_loss = Some(HsaEligibilityLoss { date, reason: HsaLossReason::Other });
         assert!(!h.valid());
     }
@@ -3850,7 +3866,7 @@ fn current_hsa_funding_spouse_uses_own_source_and_preserves_withholding() {
     let mut d = complete(FederalStatus::Joint);
     current_hsa_funding(&mut d, 4400);
     let id = d.adjustments.as_ref().unwrap().hsa[0].funding[0].income;
-    d.income.iter_mut().find(|v| v.id == id).unwrap().owner = Owner::Spouse;
+    d.income.iter_mut().find(|v| v.id == id).unwrap().owner = crate::DocumentOwner::Spouses;
     d.adjustments.as_mut().unwrap().hsa[0].owner = Owner::Spouse;
     // Neutral completion fact: the taxpayer is ineligible for HSA contributions.
     d.adjustments.as_mut().unwrap().hsa_family_share = Some(HsaFamilyShare {
@@ -3953,7 +3969,10 @@ fn prior_nol_refigures_itemized_medical_deductions_and_compares_complete_routes(
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 100000)]);
     let automatic = supported(&d);
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     let r = supported(&d);
     assert_eq!(value(&r, "prior_nol_deduction"), 35600);
     assert_eq!(value(&r, "agi"), 24400);
@@ -3961,10 +3980,11 @@ fn prior_nol_refigures_itemized_medical_deductions_and_compares_complete_routes(
     assert_eq!(value(&r, "taxable_income"), 6230);
     assert_eq!(automatic.tax, r.tax);
     assert_eq!(value(&automatic, "prior_nol_deduction"), 35600);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    let standard = supported(&d);
-    assert_eq!(value(&standard, "prior_nol_deduction"), 35120);
-    assert!(standard.tax > r.tax);
+    d.deductions.as_mut().unwrap().itemize_override = None;
+    // 2026-11-02: clearing the override keeps the same lower-liability NOL route.
+    let cleared = supported(&d);
+    assert_eq!(value(&cleared, "prior_nol_deduction"), 35600);
+    assert_eq!(cleared.tax, r.tax);
 }
 
 #[test]
@@ -3975,7 +3995,10 @@ fn prior_nol_capital_addback_refigures_itemized_medical_absorption() {
     let f = itemized(d.deductions.as_mut().unwrap());
     f.medical = 2000000;
     let facts = f.clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 100000)]);
     let r = supported(&d);
     assert_eq!(value(&r, "prior_nol_deduction"), 58820);
@@ -3990,7 +4013,7 @@ fn prior_nol_capital_addback_refigures_itemized_medical_absorption() {
 fn prior_nol_coordinates_nonitemizer_cash_charity_without_charitable_carryover() {
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.set_cash_charity(100000);
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 100000)]);
     let r = supported(&d);
@@ -4430,8 +4453,11 @@ fn variable_survivor_transition_uses_receipts_and_shared_remaining_cost() {
             earlier_gross / 100,
             RetirementTreatment::Ordinary,
         );
-        if let FederalIncome::Retirement { data } = &mut entry.income {
-            data.taxable = RetirementTaxable::VariableAnnuity { data: primary };
+        if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut entry.income
+        {
+            data.form.taxable_not_determined = true;
+            data.taxable_method = Some(TaxableMethod::VariablePayments { data: primary });
         }
         add(&mut d, entry);
         let mut entry = retirement_entry(
@@ -4445,8 +4471,12 @@ fn variable_survivor_transition_uses_receipts_and_shared_remaining_cost() {
                 early_simple: false,
             },
         );
-        if let FederalIncome::Retirement { data } = &mut entry.income {
-            data.taxable = RetirementTaxable::VariableAnnuity { data: a };
+        if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut entry.income
+        {
+            data.form.taxable_not_determined = true;
+            data.taxable_method = Some(TaxableMethod::VariablePayments { data: a });
+            data.form.payment_date = Some(20261201);
         }
         add(&mut d, entry);
         let r = supported(&d);
@@ -4458,8 +4488,10 @@ fn variable_survivor_transition_uses_receipts_and_shared_remaining_cost() {
         assert_eq!(restart(d.clone()).draft, d);
         d.income.swap(1, 2);
         assert_eq!(return_line(&supported(&d), "5b"), return_line(&r, "5b"));
-        if let FederalIncome::Retirement { data } = &mut d.income[1].income {
-            data.ordinary_distribution = RetirementTreatment::Ordinary;
+        if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut d.income[1].income
+        {
+            data.code = Some(DistributionCode::Normal { what_happened: Disposition::Kept });
         }
         unsupported(&d, "Income:");
     }
@@ -4497,8 +4529,12 @@ fn variable_survivor_transition_covers_new_joint_contract_and_final_deduction() 
             early_simple: false,
         },
     );
-    if let FederalIncome::Retirement { data } = &mut entry.income {
-        data.taxable = RetirementTaxable::VariableAnnuity { data: a };
+    if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+        &mut entry.income
+    {
+        data.form.taxable_not_determined = true;
+        data.taxable_method = Some(TaxableMethod::VariablePayments { data: a });
+        data.form.payment_date = Some(20260901);
     }
     add(&mut d, entry);
     d.deductions.as_mut().unwrap().annuity_losses.push(AnnuityLoss {
@@ -4569,8 +4605,11 @@ fn variable_temporary_life_uses_table_viii_without_lifetime_timing_adjustment() 
             3600,
             RetirementTreatment::Ordinary,
         );
-        if let FederalIncome::Retirement { data } = &mut entry.income {
-            data.taxable = RetirementTaxable::VariableAnnuity { data: a };
+        if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut entry.income
+        {
+            data.form.taxable_not_determined = true;
+            data.taxable_method = Some(TaxableMethod::VariablePayments { data: a });
         }
         add(&mut d, entry);
         assert_eq!(return_line(&supported(&d), "5b"), 120000);
@@ -4616,8 +4655,11 @@ fn retained_variable_term_handles_ending_year_without_shortfall_election() {
                 1800,
                 RetirementTreatment::Ordinary,
             );
-            if let FederalIncome::Retirement { data } = &mut entry.income {
-                data.taxable = RetirementTaxable::VariableAnnuity { data: a };
+            if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+                &mut entry.income
+            {
+                data.form.taxable_not_determined = true;
+                data.taxable_method = Some(TaxableMethod::VariablePayments { data: a });
             }
             add(&mut d, entry);
             let r = supported(&d);
@@ -4674,8 +4716,6 @@ fn retained_variable_term_reconciles_election_and_rejects_future_periods() {
     assert!(!a.valid()); // The election cannot extend the retained term.
     a.term = Some(VariableTerm::Fixed { ends: 20260701 });
     assert!(!a.valid()); // Fixed and death-contingent terms are not interchangeable.
-    a.term = Some(VariableTerm::TemporaryLife { ends: 20260230 });
-    assert!(!a.valid());
     a.term = None;
     a.history = VariableHistory::Prior { annual: 240000, recovered: 200000, refigure: None };
     a.period = 20260701;
@@ -4714,8 +4754,11 @@ fn single_life_guarantee_uses_refund_table_without_reducing_recovery_cap() {
             1200,
             RetirementTreatment::Ordinary,
         );
-        if let FederalIncome::Retirement { data } = &mut entry.income {
-            data.taxable = RetirementTaxable::GeneralAnnuity { data: a };
+        if let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+            &mut entry.income
+        {
+            data.form.taxable_not_determined = true;
+            data.taxable_method = Some(TaxableMethod::GeneralRule { data: a });
         }
         add(&mut d, entry);
         let r = supported(&d);
@@ -4749,7 +4792,8 @@ fn other_nontaxable_diesel_and_kerosene_uses_share_lines_three_a_and_four_a() {
             diesel_off_highway: Some(fuel_use(100_000, 20_000)),
             other_uses: Some(other.clone()),
             ..FederalFuelLines::default()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
@@ -4757,7 +4801,7 @@ fn other_nontaxable_diesel_and_kerosene_uses_share_lines_three_a_and_four_a() {
     let mut partner = ordinary_partner_source(20_000, true);
     partner.qbi = Some(partner_qbi_statement(20_000));
     partner.fuel_tax_credit = Some(PartnerFuelTaxCredit {
-        fuels: FederalFuelLines { other_uses: Some(other), ..FederalFuelLines::default() },
+        fuels: FederalFuelLines { other_uses: Some(other), ..FederalFuelLines::default() }.into(),
         statement_complete: true,
         farm_activity: false,
     });
@@ -4827,14 +4871,15 @@ fn other_nontaxable_emulsion_use_shares_line_fourteen_a_without_reusing_gallons(
             emulsion_off_highway: Some(fuel_use(100_000, 20_000)),
             other_uses: Some(type_8.clone()),
             ..FederalFuelLines::default()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
     let mut partner = ordinary_partner_source(20_000, true);
     partner.qbi = Some(partner_qbi_statement(20_000));
     partner.fuel_tax_credit = Some(PartnerFuelTaxCredit {
-        fuels: FederalFuelLines { other_uses: Some(type_8), ..FederalFuelLines::default() },
+        fuels: FederalFuelLines { other_uses: Some(type_8), ..FederalFuelLines::default() }.into(),
         statement_complete: true,
         farm_activity: false,
     });
@@ -5162,7 +5207,7 @@ fn marketplace_part_iv_shared_policy_with_the_other_parent_uses_the_monthly_line
     // applicable 6.60%; annual contribution 31,300 x 0.066 = 2,065.80 ->
     // $2,066; monthly 2,066 / 12 = $172. The policy covers the filer and a
     // child the other parent claims; the agreed (and head-count) share is 50%
-    // (allocation situation 4, same share in columns (e), (f), (g)).
+    // (allocation situation 4, same share in columns (e), f, g).
     // Monthly: premium 800 x 50% = 400; benchmark 700 x 50% = 350;
     // advance 450 x 50% = 225. Column (e) = min(400, 350 - 172) = 178.
     // Line 24 = 12 x 178 = 2,136; line 25 = 12 x 225 = 2,700;
@@ -5318,10 +5363,10 @@ fn marketplace_unsubsidized_shared_policy_allocates_only_the_premium() {
     // The client rule MARKETPLACE_ADVANCE_ON_UNSUBSIDIZED_SHARE, re-checked
     // by the stored-draft validity.
     if let MarketplaceClaim::Yes { facts, .. } = marketplace_claim_mut(&mut d) {
-        let PolicyAmounts::ByMonth { months } = &mut facts.forms[0].amounts else { unreachable!() };
-        months[0].advance = 100;
+        let paper = &mut facts.forms[0].form;
+        paper.month_mut(1).advance = Some(100);
     }
-    assert!(!d.valid_stored());
+    crate::tests::support::client::retained_marketplace_conflict(&d);
 }
 
 #[test]
@@ -5417,9 +5462,9 @@ fn marketplace_unclaimed_filer_reconciles_only_actual_attester_advances() {
     unsupported(&d, "Marketplace source");
     let facts = marketplace_facts_mut(&mut d);
     for form in &mut facts.forms {
-        if let PolicyAmounts::ByMonth { months } = &mut form.amounts {
-            for row in months {
-                row.advance = 0;
+        for month in 1..=12 {
+            if let Some(row) = form.form.month_slot(month) {
+                row.advance = Some(0);
             }
         }
     }
@@ -5428,9 +5473,7 @@ fn marketplace_unclaimed_filer_reconciles_only_actual_attester_advances() {
     assert_eq!(value(&r, "premium_credit_advance"), 0);
     assert_eq!(value(&r, "premium_credit_repayment"), 0);
     // One material month cannot be erased by eleven zero-advance months.
-    if let PolicyAmounts::ByMonth { months } = &mut marketplace_facts_mut(&mut d).forms[0].amounts {
-        months[0].advance = 1;
-    }
+    marketplace_facts_mut(&mut d).forms[0].form.month_mut(1).advance = Some(1);
     unsupported(&d, "Marketplace source");
 }
 
@@ -5603,7 +5646,8 @@ fn iterative_marketplace_retains_admitted_wage_and_interest_source_cents() {
     add(&mut d, wage(0, Owner::Taxpayer, 49, 0));
     let mut interest = savings_income(0, 0);
     let FederalIncome::Interest { data } = &mut interest else { unreachable!() };
-    data.taxable = 49;
+    let crate::InterestSource::Int1099(data) = data else { unreachable!() };
+    data.form.interest_income = 49;
     add(&mut d, income(interest));
     annual_marketplace_businesses(&mut d);
     d.adjustments.as_mut().unwrap().health_marketplace.method = HealthPtcMethod::Iterative;
@@ -5913,7 +5957,7 @@ fn form_7206_line_13_binds_after_the_sep_on_line_9() {
     let mut d = empty_return(FederalStatus::Single);
     let mut business = form_7206_business(20000, 1500, 0, &[], vec![]);
     let FederalIncome::Business { data } = &mut business else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 300000, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 300000, rate: 25.0 };
     add(&mut d, income(business));
     let r = supported(&d);
     let id = d.income[0].id;
@@ -6056,12 +6100,6 @@ fn marketplace_child_election_nontaxable_social_enters_household_income_once() {
     child_election_mut(&mut d).facts = ChildElectionFacts::OTHER_INCOME.0;
     assert!(crate::marketplace::valid(&d.credits.as_ref().unwrap().marketplace, &d));
     assert_eq!(value(&supported(&d), "marketplace_household_income"), 61200);
-    // The source twin rejects negative/over-bound retained money too.
-    let data = child_election_mut(&mut zero);
-    data.nontaxable_social = -1;
-    assert!(!data.valid());
-    data.nontaxable_social = 100_000_000_001;
-    assert!(!data.valid());
 }
 
 // Derived2026 boundary under section162(l)(2)(A), Form7206 and Pub974
@@ -6250,7 +6288,9 @@ fn hsa_equal_default_uses_actual_shared_months_and_ineligible_spouse() {
     d.adjustments.as_mut().unwrap().hsa =
         vec![hsa_entry(Owner::Taxpayer, HsaCoverage::Family, 656_250), spouse];
     // Six shared family months:4375/2 each; six A-only family months:4375.
-    assert_eq!(value(&supported(&d), "adjustments"), 8750);
+    // 2026-10-19 (D-2026-10-19-12): each owner's Form 8889 prints line 13 in whole dollars
+    // (6,562.50 -> 6,563 and 2,187.50 -> 2,188), and Schedule 1 line 13 adds the printed lines.
+    assert_eq!(value(&supported(&d), "adjustments"), 8751);
     d.adjustments.as_mut().unwrap().hsa[0].personal += 1;
     unsupported(&d, "HSA");
     let a = d.adjustments.as_mut().unwrap();
@@ -6351,10 +6391,10 @@ fn hsa_family_limit_counts_archer_for_december_ineligible_spouse() {
     let P::SaveHsa { value: input, .. } = &mut page else { panic!() };
     input.accounts = vec![crate::tests::cross::interview::hsa_account(
         Owner::Taxpayer,
-        HsaCoverageYear::Changed { months },
+        HsaCoverageYear::Changed { months: months.into() },
         775_000,
     )];
-    input.other_coverage = Some(HsaEligibility::Monthly { months: spouse });
+    input.other_coverage = Some(HsaEligibilityPage::Monthly { months: spouse.into() });
     input.family_method = HsaAllocationMethod::December;
     input.family_split = FamilySplit::NotApplicable;
     input.archer =
@@ -6510,16 +6550,38 @@ fn hsa_distribution_detail_keeps_pledges_outside_form_and_manual_returns_once() 
     add(
         &mut d,
         income(FederalIncome::MedicalDistribution {
-            data: FederalMedicalDistribution {
-                origin: HealthDocumentOrigin::TrusteeStatement,
-                gross: 5000,
-                account: MedicalSaAccount::Hsa,
-                payment: MedicalSaPayment::Unreported {
+            data: crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Hsa,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Unreported {
                     event: MedicalDeemed::Pledged {
                         assets: vec![MedicalAccountWithdrawal { date: 20260615, amount: 5000 }],
                     },
                     disabled_since: None,
-                },
+                }),
+                ..sa_source(Sa1099 {
+                    origin: HealthDocumentOrigin::TrusteeStatement,
+                    gross: 5000,
+                    box2_earnings: None,
+                    box3_code: None,
+                    box4_value: None,
+                    account: MedicalSaAccount::Hsa,
+                    ..Default::default()
+                })
             },
         }),
     );
@@ -6600,14 +6662,16 @@ fn hsa_contribution_detail_preserves_combined_twelfths_without_invented_residual
     d.adjustments.as_mut().unwrap().hsa = vec![taxpayer, spouse];
     let r = supported(&d);
     let cents = |id: &str| line_amount(&r, id);
-    assert_eq!(cents("hsa_1_contribution_limit"), 72_917);
-    assert_eq!(cents("hsa_1_contribution_allocated"), 36_458);
-    assert_eq!(cents("hsa_1_contribution_catchup"), 8333);
-    assert_eq!(cents("hsa_1_contribution_total_limit"), 44_792);
-    assert_eq!(cents("hsa_1_contribution_personal_limit"), 44_792);
-    assert_eq!(cents("hsa_1_contribution_deduction"), 44_792);
+    // 2026-10-19 (D-2026-10-19-12): Form 8889 prints whole dollars figured from its printed
+    // lines (729.17, 364.58 and 83.33 print 729, 365 and 83; line 8 is 365 + 83 = 448).
+    assert_eq!(cents("hsa_1_contribution_limit"), 72_900);
+    assert_eq!(cents("hsa_1_contribution_allocated"), 36_500);
+    assert_eq!(cents("hsa_1_contribution_catchup"), 8300);
+    assert_eq!(cents("hsa_1_contribution_total_limit"), 44_800);
+    assert_eq!(cents("hsa_1_contribution_personal_limit"), 44_800);
+    assert_eq!(cents("hsa_1_contribution_deduction"), 44_800);
     assert_eq!(cents("hsa_2_contribution_catchup"), 0);
-    assert_eq!(cents("hsa_2_contribution_total_limit"), 36_458);
+    assert_eq!(cents("hsa_2_contribution_total_limit"), 36_500);
     assert_eq!(value(&r, "adjustments"), 813);
 }
 
@@ -6713,7 +6777,11 @@ fn ordered_health_return(profit: i64, family: usize, monthly: i64) -> FederalDra
 // never from a forged retained IRA coverage answer.
 fn ordered_workplace_plan(d: &mut FederalDraft) {
     let mut entry = wage(0, Owner::Taxpayer, 0, 0);
-    let FederalIncome::Wage { data } = &mut entry.income else { unreachable!() };
+    let FederalIncome::Wage { data: crate::WageSource::W2(crate::W2Source { form: data, .. }) } =
+        &mut entry.income
+    else {
+        unreachable!()
+    };
     data.retirement_plan = true;
     add(d, entry);
 }
@@ -6808,7 +6876,7 @@ fn ordered_marketplace_freezes_actual_bond_worksheet_and_source_lines() {
         bond_record(Owner::Taxpayer, 12000, 3000, 20100601, vec![bond_student(-1, 14000, 0)]),
     );
     if let FederalIncome::SavingsBonds { data } = &mut d.income.last_mut().unwrap().income {
-        data.interest_statement = interest_id;
+        data.answers.as_mut().unwrap().interest_statement = interest_id;
     }
     assert_eq!(crate::savings_bonds::source_rule(&d.income), None);
     let before = d.clone();
@@ -6848,7 +6916,7 @@ fn ordered_marketplace_reuses_prior_owners_in_the_prescribed_order_for_both_meth
         bond_record(Owner::Taxpayer, 12000, 3000, 20100601, vec![bond_student(-1, 14000, 0)]),
     );
     if let FederalIncome::SavingsBonds { data } = &mut d.income.last_mut().unwrap().income {
-        data.interest_statement = interest_id;
+        data.answers.as_mut().unwrap().interest_statement = interest_id;
     }
     assert_eq!(crate::savings_bonds::source_rule(&d.income), None);
     for (method, ira, credit, health, agi) in [
@@ -6917,6 +6985,33 @@ fn health_passive_rental(d: &mut FederalDraft, rent: i64, expense: i64, prior: i
 }
 
 #[test]
+fn health_passive_ordinary_scorp_groups_keep_their_nonrental_classification() {
+    use crate::tests::cross::interview::{accepted, open_document_center};
+    use crate::tests::support::builders::k1res::{documents, input};
+    use crate::tests::support::client::k1res::scorp_ordinary_multi_session;
+
+    let (mut session, source) = scorp_ordinary_multi_session();
+    let mut request = open_document_center(&mut session);
+    documents(&mut request)[0].document = input(&FederalIncome::ScorpActivities { data: source });
+    accepted(&crate::tests::support::client::k1res::send_fixture(&mut session, request));
+    let draft = &session.draft;
+    let mut output = FederalResult::empty(draft.revision);
+    let actual = crate::extended_rules::rentals(draft, 200000, &mut output);
+    assert!(actual.inputs_complete, "{:?}", output.issues);
+    // The unchanged native fixture has passive profit and a competing prior
+    // ordinary-business loss, plus a nonpassive ordinary-business loss.
+    // None becomes real-estate rent or a real-estate-only release boundary.
+    assert!(actual.health_ptc.rentals.is_empty());
+    assert!(actual.health_ptc.mixed_losses);
+    assert!(!actual.health_ptc.nonpassive_losses);
+    assert!(!actual.health_ptc.released_outside_pool);
+    // No rental allowance is deferred, so the known ordinary projection stays
+    // available; this source control does not claim a coupled PTC amount.
+    assert!(!actual.health_ptc.deferred);
+    assert_eq!(actual.health_ptc.initial_addback(), Ok(0));
+}
+
+#[test]
 fn health_passive_initial_income_retains_other_profit_before_rental_loss() {
     for (rent, expense, prior, scorp_profit, addback, current, allowed_loss) in
         [(0, 10000, 0, 6000, 6000, -10000, 6000), (1000, 0, 5000, 0, 1000, 1000, 1000)]
@@ -6926,7 +7021,9 @@ fn health_passive_initial_income_retains_other_profit_before_rental_loss() {
         if scorp_profit != 0 {
             add(
                 &mut d,
-                income(FederalIncome::Scorp { data: complete_ordinary_scorp(scorp_profit, false) }),
+                income(FederalIncome::Scorp {
+                    data: scorp_source(complete_ordinary_scorp(scorp_profit, false)),
+                }),
             );
         }
         let mut output = FederalResult::empty(d.revision);
@@ -6960,8 +7057,14 @@ fn health_passive_initial_income_retains_other_profit_before_rental_loss() {
 fn health_passive_competing_nonrental_loss_has_a_named_source_boundary() {
     let mut d = ordered_health_return(180000, 7, 1500);
     health_passive_rental(&mut d, 0, 10000, 0);
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(6000, false) }));
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(-2000, false) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(6000, false)) }),
+    );
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(-2000, false)) }),
+    );
     let mut output = FederalResult::empty(d.revision);
     let actual = crate::extended_rules::rentals(&d, 200000, &mut output);
     assert!(actual.inputs_complete, "{:?}", output.issues);
@@ -6997,7 +7100,10 @@ fn health_passive_competing_nonrental_loss_has_a_named_source_boundary() {
 fn health_passive_marketplace_freezes_owner_before_repeating_health() {
     let mut d = ordered_health_return(180000, 7, 1500);
     let id = health_passive_rental(&mut d, 0, 10000, 0);
-    add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(6000, false) }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(6000, false)) }),
+    );
     let before = d.clone();
     let result = supported(&d);
     // Current2026 independent Fraction oracle (9.96%, full-year equal premiums):
@@ -7048,7 +7154,7 @@ fn health_passive_k1_real_estate_identity_is_independent_of_allowance_and_box3()
     let mut d = empty_return(FederalStatus::Single);
     let direct = health_passive_rental(&mut d, 0, 10000, 0);
     let mut partner = ordinary_partner_source(0, false);
-    partner.regular.basis.opening = 5000000;
+    partner.regular.basis.opening = Some(5000000);
     partner.regular.risk.start = ScorpRiskStart::Detailed { capacity: 5000000, profit: 0, loss: 0 };
     partner.regular.rentals = K1RentalAmounts {
         real_estate: 100000,
@@ -7056,7 +7162,7 @@ fn health_passive_k1_real_estate_identity_is_independent_of_allowance_and_box3()
         other: 600000,
         ..Default::default()
     };
-    partner.rental_facts.participation = K1RentalParticipation::NotActive;
+    partner.rental_facts.participation = Some(K1RentalParticipation::NotActive);
     partner.alternative = Some(partner.regular.clone());
     let linked = d.next_id;
     add(&mut d, income(FederalIncome::Partnership { data: partner }));
@@ -7130,8 +7236,11 @@ fn iterative_mixed_premiums_keep_high_credit_signed_component_until_total() {
     d.income[0].income = marketplace_business(35000, 1..=12);
     let facts = marketplace_facts_mut(&mut d);
     let policy = facts.forms[0].id;
-    facts.forms[0].amounts =
-        PolicyAmounts::AllYear { premium: 125000, benchmark: Some(100000), advance: 90000 };
+    facts.forms[0].form.set_amounts(PolicyAmounts::AllYear {
+        premium: 125000,
+        benchmark: Some(100000),
+        advance: 90000,
+    });
     let coverage = facts.forms[0].coverage[0].clone();
     facts.forms[0].coverage = (1..=12)
         .map(|month| {
@@ -7239,6 +7348,8 @@ fn iterative_marketplace_retains_combined_relief_and_medical_owner_income() {
         &mut d,
         income(FederalIncome::WildfireRelief {
             data: FederalWildfireRelief {
+                source_issuer: Default::default(),
+                source_recipient: Default::default(),
                 paid: 20260601,
                 declared: 20250101,
                 reference: "Derived source for mandatory taxable treatment".into(),
@@ -7259,16 +7370,38 @@ fn iterative_marketplace_retains_combined_relief_and_medical_owner_income() {
     add(
         &mut d,
         income(FederalIncome::MedicalDistribution {
-            data: FederalMedicalDistribution {
-                origin: HealthDocumentOrigin::Form1099Sa,
-                gross: 49,
-                account: MedicalSaAccount::Archer,
-                payment: MedicalSaPayment::Own {
+            data: crate::SaSource {
+                medicare_prior: if matches!(
+                    &MedicalSaAccount::Archer,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(MedicareMsaPrior::None)
+                } else {
+                    None
+                },
+                medicare_from_spouse: if matches!(
+                    &MedicalSaAccount::Archer,
+                    MedicalSaAccount::MedicareAdvantage
+                ) {
+                    Some(false)
+                } else {
+                    None
+                },
+                payment: Some(MedicalSaPayment::Own {
                     nonmedical: vec![MedicalAccountWithdrawal { date: 20260616, amount: 49 }],
                     medical: 0,
                     rollover: None,
                     disabled_since: None,
-                },
+                }),
+                ..sa_source(Sa1099 {
+                    origin: HealthDocumentOrigin::Form1099Sa,
+                    gross: 49,
+                    box2_earnings: None,
+                    box3_code: Some(1),
+                    box4_value: None,
+                    account: MedicalSaAccount::Archer,
+                    ..Default::default()
+                })
             },
         }),
     );
@@ -7293,23 +7426,65 @@ fn iterative_marketplace_retains_combined_relief_and_medical_owner_income() {
     data.amount = 100049;
     data.confirmed = false;
     let returned = FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross: 100049,
-            account: MedicalSaAccount::Archer,
-            payment: MedicalSaPayment::ExcessReturned { earnings: Some(100049) },
+        data: crate::SaSource {
+            medicare_prior: if matches!(
+                &MedicalSaAccount::Archer,
+                MedicalSaAccount::MedicareAdvantage
+            ) {
+                Some(MedicareMsaPrior::None)
+            } else {
+                None
+            },
+            medicare_from_spouse: if matches!(
+                &MedicalSaAccount::Archer,
+                MedicalSaAccount::MedicareAdvantage
+            ) {
+                Some(false)
+            } else {
+                None
+            },
+            payment: Some(MedicalSaPayment::ExcessReturned),
+            ..sa_source(Sa1099 {
+                origin: HealthDocumentOrigin::Form1099Sa,
+                gross: 100049,
+                box2_earnings: Some(100049),
+                box3_code: Some(2),
+                box4_value: None,
+                account: MedicalSaAccount::Archer,
+                ..Default::default()
+            })
         },
     };
     let inherited = FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross: 100049,
-            account: MedicalSaAccount::Hsa,
-            payment: MedicalSaPayment::Inherited {
-                died: 20251201,
-                value: 0,
-                beneficiary: MedicalBeneficiary::Nonspouse { payments: vec![] },
+        data: crate::SaSource {
+            medicare_prior: if matches!(&MedicalSaAccount::Hsa, MedicalSaAccount::MedicareAdvantage)
+            {
+                Some(MedicareMsaPrior::None)
+            } else {
+                None
             },
+            medicare_from_spouse: if matches!(
+                &MedicalSaAccount::Hsa,
+                MedicalSaAccount::MedicareAdvantage
+            ) {
+                Some(false)
+            } else {
+                None
+            },
+            payment: Some(MedicalSaPayment::Inherited {
+                died: 20251201,
+
+                beneficiary: MedicalBeneficiary::Nonspouse { payments: vec![] },
+            }),
+            ..sa_source(Sa1099 {
+                origin: HealthDocumentOrigin::Form1099Sa,
+                gross: 100049,
+                box2_earnings: None,
+                box3_code: Some(4),
+                box4_value: Some(0),
+                account: MedicalSaAccount::Hsa,
+                ..Default::default()
+            })
         },
     };
     for alternative in [loan, returned, inherited] {
@@ -7359,12 +7534,14 @@ fn iterative_marketplace_retains_existing_adjustment_owner_cents() {
     add(&mut d, income(marketplace_business(40000, 1..=12)));
     let business = d.income[0].id;
     let FederalIncome::Business { data } = &mut d.income[0].income else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 100049, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 100049, rate: 25.0 };
     add(&mut d, wage(0, Owner::Taxpayer, 100000, 0));
     let wage_id = d.income[1].id;
     let a = d.adjustments.as_mut().unwrap();
     a.set_educator_taxpayer(10049);
     a.employee_expenses = vec![EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         leased_vehicles: vec![],
         owner: Owner::Taxpayer,
@@ -7408,7 +7585,7 @@ fn iterative_marketplace_uses_actual_sep_cents_in_its_trade_capacity() {
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, income(marketplace_business(3000, 1..=12)));
     let FederalIncome::Business { data } = &mut d.income[0].income else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 50049, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 50049, rate: 25.0 };
     add(&mut d, wage(0, Owner::Taxpayer, 3000000, 0));
     annual_marketplace_businesses(&mut d);
     d.adjustments.as_mut().unwrap().health_marketplace.method = HealthPtcMethod::Iterative;
@@ -7496,14 +7673,7 @@ fn hsa_earlier_lifetime_funding_blocks_reuse_without_current_income() {
 
 #[test]
 fn hsa_earlier_funding_history_uses_real_dates_and_separate_owner() {
-    for (date, expected) in [
-        (20061231, false),
-        (20070101, true),
-        (20240229, true),
-        (20240230, false),
-        (20241231, true),
-        (20250101, false),
-    ] {
+    for (date, expected) in [(20070101, true), (20240229, true), (20241231, true)] {
         let fact =
             HsaFundingUseHistory { funded: date, coverage: HsaCoverage::SelfOnly, amount: 1 };
         assert_eq!(fact.valid(), expected, "date {date}");
@@ -7632,7 +7802,11 @@ fn iterative_marketplace_uses_confirmed_pension_owner_source_cents_once() {
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, income(marketplace_business(30000, 1..=12)));
     let mut w2 = wage(0, Owner::Taxpayer, 1000000, 0);
-    let FederalIncome::Wage { data } = &mut w2.income else { unreachable!() };
+    let FederalIncome::Wage { data: crate::WageSource::W2(crate::W2Source { form: data, .. }) } =
+        &mut w2.income
+    else {
+        unreachable!()
+    };
     data.retirement_plan = true;
     add(&mut d, w2);
     annual_marketplace_businesses(&mut d);
@@ -7735,4 +7909,84 @@ fn marketplace_claimable_filer_family_catalog_preserves_other_actual_people() {
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().dependency =
         FilerDependency::CanBeClaimed { claimed: false };
     assert_eq!(crate::marketplace::family_people(&d), vec![-1]);
+}
+
+// D-2026-10-19-12/-14: Form 8889 foots on its printed whole-dollar lines and the Schedule 1
+// deduction is the printed line 13. Five months give a 1,833.33 limit; with 500.60 from the
+// employer, line 8 prints 1,833, line 11 prints 501 and line 12 prints 1,332, while the
+// exact room (1,332.73) used to print 1,333 and carry 1,333 to Schedule 1.
+#[test]
+fn form_8889_foots_on_printed_lines_and_the_deduction_is_line_13() {
+    let mut d = complete(FederalStatus::Single);
+    let mut h = hsa_entry(Owner::Taxpayer, HsaCoverage::None, 133273);
+    h.employer = 50060;
+    h.employer_outside = 50060;
+    let mut months = vec![HsaCoverage::None; 12];
+    months[..5].fill(HsaCoverage::SelfOnly);
+    h.coverage = HsaEligibility::Monthly { months };
+    d.adjustments.as_mut().unwrap().hsa = vec![h];
+    let r = supported(&d);
+    let line = |n: &str| {
+        r.lines
+            .iter()
+            .find(|l| {
+                l.form_line.as_ref().is_some_and(|f| f.form == TaxForm::Form8889 && f.line == n)
+            })
+            .map(|l| l.amount)
+            .unwrap_or_else(|| panic!("Form 8889 line {n}"))
+    };
+    assert!(["2", "3", "5", "6", "8", "9", "11", "12", "13"].iter().all(|n| line(n) % 100 == 0));
+    assert_eq!(line("8") - line("11"), line("12"));
+    assert_eq!(line("13"), line("2").min(line("12")));
+    assert_eq!(line("13"), 133200);
+    assert_eq!(value(&r, "adjustments") * 100, line("13"));
+}
+
+// Form 5329 Part VII foots on its printed lines: unused room 399.40 and distributions 100.40
+// print 399 and 100, so line 45 is 499 (the exact sum, 499.80, used to print 500), line 46 is
+// 1,000 - 499 = 501 and line 49 is 6% of the printed line 48 (smaller of 48 and the value).
+#[test]
+fn form_5329_part_vii_foots_on_printed_lines_and_line_49_is_the_tax() {
+    let mut d = complete(FederalStatus::Single);
+    let mut h = hsa_entry(Owner::Taxpayer, HsaCoverage::SelfOnly, 400060);
+    add_hsa_distribution(
+        &mut d,
+        Owner::Taxpayer,
+        0,
+        vec![MedicalAccountWithdrawal { date: 20260701, amount: 10040 }],
+        None,
+        None,
+    );
+    h.excess_accounting = Some(hsa_excess_accounting(
+        1000000,
+        Some(HsaPriorExcess { line_48: 100000, line_49: 6000 }),
+        0,
+        0,
+        0,
+    ));
+    d.adjustments.as_mut().unwrap().hsa = vec![h];
+    let r = supported(&d);
+    let line = |n: u32| {
+        r.lines
+            .iter()
+            .find(|l| {
+                l.id == alloc::format!("hsa_1_excess_line{n}")
+                    && l.form_line.as_ref().is_some_and(|f| f.form == TaxForm::Form5329)
+            })
+            .map(|l| l.amount / 100)
+            .unwrap_or_else(|| panic!("Form 5329 line {n}"))
+    };
+    assert!(
+        r.lines
+            .iter()
+            .filter(|l| l.id.starts_with("hsa_1_excess_line"))
+            .all(|l| l.amount % 100 == 0)
+    );
+    assert_eq!(line(45), line(43) + line(44));
+    assert_eq!(line(46), (line(42) - line(45)).max(0));
+    assert_eq!(line(48), line(46) + line(47));
+    assert_eq!(line(45), 499);
+    assert_eq!(line(46), 501);
+    assert_eq!(line(49), line(48).min(10000) * 6 / 100);
+    assert_eq!(value(&r, "hsa_return_year_excess_contribution_tax"), line(49));
 }

@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 39000, "rule": {"select": "^<Form3922Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["corrected", "corporation", "employee", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["granted", "exercised", "grant_market", "market_price", "exercise_price", "shares", "transferred", "grant_price"]}]}},
+    {"order": 40000, "rule": {"select": "^<Form3922Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["corrected", "corporation", "employee", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["granted", "exercised", "grant_market", "market_price", "exercise_price", "shares", "transferred", "grant_price"]}]}},
+    {"order": 245000, "rule": {"select": "^<EsppShareSale>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_SALE_1099B", "fields": ["source_issuer", "source_recipient", "description", "shares", "sold", "proceeds", "reported_basis", "reporting", "withholding"]}, {"title": "DISPLAY_STOCK_PLAN_RECORD", "fields": ["plan_record"]}]}},
+    {"order": 246000, "rule": {"select": "^<EsppShareSale>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_SALE_1099B", "fields": ["source_issuer", "source_recipient", "description", "shares", "sold", "proceeds", "reported_basis", "reporting", "withholding"]}, {"title": "DISPLAY_STOCK_PLAN_RECORD", "fields": ["plan_record"]}]}}
+  ]
+}

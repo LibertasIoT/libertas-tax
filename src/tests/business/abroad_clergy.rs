@@ -6,7 +6,7 @@ fn unit41_form4029_exempts_only_the_approved_business_owner() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, income(cash_business(20000)));
     let mut spouse = income(cash_business(10000));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     d.screening.as_mut().unwrap().clergy =
         vec![ClergyClaim { owner: Owner::Taxpayer, role: ClergyRole::ReligiousSect }];
@@ -25,6 +25,7 @@ fn unit41_optional_clergy_wages_and_housing_share_one_nonfarm_method() {
     let mut d = empty_return(FederalStatus::Single);
     let mut pay = wage(1, Owner::Taxpayer, 300_000, 0);
     if let FederalIncome::Wage { data } = &mut pay.income {
+        let mut data = edit_wage(data);
         data.coverage = W2Coverage::Ministerial;
         data.social_wages = 0;
         data.social_tax = 0;
@@ -75,7 +76,13 @@ fn unit41_nonfarm_optional_record_preserves_farm_half_and_rejects_invalid_histor
     let P::SaveIncomes { documents, .. } = &mut page else {
         panic!("SE save");
     };
-    documents.documents = vec![document(0, IncomeDocument::NonfarmOptionalMethod(se_history()))];
+    documents.documents = vec![document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::NonfarmOptionalMethod(se_history()) },
+    )]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     accepted(&send(&mut session, page));
     let election = &session.draft.screening.as_ref().unwrap().optional_se[0];
     assert!(election.farm);
@@ -87,8 +94,8 @@ fn unit41_nonfarm_optional_record_preserves_farm_half_and_rejects_invalid_histor
     let P::SaveIncomes { documents, .. } = &mut page else {
         panic!("SE save");
     };
-    assert!(documents.documents.iter().any(|row| matches!(&row.document, IncomeDocument::NonfarmOptionalMethod(h) if *h == se_history())));
-    let IncomeDocument::NonfarmOptionalMethod(h) = &mut documents.documents[0].document else {
+    assert!(documents.documents.iter().any(|row| matches!(&row.document, crate::IncomeRecord::NonfarmOptionalMethod(h) if *h == se_history())));
+    let crate::IncomeRecord::NonfarmOptionalMethod(h) = &mut documents.documents[0].document else {
         panic!("history record");
     };
     h.prior_years = vec![2022, 2022];
@@ -96,11 +103,18 @@ fn unit41_nonfarm_optional_record_preserves_farm_half_and_rejects_invalid_histor
     rejected_with(send(&mut session, page), "NONFARM_OPTIONAL_HISTORY_INVALID");
     assert_eq!(session.draft, before);
     // Farming writes only its half, including removal; the nonfarm record survives.
-    let before = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        farm_save(&before, vec![document(0, IncomeDocument::Farm(cash_farm(900_000, 400_000)))]),
-    ));
+    accepted(&{
+        let request = farm_save(
+            &mut session,
+            vec![document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Farm(cash_farm(900_000, 400_000)),
+                },
+            )],
+        );
+        send(&mut session, request)
+    });
     let election = &session.draft.screening.as_ref().unwrap().optional_se[0];
     assert!(!election.farm);
     assert_eq!(election.nonfarm, Some(se_history()));
@@ -153,7 +167,7 @@ fn unit41_form4029_removes_farm_and_partner_earnings_from_se() {
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, income(raised_farm(20000, 0)));
     let mut partner = ordinary_partner_source(10000, true);
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(1_000_000);
     add(&mut d, income(FederalIncome::Partnership { data: partner }));
     d.screening.as_mut().unwrap().clergy =

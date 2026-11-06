@@ -1,3 +1,12 @@
+// Current farmer-gross scope (2026-10-21): recognized positive capital/property
+// sources remain gross after actual exclusions/timing and before cross-source
+// losses/carryovers. Known farm machinery and livestock include current recapture and
+// installment income once. K-1/K-3 whole-source gross and earlier property's
+// farming character remain explicit source boundaries when qualification affects
+// a positive penalty or requested forecast. Prior-year qualification is independent.
+// Evidence: payments::penalty::farmer_gross_* and farmer_property_gross_*;
+// IRS Pub. 225 chapter 15, https://www.irs.gov/publications/p225;
+// Pub. 505 chapter 2, https://www.irs.gov/publications/p505.
 // Coverage: Form 2210 — Supported (audited 2026-09-25).
 //   Lines: Part I 1–9 (line 1 = Form 1040 line 22; line 2 = the Schedule 2 taxes the
 //   instructions list: self-employment, Additional Medicare, NIIT, additional taxes on
@@ -25,11 +34,14 @@
 //   (an extension payment and the balance due are treated as paid then).
 //   Refused by name (the 2025 farmer/fisherman two-thirds test is a required Yes/No since the
 //   Not-sure audit; a return that meets it figures Form 2210-F instead, see the next block):
-//   a section 1062 farmland election (line 3's 75% rule; also Form 2210-F line 4), Form 2439 tax
+//   Schedule AI with a section 1062 election lacking per-period tax attribution; Form 2439 tax
 //   paid by a fund (no treated-as-paid date; also Form 2210-F line 12), an annual estimated
 //   amount without dated payments, a dated list that disagrees with the annual amount, a payment
 //   dated January 16-31, 2027 (the January 31 rule; Form 2210 only), and box D without matching
 //   entries.
+//   The annual methods include 75% of known Form 1062 applicable net tax liability
+//   with refundable credits (Notice 2026-3 section 4); selected but unavailable
+//   liability is a located Farming limitation. Schedule AI needs period attribution.
 //   No prior-year facts: no Form 2210 is computed and the return is unchanged.
 //   Evidence: src/tests/payments/penalty.rs form_2210_regular_method_matches_the_instructions_example,
 //   no_penalty_under_1000_or_with_zero_prior_tax, estimated_payments_apply_by_date_to_the_periods.
@@ -136,7 +148,7 @@
 //   waiver (form_2210_f_penalty_before_waiver keeps the computed penalty). Box C and D answers saved while the return was not a farmer's are not used
 //   (NOTE_2210F_PERIOD_ANSWERS_NOT_USED, linked to Payments); the Payments page blocks them for a
 //   farmer (FARMER_EVEN_TIMING, client rule and server twin). Refused by name as on Form 2210:
-//   a section 1062 farmland election, Form 2439 tax paid by a fund, an annual estimated amount
+//   unavailable section 1062 applicable liability, Form 2439 tax paid by a fund, annual estimated funding
 //   without dated payments. Not identified by the 2026 test (so such a filer uses Form 2210, whose
 //   penalty is never lower): Form 4797 livestock gains and fishing-vessel crew or shore wages
 //   (deferred to the Schedule F / Form 4797 line audit); Form 4835 line 7 joins with its own
@@ -155,189 +167,20 @@
 //   "Farmers and fishers"; Publication 505 (2026) chapter 2; 26 U.S.C. 6654(a), (e), (f), (g),
 //   (i); Rev. Rul. 2026-15 for the rates.
 use crate::dates::ordinal;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
-use crate::{FederalResult, FederalStatus};
-use crate::{
-    federal_rules::{preferential_tax, valid_date},
-    kernel::lines::line_cents,
+use crate::kernel::source_fact::SourceFact;
+use crate::line_emission::emit as emit_lines;
+pub use crate::underpayment_model::{
+    AnnualizedIncome, AnnualizedPeriod, DatedPayment, PenaltyWaiver, PenaltyWaiverReason,
+    PeriodWithholding, PriorYearTax,
 };
-use alloc::{string::String, vec::Vec};
+use crate::{FederalResult, FederalStatus};
+use crate::{federal_rules::preferential_tax, line_emission::line_cents};
+use alloc::vec::Vec;
 use core::cmp::min;
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// Estimated tax payment
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct DatedPayment {
-    /// Date paid
-    /// Use the postmark date for a mailed payment. A 2025 overpayment applied to 2026 counts as paid April 15, 2026 when your 2025 return was fully paid by then.
-    #[libertas_date_only]
-    // Tax-year structure: the recorded date/year cannot be later than this applicable tax-year window.
-    #[libertas_number(min = $ESTIMATED_PAYMENT_START_DATE, max = $ESTIMATED_PAYMENT_LAST_DATE)]
-    pub date: u32,
-    /// Amount paid
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// Who made this payment
-    pub payer: crate::PaymentPayer,
-    /// Source property for community refund allocation
-    #[libertas_default($null)]
-    pub refund_property: Option<crate::RefundSourcePropertyFacts>,
-}
-
-/// Your 2025 federal return
-/// Used to figure the underpayment penalty for 2026 estimated tax.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct PriorYearTax {
-    /// Your 2025 return covered a full 12 months
-    /// Choose No if you did not file a 2025 return or your 2025 tax year was shorter.
-    pub full_year: bool,
-    /// 2025 tax
-    /// Your 2025 income tax after nonrefundable credits, plus self-employment and the other additional taxes the Form 2210 instructions list, minus refundable credits. If you filed jointly for 2025 but not for 2026, enter your share. If you file jointly for 2026 but did not file jointly with this spouse for 2025, enter your own 2025 tax here and your spouse's separate 2025 tax below.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub tax: i64,
-    /// 2025 adjusted gross income
-    /// Left blank when you do not know it; Form 2210 then takes the 110% prior-year safe harbor, as for an income over $150,000 ($75,000 married filing separately). A farmer or fisherman never needs it.
-    #[libertas_money("USD", 2)]
-    pub agi: Option<i64>,
-    /// Your spouse's 2025 tax, filed on a separate return
-    /// Enter this only when you file jointly for 2026 but you and this spouse did not file jointly for 2025. It is added to the amount above.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub spouse_tax: i64,
-}
-
-/// Reason for a Form 2210 penalty waiver request
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum PenaltyWaiverReason {
-    /// Retirement after reaching age 62, or disability, with reasonable cause
-    RetirementOrDisability,
-    /// Casualty, disaster, or other unusual circumstance
-    CasualtyOrDisasterOrUnusual,
-    /// A federally declared disaster
-    FederallyDeclaredDisaster,
-}
-
-/// Request a penalty waiver
-/// This does not change the estimated penalty shown below. Attach your explanation and any documentation when you file.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum PenaltyWaiver {
-    /// Waive the entire penalty
-    Full {
-        /// Reason
-        reason: PenaltyWaiverReason,
-        /// Explanation
-        explanation: String,
-    },
-    /// Waive part of the penalty
-    Partial {
-        /// Reason
-        reason: PenaltyWaiverReason,
-        /// Explanation
-        explanation: String,
-        /// Amount of the penalty to waive
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
-        amount: i64,
-    },
-}
-impl PenaltyWaiver {
-    pub(crate) fn invalid_field(&self) -> Option<&'static str> {
-        let explanation = match self {
-            PenaltyWaiver::Full { explanation, .. }
-            | PenaltyWaiver::Partial { explanation, .. } => explanation,
-        };
-        if explanation.trim().is_empty() {
-            Some("explanation")
-        } else if matches!(self, PenaltyWaiver::Partial { amount, .. } if *amount <= 0) {
-            Some("amount")
-        } else {
-            None
-        }
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.invalid_field().is_none()
-    }
-}
-
-/// Federal income tax withheld in each payment period
-/// Include excess Social Security or tier 1 railroad retirement tax in the period it was withheld. The four amounts must add up to your total withholding.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct PeriodWithholding {
-    /// January 1 through April 15, 2026
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub first: i64,
-    /// April 16 through June 15, 2026
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub second: i64,
-    /// June 16 through September 15, 2026
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub third: i64,
-    /// September 16, 2026 through January 15, 2027
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub fourth: i64,
-}
-
-/// Income and deductions from January 1 through the end of the period
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct AnnualizedPeriod {
-    /// Adjusted gross income
-    /// Income received in the period minus your adjustments to income, including the deductible part of self-employment tax and your share of partnership or S corporation items.
-    #[libertas_money("USD", 2)]
-    pub agi: i64,
-    /// Itemized deductions paid
-    /// Enter 0 if you take the standard deduction.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub itemized: i64,
-    /// Qualified business income deduction
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub qbi: i64,
-    /// Deductions for tips, overtime, car loan interest and seniors
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub additional: i64,
-    /// Net profit from self-employment
-    /// Net profit from all your businesses in the period, before the 92.35% reduction. Enter 0 if none.
-    #[libertas_money("USD", 2)]
-    #[libertas_default(0)]
-    pub self_employment: i64,
-    /// Wages subject to Social Security tax
-    /// Wages in the period of the person with self-employment income, including the Social Security part of railroad retirement tier 1 compensation.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub social_wages: i64,
-}
-
-/// Income and deductions by period
-/// Each period starts on January 1 and includes everything from the earlier periods. The full-year amounts must match your return.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct AnnualizedIncome {
-    /// January 1 through March 31, 2026
-    pub through_march: AnnualizedPeriod,
-    /// January 1 through May 31, 2026
-    pub through_may: AnnualizedPeriod,
-    /// January 1 through August 31, 2026
-    pub through_august: AnnualizedPeriod,
-    /// January 1 through December 31, 2026
-    pub full_year: AnnualizedPeriod,
-}
-
-const MAX: i64 = 100_000_000_000;
 // The four required-installment due dates (Part III column headings) and the
 // April 15, 2027 end of every penalty computation.
 const DUE: [u32; 4] = [20260415, 20260615, 20260915, 20270115];
@@ -348,18 +191,7 @@ const FORM_F: &str = "https://www.irs.gov/pub/irs-dft/f2210f--dft.pdf";
 const INSTRUCTIONS_F: &str = "https://www.irs.gov/pub/irs-pdf/i2210f.pdf";
 const COLUMNS: [&str; 4] = ["a", "b", "c", "d"];
 
-impl DatedPayment {
-    pub(crate) fn valid(&self) -> bool {
-        valid_date(self.date)
-            && (crate::year_constants::ESTIMATED_PAYMENT_START_DATE
-                ..=crate::year_constants::ESTIMATED_PAYMENT_LAST_DATE)
-                .contains(&self.date)
-            && self.amount > 0
-    }
-}
-
-// Sum actual source cents exactly. The duplicated stored scalar is only a
-// projection; failure to fit it cannot discard a known dated source.
+// Sum actual source cents exactly without a bounded stored projection.
 pub(crate) fn payment_total(
     amounts: impl IntoIterator<Item = i64>,
 ) -> crate::kernel::ratio::exact::Exact {
@@ -377,36 +209,56 @@ pub(crate) fn amount_unavailable(result: &mut FederalResult) {
     crate::federal_rules::withhold_required_source_result(result);
 }
 
-impl crate::FederalPayments {
-    pub(crate) fn refresh_estimated_projection(&mut self) {
-        if !self.estimated_payments.is_empty() {
-            self.estimated = crate::kernel::ratio::exact::rounded(&self.dated_total());
+impl crate::EstimatedPaymentEntryRecord {
+    fn timing(&self, farmer: bool) -> SourceFact<Vec<(u32, crate::kernel::ratio::exact::Exact)>> {
+        use crate::kernel::ratio::exact::{ratio, whole};
+        match self {
+            Self::None => SourceFact::NotReported,
+            Self::Sources { payments } => {
+                SourceFact::Reported(payments.iter().map(|p| (p.date, whole(p.amount))).collect())
+            }
+            Self::TimingUnknown { .. } => SourceFact::Unavailable,
+            Self::EqualTimely { .. } => {
+                let annual = payment_total(self.funding().map(|(amount, _, _)| amount));
+                // Equal actual cash installments must be expressible in cents.
+                // Pub. 505 permits one January installment for qualifying farmers.
+                if !farmer
+                    && self
+                        .funding()
+                        .map(|(amount, _, _)| amount % 4)
+                        .fold(0, |sum, part| (sum + part) % 4)
+                        != 0
+                {
+                    return SourceFact::Unavailable;
+                }
+                SourceFact::Reported(if farmer {
+                    alloc::vec![(DUE[3], annual)]
+                } else {
+                    DUE.iter()
+                        .map(|date| (*date, &annual * ratio(1, 4).expect("nonzero divisor")))
+                        .collect()
+                })
+            }
         }
     }
+}
+fn timing_or_amount_unavailable(pay: &crate::FederalPayments, farmer: bool, r: &mut FederalResult) {
+    if matches!(pay.estimated.timing(farmer), SourceFact::Unavailable) {
+        crate::issue_localized!(
+            r,
+            &crate::IssueContext::Section(crate::TaxSection::Payments),
+            "Form 2210 underpayment penalty",
+            "ISSUE_2210_ESTIMATED_PAYMENT_DATES",
+            "Form 2210 line 11 and Form 2210-F line 12 need the date of each estimated payment; enter the payments by date.",
+        );
+    } else {
+        amount_unavailable(r);
+    }
+}
 
-    pub(crate) fn dated_total(&self) -> crate::kernel::ratio::exact::Exact {
-        payment_total(self.estimated_payments.iter().map(|payment| payment.amount))
-    }
-    pub(crate) fn estimated_source(&self) -> Option<crate::kernel::ratio::exact::Exact> {
-        if self.estimated_payments.is_empty() {
-            self.estimated.map(crate::kernel::ratio::exact::whole)
-        } else {
-            Some(self.dated_total())
-        }
-    }
-    pub(crate) fn projection_issue(&self) -> Option<crate::validation::ValidationIssue> {
-        let key = if self.estimated_payments.is_empty() {
-            if self.estimated.is_some_and(|amount| amount >= 0) {
-                return None;
-            }
-            "PAYMENT_ESTIMATED_SOURCE_UNAVAILABLE"
-        } else {
-            if self.estimated == crate::kernel::ratio::exact::rounded(&self.dated_total()) {
-                return None;
-            }
-            "ISSUE_FORM_1040_LINE_26_THE_DATED_ESTIMATED_PAYMENTS_DO_NOT_ADD_UP_TO_THE_9C68C13C"
-        };
-        Some(crate::validation::ValidationIssue::new(key).at_field("estimated"))
+impl crate::FederalPayments {
+    pub(crate) fn estimated_source(&self) -> crate::kernel::ratio::exact::Exact {
+        payment_total(self.estimated.funding().map(|(amount, _, _)| amount))
     }
 }
 
@@ -422,42 +274,6 @@ impl crate::Withheld {
         })
     }
 }
-impl PriorYearTax {
-    pub(crate) fn valid(&self) -> bool {
-        // Arithmetic safety for the unchanged prior-tax pair and 110% safe-
-        // harbor calculation. This operand class is separate from payments.
-        (0..=MAX).contains(&self.tax)
-            && self.agi.is_none_or(|agi| (-MAX..=MAX).contains(&agi))
-            && (0..=MAX).contains(&self.spouse_tax)
-    }
-}
-impl AnnualizedPeriod {
-    fn valid(&self) -> bool {
-        // Arithmetic safety for the unchanged ScheduleAI annualization, tax
-        // and four-period difference calculations; these are income operands.
-        [self.agi, self.self_employment].iter().all(|v| (-MAX..=MAX).contains(v))
-            && [self.itemized, self.qbi, self.additional, self.social_wages]
-                .iter()
-                .all(|v| (0..=MAX).contains(v))
-    }
-}
-impl AnnualizedIncome {
-    fn periods(&self) -> [&AnnualizedPeriod; 4] {
-        [&self.through_march, &self.through_may, &self.through_august, &self.full_year]
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.periods().iter().all(|v| v.valid())
-    }
-}
-impl PeriodWithholding {
-    fn amounts(&self) -> [i64; 4] {
-        [self.first, self.second, self.third, self.fourth]
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.amounts().iter().all(|v| *v >= 0)
-    }
-}
-
 // The quarterly underpayment rates, in percent, for the four rate periods of
 // the 2026 penalty worksheet (Q2 2026 through Q1 2027), read from the fixture.
 // A blank rate is unpublished and takes the last published rate.
@@ -498,8 +314,10 @@ pub(crate) struct Inputs {
     pub separate: bool,
     // At least two-thirds of 2026 gross income from farming or fishing, as
     // this return shows it (two_thirds_return_year).
-    pub farming_return_year: bool,
-    pub farmland_election: bool,
+    pub farming_return_year: Result<bool, &'static str>,
+    // Same-invocation Form 1062 applicable liability, in cents. No election
+    // is known absence; a selected election without an owner result is unknown.
+    pub farmland_applicable: SourceFact<i64>,
     pub fund_credit: bool,
     // Schedule AI facts, in whole dollars: the annual return's AGI and
     // taxable income for the column (d) reconciliation, the standard
@@ -520,6 +338,25 @@ pub(crate) struct Inputs {
     pub se_tax: [i64; 2],
     pub ordinary_tax: bool,
     pub other_taxes: bool,
+}
+
+impl Inputs {
+    // Notice 2026-3 section 4 excludes 75% of applicable net tax liability
+    // from the required annual payment. The 2025 Form 2210 line 3 and
+    // Form 2210-F line 4 include that reduction with refundable credits.
+    // https://www.irs.gov/irb/2026-02_IRB#NOT-2026-3
+    fn payment_credits_cents(&self) -> Option<i64> {
+        let relief = match self.farmland_applicable {
+            SourceFact::NotReported => 0,
+            SourceFact::Reported(amount) if amount >= 0 => {
+                // Source cents times 3/4, rounded once to the line's dollars.
+                // This is not the residual after Form 1062's rounded quarter.
+                crate::kernel::ratio::checked_fraction(amount, 3, 400)?
+            }
+            _ => return None,
+        };
+        crate::kernel::ratio::checked_sum([self.line_3, relief])?.checked_mul(100)
+    }
 }
 
 // Schedule AI Part I by column, in cents: lines 1, 3, 6, 11, 13, 14, 15
@@ -554,15 +391,16 @@ struct FarmerSheet {
 // gross income (this return). A filer who meets it figures the penalty on
 // Form 2210-F; every other filer uses Form 2210.
 fn farmer_2210(pay: &crate::FederalPayments, input: &Inputs) -> bool {
-    input.farming_return_year || pay.farmer_fisherman_prior_year
+    input.farming_return_year == Ok(true) || pay.farmer_fisherman_prior_year
 }
 
 // The farmer and fisherman two-thirds test for 2026, figured from this return
 // (Pub. 505 (2026), chapter 2, "Farming and Fishing"), in cents. `farming` is
 // gross income from farming or fishing: each Schedule F line 9, Form 1041
-// K-1 box 14 code F, Form 1065 K-1 box 14 code B where entered, and each
+// K-1 box 14 code F, recognized livestock gains, and each
 // commercial fishing Schedule C line 7, each counted when it is income, not
-// a loss. `gross` is the total of the return's income (not loss) amounts,
+// a loss. Missing partnership/S-corporation gross stays unavailable.
+// `gross` is the total of the return's income (not loss) amounts,
 // both spouses together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TwoThirds {
@@ -576,74 +414,136 @@ impl TwoThirds {
 }
 
 // `other_income` is, in cents, the return's income (not loss) amounts other
-// than its sole-proprietor businesses and Schedule 1 line 5; each business
-// adds its own gross income (Schedule C line 7, or Schedule F line 9 from the
-// farm's lines already in `r`) in place of its net profit or loss.
-// `schedule_e` is Schedule 1 line 5 in cents, which holds any Form 1041
-// box 6 income and so its code F part: the code F part counts in full and
-// the rest only when it is income.
+// than sole-proprietor businesses, farm rentals and estate/trust activity
+// income. Direct rental/royalty/personal-rent receipts are already gross.
+// Each business contributes its own gross; `schedule_e` is the existing rental
+// owner's per-source native NET dollars map. Only estate/trust entries read it,
+// with their actual code F farming subset retained once.
+#[cfg(test)]
 pub(crate) fn two_thirds_return_year(
     d: &crate::FederalDraft,
     r: &FederalResult,
-    other_income: i64,
-    schedule_e: i64,
-) -> Result<TwoThirds, crate::Section179PreparedIssue> {
-    let mut farming = 0;
-    let mut estate = 0;
-    let mut gross = other_income;
+    other_income: Option<i64>,
+    schedule_e: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Result<TwoThirds, &'static str>, crate::Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    two_thirds_return_year_with_claims(d, r, other_income, schedule_e, &source_claims)
+}
+
+pub(crate) fn two_thirds_return_year_with_claims(
+    d: &crate::FederalDraft,
+    r: &FederalResult,
+    other_income: Option<i64>,
+    schedule_e: &alloc::collections::BTreeMap<i64, i64>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Result<TwoThirds, &'static str>, crate::Section179PreparedIssue> {
+    let mut routed = alloc::collections::BTreeMap::new();
     for entry in &crate::community::entries(d) {
-        match &entry.income {
-            crate::FederalIncome::Business { data } => {
-                let amount = match &data.activity {
-                    crate::BusinessActivity::Farming { .. } => {
-                        let id = alloc::format!("farm_{}_gross_income", entry.id);
-                        let line = r.lines.iter().find(|l| l.id == id).map_or(0, |l| l.amount);
-                        farming += positive(line);
-                        line
-                    }
-                    crate::BusinessActivity::Ordinary { .. } => {
-                        let line = data.receipts()
-                            + crate::federal_rules::farm_routed_income(
-                                d,
-                                usize::from(entry.owner == crate::Owner::Spouse),
-                                entry.id,
-                            )?
-                            - data.inventory.cost();
-                        if data.commercial_fishing {
-                            farming += positive(line);
-                        }
-                        line
-                    }
-                    crate::BusinessActivity::Gambling { .. } => data.receipts(),
-                };
-                gross += positive(amount);
-            }
-            // Form 4835 line 7 is farming gross income; the rental's net is not
-            // in `schedule_e` (the caller takes it out) so its gross counts
-            // here instead (Schedule E line 42, Pub. 505).
-            crate::FederalIncome::FarmRental { .. } => {
-                let id = alloc::format!("farm_rental_{}_gross_income", entry.id);
-                let line = r.lines.iter().find(|l| l.id == id).map_or(0, |l| l.amount);
-                farming += positive(line);
-                gross += positive(line);
-            }
-            crate::FederalIncome::EstateTrustPortfolio { data } => {
-                estate += data.gross_farming_fishing_income;
-            }
-            crate::FederalIncome::Partnership { data } => {
-                // Code B stands beside the K-1's net income in Schedule E.
-                if let Some(crate::PartnerSeGross::Farm { gross: amount }) = &data.se_gross {
-                    let amount = crate::community::income_amount(d, entry.id, *amount);
-                    farming += amount;
-                    gross += amount;
-                }
-            }
-            _ => {}
+        if matches!(&entry.income, crate::FederalIncome::Business { data } if matches!(data.activity, crate::BusinessActivity::Ordinary { .. }))
+        {
+            routed.insert(
+                entry.id,
+                crate::federal_rules::farm_routed_income_with_claims(
+                    d,
+                    usize::from(entry.owner == crate::DocumentOwner::Spouses),
+                    entry.id,
+                    source_claims,
+                )?,
+            );
         }
     }
-    farming += estate;
-    gross += positive(schedule_e - estate) + estate;
-    Ok(TwoThirds { farming, gross })
+    let farm_property_gross =
+        crate::asset_sale::farming_property_gross_with_claims(d, source_claims)?;
+    Ok((|| {
+        // Outside the reconciled native statement cohort, K-1 net boxes and
+        // K-3 foreign-tax replacements do not establish farmer/fisher gross.
+        // The source producer owns basis/risk/PAL attribution and reconciliation.
+        if d.income.iter().any(|entry| {
+            matches!(
+                entry.income,
+                crate::FederalIncome::Partnership { .. }
+                    | crate::FederalIncome::Scorp { .. }
+                    | crate::FederalIncome::ScorpActivities { .. }
+            )
+        }) {
+            return Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE");
+        }
+        let capacity = "ISSUE_FARMER_GROSS_AMOUNT_UNAVAILABLE";
+        let mut farming = farm_property_gross?
+            .checked_add(crate::section1231::earlier_farmer_gross(d)?)
+            .ok_or(capacity)?;
+        let mut gross = other_income.ok_or(capacity)?;
+        for entry in &crate::community::entries(d) {
+            match &entry.income {
+                crate::FederalIncome::Business { data } => {
+                    let amount = match &data.activity {
+                        crate::BusinessActivity::Farming { .. } => {
+                            let id = alloc::format!("farm_{}_gross_income", entry.id);
+                            let line = r.lines.iter().find(|l| l.id == id).map_or(0, |l| l.amount);
+                            farming = farming.checked_add(positive(line)).ok_or(capacity)?;
+                            line
+                        }
+                        crate::BusinessActivity::Ordinary { .. } => {
+                            let line = data.receipts() + routed[&entry.id] - data.inventory.cost();
+                            if data.commercial_fishing {
+                                farming = farming.checked_add(positive(line)).ok_or(capacity)?;
+                            }
+                            line
+                        }
+                        crate::BusinessActivity::Gambling { .. } => data.receipts(),
+                    };
+                    gross = gross.checked_add(positive(amount)).ok_or(capacity)?;
+                }
+                // Form 4835 line 7 is farming gross income; the rental's net is not
+                // in `schedule_e` (the caller takes it out) so its gross counts
+                // here instead (Schedule E line 42, Pub. 505).
+                crate::FederalIncome::FarmRental { .. } => {
+                    let id = alloc::format!("farm_rental_{}_gross_income", entry.id);
+                    let line = r.lines.iter().find(|l| l.id == id).map_or(0, |l| l.amount);
+                    farming = farming.checked_add(positive(line)).ok_or(capacity)?;
+                    gross = gross.checked_add(positive(line)).ok_or(capacity)?;
+                }
+                crate::FederalIncome::PartnershipActivities { data } => {
+                    // The native statement owner reconciles this cohort's actual
+                    // SE category and gross. Retain its positive Schedule E amount
+                    // beside code B gross, as in Publication 505's farmer test.
+                    let source = data
+                        .ordinary_self_employment()
+                        .map_err(|_| "ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")?
+                        .ok_or("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")?;
+                    let net = schedule_e
+                        .get(&entry.id)
+                        .ok_or("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE")?
+                        .checked_mul(100)
+                        .ok_or(capacity)?;
+                    if source.category == 0 {
+                        let farm = crate::community::income_amount(d, entry.id, source.gross);
+                        farming = farming.checked_add(farm).ok_or(capacity)?;
+                        gross = gross.checked_add(farm).ok_or(capacity)?;
+                    }
+                    gross = gross.checked_add(positive(net)).ok_or(capacity)?;
+                }
+                crate::FederalIncome::EstateTrustPortfolio { data } => {
+                    let data = &crate::FederalEstateTrustPortfolioK1::from(data);
+                    // Pub.225 chapter15 uses taxable NET estate/trust income,
+                    // unlike gross direct rents/royalties. Keep actual code F as
+                    // its existing subset, never gross up the fiduciary's expenses.
+                    let net = match schedule_e.get(&entry.id) {
+                        Some(amount) => amount.checked_mul(100).ok_or(capacity)?,
+                        None if data.activities.activities.is_empty() => 0,
+                        None => return Err("ISSUE_FARMER_GROSS_SOURCE_UNAVAILABLE"),
+                    };
+                    let farm = data.gross_farming_fishing_income;
+                    farming = farming.checked_add(farm).ok_or(capacity)?;
+                    let other = net.checked_sub(farm).ok_or(capacity)?;
+                    gross = crate::kernel::ratio::checked_sum([gross, positive(other), farm])
+                        .ok_or(capacity)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(TwoThirds { farming, gross })
+    })())
 }
 
 // Section 6654(e)(2): a full 12-month 2025 year with no tax.
@@ -670,11 +570,15 @@ pub(crate) fn calculate(
                 "ISSUE_2210_ESTIMATED_PAYMENT_DATES" | "ISSUE_2210_WITHHOLDING_PERIODS" => {
                     crate::IssueContext::Section(crate::TaxSection::Payments)
                 }
-                "ISSUE_2210_SCHEDULE_AI_PERIODS"
+                "ISSUE_2210_AI_FARMLAND_PERIODS"
+                | "ISSUE_2210_SCHEDULE_AI_PERIODS"
                 | "ISSUE_2210_AI_ITEMIZED_ROUTE"
                 | "ISSUE_2210_AI_FULL_YEAR_MATCH"
                 | "ISSUE_2210_AI_SE_FULL_YEAR_MATCH" => {
                     crate::IssueContext::Section(crate::TaxSection::IncomeByPeriod)
+                }
+                "ISSUE_2210_FARMLAND_ELECTION" => {
+                    crate::IssueContext::Section(crate::TaxSection::Farming)
                 }
                 _ => crate::IssueContext::Underpayment.manual(),
             };
@@ -684,10 +588,10 @@ pub(crate) fn calculate(
     };
     refuse(
         r,
-        !input.farmland_election,
+        !matches!(input.farmland_applicable, SourceFact::Unavailable),
         "ISSUE_2210_FARMLAND_ELECTION",
         #[cfg(test)]
-        "Form 2210 line 3 or Form 2210-F line 4 includes 75% of the applicable net tax liability of a section 1062 farmland election; that amount is not calculated.",
+        "The selected section 1062 farmland election needs its applicable net tax liability before Form 2210 line 3 or Form 2210-F line 4 can be calculated.",
     );
     refuse(
         r,
@@ -695,13 +599,6 @@ pub(crate) fn calculate(
         "ISSUE_2210_FUND_CREDIT_DATE",
         #[cfg(test)]
         "Form 2439 tax paid by a fund or REIT has no payment date on Form 2210 line 11 or Form 2210-F line 12 in this App.",
-    );
-    refuse(
-        r,
-        pay.estimated == Some(0) || !pay.estimated_payments.is_empty(),
-        "ISSUE_2210_ESTIMATED_PAYMENT_DATES",
-        #[cfg(test)]
-        "Form 2210 line 11 and Form 2210-F line 12 need the date of each estimated payment; enter the payments by date.",
     );
     // A farmer or fisherman has one installment, due January 15, 2027
     // (section 6654(i)(1)): Form 2210-F, with no box C or D, no Schedule AI,
@@ -714,7 +611,15 @@ pub(crate) fn calculate(
     }
     refuse(
         r,
-        !pay.estimated_payments.iter().any(|p| (20270116..=20270131).contains(&p.date)),
+        !pay.annualized
+            || !matches!(input.farmland_applicable, SourceFact::Reported(amount) if amount > 0),
+        "ISSUE_2210_AI_FARMLAND_PERIODS",
+        #[cfg(test)]
+        "Schedule AI needs the applicable section 1062 farmland tax liability attributable to each income period; the annual amount cannot establish those period amounts.",
+    );
+    refuse(
+        r,
+        !matches!(&pay.estimated, crate::EstimatedPaymentEntryRecord::Sources { payments } if payments.iter().any(|p| (20270116..=20270131).contains(&p.date))),
         "ISSUE_2210_JANUARY_PAYMENT_EXCEPTION",
         #[cfg(test)]
         "Form 2210 line 11 column (d): a balance paid January 16-31, 2027 may be treated as paid on the January 15 due date if you file your return and pay in full by January 31; this App charges interest to the actual payment date instead of applying that rule.",
@@ -778,7 +683,7 @@ pub(crate) fn calculate(
         worksheet(pay, prior, input, line_2, line_6_cents, periods, annualized.as_ref())
     };
     let Some(mut sheet) = figure(input.line_2 + input.household_tax) else {
-        amount_unavailable(r);
+        timing_or_amount_unavailable(pay, false, r);
         return None;
     };
     // Household employment tax joins line 2 unless the filer had no income tax
@@ -793,6 +698,21 @@ pub(crate) fn calculate(
         if without.part_1[6].is_some_and(|v| v < 100_000) || prior_year_zero(prior) {
             sheet = without;
         }
+    }
+    // A zero ordinary penalty is safe regardless of farmer qualification.
+    if let Err(key) = input.farming_return_year
+        && !pay.farmer_fisherman_prior_year
+        && !prior_year_zero(prior)
+        && sheet.penalty > 0
+    {
+        refuse(
+            r,
+            false,
+            key,
+            #[cfg(test)]
+            "The current farmer or fisher gross-income test needs complete source-owner gross statements and the actual farming or fishing character of recognized gains before other sources' losses. Net income or an earlier sale's business-property label cannot replace those facts. A qualifying prior-year farmer or fisher answer remains independent.",
+        );
+        return None;
     }
     let waived = waived_cents(pay.waiver.as_ref(), sheet.penalty);
     emit(&sheet, waived, r);
@@ -914,7 +834,7 @@ fn form_2210_f(
     };
     let figure = |line_2: i64| farmer_sheet(pay, prior, input, line_2, line_8);
     let Some(mut sheet) = figure(input.line_2 + input.household_tax) else {
-        amount_unavailable(r);
+        timing_or_amount_unavailable(pay, true, r);
         return None;
     };
     // The same section 3510(b)(2)(B) exclusion as Form 2210 line 2 (Form 2210-F line 2).
@@ -969,7 +889,7 @@ fn farmer_sheet(
     if l3 < 100_000 {
         return Some(halt(part_2, "EXPLAIN_FORM_2210_F_NO_PENALTY_3"));
     }
-    let l4 = input.line_3.checked_mul(100)?;
+    let l4 = input.payment_credits_cents()?;
     let l6 = positive(l3 - l4);
     part_2[3] = Some(l4);
     part_2[5] = Some(l6);
@@ -991,11 +911,7 @@ fn farmer_sheet(
     if line_8 >= l11 {
         return Some(halt(part_2, "EXPLAIN_FORM_2210_F_NO_PENALTY_11"));
     }
-    let mut stream: Vec<(u32, crate::kernel::ratio::exact::Exact)> = pay
-        .estimated_payments
-        .iter()
-        .map(|v| (v.date, crate::kernel::ratio::exact::whole(v.amount)))
-        .collect();
+    let mut stream = pay.estimated.timing(true).require(|| ()).ok()?.unwrap_or_default();
     stream.push((DUE[3], crate::kernel::ratio::exact::whole(line_8)));
     if input.estate_estimated > crate::kernel::ratio::exact::whole(0) {
         stream.push((DUE[3], input.estate_estimated.clone()));
@@ -1057,7 +973,7 @@ fn emit_2210_f(sheet: &FarmerSheet, waived: i64, r: &mut FederalResult) {
         r,
         "form_2210_f_line_16",
         sheet.penalty - waived,
-        &["payments.prior_year", "total_tax", "payments", "payments.estimated_payments"],
+        &["payments.prior_year", "total_tax", "payments", "payments.estimated"],
         FORM_F,
         line_16,
     );
@@ -1084,7 +1000,7 @@ fn worksheet(
 ) -> Option<Worksheet> {
     let mut part_1 = [None; 9];
     let (l1, l2, l3) =
-        (input.line_1.checked_mul(100)?, line_2.checked_mul(100)?, input.line_3.checked_mul(100)?);
+        (input.line_1.checked_mul(100)?, line_2.checked_mul(100)?, input.payment_credits_cents()?);
     let l4 = positive(crate::kernel::ratio::checked_sum([l1, l2, -l3])?);
     let l5 = fraction(l4, 90, 100);
     let l7 = l4 - line_6;
@@ -1124,11 +1040,7 @@ fn worksheet(
         return Some(Worksheet { part_1, schedule_ai, part_3: None, penalty: 0, stop });
     }
     let withheld = periods.unwrap_or([fraction(line_6, 1, 4); 4]);
-    let mut stream: Vec<(u32, crate::kernel::ratio::exact::Exact)> = pay
-        .estimated_payments
-        .iter()
-        .map(|v| (v.date, crate::kernel::ratio::exact::whole(v.amount)))
-        .collect();
+    let mut stream = pay.estimated.timing(false).require(|| ()).ok()?.unwrap_or_default();
     stream.extend(DUE.iter().copied().zip(withheld.map(crate::kernel::ratio::exact::whole)));
     if input.estate_estimated > crate::kernel::ratio::exact::whole(0) {
         stream.push((DUE[3], input.estate_estimated.clone()));
@@ -1425,7 +1337,7 @@ fn emit(sheet: &Worksheet, waived: i64, r: &mut FederalResult) {
                     None,
                     &alloc::format!("form_2210_line_{number}_{column}"),
                     LineValue::MoneyCents(*value),
-                    &["payments.estimated_payments", "payments.withholding_periods"],
+                    &["payments.estimated", "payments.withholding_periods"],
                     FORM,
                     explanation.clone(),
                 ))

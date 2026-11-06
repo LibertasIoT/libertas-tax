@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 391000, "rule": {"select": "^<HostedStudent>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_STUDENT", "fields": ["label", "sponsor", "agreement", "school", "school_location", "grade"]}, {"title": "DISPLAY_STUDENT_MONTHS", "fields": ["joined", "school_start", "school_end", "months", "documented"]}]}},
+    {"order": 392000, "rule": {"select": "^<HostedStudent>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_STUDENT", "fields": ["label", "sponsor", "agreement", "school", "school_location", "grade"]}, {"title": "DISPLAY_STUDENT_MONTHS", "fields": ["joined", "school_start", "school_end", "months", "documented"]}]}}
+  ]
+}

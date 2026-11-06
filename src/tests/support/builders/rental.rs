@@ -72,6 +72,28 @@ pub(in crate::tests) fn kept_rental_casualty() -> FederalDraft {
     draft
 }
 
+// Pub527 Worksheet5-1: actual12,000FMV decline; equal rental/personal days.
+// The kept source ledger establishes annual post-loss recovery of
+// 39,700*24/517 =1,842.94, before the rental-day split and income limit.
+pub(in crate::tests) fn standard_home_casualty() -> FederalDraft {
+    let mut draft = kept_rental_casualty();
+    draft.deductions.as_mut().unwrap().itemize_override = None;
+    let FederalIncome::Rental { data } = &mut draft.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    data.rent = 200_000;
+    data.expenses[0].amount = 100_000;
+    data.personal_use = RentalPersonalUse::Yes {
+        fair_rental_days: 60,
+        personal_days: 60,
+        overlap_days: 0,
+        direct_expenses: 0,
+    };
+    data.buildings[0].casualty.as_mut().unwrap().casualty.kind =
+        CasualtyKind::Damaged { before: 2_500_000, after: 1_300_000, retired: None };
+    draft
+}
+
 // A rehabilitation record: measuring period start, adjusted basis at its
 // start, expenditures in it, the earlier credit years and the confirmation.
 pub(in crate::tests) fn rehabilitation(
@@ -94,9 +116,12 @@ pub(in crate::tests) fn rehabilitation(
 
 pub(in crate::tests) fn rental(rent: i64, expense: i64) -> FederalRental {
     FederalRental {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
+        location: crate::RentalLocation::UnitedStates,
         energy_buildings: Vec::new(),
         property_qbi_history: Vec::new(),
-        mortgage_loans: Vec::new(),
+        related: Vec::new(),
         assets: alloc::vec::Vec::new(),
         rent: rent * 100,
         expenses: vec![crate::extended_model::RentalExpense {
@@ -118,19 +143,18 @@ pub(in crate::tests) fn rental(rent: i64, expense: i64) -> FederalRental {
         personal_use: crate::extended_model::RentalPersonalUse::No,
         home_operating_carryover: 0,
         //2026-10-19: synthetic prior worksheets explicitly establish these independent records.
-        home_depreciation_carryover: crate::SourceCents::Reported { amount: 0 },
-        amt_home_depreciation_carryover: crate::SourceCents::Reported { amount: 0 },
-        home_casualty_carryover: crate::SourceCents::NotReported,
-        amt_home_casualty_carryover: crate::SourceCents::NotReported,
+        prior_home_carry: None,
         property_type: RentalPropertyType::SingleFamily,
         sale: crate::RentalSale::No,
         statement: None,
+        section179_business: None,
     }
 }
 
 pub(in crate::tests) fn royalty(receipts: i64, expenses: i64) -> FederalIncome {
     FederalIncome::Royalty {
         data: crate::FederalRoyalty {
+            related: alloc::vec![],
             kind: crate::RoyaltyKind::Intangible,
             receipts: receipts * 100,
             advance: 0,
@@ -152,6 +176,7 @@ pub(in crate::tests) fn royalty(receipts: i64, expenses: i64) -> FederalIncome {
 pub(in crate::tests) fn personal_rent(receipts: i64, expenses: i64) -> FederalIncome {
     FederalIncome::NonbusinessProperty {
         kind: NonbusinessPropertyKind::PersonalRental {
+            related: alloc::vec![],
             basis: 1000000,
             depreciable_basis: 1000000,
             assets: vec![],
@@ -173,6 +198,7 @@ pub(in crate::tests) fn personal_rent_with_history(
     let mut rent = personal_rent(receipts, expenses);
     let FederalIncome::NonbusinessProperty { kind, .. } = &mut rent else { panic!() };
     *kind = NonbusinessPropertyKind::PersonalRental {
+        related: alloc::vec![],
         basis: 1000000,
         depreciable_basis: if investment { 0 } else { 1000000 },
         assets: vec![],
@@ -190,6 +216,7 @@ pub(in crate::tests) fn personal_rent_with_assets(
     let FederalIncome::NonbusinessProperty { kind, .. } = &mut rent else { unreachable!() };
     let basis = assets.iter().map(|a| a.cost).sum();
     *kind = NonbusinessPropertyKind::PersonalRental {
+        related: alloc::vec![],
         basis,
         depreciable_basis: basis,
         assets,
@@ -239,7 +266,7 @@ pub(in crate::tests) fn personal_rental_owner_fixture() -> FederalDraft {
     asset.description = "Equipment rented to others".into();
     add(&mut d, income(personal_rent_with_assets(11_000, 2000, vec![asset])));
     let mut second = income(personal_rent_with_history(20_000, 4000, 3000, 5000, false));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     d
 }
@@ -386,6 +413,7 @@ pub(in crate::tests) fn purchased_rental_building(
     RentalBuilding {
         commercial_1993_transition: None,
         casualty: None,
+        casualty_property: None,
         id: 0,
         energy: None,
         sale_history: None,
@@ -615,7 +643,7 @@ pub(in crate::tests) fn community_rental_property_history(owner: Owner) -> Feder
         rental_property_loss_year(2021, 1, 0, 1, 0),
     ];
     let mut entry = income(FederalIncome::Rental { data: source });
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry.community = CommunityShare::Community;
     add(&mut draft, entry);
     draft
@@ -642,8 +670,11 @@ pub(in crate::tests) fn transition_source_page(source: Commercial1993Transition)
     page.building.land = 5_500_000;
     page.building.in_service = 19930701;
     page.building.commercial_1993_transition = Some(source);
-    page.building.allowed_commercial_1993_transition =
-        crate::rental_recovery::allowed(&page.kind, page.building.in_service);
+    page.building.allowed_commercial_1993_transition = crate::rental_recovery::allowed(
+        &page.kind,
+        &crate::RentalLocation::UnitedStates,
+        page.building.in_service,
+    );
     page.more.qbi = RentalBusiness::Yes { material_participation: true };
     page
 }
@@ -651,9 +682,9 @@ pub(in crate::tests) fn transition_source_page(source: Commercial1993Transition)
 pub(in crate::tests) fn transition_source_record(
     source: Commercial1993Transition,
 ) -> FederalRental {
-    let FederalIncome::Rental { data } =
-        crate::interview::document_income(&IncomeDocument::Rental(transition_source_page(source)))
-    else {
+    let FederalIncome::Rental { data } = crate::interview::document_income(&IncomeSource::Record {
+        value: crate::IncomeRecord::Rental(transition_source_page(source)),
+    }) else {
         unreachable!()
     };
     data
@@ -661,9 +692,10 @@ pub(in crate::tests) fn transition_source_record(
 
 pub(in crate::tests) fn rental_energy_building() -> crate::RentalEnergyBuildingFacts {
     crate::RentalEnergyBuildingFacts {
+        recovery: None,
         id: 0,
         building_source: "Certification EB-01, building A".into(),
-        square_feet: "10000.00".into(),
+        square_feet: 10000.0,
         ownership_numerator: 1,
         ownership_denominator: 1,
         deductions: (2023..=2026)
@@ -691,7 +723,7 @@ pub(in crate::tests) fn rental_energy_claim(physical_building: i64) -> crate::Re
                 license_source: "Synthetic State PE-101".into(),
                 unrelated_to_claimant: true,
                 calculation_source: "90.1-2007; qualified-software declaration EB-01".into(),
-                savings_percent: "35.00".into(),
+                savings_percent: 35.0,
             }),
         },
         increased: crate::RentalEnergyIncreasedAmount::Ordinary,
@@ -710,4 +742,134 @@ pub(in crate::tests) fn rental_energy_return() -> FederalDraft {
     };
     data.buildings[0].energy = Some(rental_energy_claim(data.energy_buildings[0].id));
     d
+}
+
+pub(in crate::tests) fn foreign_rental(placed: u32, kind: RentalPropertyType) -> FederalRental {
+    let mut source = rental(48_000, 6_000);
+    source.location = crate::RentalLocation::Foreign { country: "FR".into() };
+    source.property_type = kind;
+    source.buildings = vec![purchased_rental_building(36_000_000, 0, placed)];
+    source
+}
+
+pub(in crate::tests) fn rental_source_view(
+    draft: &FederalDraft,
+    magi: i64,
+    alternative: bool,
+) -> crate::extended_rules::RentalResult {
+    crate::extended_rules::rentals_for_home_with_care(
+        draft,
+        magi,
+        &mut FederalResult::empty(draft.revision),
+        alternative,
+        [magi, magi],
+        &crate::care::CareDeductions::default(),
+    )
+}
+
+// A kept rental casualty whose building is a saved personal casualty property
+// of the same storm: (return, rental ID, building cost ID, event ID, property ID).
+pub(in crate::tests) fn shared_casualty_return() -> (FederalDraft, i64, i64, i64, i64) {
+    let mut draft = kept_rental_casualty();
+    let mut event = personal_disaster("Synthetic December storm", 500_000);
+    event.declaration = CasualtyDeclaration::Undeclared;
+    event.zip = "".into();
+    event.date = 20261215;
+    event.properties[0].label = "Synthetic vacation home".into();
+    event.id = draft.next_id;
+    event.properties[0].id = draft.next_id + 1;
+    draft.next_id += 2;
+    let ids = (event.id, event.properties[0].id);
+    draft.deductions.as_mut().unwrap().personal_casualties.push(event);
+    let rental = draft.income.last().unwrap().id;
+    let FederalIncome::Rental { data } = &mut draft.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    let building = &mut data.buildings[0];
+    if building.id == 0 {
+        building.id = draft.next_id;
+        draft.next_id += 1;
+    }
+    let source = &building.casualty.as_ref().unwrap().casualty;
+    assert_eq!((source.date, &source.declaration), (20261215, &CasualtyDeclaration::Undeclared));
+    building.casualty_property = Some(ids.1);
+    let cost = building.id;
+    (draft, rental, cost, ids.0, ids.1)
+}
+
+// One canonical whole dwelling and its actual damaged cost source. The
+// ordinary event loses $12,000 before one $100 floor; the qualified event
+// instead uses one $500 floor. Both have equal personal/rental days.
+pub(in crate::tests) fn bound_home_casualty(qualified: bool) -> (FederalDraft, i64, i64) {
+    let mut draft = standard_home_casualty();
+    let mut event = personal_disaster("Synthetic December storm", 4_940_000);
+    event.id = draft.next_id;
+    event.properties[0].id = draft.next_id + 1;
+    draft.next_id += 2;
+    event.date = 20261215;
+    event.declaration = if qualified {
+        CasualtyDeclaration::MajorDisaster { reference: "DR-1234".into() }
+    } else {
+        CasualtyDeclaration::Federal { reference: "EM-1234".into() }
+    };
+    event.properties[0].before = 2_500_000;
+    event.properties[0].after = 1_300_000;
+    let property = event.properties[0].id;
+    let rental = draft.income.last().unwrap().id;
+    let FederalIncome::Rental { data } = &mut draft.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    // Pub527 Worksheet5-1 line2d: this $500 is directly rental-only, so
+    // line2e may exceed rent. Ordinary tier4 expenses would instead carry.
+    data.expenses[0].amount = 0;
+    let RentalPersonalUse::Yes { direct_expenses, .. } = &mut data.personal_use else {
+        unreachable!()
+    };
+    *direct_expenses = 50_000;
+    let cost = &mut data.buildings[0];
+    if cost.id == 0 {
+        cost.id = draft.next_id;
+        draft.next_id += 1;
+    }
+    cost.casualty_property = Some(property);
+    cost.casualty.as_mut().unwrap().casualty.declaration = event.declaration.clone();
+    draft.deductions.as_mut().unwrap().personal_casualties.push(event);
+    (draft, rental, property)
+}
+
+pub(in crate::tests) fn duplicate_bound_home_casualty_cost(draft: &mut FederalDraft) {
+    let FederalIncome::Rental { data } = &mut draft.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    let mut second = data.buildings[0].clone();
+    second.id = draft.next_id;
+    draft.next_id += 1;
+    data.buildings.push(second);
+}
+
+pub(in crate::tests) fn split_bound_home_casualty_cost(draft: &mut FederalDraft) {
+    duplicate_bound_home_casualty_cost(draft);
+    let FederalIncome::Rental { data } = &mut draft.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    for cost in &mut data.buildings {
+        cost.cost /= 2;
+        let records = cost.casualty.as_mut().unwrap();
+        records.casualty.kind =
+            CasualtyKind::Damaged { before: 1_250_000, after: 650_000, retired: None };
+        records.continuing_records.regular = rental_casualty_basis(2_470_000, 830_000, 715_000);
+        records.continuing_records.alternative = records.continuing_records.regular.clone();
+    }
+}
+
+// Test fixtures resolve the complete accepted return before inspecting casualty sources.
+pub(in crate::tests) fn accepted_rental_casualty_items(
+    draft: &FederalDraft,
+) -> Vec<crate::casualty::rental::LocatedRentalCasualty> {
+    let claims = crate::related_forms::effective_claimants(draft);
+    let result = estimate(draft);
+    crate::casualty::rental::items(
+        crate::related_forms::RelatedFormContext::original(draft, &claims),
+        result.rental_home_context.as_ref(),
+    )
 }

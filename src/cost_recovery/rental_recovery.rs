@@ -25,6 +25,8 @@ pub struct RentalRecoveryMoreDates {
 /// Actual property kind and dates, without amounts or calculated choices
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct RentalRecoveryInputs {
+    /// Actual location of the current rental property
+    pub location: crate::RentalLocation,
     /// Actual property type
     pub kind: RentalPropertyType,
     /// Original building source date
@@ -63,8 +65,12 @@ pub(crate) fn applicable(kind: &RentalPropertyType, placed: u32) -> bool {
         && crate::federal_rules::valid_date(placed)
 }
 
-pub(crate) fn allowed(kind: &RentalPropertyType, placed: u32) -> Vec<i32> {
-    if applicable(kind, placed) {
+pub(crate) fn allowed(
+    kind: &RentalPropertyType,
+    location: &crate::RentalLocation,
+    placed: u32,
+) -> Vec<i32> {
+    if !location.foreign() && applicable(kind, placed) {
         vec![
             libertas_macros::variant_index!(Commercial1993Transition::Ordinary39Year) as i32,
             libertas_macros::variant_index!(Commercial1993Transition::BindingContract) as i32,
@@ -77,7 +83,7 @@ pub(crate) fn allowed(kind: &RentalPropertyType, placed: u32) -> Vec<i32> {
 
 pub(crate) fn choices(input: &RentalRecoveryInputs) -> RentalRecoveryAllowed {
     let row = |date: &RentalRecoveryDate| RentalRecoveryAllowedRow {
-        allowed_commercial_1993_transition: allowed(&input.kind, date.in_service),
+        allowed_commercial_1993_transition: allowed(&input.kind, &input.location, date.in_service),
     };
     RentalRecoveryAllowed {
         building: row(&input.building),
@@ -144,6 +150,23 @@ fn source_bounds(source: &Commercial1993Transition) -> Result<(), ValidationIssu
 }
 
 pub(crate) fn page_issue(value: &Rental) -> Option<ValidationIssue> {
+    if value.location.foreign() {
+        if value.building.commercial_1993_transition.is_some() {
+            return Some(
+                ValidationIssue::new("RENTAL_1993_TRANSITION_NOT_APPLICABLE")
+                    .at_field("commercial_1993_transition")
+                    .in_field("building"),
+            );
+        }
+        return value.more.improvements.iter().enumerate().find_map(|(index, row)| {
+            row.commercial_1993_transition.as_ref().map(|_| {
+                ValidationIssue::new("RENTAL_1993_TRANSITION_NOT_APPLICABLE")
+                    .at_field("commercial_1993_transition")
+                    .in_list("improvements", index)
+                    .in_field("more")
+            })
+        });
+    }
     if let Some(issue) = source_rule(
         &value.kind,
         value.building.in_service,

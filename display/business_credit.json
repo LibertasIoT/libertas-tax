@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 160000, "rule": {"select": "^<BusinessCreditCarryforwardPage>.research_source", "when_single_choice": "hide"}},
+    {"order": 161000, "rule": {"select": "^<BusinessCreditCarrybackPage>.research_source", "when_single_choice": "hide"}},
+    {"order": 973000, "rule": {"select": "^<EnteredBusinessCreditInitial>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_BUSCRED_CREDIT", "fields": ["credit", "source", "amount"]}, {"title": "DISPLAY_BUSCRED_ELECTION", "fields": ["allowed_elections", "election"]}, {"title": "DISPLAY_BUSCRED_ORIGIN", "fields": ["carbon_oxide_origin", "allowed_carbon_oxide_origins", "renewable_facility_origin", "allowed_renewable_facility_origins"]}]}}
+  ]
+}

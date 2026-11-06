@@ -1,0 +1,14 @@
+{
+  "FormatVersion": 1,
+  "Locales": {
+    "es-US": {
+      "DocumentSha256": "sha256:f9a057606b152822e6b839da85b27829114c8cfa16b92ae7e5ecdb927fb59a4d",
+      "StateSha256": "sha256:14ab385624c88bdde9764ff044a0e9c40c7a50ba9753ad5a48cd94ae09af9aad"
+    },
+    "zh-Hans": {
+      "DocumentSha256": "sha256:0902970da43cd02bc9967141bdbd5d40f6b5af372c51ae655a2bcba62145577b",
+      "StateSha256": "sha256:71b42589b7181a48662a21c1d82ac4f5af745b30e009ac9d4efca8d741a887d0"
+    }
+  },
+  "PackageName": "libertas-tax"
+}

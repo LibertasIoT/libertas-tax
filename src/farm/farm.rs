@@ -20,8 +20,8 @@
 //   prepaid-supplies limit; section 175 conservation; farm-land sales/1062 deferral; Schedule J
 //   averaging; optional farm SE. The 1099-PATR document (federal_model.rs Patr1099/PatrMore onto
 //   FederalIncome::Cooperative { FederalCooperative }) enters on the Self-employment page and is
-//   routed to the farm or farm rental the document names (FederalCooperative.farm,
-//   FederalUnemployment.agriculture_farm; an owner's only farm when it names none, a correction
+//   routed through the related component keys on the receiving activity
+//   (an owner's only eligible activity when unclaimed, a correction
 //   note when several; unit B2 replaced the lowest-id rule) with the 1099-G box 7 payments
 //   (federal_rules.rs routed_farm, farm_cooperative, farm_routed_income); its taxable
 //   amount joins the farm's profit, SE earnings, Schedule J base and QBI; box 8 qualified items
@@ -117,152 +117,20 @@
 //   farm_page_maps_every_branch_onto_the_stored_farm_and_back.
 
 // Schedule F source facts; shared business stages own SE/QBI and deductions.
-use crate::federal_rules::{farm_1099g_program, farm_cooperative};
-use crate::kernel::lines::push_line;
-use crate::kernel::phase;
+pub use crate::farm_nol_source::FarmNolElection;
+use crate::federal_rules::farm_1099g_program;
+use crate::line_emission::push_line;
 use crate::{BusinessInventory, FederalBusiness, FederalDraft, FederalResult, Owner};
 use crate::{FormLine, TaxForm};
 use alloc::{format, vec::Vec};
 use libertas_macros::*;
 
-/// 2026 farming-loss carryback choice
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum FarmNolElection {
-    /// Keep the two-year carryback
-    /// The farming portion must first be applied to 2024, then 2025, before determining the remaining carryforward. The refund for 2024 and 2025 is claimed on Form 1045 or Form 1040-X and is not in this estimate; a note says so. The 2026 return shows the whole loss as carried forward, before the amount the earlier years absorb.
-    Carryback,
-    /// Waive the entire farming-loss carryback period
-    /// This applies to the 2026 loss year as a whole. The election is generally irrevocable once validly made. The section 172(b) waiver statement is or will be attached to the original 2026 return by its due date, including extensions; alternatively, a timely original filer qualifies for the six-month amended-return election relief and uses its required statement. The App calculates the carryforward but does not file the election statement.
-    Waive,
-}
-
-/// Form 1099-PATR issuer facts and actual recipient records
-#[derive(
-    Clone, Default, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub struct FederalCooperative {
-    /// Printed box 1
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub patronage: i64,
-    /// Printed box 2
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub nonpatronage: i64,
-    /// Printed box 3
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub per_unit_retains: i64,
-    /// Printed box 4
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub withholding: i64,
-    /// Printed box 5
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub redeemed: i64,
-    /// Printed box 6
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub section_199a_g: i64,
-    /// Printed box 7
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub qualified_payments: i64,
-    /// Printed box 8
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub qualified_items: i64,
-    /// Printed box 9
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub sstb_items: i64,
-    /// Printed box 13 checkbox
-    #[libertas_default(false)]
-    pub specified_cooperative: bool,
-    /// Actual activity shares
-    pub allocations: Vec<crate::CoopAllocation>,
-    /// Printed10–12 and actual source facts
-    pub credit_facts: crate::CoopCreditFacts,
-    /// Printed box 12 statement text
-    pub box12_text: alloc::string::String,
-}
-impl FederalCooperative {
-    pub(crate) fn distributions(&self) -> i64 {
-        self.patronage + self.nonpatronage + self.per_unit_retains + self.redeemed
-    }
-    pub(crate) fn taxable(&self) -> i64 {
-        if self.allocations.is_empty() {
-            self.distributions()
-        } else {
-            self.allocations.iter().map(crate::CoopAllocation::ordinary).sum()
-        }
-    }
-    pub(crate) fn nonqualified(&self) -> i64 {
-        if self.allocations.is_empty() {
-            return phase::floor(self.taxable() - self.qualified_items, 0);
-        }
-        let qualified: i64 = self
-            .allocations
-            .iter()
-            .filter_map(crate::CoopAllocation::retained_qualification)
-            .map(|v| v[1])
-            .sum();
-        phase::floor(self.taxable() - qualified, 0)
-    }
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        use crate::validation::ValidationIssue;
-        for (field, value) in [
-            ("patronage", self.patronage),
-            ("nonpatronage", self.nonpatronage),
-            ("per_unit_retains", self.per_unit_retains),
-            ("redeemed", self.redeemed),
-            ("withholding", self.withholding),
-            ("section_199a_g", self.section_199a_g),
-            ("qualified_payments", self.qualified_payments),
-            ("qualified_items", self.qualified_items),
-            ("sstb_items", self.sstb_items),
-        ] {
-            if !(0..=100_000_000_000).contains(&value) {
-                return Some(ValidationIssue::new("COOP_ALLOCATION_INVALID").at_field(field));
-            }
-        }
-        if self.withholding > self.distributions() {
-            return Some(ValidationIssue::new("COOP_ALLOCATION_INVALID").at_field("withholding"));
-        }
-        if self.qualified_items + self.sstb_items > self.distributions() {
-            return Some(
-                ValidationIssue::new("COOP_ALLOCATION_INVALID").at_field("qualified_items"),
-            );
-        }
-        if self.allocations.len() > 100 {
-            return Some(ValidationIssue::new("COOP_ALLOCATION_INVALID").at_field("allocations"));
-        }
-        for (index, allocation) in self.allocations.iter().enumerate() {
-            if let Some(issue) = allocation.issue() {
-                return Some(issue.in_list("allocations", index));
-            }
-        }
-        self.credit_facts.issue().map(|issue| issue.in_field("credit_facts"))
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.issue().is_none()
-    }
-}
-
 /// Farm income and accounting method
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 
 pub struct FarmIncome {
+    /// Related accepted document-component identities
+    pub related: Vec<i64>,
     /// Direct special source facts, original elections and retained history
     pub specials: crate::FarmSpecials,
     /// Canonical parcel opening/acquisition basis and exclusion history
@@ -273,7 +141,9 @@ pub struct FarmIncome {
     /// Accounting records
     pub accounting: FarmAccounting,
     /// Crop-insurance and federal crop-disaster records
-    pub insurance: crate::FarmInsurance,
+    pub insurance: crate::farm_insurance_paper::FarmInsuranceRecords,
+    /// Source-keyed facts absent from related crop-insurance statements
+    pub insurance_papers: crate::farm_insurance_paper::CropInsuranceFacts,
     /// CCC marketing-assistance loan records
     pub ccc: Option<crate::FarmCcc>,
     /// Conservation Reserve Program payments
@@ -302,36 +172,43 @@ pub enum FarmAccounting {
         /// Sales recognized in 2026
         /// All livestock and products raised or purchased for sale; exclude equipment, land and depreciable livestock dispositions. Include earned receivables once, not again when collected. Exclude sales entered in CCC lot records; the App adds those separately.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         sales: i64,
         /// Opening farm inventory
         /// Retained prior-year closing tax valuation, including required raised and purchased products and all crops pledged for or redeemed from loan-method CCC advances. Exclude depreciable assets and costs already deducted outside inventory.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         opening: i64,
         /// Closing farm inventory
         /// Use the same established permitted valuation method and all required inventory classes, including unsold crops pledged for or redeemed from loan-method CCC advances. Raised inventory may increase without purchased livestock/product costs; the App does not cap closing inventory at purchases plus opening inventory.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         closing: i64,
         /// Livestock and products purchased during 2026
         /// Costs recognized under the accrual method, including unsold products included in closing inventory. Do not repeat these costs in operating expenses or include depreciable asset purchases.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         purchases: i64,
         /// Custom hire and machine-work income recognized
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         custom_hire: i64,
         /// Fully taxable ordinary agricultural-program income recognized
         /// Exclude cooperative distributions, CCC loans, conservation-reserve payments, insurance and special subsidy treatments.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         program: i64,
         /// Other ordinary farm operating income recognized
         /// Exclude separately reported rent, interest, asset gains, debt discharge and tax-benefit recoveries needing another worksheet.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         other: i64,
     },
 }
@@ -344,7 +221,8 @@ pub enum FarmReceipt {
     Raised {
         /// Proceeds received
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
     /// Purchased livestock or products resold
@@ -352,19 +230,22 @@ pub enum FarmReceipt {
     Resale {
         /// Proceeds received
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
         /// Cost or other tax basis of the products sold
         /// Use paid purchase records, including a purchase in a prior year; exclude costs already deducted or recovered. This is basis, not a computed profit.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         cost: i64,
     },
     /// Custom hire or machine work
     CustomHire {
         /// Receipts received for farm work
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
     /// Fully taxable ordinary agricultural-program payment
@@ -372,7 +253,8 @@ pub enum FarmReceipt {
     Program {
         /// Payment received
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
     /// Cost-sharing payment under a conservation program eligible for the section 126 exclusion
@@ -380,7 +262,8 @@ pub enum FarmReceipt {
     CostSharing {
         /// Payment received
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
     /// Other ordinary farm operating income
@@ -388,7 +271,8 @@ pub enum FarmReceipt {
     Other {
         /// Receipt received
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }
@@ -517,9 +401,9 @@ impl FarmIncome {
         Some(self.gross() - services)
     }
 
-    pub(crate) fn report_with_section179(
+    pub(crate) fn report_with_section179_with_claims(
         &self,
-        d: &FederalDraft,
+        form_context: crate::related_forms::RelatedFormContext<'_>,
         b: &FederalBusiness,
         id: i64,
         r: &mut FederalResult,
@@ -527,6 +411,8 @@ impl FarmIncome {
 
         home: Option<&crate::home_office::HomeContext>,
     ) -> Result<(), crate::Section179PreparedIssue> {
+        let crate::related_forms::RelatedFormContext { draft: d, claims: source_claims, .. } =
+            form_context;
         let header_context = d
             .income
             .iter()
@@ -541,7 +427,7 @@ impl FarmIncome {
             header_context.clone(),
             r,
         );
-        self.report_parcels(d, id, FarmForm::ScheduleF, r);
+        self.report_parcels_with_claims(d, id, FarmForm::ScheduleF, r, source_claims);
         self.report_property_history(&b.assets, header_context.clone(), r);
 
         let death = owner_death_date(d, id);
@@ -554,29 +440,39 @@ impl FarmIncome {
                 "ISSUE_A_SALE_AFTER_THIS_FARM_OWNER_S_DEATH_DOES_NOT_BELONG_TO_THE_OWNER_S_E146F4F3",
                 "A sale after this farm owner's death does not belong to the owner's final individual return. Resolve the estate or beneficiary's ownership and reporting; a surviving spouse's own farm follows that spouse's dates.",
             );
-            sale.report(d, self, id, index, FarmForm::ScheduleF, r);
-        }
-        if let Some(conservation) = &self.conservation {
-            conservation.report(
-                self.gross()
-                    + crate::method_change::increase(&b.method_changes)
-                    + crate::farm_conservation::routed_to(d, id)?,
-                d,
+            sale.report_with_claims(
+                crate::related_forms::RelatedFormContext::original(d, source_claims),
+                self,
                 id,
+                index,
                 FarmForm::ScheduleF,
                 r,
             );
         }
+        if let Some(conservation) = &self.conservation {
+            conservation.report_with_claims(
+                self.gross()
+                    + crate::method_change::increase(&b.method_changes)
+                    + crate::farm_conservation::routed_to_with_claims(d, id, source_claims)?,
+                d,
+                id,
+                FarmForm::ScheduleF,
+                r,
+                source_claims,
+            );
+        }
         if let Some(supplies) = &self.supplies {
-            supplies.report(d, b, id, r, home);
+            supplies.report_with_claims(d, b, id, r, home, source_claims);
         }
         crate::farm_crp::report(&self.crp, id, r);
-        self.insurance.report(
-            matches!(self.accounting, FarmAccounting::Cash { .. }),
-            id,
-            FarmForm::ScheduleF,
-            r,
-        );
+        crate::farm_insurance_paper::resolved(d, id, source_claims)
+            .unwrap_or_else(|| self.insurance.kernel())
+            .report(
+                matches!(self.accounting, FarmAccounting::Cash { .. }),
+                id,
+                FarmForm::ScheduleF,
+                r,
+            );
         if let Some(ccc) = &self.ccc {
             ccc.report(
                 matches!(self.accounting, FarmAccounting::Cash { .. }),
@@ -595,16 +491,30 @@ impl FarmIncome {
             .income
             .iter()
             .find(|e| e.id == id)
-            .map_or(0, |e| usize::from(e.owner == Owner::Spouse));
-        let program_1099g = farm_1099g_program(d, owner, id);
+            .map_or(0, |e| usize::from(e.owner == crate::DocumentOwner::Spouses));
+        let program_1099g = farm_1099g_program(d, owner, id, source_claims);
         // Form 1099-PATR distributions for this owner are routed the same way
         // (`farm_cooperative`): line 3a/3b of the lowest-id farm.
-        let cooperative = farm_cooperative(d, owner, id)?;
+        let cooperative =
+            crate::federal_rules::farm_cooperative_with_claims(d, owner, id, source_claims)?;
         // `b.receipts()` is this farm's gross income plus the line 8 fuel-tax
         // credit or recovery income the Business record carries, the same
         // amount Schedule 1 line 6 and Schedule SE use.
-        let gross = b.receipts() + program_1099g + cooperative.taxable;
-        let profit = gross - crate::section179_return::expenses(d, id, b, selected, home)?;
+        let grants = crate::information_returns::farm_grants_with_claims(d, id, source_claims);
+        let gross = b.receipts()
+            + program_1099g
+            + cooperative.taxable
+            + grants
+            + crate::farm_insurance_paper::income_delta(d, id, source_claims);
+        let profit = gross
+            - crate::section179_return::expenses_with_claims(
+                d,
+                id,
+                b,
+                selected,
+                home,
+                source_claims,
+            )?;
         let cost_sharing: i64 = match &self.accounting {
             FarmAccounting::Cash { receipts } => receipts
                 .iter()
@@ -773,7 +683,7 @@ impl FarmIncome {
         rows.push(("custom_hire_income", custom, msg!("EXPLAIN_FARM_CUSTOM_HIRE")));
         rows.push((
             "other_income",
-            other + self.specials.other_income() + b.receipts() - self.gross(),
+            other + grants + self.specials.other_income() + b.receipts() - self.gross(),
             msg!("EXPLAIN_FARM_OTHER_INCOME"),
         ));
         if let FarmAccounting::Accrual { opening, purchases, closing, .. } = self.accounting {
@@ -793,15 +703,27 @@ impl FarmIncome {
             ("gross_income", gross, msg!("EXPLAIN_FARM_N_GROSS_INCOME")),
             (
                 "expenses",
-                crate::section179_return::expenses(d, id, b, selected, home)?,
+                crate::section179_return::expenses_with_claims(
+                    d,
+                    id,
+                    b,
+                    selected,
+                    home,
+                    source_claims,
+                )?,
                 msg!("EXPLAIN_FARM_N_EXPENSES"),
             ),
             ("net_profit", profit, msg!("EXPLAIN_FARM_N_NET_PROFIT")),
         ]);
         rows.push((
             "depreciation",
-            crate::federal_rules::business_depreciation_with_section179(
-                d, id, &b.assets, selected, home,
+            crate::federal_rules::business_depreciation_with_section179_with_claims(
+                d,
+                id,
+                &b.assets,
+                selected,
+                home,
+                source_claims,
             )?,
             msg!("EXPLAIN_FARM_N_DEPRECIATION"),
         ));
@@ -1034,8 +956,9 @@ pub(crate) enum FarmLossRoute {
 // cents, regular and alternative minimum tax: a farm rental loss is a farming
 // loss (section 172(b)(1)(B)), so a return whose NOL includes it still needs
 // the explicit choice.
-pub(crate) fn check_nol_with_section179(
-    d: &FederalDraft,
+
+pub(crate) fn check_nol_with_section179_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     regular_nol: i64,
     alternative_nol: i64,
     rentals: [i64; 2],
@@ -1043,6 +966,8 @@ pub(crate) fn check_nol_with_section179(
     r: &mut FederalResult,
     home: Option<&crate::home_office::HomeContext>,
 ) -> Result<FarmLossRoute, crate::Section179PreparedIssue> {
+    let crate::related_forms::RelatedFormContext { draft: d, claims: source_claims, .. } =
+        form_context;
     let selected = selected_pair.map(|pair| &pair[0].allocation);
     let mut regular = rentals[0];
     let mut alternative = rentals[1];
@@ -1050,17 +975,35 @@ pub(crate) fn check_nol_with_section179(
         if let crate::FederalIncome::Business { data } = &e.income
             && matches!(data.activity, crate::BusinessActivity::Farming { .. })
         {
-            let owner = usize::from(e.owner == Owner::Spouse);
+            let owner = usize::from(e.owner == crate::DocumentOwner::Spouses);
             let profit = data.receipts()
-                + crate::federal_rules::farm_routed_income(d, owner, e.id)?
-                - crate::section179_return::expenses(d, e.id, data, selected, home)?;
+                + crate::federal_rules::farm_routed_income_with_claims(
+                    d,
+                    owner,
+                    e.id,
+                    source_claims,
+                )?
+                - crate::section179_return::expenses_with_claims(
+                    d,
+                    e.id,
+                    data,
+                    selected,
+                    home,
+                    source_claims,
+                )?;
             regular += profit;
             let existing = crate::depreciation::business_amt_adjustment(
                 data,
                 crate::depreciation::mid_quarter(d),
-            ) + crate::farm_conservation::business_amt_adjustment(d, e.id)
-                + crate::farm_supplies::business_amt_adjustment(d, e.id)
-                + crate::farm_production::business_amt_adjustment(d, e.id);
+            ) + crate::farm_conservation::business_amt_adjustment_with_claims(
+                d,
+                e.id,
+                source_claims,
+            ) + crate::farm_supplies::business_amt_adjustment_with_claims(
+                d,
+                e.id,
+                source_claims,
+            ) + crate::farm_production::business_amt_adjustment(d, e.id);
             alternative +=
                 profit + crate::section179_return::amt_adjustment(e.id, existing, selected_pair)?;
         }
@@ -1088,7 +1031,7 @@ pub(crate) fn check_nol_with_section179(
 pub(crate) fn owner_death_date(d: &FederalDraft, id: i64) -> Option<u32> {
     let entry = d.income.iter().find(|e| e.id == id)?;
     let people = d.people.as_ref()?;
-    people.person(entry.owner)?.death_date()
+    people.person(entry.owner.owned())?.death_date()
 }
 
 // Section 77(b): one current-year CCC method for every farm and farm rental an
@@ -1101,11 +1044,9 @@ pub(crate) fn require_same_ccc_method(
 ) {
     crate::require_localized!(
         r,
-        sources(d).filter(|other| other.entry.owner == owner).all(|other| other
-            .farm
-            .ccc
-            .as_ref()
-            .is_none_or(|v| v.method == ccc.method)),
+        sources(d)
+            .filter(|other| other.entry.owner == crate::DocumentOwner::from(owner))
+            .all(|other| other.farm.ccc.as_ref().is_none_or(|v| v.method == ccc.method)),
         &crate::IssueContext::Section(crate::TaxSection::Farming),
         "CCC loan election",
         "ISSUE_USE_THE_SAME_CURRENT_YEAR_CCC_METHOD_FOR_EVERY_FARM_OWNED_BY_THIS_T_C9BBF517",
@@ -1241,7 +1182,7 @@ crate::community::divide_record!(FarmIncome {
         land_sales
     ],
     gains: [],
-    facts: [header],
+    facts: [header, related, insurance_papers],
 });
 
 crate::community::divide_enum!(FarmAccounting {

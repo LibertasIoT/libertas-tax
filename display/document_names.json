@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {"order": 114000, "rule": {"select": "^<PersonDocuments>", "title": {"field": "name"}}},
+    {"order": 114001, "rule": {"select": "^<SaveDocuments>.document_owners", "when_empty": "hide", "suppress_label": true}},
+    {"order": 114002, "rule": {"select": "^<PersonDocuments>.choices[]", "title": {"field": "label"}}},
+    {"order": 114003, "rule": {"select": "^<SectionDocument>.document", "lock": true}},
+    {"order": 114004, "rule": {"select": "^<SectionDocument>.ownership", "when_single_choice": "hide"}},
+    {"order": 114005, "rule": {"select": "^<SectionDocument>.edit_document", "layout": "rows", "when_empty": "hide", "suppress_label": true}},
+    {"order": 114006, "rule": {"select": "^<DocumentEditTarget>.action", "promote": true, "suppress_label": true}},
+    {"order": 115000, "rule": {"select": "^<PersonDocuments>.documents", "layout": "summary", "paths": ["document", {"path": "ownership", "show": "variant"}]}}
+  ]
+}

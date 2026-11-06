@@ -10,7 +10,6 @@ fn fixture(joint: bool) -> FederalDraft {
     let mut d = complete(if joint { FederalStatus::Joint } else { FederalStatus::Single });
     d.income.clear();
     d.next_id = 1;
-    d.checklist.income |= IncomeTopics::INTEREST_DIVIDENDS.0;
     d
 }
 fn checked(d: &FederalDraft, expected: Option<Owner>) {
@@ -18,9 +17,9 @@ fn checked(d: &FederalDraft, expected: Option<Owner>) {
     if let Some(owner) = expected {
         let entry = &d.income[0];
         assert!(entry.id > 0);
-        assert_eq!(entry.owner, owner);
+        assert_eq!(entry.owner, crate::DocumentOwner::from(owner));
         let FederalIncome::Interest { data } = &entry.income else { panic!() };
-        assert_eq!(data.taxable, 10_000);
+        assert_eq!(FederalInterest::from(data).taxable, 10_000);
     }
     let r = supported(d);
     let total = if expected.is_some() { 100 } else { 0 };
@@ -97,7 +96,7 @@ fn unit13_document_owner_actual_add_required_singleton_save_restart() {
             fs::create_dir_all(directory).unwrap();
             fs::write(directory.join("entry.avro"), entry.to_avro()).unwrap();
             fs::write(directory.join("review.avro"), shown.to_avro()).unwrap();
-            fs::write(directory.join("identity.json"), serde_json::to_vec_pretty(&serde_json::json!({"joint":joint,"income_section":TaxSection::Income as i32,"topic_section":TaxSection::InterestDividends as i32})).unwrap()).unwrap();
+            fs::write(directory.join("identity.json"), serde_json::to_vec_pretty(&serde_json::json!({"joint":joint,"income_section":TaxSection::Income as i32,"topic_section":TaxSection::Documents as i32})).unwrap()).unwrap();
             return;
         }
         let Some(directory) = directory else { continue };
@@ -114,7 +113,7 @@ fn unit13_document_owner_actual_add_required_singleton_save_restart() {
             let request = P::from_avro(&bytes).unwrap();
             assert_eq!(request.to_avro(), bytes);
             assert!(
-                matches!(request, P::OpenSection { section, .. } if section == if index == 0 { TaxSection::Income } else { TaxSection::InterestDividends })
+                matches!(request, P::OpenSection { section, .. } if section == if index == 0 { TaxSection::Income } else { TaxSection::Documents })
             );
             last = Some(send(&mut session, request));
             assert_eq!(session.draft, before);
@@ -130,18 +129,20 @@ fn unit13_document_owner_actual_add_required_singleton_save_restart() {
                 .unwrap();
             return;
         }
-        assert!(matches!(last, Some(Reply::Edit(P::SaveIncomes { .. }))));
+        assert!(matches!(last, Some(Reply::Edit(P::SaveDocuments { .. }))));
         if let Ok(input) = std::env::var("TAX_UNIT13_OWNER_CALC_INPUT") {
             let bytes = fs::read(input).unwrap();
             let request = P::from_avro(&bytes).unwrap();
             assert_eq!(request.to_avro(), bytes);
-            assert!(matches!(
-                request,
-                P::PreviewDocument { .. }
-                    | P::EstimateDocuments { .. }
-                    | P::DocumentPropertyOptions { .. }
-            ));
-            let Reply::Response(value) = send(&mut session, request) else { panic!() };
+            assert!(matches!(request, P::SaveDocuments { .. }));
+            let Reply::Response(value) =
+                crate::tests::support::client::income_pages::candidate_save_review(
+                    &mut session,
+                    request,
+                )
+            else {
+                panic!()
+            };
             assert_eq!(session.draft, before);
             fs::write(std::env::var("TAX_UNIT13_OWNER_CALC_OUTPUT").unwrap(), value.to_avro())
                 .unwrap();
@@ -161,12 +162,12 @@ fn unit13_document_owner_actual_add_required_singleton_save_restart() {
         let bytes = fs::read(directory.join(format!("{phase}.payload.avro"))).unwrap();
         let request = P::from_avro(&bytes).unwrap();
         assert_eq!(request.to_avro(), bytes);
-        let P::SaveIncomes { documents, .. } = &request else { panic!() };
-        assert_eq!(documents.documents.len(), 1);
-        let item = &documents.documents[0];
-        assert_eq!(item.owner, current_owner);
-        let IncomeDocument::Int1099(data) = &item.document else { panic!() };
-        assert_eq!(data.taxable, 10_000);
+        let P::SaveDocuments { documents, .. } = &request else { panic!() };
+        assert_eq!(documents.common.interest_dividends.documents.len(), 1);
+        let item = &documents.common.interest_dividends.documents[0];
+        assert_eq!(item.owner, crate::DocumentOwner::from(current_owner));
+        let crate::InterestDividendDocument::Int1099(data) = &item.document else { panic!() };
+        assert_eq!(data.interest_income, 10_000);
         let before_id = session.draft.income.first().map(|e| e.id);
         accepted(&send(&mut session, request));
         checked(&session.draft, Some(current_owner));

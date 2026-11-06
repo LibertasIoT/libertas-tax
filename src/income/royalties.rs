@@ -5,11 +5,12 @@ use crate::validation::ValidationIssue;
 // 65% taxable-income limit, separate regular/AMT carryovers. K-1 royalty
 // columns belong to k1_totals; federal_rules combines the Part I totals.
 // Sources: IRC 611–613A, 57(a)(1); i1040se, i6251.
-use crate::kernel::lines::push_line;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{self, Exact};
 use crate::kernel::ratio::{fraction, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::push_line;
 use crate::*;
 use alloc::vec::Vec;
 const SOURCE: &str = "https://www.irs.gov/instructions/i1040se";
@@ -88,9 +89,9 @@ pub(crate) struct Depletion {
 // section 613A(c) percentage depletion is 15 percent of the taxpayer's own gross income from the
 // property, and cost depletion follows the taxpayer's own basis). None when nothing is divided.
 fn filer_share(d: &FederalDraft, entry: &FederalIncomeEntry) -> Option<crate::community::Share> {
-    d.setup
-        .as_ref()
-        .and_then(|s| crate::community::share(s, entry.owner, entry.community, &entry.income))
+    d.setup.as_ref().and_then(|s| {
+        crate::community::share(s, entry.owner.owned(), entry.community, &entry.income)
+    })
 }
 // The filer's part of one royalty's amount.
 pub(crate) fn filer_part(d: &FederalDraft, entry: &FederalIncomeEntry, amount: i64) -> i64 {
@@ -109,11 +110,27 @@ fn mine_exact(share: Option<crate::community::Share>, amount: &Exact) -> Exact {
 fn mine(share: Option<crate::community::Share>, amount: i64) -> i64 {
     share.map_or(amount, |share| share.filer(amount))
 }
+#[cfg(test)]
 pub(crate) fn calculate(
     d: &FederalDraft,
     taxable_before: Option<i64>,
     amt: bool,
 ) -> Option<Vec<Depletion>> {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_claims(
+        crate::related_forms::RelatedFormContext::original(d, &source_claims),
+        taxable_before,
+        amt,
+    )
+}
+
+pub(crate) fn calculate_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    taxable_before: Option<i64>,
+    amt: bool,
+) -> Option<Vec<Depletion>> {
+    let d = form_context.draft;
+    let source_claims = form_context.claims;
     // Percentage depletion needs this source's actual post-home expenses.
     // This prepass has no bound home invocation; preserve the unavailable
     // native output rather than substitute a zero home deduction. Cost
@@ -122,7 +139,7 @@ pub(crate) fn calculate(
         FederalIncome::Business { data } if data.depletion.as_ref().is_some_and(|claim|
             matches!(claim.depletion, RoyaltyDepletion::Percentage { .. }))
             && (crate::home_office::uses_activity(d, entry.id)
-                || (!d.home_sites.is_empty() && crate::section179_return::needed(d).unwrap_or(true))))) {
+                || (!d.home_sites.is_empty() && crate::section179_return::needed(form_context).unwrap_or(true))))) {
         return None;
     }
     let mut rows: Vec<_> = d
@@ -159,7 +176,12 @@ pub(crate) fn calculate(
                         if matches!(depletion.depletion, RoyaltyDepletion::Percentage { .. }) {
                             Some(exact::whole(
                                 data.expense_with_office(
-                                    crate::section179::operating(d, entry.id, data),
+                                    crate::section179::operating_with_claims(
+                                        d,
+                                        entry.id,
+                                        data,
+                                        source_claims,
+                                    ),
                                     0,
                                 ) - amt_adjustment,
                             ))
@@ -414,7 +436,7 @@ pub(crate) fn losses(d: &FederalDraft, rows: &[Depletion]) -> Exact {
 }
 
 fn line_business_depletion(r: &mut FederalResult, row: &Depletion, prefix: &str) {
-    crate::kernel::lines::line_cents(
+    crate::line_emission::line_cents(
         r,
         &alloc::format!("{prefix}business_{}_depletion_carryover", row.id),
         row.carryover,
@@ -422,4 +444,26 @@ fn line_business_depletion(r: &mut FederalResult, row: &Depletion, prefix: &str)
         "https://www.irs.gov/publications/p535",
         crate::Message::new("EXPLAIN_BUSINESS_DEPLETION_CARRY", alloc::vec![]),
     );
+}
+
+impl crate::related_forms::Activity for RoyaltyProperty {
+    const KINDS: &'static [crate::related_forms::DocumentKind] =
+        crate::related_forms::ROYALTY_KINDS;
+    fn related(&self) -> &RelatedForms {
+        &self.related
+    }
+    fn related_mut(&mut self) -> &mut RelatedForms {
+        &mut self.related
+    }
+}
+
+impl crate::related_forms::Activity for EquipmentRent {
+    const KINDS: &'static [crate::related_forms::DocumentKind] =
+        crate::related_forms::EQUIPMENT_KINDS;
+    fn related(&self) -> &RelatedForms {
+        &self.related
+    }
+    fn related_mut(&mut self) -> &mut RelatedForms {
+        &mut self.related
+    }
 }

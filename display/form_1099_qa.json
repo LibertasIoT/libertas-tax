@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 5000, "rule": {"select": "^<Form1099QaPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "earnings", "basis", "program_to_program_transfer", "account_terminated", "recipient_not_designated_beneficiary"]}]}},
+    {"order": 6000, "rule": {"select": "^<Form1099QaPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross", "earnings", "basis", "program_to_program_transfer", "account_terminated", "recipient_not_designated_beneficiary"]}]}}
+  ]
+}

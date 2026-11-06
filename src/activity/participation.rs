@@ -15,8 +15,9 @@ pub struct ScorpParticipation {
     /// Ordinary individual participation tests apply to this activity
     /// Yes unless you are a retired or disabled farmer or a surviving spouse using that rule, or an activity-grouping election on your prior returns is unresolved. No leaves this activity out of the estimate with an Estimate note because it needs separate participation analysis.
     pub ordinary_scope: bool,
-    /// Combined qualifying work, in minutes
+    /// Combined qualifying work
     #[libertas_number(min = 0)]
+    #[libertas_physical_unit("minute")]
     pub minutes: u32,
     /// This work was substantially all participation by everyone
     /// Include employees and people who do not own the business. Compare your time records with the business's payroll and contractor hours.
@@ -24,23 +25,26 @@ pub struct ScorpParticipation {
     /// Combined participation was at least as much as any other individual
     /// Include employees and nonowners when comparing participation. Compare your time records with the hours of the person who worked most, from payroll or contractor records.
     pub at_least_as_much: bool,
-    /// Material-participation years among 2016 through 2025
-    /// Count them from your 2016 through 2025 returns: the years Schedule E Part II line 28 reported this activity as nonpassive (column (i) or (k)) because you materially participated. Count only years established by a test other than the five-of-ten historical test itself; the years need not be consecutive. Enter zero when there were none.
+    /// Material participation among 2016 through 2025
+    /// Count the returns from 2016 through 2025 on which Schedule E Part II line 28 reported this activity as nonpassive (column (i) or (k)) because you materially participated. Count only those established by a test other than the five-of-ten historical test itself; they need not be consecutive. Enter zero when there were none.
     // Tax structure: the 2016–2025 lookback contains ten tax years.
     #[libertas_number(min = 0, max = 10)]
+    #[libertas_physical_unit("year")]
     pub prior_ten: u32,
     /// This is a personal-service activity
     /// Health, law, engineering, architecture, accounting, actuarial science, performing arts, consulting, or another business where capital is not a material income-producing factor.
     pub personal_service: bool,
-    /// Earlier years of material participation in this same personal-service activity
-    /// Count them from your earlier returns: every year before 2026, not only the past ten, that Schedule E Part II reported this activity as nonpassive (line 28 column (i) or (k)) because you materially participated. Enter zero when there were none or when it is not a personal-service activity.
+    /// Earlier material participation in this same personal-service activity
+    /// Count them from your earlier returns: every return before 2026, not only the past ten, that Schedule E Part II reported this activity as nonpassive (line 28 column (i) or (k)) because you materially participated. Enter zero when there were none or when it is not a personal-service activity.
     #[libertas_number(min = 0)]
+    #[libertas_physical_unit("year")]
     pub service_years: u32,
     /// Participation was regular, continuous and substantial
     /// Answer from all facts and circumstances, not ownership percentage: work on most operating days through the year, in the business's day-to-day decisions. This test additionally requires more than 100 qualifying hours.
     pub regular: bool,
-    /// Management minutes included in the combined total
+    /// Management work included in the combined total
     #[libertas_number(min = 0)]
+    #[libertas_physical_unit("minute")]
     pub management_minutes: u32,
     /// Another person was paid to manage the activity
     /// Check the payroll and contractor records.
@@ -79,22 +83,49 @@ impl ScorpParticipation {
         if !self.ordinary_scope {
             return Participation::No;
         }
+        OrdinaryEvidence {
+            minutes: self.minutes,
+            substantially_all: self.substantially_all,
+            at_least_as_much: self.at_least_as_much,
+            prior_ten: self.prior_ten,
+            personal_service_years: if self.personal_service { self.service_years } else { 0 },
+            regular: self.regular,
+            management_minutes: self.management_minutes,
+            disqualified_management: self.paid_manager || self.other_manager_more,
+        }
+        .material()
+    }
+}
+
+// Reg. 1.469-5T(a)(1)-(3), (5)-(7). All source owners use minutes here so
+// minute-based K-1 records keep their exact threshold behavior.
+pub(crate) struct OrdinaryEvidence {
+    pub minutes: u32,
+    pub substantially_all: bool,
+    pub at_least_as_much: bool,
+    pub prior_ten: u32,
+    pub personal_service_years: u32,
+    pub regular: bool,
+    pub management_minutes: u32,
+    pub disqualified_management: bool,
+}
+impl OrdinaryEvidence {
+    pub(crate) fn material(&self) -> Participation {
+        let eligible = if self.disqualified_management {
+            self.minutes.saturating_sub(self.management_minutes)
+        } else {
+            self.minutes
+        };
         if self.minutes > 30_000
             || self.substantially_all
             || (self.minutes > 6_000 && self.at_least_as_much)
             || self.prior_ten >= 5
-            || (self.personal_service && self.service_years >= 3)
+            || self.personal_service_years >= 3
+            || (eligible > 6_000 && self.regular)
         {
-            return Participation::Yes;
-        }
-        let eligible = if self.paid_manager || self.other_manager_more {
-            self.minutes - self.management_minutes
+            Participation::Yes
         } else {
-            self.minutes
-        };
-        if eligible > 6_000 && self.regular {
-            return Participation::Yes;
+            Participation::No
         }
-        Participation::No
     }
 }

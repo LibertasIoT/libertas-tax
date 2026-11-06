@@ -57,9 +57,10 @@ fn ordinary_sales_deferral(
                 && p.pensions == 0
                 && p.retirement == crate::PartnerRetirement::None
                 && matches!(p.health_insurance, crate::BusinessHealthInsurance::None)
-                && p.disposition == crate::K1Disposition::Kept
+                && p.disposition == Some(crate::K1Disposition::Kept)
         }
         FederalIncome::Scorp { data: s } => {
+            let s = &crate::ScorpK1::from(s);
             s.trade_kind == crate::ScorpTradeKind::Ordinary
                 && s.nonpassive() == crate::participation::Participation::Yes
                 && s.ordinary <= 0
@@ -70,7 +71,7 @@ fn ordinary_sales_deferral(
                 && s.deductions.is_empty()
                 && s.section179 == 0
                 && s.section179_carryover == 0
-                && s.disposition == crate::K1Disposition::Kept
+                && s.disposition == Some(crate::K1Disposition::Kept)
         }
         _ => false,
     };
@@ -145,6 +146,7 @@ fn ordinary_sales_deferral(
             }
         }
         FederalIncome::Scorp { data: s } => {
+            let s = &crate::ScorpK1::from(s);
             let suspended = pool
                 .scorp_qbi_ordinary_suspensions
                 .iter()
@@ -200,7 +202,7 @@ fn ordinary_sales_deferral(
     // Source identity must survive the financial equality check and the
     // replacement below, just as it does in the central activity builder.
     for activity in &mut expected {
-        activity.owner = Some(entry.owner);
+        activity.owner = Some(entry.owner.owned());
     }
     if *activities != expected {
         return None;
@@ -258,7 +260,7 @@ fn current_ordinary_sales_only(draft: &FederalDraft, pool: &RentalResult) -> boo
                 && data.regular.passive_loss == 0
                 && data.income.is_empty()
                 && data.deductions.is_empty()
-                && data.disposition == crate::K1Disposition::Kept
+                && data.disposition == Some(crate::K1Disposition::Kept)
                 && data.guaranteed_services == 0
                 && data.guaranteed_capital == 0
                 && data.section179 == 0
@@ -268,6 +270,7 @@ fn current_ordinary_sales_only(draft: &FederalDraft, pool: &RentalResult) -> boo
                 && data.regular.rentals == crate::K1RentalAmounts::default()
         }
         FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
             data.ordinary < 0
                 && data.qbi_statement.as_ref().is_some_and(|q| !q.service && q.income == 0)
                 && data.loss_qbi.current == -data.ordinary
@@ -277,7 +280,7 @@ fn current_ordinary_sales_only(draft: &FederalDraft, pool: &RentalResult) -> boo
                 && data.passive.loss == 0
                 && data.income.is_empty()
                 && data.deductions.is_empty()
-                && data.disposition == crate::K1Disposition::Kept
+                && data.disposition == Some(crate::K1Disposition::Kept)
                 && data.section179 == 0
                 && data.section179_carryover == 0
                 && data.rentals == crate::K1RentalAmounts::default()
@@ -318,7 +321,8 @@ pub(crate) fn qualified_deferral(
                     | FederalIncome::Interest { .. }
                     | FederalIncome::Dividend { .. }
                     | FederalIncome::Sale { .. }
-            )
+            ) && !matches!(&entry.income, FederalIncome::Broker { data }
+                if crate::broker_calculation::known_components(data, true, false))
         })
         || !draft.income.iter().any(|entry| {
             matches!(entry.income, FederalIncome::Partnership { .. } | FederalIncome::Scorp { .. })
@@ -344,6 +348,7 @@ pub(crate) fn qualified_deferral(
                     crate::k1_items::K1Items::partner(&data.income, &data.deductions)
                 }
                 FederalIncome::Scorp { data } => {
+                    let data = &crate::ScorpK1::from(data);
                     crate::k1_items::K1Items::scorp(&data.income, &data.deductions)
                 }
                 _ => return false,

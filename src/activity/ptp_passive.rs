@@ -1,4 +1,4 @@
-// Coverage: assigned Unit19 PTP PAL source interface (2026-10-13).
+// Coverage: PTP passive-loss source interface, ordinary and rental items.
 //   Current/prior form components after basis/risk and activity classification,
 //   separate regular/AMT inputs, same-PTP-only activity/form allocations and
 //   checked Form4562 supplier consumption. Existing whole-return PTP179,
@@ -51,6 +51,38 @@ pub struct PtpPalResult {
     pub suspended_cents: i64,
     // The Form4562 owner retains this carry; it is never a prior PAL loss.
     pub business_income_carry_cents: i64,
+}
+
+impl PtpPalResult {
+    // Schedule E line 28 reports separately stated items on separate lines.
+    // Keep the actual post-PAL section 179 item separate from ordinary income.
+    pub(crate) fn ordinary_reported_net(&self) -> Option<i64> {
+        crate::kernel::ratio::checked_sum(
+            self.components
+                .iter()
+                .filter(|part| {
+                    !matches!(
+                        part.original.character,
+                        PtpPalCharacter::RentalRealEstate | PtpPalCharacter::OtherRental
+                    )
+                })
+                .map(|part| crate::kernel::ratio::dollars(part.allowed_passive_net_cents)),
+        )
+    }
+
+    pub(crate) fn ordinary_net_cents(&self) -> Option<i64> {
+        crate::kernel::ratio::checked_sum(
+            self.components
+                .iter()
+                .filter(|part| {
+                    !matches!(
+                        part.original.character,
+                        PtpPalCharacter::RentalRealEstate | PtpPalCharacter::OtherRental
+                    )
+                })
+                .map(|part| part.allowed_passive_net_cents),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +152,32 @@ pub fn ptp_passive_source(
         net_gain_cents,
         suspended_cents,
         business_income_carry_cents: section179.business_income_carry_cents,
+    })
+}
+
+// No Form 4562 source is needed when no section 179 component enters PAL.
+// Both entry points use the same same-PTP pool and character allocator.
+pub(crate) fn without_section179(
+    k1: i64,
+    alternative: bool,
+    activities: &[PtpPalActivity],
+) -> Result<PtpPalResult, PtpPalIssue> {
+    if k1 <= 0
+        || activities
+            .iter()
+            .flat_map(|activity| &activity.components)
+            .any(|component| component.character == PtpPalCharacter::Section179)
+    {
+        return Err(PtpPalIssue::Section179SourceMismatch);
+    }
+    let (components, net_gain_cents, suspended_cents) = allocate(k1, activities)?;
+    Ok(PtpPalResult {
+        k1,
+        alternative,
+        components,
+        net_gain_cents,
+        suspended_cents,
+        business_income_carry_cents: 0,
     })
 }
 

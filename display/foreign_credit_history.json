@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"order": 376000, "rule": {"select": "^<ForeignCarryoverColumn>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_CARRYOVER_REGULAR", "fields": ["year", "regular"]}, {"title": "DISPLAY_CARRYOVER_AMT", "fields": ["amt"]}]}},
+    {"order": 377000, "rule": {"select": "^<ForeignCarryoverColumn>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_CARRYOVER_REGULAR", "fields": ["year", "regular"]}, {"title": "DISPLAY_CARRYOVER_AMT", "fields": ["amt"]}]}},
+    {"order": 589000, "rule": {"select": "^<ForeignCreditHistory>", "flatten": true}},
+    {"order": 590000, "rule": {"select": "^<ForeignCarryback>", "flatten": true}},
+    {"order": 773000, "rule": {"select": "^<ForeignCarryoverColumn>.year", "promote": true}},
+    {"order": 774000, "rule": {"select": "^<ForeignCarryoverSchedule>.category", "promote": true}},
+    {"order": 775000, "rule": {"select": "^<ForeignPriorCredit>.category", "promote": true}}
+  ]
+}

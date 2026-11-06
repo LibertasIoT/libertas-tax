@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 332000, "rule": {"select": "^<SocialBenefitYear>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_LUMP_SUM_BENEFITS", "fields": ["year", "status", "apart", "received", "benefits", "earlier_lumps"]}, {"title": "DISPLAY_LUMP_SUM_RETURN", "fields": ["agi", "taxable", "refigured", "exempt", "addbacks"]}]}},
+    {"order": 333000, "rule": {"select": "^<SocialBenefitYear>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_LUMP_SUM_BENEFITS", "fields": ["year", "status", "apart", "received", "benefits", "earlier_lumps"]}, {"title": "DISPLAY_LUMP_SUM_RETURN", "fields": ["agi", "taxable", "refigured", "exempt", "addbacks"]}]}}
+  ]
+}

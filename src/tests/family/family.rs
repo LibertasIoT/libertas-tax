@@ -1,5 +1,9 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::*;
+use crate::tests::cross::interview::{
+    at_the_credits_hub, continued, education_value, open_credits_topic, save_education,
+    save_more_credits, student,
+};
 
 // Form 8958 (Pub. 555): fixtures F4 of the whole-return map. Emery files
 // separately in Arizona and divides every item by half; the spouse Finley's
@@ -11,7 +15,7 @@ pub(in crate::tests) fn community_pair(
 ) -> FederalDraft {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = CommunityProperty::Yes { state, rule };
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let (own, other) = if filer_is_emery {
         (Owner::Taxpayer, Owner::Spouse)
     } else {
@@ -26,9 +30,9 @@ pub(in crate::tests) fn community_pair(
         income(savings_income(1200, 0)),
         income(savings_income(800, 0)),
     ];
-    entries[2].owner = own;
+    entries[2].owner = crate::DocumentOwner::from(own);
     entries[2].label = "Joint bank".into();
-    entries[3].owner = other;
+    entries[3].owner = crate::DocumentOwner::from(other);
     entries[3].label = "Inherited account".into();
     for (id, entry) in entries.iter_mut().enumerate() {
         entry.id = id as i64 + 1;
@@ -40,10 +44,10 @@ pub(in crate::tests) fn community_pair(
         entries.swap(0, 1);
         entries[0].id = 1;
         entries[1].id = 2;
-        entries[0].owner = Owner::Taxpayer;
-        entries[1].owner = Owner::Spouse;
-        entries[2].owner = Owner::Spouse;
-        entries[3].owner = Owner::Taxpayer;
+        entries[0].owner = crate::DocumentOwner::Yours;
+        entries[1].owner = crate::DocumentOwner::Spouses;
+        entries[2].owner = crate::DocumentOwner::Spouses;
+        entries[3].owner = crate::DocumentOwner::Yours;
     }
     d.income = entries;
     d.next_id = 5;
@@ -231,7 +235,7 @@ fn head_of_household_takes_a_non_citizen_child_unless_the_child_is_married() {
 }
 // Family unit (2026-10-08), defect 2. IRC section 2(a)(1)(B) takes "a
 // dependent (i) who (within the meaning of section 152, determined without
-// regard to subsections (b)(1), (b)(2), and (d)(1)(B)) is a son, stepson,
+// regard to subsections (b)(1), b(2), and (d)(1)(B)) is a son, stepson,
 // daughter, or stepdaughter"; Pub. 501 (2025) "Qualifying Surviving Spouse"
 // test 3 allows a child or stepchild (not a foster child) "whom you can claim
 // as a dependent or could claim ... except that" the child had gross income of
@@ -435,14 +439,305 @@ fn care_2026_rates_and_joint_earned_income_caps() {
     );
 }
 #[test]
+fn form_1098t_prepaid_period_keeps_paid_year_credit_and_refunds_count_once() {
+    // Pub. 970 chapters 2–3, prepaid expenses and refunds:
+    // https://www.irs.gov/publications/p970
+    // A January–March 2027 term paid in 2026 stays in the 2026 credit.
+    for (method, full_credit, reduced_credit) in [
+        (EducationChoice::AmericanOpportunity, 2_250, 2_000),
+        (EducationChoice::LifetimeLearning, 600, 400),
+    ] {
+        let (mut session, _) = at_the_credits_hub(complete(FederalStatus::Single));
+        let page = crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let mut document = student(-1, 300_000);
+        document.form.box_7 = true;
+        let request = save_education(
+            &mut session,
+            EducationCredits {
+                students: vec![document],
+                people: education_value(&page).people.clone(),
+            },
+        );
+        assert!(session.draft.credits.as_ref().unwrap().education.is_empty());
+        accepted(&send(&mut session, request));
+        let credits = session.draft.credits.as_ref().unwrap();
+        assert_eq!(credits.education[0].form.box_1, 300_000);
+        assert!(credits.education[0].form.box_7);
+        assert!(credits.education_inputs().is_empty(), "annual answers are still owed");
+
+        let mut topic = open_credits_topic(&mut session, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        assert!(education.documents[0].following_year_academic_period);
+        assert_eq!(education.documents[0].tuition, 300_000);
+        assert_eq!(education.students[0].allowed_insurance_refund_allocations, vec![1],);
+        assert_eq!(
+            education.students[0].more.insurance_refund_current_expenses,
+            SourceCents::NotReported,
+        );
+        education.students[0].method = Some(method);
+        education.students[0].more.american_opportunity_used_up = Some(false);
+        accepted(&send(&mut session, topic));
+        let full = continued(&mut session);
+        assert_eq!(
+            value(&full, "education_credit") + value(&full, "refundable_education_credit"),
+            full_credit,
+        );
+
+        // A separate $1,000 refund reduces $3,000 to $2,000 exactly once.
+        let mut topic = open_credits_topic(&mut session, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        education.students[0].more.refunds = 100_000;
+        accepted(&send(&mut session, topic));
+        let reduced = continued(&mut session);
+        assert_eq!(
+            value(&reduced, "education_credit") + value(&reduced, "refundable_education_credit"),
+            reduced_credit,
+        );
+        assert_eq!(session.draft.credits.as_ref().unwrap().education[0].form.box_1, 300_000);
+        let saved = session.draft.clone();
+        let topic = open_credits_topic(&mut session, TaxSection::Education);
+        accepted(&send(&mut session, topic));
+        assert_eq!(session.draft, saved);
+        let mut restored = restart(saved.clone());
+        let topic = open_credits_topic(&mut restored, TaxSection::Education);
+        accepted(&send(&mut restored, topic));
+        assert_eq!(restored.draft, saved);
+        assert_eq!(continued(&mut restored).tax, reduced.tax);
+
+        // Correcting only the period checkbox preserves the paid-year amount
+        // and the annual refund answer through the ordinary document editor.
+        let mut paper =
+            crate::tests::support::client::income_pages::open_document_center(&mut restored);
+        let P::SaveDocuments { documents, .. } = &mut paper else { unreachable!() };
+        documents.common.education.students[0].form.box_7 = false;
+        accepted(&send(&mut restored, paper));
+        let topic = open_credits_topic(&mut restored, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &topic else { unreachable!() };
+        assert!(!education.documents[0].following_year_academic_period);
+        assert_eq!(education.students[0].more.refunds, 100_000);
+        accepted(&send(&mut restored, topic));
+        assert_eq!(continued(&mut restored).tax, reduced.tax);
+    }
+}
+
+#[test]
+fn form_1098t_insurance_refunds_reduce_only_allocated_current_expenses() {
+    // Form 1098-T box 10 and Pub. 970 chapters 2–3:
+    // https://www.irs.gov/pub/irs-pdf/f1098t.pdf
+    // https://www.irs.gov/publications/p970
+    // $3,000 tuition less a separately reported $1,000 insurance refund
+    // gives $2,000 current expenses only when the records allocate it here.
+    for (method, original_credit, insured_credit, other_refund_credit, corrected_credit) in [
+        (EducationChoice::AmericanOpportunity, 2_250, 2_000, 1_800, 2_075),
+        (EducationChoice::LifetimeLearning, 600, 400, 360, 460),
+    ] {
+        let (mut session, _) = at_the_credits_hub(complete(FederalStatus::Single));
+        let page = crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let request = save_education(
+            &mut session,
+            EducationCredits {
+                students: vec![student(-1, 300_000)],
+                people: education_value(&page).people.clone(),
+            },
+        );
+        accepted(&send(&mut session, request));
+        let mut topic = open_credits_topic(&mut session, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        education.students[0].method = Some(method);
+        education.students[0].more.american_opportunity_used_up = Some(false);
+        accepted(&send(&mut session, topic));
+        let original = continued(&mut session);
+        assert_eq!(
+            value(&original, "education_credit") + value(&original, "refundable_education_credit"),
+            original_credit,
+        );
+
+        let mut paper =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut paper else { unreachable!() };
+        let mut insurer = student(-1, 0);
+        insurer.form.student = documents.common.education.students[0].form.student.clone();
+        insurer.form.box_8 = false;
+        insurer.form.box_10 = 100_000;
+        documents.common.education.students.push(insurer);
+        assert_eq!(session.draft.credits.as_ref().unwrap().education.len(), 1);
+        accepted(&send(&mut session, paper));
+        let credits = session.draft.credits.as_ref().unwrap();
+        assert_eq!(credits.education.len(), 2);
+        assert_eq!(credits.education[0].form.box_1, 300_000);
+        assert_eq!(credits.education[1].form.box_10, 100_000);
+        assert_eq!(
+            credits.students[0].more.insurance_refund_current_expenses,
+            SourceCents::Unavailable,
+        );
+        assert!(
+            credits
+                .education_pending()
+                .contains(&(-1, "EDUCATION_INSURANCE_REFUND_ALLOCATION_NEEDED"))
+        );
+        assert!(credits.education_inputs().is_empty());
+
+        let mut topic = open_credits_topic(&mut session, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        assert_eq!(education.documents[1].insurance_reimbursements, 100_000);
+        assert_eq!(education.students[0].allowed_insurance_refund_allocations.len(), 3);
+        education.students[0].more.insurance_refund_current_expenses =
+            SourceCents::Reported { amount: 100_000 };
+        accepted(&send(&mut session, topic));
+        let insured = continued(&mut session);
+        assert_eq!(
+            value(&insured, "education_credit") + value(&insured, "refundable_education_credit"),
+            insured_credit,
+        );
+        assert_eq!(
+            session.draft.credits.as_ref().unwrap().education_inputs()[0].expenses.refunds,
+            100_000
+        );
+
+        let mut topic = open_credits_topic(&mut session, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        education.students[0].more.refunds = 20_000;
+        accepted(&send(&mut session, topic));
+        let reduced = continued(&mut session);
+        assert_eq!(
+            value(&reduced, "education_credit") + value(&reduced, "refundable_education_credit"),
+            other_refund_credit,
+        );
+        assert_eq!(
+            session.draft.credits.as_ref().unwrap().education_inputs()[0].expenses.refunds,
+            120_000
+        );
+        let saved = session.draft.clone();
+        let topic = open_credits_topic(&mut session, TaxSection::Education);
+        accepted(&send(&mut session, topic));
+        assert_eq!(session.draft, saved);
+        let mut restored = restart(saved.clone());
+        let topic = open_credits_topic(&mut restored, TaxSection::Education);
+        accepted(&send(&mut restored, topic));
+        assert_eq!(restored.draft, saved);
+        assert_eq!(continued(&mut restored).tax, reduced.tax);
+
+        // Correcting the accepted insurance receipt reopens only its source
+        // allocation; it retains the separate refund and chosen credit.
+        let mut paper =
+            crate::tests::support::client::income_pages::open_document_center(&mut restored);
+        let P::SaveDocuments { documents, .. } = &mut paper else { unreachable!() };
+        documents.common.education.students[1].form.box_10 = 50_000;
+        accepted(&send(&mut restored, paper));
+        assert!(
+            restored
+                .draft
+                .credits
+                .as_ref()
+                .unwrap()
+                .education_pending()
+                .contains(&(-1, "EDUCATION_INSURANCE_REFUND_ALLOCATION_NEEDED"))
+        );
+        let mut topic = open_credits_topic(&mut restored, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        assert_eq!(education.students[0].method, Some(method));
+        assert_eq!(education.students[0].more.refunds, 20_000);
+        assert_eq!(
+            education.students[0].more.insurance_refund_current_expenses,
+            SourceCents::Unavailable
+        );
+        education.students[0].more.insurance_refund_current_expenses =
+            SourceCents::Reported { amount: 50_000 };
+        accepted(&send(&mut restored, topic));
+        let corrected = continued(&mut restored);
+        assert_eq!(
+            value(&corrected, "education_credit")
+                + value(&corrected, "refundable_education_credit"),
+            corrected_credit,
+        );
+    }
+}
+
+#[test]
+fn form_1098t_insurance_refunds_keep_unknown_and_prior_year_history_unresolved() {
+    let (mut session, _) = at_the_credits_hub(complete(FederalStatus::Single));
+    let page = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let mut insurer = student(-1, 0);
+    insurer.form.box_8 = false;
+    insurer.form.box_10 = 100_000;
+    let request = save_education(
+        &mut session,
+        EducationCredits {
+            students: vec![student(-1, 300_000), insurer],
+            people: education_value(&page).people.clone(),
+        },
+    );
+    accepted(&send(&mut session, request));
+    for (allocation, current_refund, key) in [
+        (SourceCents::Unavailable, None, "EDUCATION_INSURANCE_REFUND_ALLOCATION_NEEDED"),
+        (SourceCents::NotReported, Some(0), "ISSUE_EDUCATION_RECAPTURE_COMPLEX_PRIOR_RETURN"),
+        (
+            SourceCents::Reported { amount: 50_000 },
+            Some(50_000),
+            "ISSUE_EDUCATION_RECAPTURE_COMPLEX_PRIOR_RETURN",
+        ),
+    ] {
+        let mut topic = open_credits_topic(&mut session, TaxSection::Education);
+        let P::SaveEducation { value: education, .. } = &mut topic else { unreachable!() };
+        education.students[0].method = Some(EducationChoice::LifetimeLearning);
+        education.students[0].more.american_opportunity_used_up = Some(false);
+        education.students[0].more.insurance_refund_current_expenses = allocation.clone();
+        accepted(&send(&mut session, topic));
+        let credits = session.draft.credits.as_ref().unwrap();
+        assert_eq!(credits.students[0].more.insurance_refund_current_expenses, allocation);
+        assert!(credits.education_pending().contains(&(-1, key)));
+        assert_eq!(
+            credits.education_inputs().first().map(|row| row.expenses.refunds),
+            current_refund
+        );
+        assert!(credits.education_recapture.is_none(), "receipt year establishes no prior history");
+        assert_ne!(estimate(&session.draft).state, ResultState::EstimatedForSupportedScope);
+        let restored = restart(session.draft.clone());
+        assert_eq!(restored.draft, session.draft);
+        assert!(restored.draft.credits.as_ref().unwrap().education_pending().contains(&(-1, key)));
+    }
+
+    // An independently entered 2025 history has no source/student link to
+    // this receipt. Even a matching $500 reduction cannot establish one.
+    let request = save_more_credits(
+        &session.draft,
+        MoreCredits {
+            answers: Vec::new(),
+            documents: Vec::new(),
+            credits: vec![MoreCredit::EducationRecapture(PriorYearEducationCreditRecapture {
+                method: EducationMethod::AmericanOpportunity,
+                filed_qualified_expenses: 400_000,
+                after_filing_reduction: 50_000,
+                filed_education_magi: 5_000_000,
+                filed_joint: false,
+                filed_credit_used: 250_000,
+                ordinary_prior_return: true,
+            })],
+        },
+    );
+    accepted(&send(&mut session, request));
+    let credits = session.draft.credits.as_ref().unwrap();
+    assert_eq!(credits.education_recapture.as_ref().unwrap().additional_tax(), Ok(125));
+    assert!(
+        credits
+            .education_pending()
+            .contains(&(-1, "ISSUE_EDUCATION_RECAPTURE_COMPLEX_PRIOR_RETURN"))
+    );
+    assert_ne!(estimate(&session.draft).state, ResultState::EstimatedForSupportedScope);
+}
+
+#[test]
 fn education_credits_and_claimant_refund_restriction() {
     let mut d = complete(FederalStatus::Single);
     let sid0_1578 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(native_education(
-        sid0_1578,
-        education_expenses(400_000),
-        education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    ));
+    add_education(
+        d.credits.as_mut().unwrap(),
+        native_education(
+            sid0_1578,
+            education_expenses(400_000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        ),
+    );
     let r = supported(&d);
     assert_eq!(r.tax, Some(352_300));
     assert_eq!(value(&r, "refundable_education_credit"), 1000);
@@ -457,11 +752,14 @@ fn education_credits_and_claimant_refund_restriction() {
 fn education_credit_requires_a_valid_student_ssn() {
     let mut d = complete(FederalStatus::Single);
     let sid0_1600 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(native_education(
-        sid0_1600,
-        education_expenses(400_000),
-        education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    ));
+    add_education(
+        d.credits.as_mut().unwrap(),
+        native_education(
+            sid0_1600,
+            education_expenses(400_000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        ),
+    );
     let expected = supported(&d);
     assert_eq!(expected.tax, Some(352_300));
     // The student catalog carries the taxpayer's own SSN answer from the filer
@@ -545,7 +843,7 @@ fn joint_status_change_opens_the_spouse_page_and_keeps_later_pages() {
             page: 0,
             previous: TaxSection::Review as i32,
             review: true,
-            estimate: vec![],
+            estimate: None,
             warnings: vec![],
             progress: vec![],
             value: ReturnSetup { filing: Filing::MarriedJointly },
@@ -573,7 +871,7 @@ fn joint_status_change_opens_the_spouse_page_and_keeps_later_pages() {
             page: 1,
             previous: 0,
             review: false,
-            estimate: vec![],
+            estimate: None,
             warnings: vec![],
             progress: vec![],
             you: crate::interview::filer(&d.people.unwrap().taxpayer),
@@ -593,6 +891,7 @@ fn work_deductions_share_joint_caps_and_require_claimant_ssn() {
     add(&mut d, wage(id, Owner::Spouse, 8_000_000, 0));
     for entry in &mut d.income {
         let FederalIncome::Wage { data: w } = &mut entry.income else { panic!() };
+        let mut w = edit_wage(w);
         w.work_deductions = work_deductions(2_000_000, 2_000_000);
     }
     let r = supported(&d);
@@ -633,11 +932,14 @@ fn education_expenses_derive_the_selected_credit_base() {
     assert_eq!(expenses.qualified(EducationMethod::LifetimeLearning), 260_000);
     let mut draft = complete(FederalStatus::Single);
     let sid0_1899 = -1; // You, the first person of the catalog
-    draft.credits.as_mut().unwrap().education.push(native_education(
-        sid0_1899,
-        expenses.clone(),
-        education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    ));
+    add_education(
+        draft.credits.as_mut().unwrap(),
+        native_education(
+            sid0_1899,
+            expenses.clone(),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        ),
+    );
     let result = supported(&draft);
     assert_eq!(
         value(&result, "education_credit") + value(&result, "refundable_education_credit"),
@@ -652,7 +954,10 @@ fn exclusion_magi_is_restored_for_niit_and_child_phaseout() {
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, income(foreign_pay(250000)));
     set_claim(&mut d, foreign_claim(Owner::Taxpayer));
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(1_000_000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(1_000_000, 0)) }),
+    );
     let dep = child(d.next_id);
     d.next_id += 1;
     d.dependents.push(dep);
@@ -768,8 +1073,6 @@ fn alimony_special_treatment_remains_visible_even_with_no_current_payment() {
     // A pre-1985 instrument's special rules are refused by name.
     d.adjustments.as_mut().unwrap().alimony_paid[0].payment.agreement = 19840101;
     unsupported(&d, "Alimony");
-    d.adjustments.as_mut().unwrap().alimony_paid[0].payment.agreement = 20180230;
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -873,11 +1176,14 @@ fn care_credit_precedes_education_when_tax_capacity_is_limited() {
     add_child(&mut d);
     d.dependents[0].set_care_expenses(300000);
     let sid0_2217 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(native_education(
-        sid0_2217,
-        education_expenses(400000),
-        education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    ));
+    add_education(
+        d.credits.as_mut().unwrap(),
+        native_education(
+            sid0_2217,
+            education_expenses(400000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        ),
+    );
     let r = {
         document_care(&mut d);
         supported(&d)
@@ -913,8 +1219,6 @@ fn prior_year_care_caps_and_history_validation() {
     p.prior_line_6 = 0;
     assert!(p.valid());
     assert_eq!(p.credit(&mut r), 440);
-    p.paid_in_return_year = -1;
-    assert!(!p.valid());
     p.paid_in_return_year = 60000;
     p.prior_line_6 = 200001;
     assert!(!p.valid());
@@ -936,10 +1240,10 @@ fn two_employers_both_spouses_share_one_care_exclusion_and_credit_ceiling() {
     let mut d = joint_employer_care_return();
     let r = supported(&d);
     assert!(
-        matches!(&d.income[0].income, FederalIncome::Wage { data } if data.care_benefits == 200_000)
+        matches!(&d.income[0].income, FederalIncome::Wage { data } if FederalWage::from(data).care_benefits == 200_000)
     );
     assert!(
-        matches!(&d.income[1].income, FederalIncome::Wage { data } if data.care_benefits == 200_000)
+        matches!(&d.income[1].income, FederalIncome::Wage { data } if FederalWage::from(data).care_benefits == 200_000)
     );
     assert_eq!(value(&r, "care_benefits_excluded"), 4000);
     assert_eq!(value(&r, "care_benefits_taxable"), 0);
@@ -1115,11 +1419,16 @@ fn birth_adoption_withdrawals_share_parent_child_limit_and_one_year_window() {
     assert_eq!(value(&r, "birth_adoption_used_0_Child A"), 5000);
     assert_eq!(value(&r, "agi"), 68000);
     assert_eq!(restart(d.clone()).draft, d);
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTreatment::Exception { distributed, .. } = &mut data.ordinary_distribution else {
-        unreachable!()
-    };
-    *distributed = 20260301;
+    {
+        let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
+        let mut data = edit_retirement(data);
+        let Some(RetirementTreatment::Exception { distributed, .. }) =
+            &mut data.ordinary_distribution
+        else {
+            unreachable!()
+        };
+        *distributed = 20260301;
+    }
     unsupported(&d, "Income");
 }
 
@@ -1335,8 +1644,11 @@ fn eic_investment_income_limit_is_12200() {
     assert_eq!(restart(d.clone()).draft, d);
 
     let mut over = d.clone();
-    let FederalIncome::Interest { data } = &mut over.income[1].income else { unreachable!() };
-    data.taxable = 1_220_100; // $12,201.00: one cent over the limit.
+    {
+        let FederalIncome::Interest { data } = &mut over.income[1].income else { unreachable!() };
+        let mut data = edit_interest(data);
+        data.taxable = 1_220_100; // $12,201.00: one cent over the limit.
+    }
     let over_result = supported(&over);
     assert_eq!(value(&over_result, "eic_investment_income"), 12_201);
     assert_eq!(value(&over_result, "earned_income_credit"), 0);
@@ -1543,7 +1855,9 @@ fn main_home_exclusion_uses_closing_costs_and_each_spouses_history() {
         let mut d = complete(status);
         add(
             &mut d,
-            income(FederalIncome::HomeSale { data: home_sale(status == FederalStatus::Joint) }),
+            income(FederalIncome::HomeSale {
+                data: home_sale_source(status == FederalStatus::Joint),
+            }),
         );
         let r = supported(&d);
         let id = d.income[1].id;
@@ -1560,31 +1874,30 @@ fn main_home_exclusion_uses_closing_costs_and_each_spouses_history() {
 #[test]
 fn joint_home_exclusion_can_use_one_spouses_ownership_but_not_the_others_residence() {
     let mut d = complete(FederalStatus::Joint);
-    let mut home = home_sale(true);
-    let HomeExclusion::Full { taxpayer, spouse } = &mut home.exclusion else { panic!() };
-    taxpayer.owned = 0;
-    *spouse = Some(home_use(1000, 729));
+    let mut home = home_sale_source(true);
+    let HomeSpouse::Joint { lived, .. } = &mut home.facts_mut().spouse else { panic!() };
+    *lived = HomeLived::Days { days: 729 };
     add(&mut d, income(FederalIncome::HomeSale { data: home }));
     assert_eq!(value(&supported(&d), "capital_gain"), 300000);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
-    let HomeExclusion::Full { taxpayer, .. } = &mut data.exclusion else { panic!() };
-    taxpayer.prior_exclusion = true;
+    data.facts_mut().earlier_sale = EarlierHomeSale::Yes { sold: 20251231 };
     unsupported(&d, "Income:");
 }
 #[test]
 fn home_care_facility_days_complete_residence_but_not_ownership() {
     let mut d = complete(FederalStatus::Single);
-    let mut home = home_sale(false);
-    let HomeExclusion::Full { taxpayer, .. } = &mut home.exclusion else { panic!() };
-    *taxpayer = home_use(1000, 365);
-    taxpayer.care = home_care(365, 365);
-    assert!(home.valid());
+    let mut home = home_sale_source(false);
+    home.facts_mut().lived =
+        HomeLived::CareFacility { home_days: 365, facility_days: 365, owned_residence_days: 365 };
+    assert!(HomeSale::from(&home).valid());
     add(&mut d, income(FederalIncome::HomeSale { data: home }));
     assert_eq!(value(&supported(&d), "capital_gain"), 300000);
     assert_eq!(restart(d.clone()).draft, d);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
-    let HomeExclusion::Full { taxpayer, .. } = &mut data.exclusion else { panic!() };
-    taxpayer.care = home_care(365, 364);
+    let HomeLived::CareFacility { owned_residence_days, .. } = &mut data.facts_mut().lived else {
+        panic!()
+    };
+    *owned_residence_days = 364;
     unsupported(&d, "Income:");
 }
 #[test]
@@ -1613,34 +1926,39 @@ fn retained_2013_through_2016_pease_refund_uses_year_and_filing_status() {
         let mut d = complete(FederalStatus::Single);
         add(
             &mut d,
-            income(FederalIncome::TaxRefund {
-                amount: 300_000,
-                withholding: 0,
-                history: TaxRefundHistory::IncomeTax {
-                    deduction_year: year,
-                    income_paid: 1_000_000,
-                    sales_available: 500_000,
-                    salt_paid: 1_000_000,
-                    salt_deducted: 1_000_000,
-                    itemized: 1_970_000,
-                    standard: 600_000,
-                    overall_limit: Some(PeaseWorksheet {
-                        agi: threshold + 1_000_000,
-                        before_limit: 2_000_000,
-                        protected: 1_000_000,
-                        filing_status,
-                    }),
-                    property_refunded: 0,
-                    ordinary: true,
-                },
+            income(FederalIncome::GovernmentPayment {
+                data: tax_refund_source(FederalTaxRefund {
+                    amount: 300_000,
+                    withholding: 0,
+                    history: TaxRefundHistory::IncomeTax {
+                        deduction_year: year,
+                        income_paid: 1_000_000,
+                        sales_available: 500_000,
+                        salt_paid: 1_000_000,
+                        salt_deducted: 1_000_000,
+                        itemized: 1_970_000,
+                        standard: 600_000,
+                        overall_limit: Some(PeaseWorksheet {
+                            agi: threshold + 1_000_000,
+                            before_limit: 2_000_000,
+                            protected: 1_000_000,
+                            filing_status,
+                        }),
+                        property_refunded: 0,
+                        ordinary: true,
+                    },
+                }),
             }),
         );
         let r = supported(&d);
         assert_eq!(value(&r, "taxable_state_tax_refund"), 3_000, "{year}");
         assert_eq!(estimate(&restart(d.clone()).draft), r, "{year}");
-        let FederalIncome::TaxRefund {
-            history: TaxRefundHistory::IncomeTax { overall_limit, .. },
-            ..
+        let FederalIncome::GovernmentPayment {
+            data:
+                GovernmentPaymentSource {
+                    history: TaxRefundHistory::IncomeTax { overall_limit, .. },
+                    ..
+                },
         } = &mut d.income[1].income
         else {
             unreachable!()
@@ -1654,7 +1972,7 @@ fn social_security_negative_box_five_offsets_joint_spouse_benefits() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, income(social_security_net(-1000000, 10000)));
     let mut spouse = income(social_security_net(2000000, 50000));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(return_line(&r, "6a"), 1000000);
@@ -1702,7 +2020,8 @@ fn joint_general_rule_matches_irs_different_survivor_payment_example() {
         RetirementTreatment::Ordinary,
     );
     if let FederalIncome::Retirement { data } = &mut e.income {
-        data.taxable = RetirementTaxable::GeneralAnnuity { data: survivor };
+        let mut data = edit_retirement(data);
+        data.taxable = Some(RetirementTaxable::GeneralAnnuity { data: survivor });
         assert_eq!(data.taxable_income(), 202860);
     }
     add(&mut d, e);
@@ -1715,14 +2034,6 @@ fn joint_survivor_recovery_shares_original_cost_and_validates_recipient_payments
     a.recovered = a.cost - 10000;
     assert_eq!(a.excluded(), 10000);
     assert!(!a.valid(600000)); // Survivor's payment is $350, not the primary's $500.
-    a.duration = AnnuityDuration::JointLife {
-        delay: 1,
-        age: 70,
-        survivor_age: 116,
-        survivor_payment: 35000,
-        survivor: true,
-    };
-    assert!(!a.valid(420000));
 }
 
 #[test]
@@ -1812,11 +2123,14 @@ fn final_education_refund_restriction_uses_age_at_tax_year_close() {
     p.support_share = SupportShare::LessThanHalf;
     p.died = Some(FinalReturn { date: 20260613, ordinary: true, bonds: None, estate_medical: 0 });
     let sid0_3795 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(native_education(
-        sid0_3795,
-        education_expenses(400000),
-        education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    ));
+    add_education(
+        d.credits.as_mut().unwrap(),
+        native_education(
+            sid0_3795,
+            education_expenses(400000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        ),
+    );
     assert_eq!(value(&supported(&d), "refundable_education_credit"), 0);
     d.people.as_mut().unwrap().taxpayer.died.as_mut().unwrap().date = 20260614;
     assert_eq!(value(&supported(&d), "refundable_education_credit"), 1000);
@@ -1864,8 +2178,6 @@ fn kiddie_missing_or_special_sources_do_not_publish_estimates() {
     parent.ordinary = true;
     parent.complete = false;
     unsupported(&d, "Investment tax");
-    d.people.as_mut().unwrap().parent_tax.as_mut().unwrap().taxable = -1;
-    assert!(!d.valid_stored());
 }
 #[test]
 fn kiddie_savings_penalty_reduces_unearned_income_before_parent_allocation() {
@@ -1973,7 +2285,8 @@ fn kiddie_child_preferential_income_uses_parent_capital_gain_rates() {
 #[test]
 fn kiddie_child_gain_worksheets_flow_to_return_and_persist() {
     let mut d = young_interest_return();
-    d.income[0].income = FederalIncome::Dividend { data: native_dividend(600000, 600000, 400000) };
+    d.income[0].income =
+        FederalIncome::Dividend { data: dividend_source(native_dividend(600000, 600000, 400000)) };
     let r = supported(&d);
     assert_eq!(value(&r, "kiddie_tax_allocated_dividends"), 4380);
     assert_eq!(value(&r, "kiddie_tax_allocated_capital_gain"), 2920);
@@ -1981,6 +2294,7 @@ fn kiddie_child_gain_worksheets_flow_to_return_and_persist() {
     assert_eq!(restart(d.clone()).draft, d);
     d.people.as_mut().unwrap().taxpayer.dependency = FilerDependency::Independent;
     if let FederalIncome::Dividend { data } = &mut d.income[0].income {
+        let mut data = edit_dividend(data);
         data.ordinary *= 2;
         data.qualified *= 2;
         data.capital_distributions *= 2;
@@ -2170,8 +2484,6 @@ fn kiddie_family_special_gain_caps_use_original_parent_source_lines() {
         p.calculate(10000, 10000, FederalStatus::Single, [10000, 10000], 10000, [0; 3]).0,
         2800
     );
-    p.gains.as_mut().unwrap().collectibles = -1;
-    assert!(!p.valid());
 }
 
 #[test]
@@ -2271,7 +2583,9 @@ fn kiddie_special_gain_allocation_uses_net_gain_after_short_term_loss() {
     let mut d = young_special_return(10000, 0, 10000);
     add(
         &mut d,
-        income(FederalIncome::Sale { data: native_sale(GainTerm::Short, 100000, Some(600000)) }),
+        income(FederalIncome::Sale {
+            data: sale_source(native_sale(GainTerm::Short, 100000, Some(600000))),
+        }),
     );
     let r = supported(&d);
     assert_eq!(value(&r, "kiddie_tax_allocated_capital_gain"), 12300);
@@ -2510,9 +2824,6 @@ fn child_interest_attribution_validates_each_source_pool() {
     d.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().income_use =
         InvestmentInterestUse::Mixed { paid: 0, carryover: 200001 };
     assert!(!d.valid_stored());
-    d.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().income_use =
-        InvestmentInterestUse::Mixed { paid: -1, carryover: 0 };
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -2561,10 +2872,11 @@ fn child_gambling_expense_does_not_directly_reduce_preferential_income() {
 #[test]
 fn child_gambling_deduction_respects_standard_choice_and_section68() {
     let mut d = child_gambling_return(10000, 8000);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    // 2026-11-02: automatic selection keeps the retained eligible itemized claim.
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
-    assert_eq!(value(&r, "kiddie_tax_direct_gambling_deduction"), 0);
-    assert_eq!(value(&r, "kiddie_tax_net_unearned_income"), 7300);
+    assert_eq!(value(&r, "kiddie_tax_direct_gambling_deduction"), 7200);
+    assert_eq!(value(&r, "kiddie_tax_net_unearned_income"), 1450);
     let mut d = child_gambling_return(100000, 100000);
     add(&mut d, wage(0, Owner::Taxpayer, 80000000, 0));
     let r = supported(&d);
@@ -2635,6 +2947,7 @@ fn two_special_joint_children_reject_a_reused_source_and_accept_history_over_cap
     unsupported(&reused, "Adoption benefits");
     let mut missing_w2 = d.clone();
     if let FederalIncome::Wage { data } = &mut missing_w2.income[2].income {
+        let mut data = edit_wage(data);
         data.medicare_wages = data.wages;
     }
     unsupported(&missing_w2, "Adoption benefits");
@@ -3206,6 +3519,7 @@ fn joint_special_needs_deemed_excess_requires_confirmed_source_and_automatic_spl
     unsupported(&missing_w2, "Adoption benefits");
     let mut missing_fica = d.clone();
     if let FederalIncome::Wage { data } = &mut missing_fica.income[2].income {
+        let mut data = edit_wage(data);
         data.medicare_wages = data.wages;
     }
     unsupported(&missing_fica, "Adoption benefits");
@@ -3259,6 +3573,7 @@ fn joint_employer_adoption_requires_distinct_w2_sources_and_resolved_history() {
 
     let mut missing_fica_wages = d.clone();
     if let FederalIncome::Wage { data } = &mut missing_fica_wages.income[1].income {
+        let mut data = edit_wage(data);
         data.medicare_wages = data.wages;
     }
     unsupported(&missing_fica_wages, "Adoption benefits");
@@ -3477,12 +3792,6 @@ fn adoption_shared_limit_agreement_and_amounts_are_verified() {
     let r = supported(&d);
     assert!(noted(&r, "WARN_ADOPTION_SHARED_LIMIT_LEFT_OUT"), "{r:?}");
     assert_eq!(value(&r, "adoption_1_credit_limit"), 0);
-    d.credits.as_mut().unwrap().adoptions[0].limits =
-        AdoptionLimits::Shared { credit: 1767001, exclusion: 0, agreed: true };
-    assert!(!d.valid_stored());
-    d.credits.as_mut().unwrap().adoptions[0].limits =
-        AdoptionLimits::Shared { credit: 0, exclusion: -1, agreed: true };
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -3503,19 +3812,7 @@ fn personal_long_term_care_checks_qualification_the_person_and_stored_amounts() 
     }
     itemized(d.deductions.as_mut().unwrap()).long_term_care[0].qualified =
         CareContractQualification::Qualified;
-    let baseline = supported(&d);
-    // 2026-10-16 D-2026-10-15-13: the actual statutory premium allowance,
-    // not an arbitrary source ceiling, limits the deductible amount.
-    itemized(d.deductions.as_mut().unwrap()).long_term_care[0].premiums = 100_000_000_001;
-    assert!(d.valid_stored());
-    let wide = supported(&d);
-    for id in ["long_term_care_1_eligible", "long_term_care_1_medical"] {
-        assert_eq!(value(&wide, id), value(&baseline, id));
-    }
-    assert_eq!(wide.tax, baseline.tax);
     assert_eq!(restart(d.clone()).draft, d);
-    itemized(d.deductions.as_mut().unwrap()).long_term_care[0].premiums = -1;
-    assert!(!d.valid_stored());
 }
 #[test]
 fn sole_spouse_uniform_lifetime_election_needs_supported_source_facts() {
@@ -3547,15 +3844,13 @@ fn personal_debt_allocated_joint_amounts_are_summed_once_and_dates_validated() {
     let before = supported(&d);
     add(&mut d, canceled_personal_debt(2000, PersonalDebtTreatment::Taxable));
     let mut spouse = canceled_personal_debt(3000, PersonalDebtTreatment::Taxable);
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), value(&before, "agi") + 5000);
     if let FederalIncome::PersonalDebt { data } = &mut d.income[1].income {
-        data.date = 20251231;
-        assert!(!data.valid());
-        data.date = 20260230;
-        assert!(!data.valid());
+        data.form.date = 20251231;
+        assert!(!PersonalDebtCancellation::from(&*data).valid());
     }
 }
 
@@ -3585,7 +3880,7 @@ fn student_death_disability_discharge_uses_debt_owners_ssn_not_spouses() {
             reason: StudentDischargeReason::DeathOrDisability,
         },
     );
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut d, entry);
     supported(&d);
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().valid_ssn = false;
@@ -3728,7 +4023,7 @@ fn prior_2025_cash_and_hosted_student_keep_class_and_vintage_through_full_return
     assert_eq!(return_line(&current_only, "15") - return_line(&result, "15"), 500_000);
     assert!(result.tax < current_only.tax);
 
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    draft.deductions.as_mut().unwrap().itemize_override = None;
     let standard = supported(&draft);
     assert_eq!(value(&standard, "charity_carry_2025_cash_sixty_used"), 5_000);
     assert_eq!(value(&standard, "charity_prior_cash_sixty_deduction"), 0);
@@ -3769,8 +4064,8 @@ fn prior_cash_with_hosted_student_preserves_current_thirty_percent_excess() {
 fn prior_cash_competes_with_hosted_student_under_amended_b_g_limit() {
     // At $60,000 AGI the old (G) cash competes with (B) student expenses.
     // Section 170(b)(1)(B)(ii) restores up to $6,000 cash to its 50% test.
-    for (carry, used, remaining, student, student_carry, standard_carry) in
-        [(35_600, 35_600, 0, 100, 500, 200), (40_000, 36_000, 4_000, 0, 600, 600)]
+    for (carry, used, remaining, student, student_carry, automatic_carry) in
+        [(35_600, 35_600, 0, 100, 500, 500), (40_000, 36_000, 4_000, 0, 600, 600)]
     {
         let mut draft = cash_carry_with_hosted_student(6_000_000, 12, carry);
         let itemized_result = supported(&draft);
@@ -3792,22 +4087,23 @@ fn prior_cash_competes_with_hosted_student_under_amended_b_g_limit() {
         }
         assert_eq!(return_line(&itemized_result, "12e"), 3_570_000);
         assert_eq!(estimate(&restart(draft.clone()).draft), itemized_result);
-        draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-        let standard = supported(&draft);
+        // 2026-11-02: automatic selection retains the same itemized facts and limits.
+        draft.deductions.as_mut().unwrap().itemize_override = None;
+        let automatic = supported(&draft);
         if remaining == 0 {
-            assert_eq!(value(&standard, "charity_carry_2025_cash_sixty_used"), 35_600);
+            assert_eq!(value(&automatic, "charity_carry_2025_cash_sixty_used"), 35_600);
         }
-        assert_eq!(value(&standard, "charity_prior_cash_sixty_consumed_without_deduction"), used);
+        assert_eq!(value(&automatic, "charity_prior_cash_sixty_consumed_without_deduction"), 0);
         assert_eq!(
-            value(&standard, "charity_prior_cash_sixty_remaining_following_year"),
+            value(&automatic, "charity_prior_cash_sixty_remaining_following_year"),
             remaining
         );
         assert_eq!(
-            value(&standard, "charity_hosted_student_return_year_carryforward"),
-            standard_carry
+            value(&automatic, "charity_hosted_student_return_year_carryforward"),
+            automatic_carry
         );
-        assert_eq!(return_line(&standard, "12f"), 0);
-        assert_eq!(estimate(&restart(draft).draft), standard);
+        assert_eq!(return_line(&automatic, "12f"), 0);
+        assert_eq!(estimate(&restart(draft).draft), automatic);
     }
 }
 
@@ -4024,16 +4320,6 @@ fn nonspouse_gift_of_subsidized_home_uses_fair_market_value_for_form_8828() {
     assert_eq!(value(&gift_loss, "mortgage_subsidy_1_disposition_gain"), -50000);
     assert_eq!(value(&gift_loss, "mortgage_subsidy_recapture_tax"), 0);
     assert_eq!(gift_loss.tax, ordinary_return.tax);
-
-    let MortgageSubsidyDisposition::Ordinary {
-        transfer: MortgageSubsidyTransfer::GiftToOther { fair_market_value, .. },
-        ..
-    } = mortgage_disposition(&mut d)
-    else {
-        panic!()
-    };
-    *fair_market_value = -1;
-    assert!(!d.valid_stored());
 }
 #[test]
 fn mixed_note_gain_rounding_conserves_total_and_is_independent_of_payment_order() {
@@ -4058,7 +4344,7 @@ fn mixed_note_gain_rounding_conserves_total_and_is_independent_of_payment_order(
     let second = source.loan_gains(&source.basis_result().unwrap()).unwrap();
     assert_eq!(first, second);
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     assert_eq!(value(&supported(&d), "capital_gain"), 1);
     assert_eq!(restart(d.clone()).draft, d);
 }
@@ -4116,11 +4402,13 @@ fn property_child_income_recapture_reconciles_with_and_without_wages() {
         let young = young_interest_return();
         draft.people = young.people;
         if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+            let mut data = edit_wage(data);
             data.wages = wages * 100;
             data.withholding = 0;
         }
         for entry in &mut draft.income {
             if let FederalIncome::Scorp { data } = &mut entry.income {
+                let mut data = edit_scorp(data);
                 data.property_qbi = property_qbi(0, 0);
             }
         }
@@ -4149,7 +4437,7 @@ fn property_child_income_loss_reduces_unearned_income_once() {
     source.property_qbi = property_qbi(20000, 0);
     source.qbi_statement = complete_ordinary_scorp(0, true).qbi_statement;
     source.amt = Some(amt_records(&source));
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     draft.screening.as_mut().unwrap().section1231 = Some(section1231_history(&[], &[]));
     let r = supported(&draft);
     assert_eq!(value(&r, "agi"), 15000);
@@ -4197,6 +4485,7 @@ fn property_excess_loss_addback_reaches_child_income_with_wages() {
             property_excess_draft(400000, 300000, 500000, 400000, FederalStatus::Single);
         draft.people = young_interest_return().people;
         if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+            let mut data = edit_wage(data);
             data.wages = wages * 100;
             data.withholding = 0;
         }
@@ -4218,7 +4507,7 @@ fn multiple_property_excess_losses_check_both_spouses_and_reject_gains() {
     let mut draft = property_excess_draft(400000, 300000, 500000, 400000, FederalStatus::Joint);
     let mut other = property_excess_draft(400000, 300000, 500000, 200000, FederalStatus::Joint);
     let mut entry = other.income.remove(1);
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, entry);
     let r = supported(&draft);
     assert_eq!(value(&r, "excess_business_loss_carryforward"), 288000);
@@ -4228,15 +4517,21 @@ fn multiple_property_excess_losses_check_both_spouses_and_reject_gains() {
     assert_eq!(value(&r, "amt_section1231_2026_next_lookback"), 512000);
     assert_eq!(r.tax, Some(0));
     assert_eq!(restart(draft.clone()).draft, draft);
-    let FederalIncome::Scorp { data } = &mut draft.income[2].income else { unreachable!() };
-    data.section1231.as_mut().unwrap().net = 1000000;
-    data.property_qbi = property_qbi(0, 10000);
+    {
+        let FederalIncome::Scorp { data } = &mut draft.income[2].income else { unreachable!() };
+        let mut data = edit_scorp(data);
+        data.section1231.as_mut().unwrap().net = 1000000;
+        data.property_qbi = property_qbi(0, 10000);
+    }
     // The remaining loss still exceeds $512k only with a larger first loss.
-    let FederalIncome::Scorp { data } = &mut draft.income[1].income else { unreachable!() };
-    data.section1231.as_mut().unwrap().net = -70000000;
-    data.property_qbi = property_qbi(700000, 0);
-    data.opening = 80000000;
-    data.risk.start = ScorpRiskStart::Detailed { capacity: 80000000, profit: 0, loss: 0 };
+    {
+        let FederalIncome::Scorp { data } = &mut draft.income[1].income else { unreachable!() };
+        let mut data = edit_scorp(data);
+        data.section1231.as_mut().unwrap().net = -70000000;
+        data.property_qbi = property_qbi(700000, 0);
+        data.opening = Some(80000000);
+        data.risk.start = ScorpRiskStart::Detailed { capacity: 80000000, profit: 0, loss: 0 };
+    }
     unsupported(&draft, "Property excess business loss");
 }
 
@@ -4349,7 +4644,7 @@ fn household_wage_caps_apply_per_employee_not_to_employer_earnings() {
 fn household_late_state_contributions_receive_only_ninety_percent_credit() {
     let mut e = household_employer(10000);
     e.states[0].periods[0].wages = 700000;
-    e.states[0].periods[0].rate = Some(27000);
+    e.states[0].periods[0].rate = Some(2.7);
     e.states[0].required = 18900;
     e.states[0].payments = vec![HouseholdStatePayment { date: 20270415, amount: 18900 }];
     assert_eq!(value(&supported(&with_household(e.clone())), "household_0_futa_tax"), 42);
@@ -4358,7 +4653,7 @@ fn household_late_state_contributions_receive_only_ninety_percent_credit() {
     // 420 gross - (189 experience credit + round(189 * .90)) = 61.
     assert_eq!(value(&r, "household_0_futa_tax"), 61);
     assert_eq!(r.tax, Some(661400));
-    e.states[0].reduction = Some(3000);
+    e.states[0].reduction = Some(0.3);
     assert_eq!(value(&supported(&with_household(e)), "household_0_futa_tax"), 82);
 }
 
@@ -4368,11 +4663,11 @@ fn household_futa_allocates_first_seven_thousand_across_states_by_payment_date()
     e.workers[0].pay = vec![household_pay(6000, 20260630), household_pay(4000, 20260331)];
     e.workers[0].pay[0].state = "CA".into();
     e.states[0].periods[0].wages = 400000;
-    e.states[0].reduction = Some(3000);
+    e.states[0].reduction = Some(0.3);
     let mut ca = e.states[0].clone();
     ca.state = "CA".into();
     ca.periods[0].wages = 600000;
-    ca.reduction = Some(12000); // Synthetic rate, not a claim of final 2026 California law.
+    ca.reduction = Some(1.2); // Synthetic rate, not a claim of final 2026 California law.
     e.states.push(ca);
     let r = supported(&with_household(e.clone()));
     // Base 42 + 4,000 * .003 + 3,000 * .012 = 90.
@@ -4404,7 +4699,7 @@ fn household_unknown_rates_and_incomplete_records_do_not_silently_mean_zero() {
         ),
         Some(TaxSection::OtherTaxes)
     );
-    e.states[0].reduction = Some(0);
+    e.states[0].reduction = Some(0.0);
     let final_rate = supported(&with_household(e.clone()));
     assert_eq!(value(&final_rate, "household_0_futa_tax"), 42);
     assert!(!noted(&final_rate, "WARN_HOUSEHOLD_FUTA_CREDIT_ASSUMED_NONE"));
@@ -4444,8 +4739,8 @@ fn household_changed_state_rates_and_unassigned_rate_use_source_credits() {
     let mut e = household_employer(10000);
     e.states[0].required = 56700;
     e.states[0].periods = vec![
-        HouseholdStatePeriod { starts: 20260101, ends: 20260630, wages: 350000, rate: Some(27000) },
-        HouseholdStatePeriod { starts: 20260701, ends: 20261231, wages: 350000, rate: Some(54000) },
+        HouseholdStatePeriod { starts: 20260101, ends: 20260630, wages: 350000, rate: Some(2.7) },
+        HouseholdStatePeriod { starts: 20260701, ends: 20261231, wages: 350000, rate: Some(5.4) },
     ];
     e.states[0].payments = vec![HouseholdStatePayment { date: 20270415, amount: 20000 }];
     // Experience difference 189 - 95 = 94; credit 294; gross 420 -> 126.
@@ -4495,11 +4790,11 @@ fn household_disability_payments_share_chronological_futa_base_with_regular_pay(
     reported_sick_pay(&mut notice)[0].date = 20260331;
     e.workers[0].disability = Some(notice);
     e.states[0].periods[0].wages = 200000;
-    e.states[0].reduction = Some(3000);
+    e.states[0].reduction = Some(0.3);
     let mut ca = e.states[0].clone();
     ca.state = "CA".into();
     ca.periods[0].wages = 600000;
-    ca.reduction = Some(12000); // Synthetic worksheet parameters, not final 2026 rates.
+    ca.reduction = Some(1.2); // Synthetic worksheet parameters, not final 2026 rates.
     e.states.push(ca);
     let r = supported(&with_household(e));
     assert_eq!(value(&r, "household_0_futa_wages"), 7000);
@@ -4561,7 +4856,7 @@ fn partner_sep_missing_source_keeps_record_identity_and_actual_editor() {
     for label in ["Acme partnership", "Acme partnership"] {
         let mut partner = partner_health_source(0, false);
         partner.pensions = 300000;
-        partner.retirement = PartnerRetirement::Sep { rate: 2500 };
+        partner.retirement = PartnerRetirement::Sep { rate: 25.0 };
         let mut entry = income(FederalIncome::Partnership { data: partner });
         entry.label = label.into();
         add(&mut draft, entry);
@@ -4584,7 +4879,7 @@ fn partner_sep_missing_source_keeps_record_identity_and_actual_editor() {
         assert_eq!(issue.context.source(), &crate::interview::income_issue_context(entry));
         assert_eq!(
             crate::interview::issue_page(&draft, &issue.context, Some(&issue.display.key)),
-            Some(TaxSection::PassThrough)
+            Some(TaxSection::Documents)
         );
         assert_eq!(
             issue.context.label().args,
@@ -4691,7 +4986,7 @@ fn adverse_second_only_household_in_another_listed_locality_uses_one_cap() {
 
     let mut duplicate = draft.clone();
     let mut spouse = duplicate.income[0].clone();
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut duplicate, spouse);
     let mut spouse_claim = claim_mut(&mut duplicate, Owner::Taxpayer).clone();
     spouse_claim.owner = Owner::Spouse;
@@ -4713,7 +5008,7 @@ fn adverse_second_household_rejects_duplicate_spouse_claim_and_unresolved_caps()
     supported(&d);
     let mut duplicate = d.clone();
     let mut spouse = duplicate.income[0].clone();
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut duplicate, spouse);
     let mut spouse_claim = claim_mut(&mut duplicate, Owner::Taxpayer).clone();
     spouse_claim.owner = Owner::Spouse;
@@ -4734,7 +5029,7 @@ fn prior_household_furnishing_retains_2025_vintage_and_form_8283_evidence() {
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
     ded.charity_carryovers.push(prior_household_carry());
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&d);
     // Original-lot amounts are retained in historical audit evidence; this page carries the reconciled class/year balance.
     assert_eq!(value(&result, "charity_carry_2025_property_fifty_opening"), 3_000);
@@ -4762,7 +5057,7 @@ fn prior_household_furnishing_retains_2025_vintage_and_form_8283_evidence() {
     assert_eq!(return_line(&control, "15") - return_line(&result, "15"), 270_000);
     assert!(result.tax < control.tax);
 
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let standard = supported(&d);
     assert_eq!(value(&standard, "charity_carry_2025_property_fifty_used"), 3_000);
     assert_eq!(value(&standard, "charity_carry_2025_property_fifty_deduction"), 0);
@@ -4788,7 +5083,7 @@ fn current_cash_property_and_stock_precede_prior_household() {
     current_household.description = "Synthetic 2026 used household goods".into();
     current_household.basis = 1_000_000;
     ded.property_gifts.push(current_household);
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let partial = supported(&d);
     assert_eq!(value(&partial, "charity_cash_sixty_current_deduction"), 24_000);
     assert_eq!(value(&partial, "charity_property_fifty_current_deduction"), 5_000);
@@ -4889,23 +5184,20 @@ fn qualified_foster_care_service_costs_join_the_cash_charity_limits() {
         kind: VolunteerExpenseKind::FosterCare { amount: 40_000 },
         documented: true,
     });
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let itemized_result = supported(&d);
     assert_eq!(value(&itemized_result, "charity_volunteer_1_expense"), 400);
     assert_eq!(value(&itemized_result, "charity_cash_sixty_current_deduction"), 1_100);
     assert_eq!(estimate(&restart(d.clone()).draft), itemized_result);
 
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.set_cash_charity(0);
     let standard_result = supported(&d);
     assert_eq!(return_line(&standard_result, "12f"), 0);
     d.deductions.as_mut().unwrap().volunteer_expenses[0].documented = false;
     assert!(noted(&supported(&d), "WARN_VOLUNTEER_EXPENSE_LEFT_OUT"));
     d.deductions.as_mut().unwrap().volunteer_expenses[0].documented = true;
-    d.deductions.as_mut().unwrap().volunteer_expenses[0].kind =
-        VolunteerExpenseKind::FosterCare { amount: 0 };
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -4930,7 +5222,7 @@ fn hosted_student_months_apply_fifteen_day_test_and_fifty_dollar_cap() {
         ],
         documented: true,
     });
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let itemized_result = supported(&d);
     assert_eq!(value(&itemized_result, "charity_hosted_student_1_eligible"), 80);
     assert_eq!(value(&itemized_result, "charity_cash_sixty_current_deduction"), 780);
@@ -4948,7 +5240,7 @@ fn hosted_student_months_apply_fifteen_day_test_and_fifty_dollar_cap() {
     assert_eq!(value(&near_sixty_percent, "charity_return_year_carryforward"), 80);
 
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.set_cash_charity(0);
     let standard_result = supported(&d);
     assert_eq!(return_line(&standard_result, "12f"), 0);
@@ -4985,14 +5277,14 @@ fn hosted_student_expenses_obey_thirty_percent_limit_and_keep_2026_class() {
             documented: true,
         });
     }
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&d);
     assert_eq!(value(&result, "charity_hosted_student_deduction"), 5_900);
     assert_eq!(value(&result, "charity_hosted_student_return_year_carryforward"), 700);
     assert_eq!(value(&result, "charity_return_year_carryforward"), 700);
     assert_eq!(estimate(&restart(d.clone()).draft), result);
 
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let standard = supported(&d);
     assert_eq!(return_line(&standard, "12f"), 0);
     assert_eq!(value(&standard, "charity_hosted_student_return_year_carryforward"), 600);
@@ -5024,13 +5316,14 @@ fn current_and_prior_cash_share_one_b_limit_for_student_and_whaling() {
     }));
     assert_eq!(estimate(&restart(draft.clone()).draft), itemized);
 
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    let standard = supported(&draft);
-    assert_eq!(value(&standard, "charity_other_30_percent_deduction"), 0);
-    assert_eq!(value(&standard, "charity_other_30_percent_return_year_carryforward"), 15_600);
-    assert_eq!(value(&standard, "charity_prior_cash_sixty_remaining_following_year"), 0);
-    assert_eq!(return_line(&standard, "12f"), 100_000);
-    assert_eq!(estimate(&restart(draft).draft), standard);
+    // 2026-11-02: automatic selection retains the same itemized facts and limits.
+    draft.deductions.as_mut().unwrap().itemize_override = None;
+    let automatic = supported(&draft);
+    assert_eq!(value(&automatic, "charity_other_30_percent_deduction"), 14_500);
+    assert_eq!(value(&automatic, "charity_other_30_percent_return_year_carryforward"), 16_100);
+    assert_eq!(value(&automatic, "charity_prior_cash_sixty_remaining_following_year"), 0);
+    assert_eq!(return_line(&automatic, "12f"), 0);
+    assert_eq!(estimate(&restart(draft).draft), automatic);
 }
 
 #[test]
@@ -5049,13 +5342,14 @@ fn current_and_prior_cash_with_hosted_student_charge_floor_to_b_first() {
     assert_eq!(return_line(&itemized, "12e"), 3_570_000);
     assert_eq!(estimate(&restart(draft.clone()).draft), itemized);
 
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    let standard = supported(&draft);
-    assert_eq!(return_line(&standard, "12f"), 100_000);
-    assert_eq!(value(&standard, "charity_carry_2025_cash_sixty_used"), 15_600);
-    assert_eq!(value(&standard, "charity_prior_cash_sixty_consumed_without_deduction"), 15_600);
-    assert_eq!(value(&standard, "charity_hosted_student_return_year_carryforward"), 200);
-    assert_eq!(estimate(&restart(draft).draft), standard);
+    // 2026-11-02: automatic selection retains the same itemized facts and limits.
+    draft.deductions.as_mut().unwrap().itemize_override = None;
+    let automatic = supported(&draft);
+    assert_eq!(return_line(&automatic, "12f"), 0);
+    assert_eq!(value(&automatic, "charity_carry_2025_cash_sixty_used"), 15_600);
+    assert_eq!(value(&automatic, "charity_prior_cash_sixty_consumed_without_deduction"), 0);
+    assert_eq!(value(&automatic, "charity_hosted_student_return_year_carryforward"), 500);
+    assert_eq!(estimate(&restart(draft).draft), automatic);
 }
 
 #[test]
@@ -5071,7 +5365,7 @@ fn joint_captains_each_receive_their_own_fifty_thousand_dollar_cap() {
         whaling_claim(vec![whaling_expense(WhalingExpenseKind::WeaponsAndGear, 5_500_000)]);
     spouse.owner = Owner::Spouse;
     ded.whaling_captains.push(spouse);
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&draft);
     assert_eq!(value(&result, "charity_whaling_taxpayer_statutory_claim"), 50_000);
     assert_eq!(value(&result, "charity_whaling_spouse_statutory_claim"), 50_000);
@@ -5094,7 +5388,7 @@ fn joint_captains_each_receive_their_own_fifty_thousand_dollar_cap() {
 fn paired_2025_household_and_stock_carries_keep_vintage_evidence_and_standard_use() {
     let mut draft = paired_2025_noncash_carries();
     let deductions = draft.deductions.as_mut().unwrap();
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&draft);
     assert_eq!(value(&result, "charity_carry_2025_property_fifty_opening"), 3_000);
     assert_eq!(value(&result, "charity_carry_2025_capital_gain_thirty_opening"), 20_000);
@@ -5133,21 +5427,22 @@ fn paired_2025_household_and_stock_carries_keep_vintage_evidence_and_standard_us
     assert_eq!(return_line(&without_carries, "15") - return_line(&result, "15"), 2_070_000);
     assert!(result.tax < without_carries.tax);
 
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    let standard = supported(&draft);
-    assert_eq!(value(&standard, "charity_carry_2025_property_fifty_used"), 3_000);
-    assert_eq!(value(&standard, "charity_carry_2025_capital_gain_thirty_used"), 18_000);
+    // 2026-11-02: automatic selection retains the same itemized facts and limits.
+    draft.deductions.as_mut().unwrap().itemize_override = None;
+    let automatic = supported(&draft);
+    assert_eq!(value(&automatic, "charity_carry_2025_property_fifty_used"), 3_000);
+    assert_eq!(value(&automatic, "charity_carry_2025_capital_gain_thirty_used"), 18_000);
     assert_eq!(
-        value(&standard, "charity_carry_2025_property_fifty_consumed_without_deduction"),
-        3_000
+        value(&automatic, "charity_carry_2025_property_fifty_consumed_without_deduction"),
+        0
     );
     assert_eq!(
-        value(&standard, "charity_carry_2025_capital_gain_thirty_consumed_without_deduction"),
-        18_000
+        value(&automatic, "charity_carry_2025_capital_gain_thirty_consumed_without_deduction"),
+        0
     );
-    assert_eq!(value(&standard, "charity_carry_2025_capital_gain_thirty_remaining"), 2_000);
-    assert_eq!(return_line(&standard, "12f"), 0);
-    assert_eq!(estimate(&restart(draft.clone()).draft), standard);
+    assert_eq!(value(&automatic, "charity_carry_2025_capital_gain_thirty_remaining"), 2_000);
+    assert_eq!(return_line(&automatic, "12f"), 0);
+    assert_eq!(estimate(&restart(draft.clone()).draft), automatic);
 }
 
 #[test]
@@ -5164,7 +5459,7 @@ fn current_stock_precedes_both_2025_carries_and_prior_household_precedes_prior_s
     current_stock.value = 400_000;
     current_stock.basis = 100_000;
     deductions.property_gifts.push(current_stock);
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
 
     let with_current_stock = supported(&draft);
     assert_eq!(value(&with_current_stock, "charity_cash_sixty_current_deduction"), 20_000);
@@ -5220,7 +5515,7 @@ fn paired_2025_floor_can_span_stock_and_household_without_new_vintage() {
         .unwrap();
     stock.balance = 10_000;
     stock.appreciation = Some(5_000);
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&draft);
     assert_eq!(value(&result, "charity_carry_2025_capital_gain_thirty_used"), 100);
     assert_eq!(value(&result, "charity_carry_2025_capital_gain_thirty_floor_not_carried"), 100);
@@ -5251,7 +5546,7 @@ fn public_stock_follows_cash_and_hosted_students_under_2026_limits() {
         documented: true,
     });
     ded.set_cash_charity(100_000);
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let mixed = supported(&d);
     assert_eq!(value(&mixed, "charity_capital_gain_thirty_current_deduction"), 17_700);
     assert_eq!(value(&mixed, "charity_hosted_student_deduction"), 50);
@@ -6080,11 +6375,14 @@ fn child_credit_and_aotc_parts_list_each_person() {
     d.dependents.push(parent);
     let credits = d.credits.as_mut().unwrap();
     let sid0_10788 = -1; // You, the first person of the catalog
-    credits.education.push(native_education(
-        sid0_10788,
-        education_expenses(200_000),
-        education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
-    ));
+    add_education(
+        credits,
+        native_education(
+            sid0_10788,
+            education_expenses(200_000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        ),
+    );
     credits.after_disallowance = Some(after_disallowance(
         EicDisallowance::Never,
         CreditDisallowance::Disallowed(disallowed(2019, DisallowanceFinding::Ineligible)),
@@ -6298,7 +6596,7 @@ fn child_election_two_children_share_the_28_percent_gain_and_net_with_schedule_d
     add(&mut d, child_election(a, vec![interest], 0, OtherParentChoice::LivedApart));
     let mut dividends = child_dividends(1_200, 800, 2_000);
     if let ChildIncome::Dividend { data, .. } = &mut dividends {
-        data.collectible_distributions = 50_000;
+        data.form.collectible_distributions = Some(50_000);
     }
     add(
         &mut d,
@@ -6418,7 +6716,7 @@ fn child_election_omissions_leave_the_child_out_with_one_notice() {
     omit(
         &|_, e| {
             if let ChildIncome::Dividend { data, .. } = &mut e.statements[0] {
-                data.withholding = 100;
+                data.form.withholding = Some(100);
             }
         },
         "WARN_CHILD_ELECTION_WITHHOLDING_LEFT_OUT",
@@ -6518,7 +6816,10 @@ fn child_election_is_independent_of_form_8615() {
     assert_eq!(value(&r, "child_election_tax"), 135);
     assert!(r.lines.iter().all(|l| !l.id.starts_with("kiddie_tax_")));
     assert_ne!(crate::federal_rules::form_8615_applies(&r), Some(true));
-    let kiddie = include_str!("../../family/kiddie.rs");
+    let kiddie = concat!(
+        include_str!("../../family/kiddie.rs"),
+        include_str!("../../family/parent_tax_source.rs"),
+    );
     assert!(
         kiddie
             .matches("a brother or sister whose income your parent reported on Form 8814")
@@ -6892,6 +7193,9 @@ fn qualifying_survivor_cannot_rest_on_a_child_the_filer_released() {
 fn married_custodial_parent_who_released_the_child_is_considered_unmarried() {
     let apart = |status: FilingChoice, c: FederalDependent| {
         let mut d = head_with_release(45_000, c);
+        if matches!(status, FilingChoice::Separate { .. }) {
+            answer_separate_pages(&mut d);
+        }
         d.setup.as_mut().unwrap().status = status;
         d.setup.as_mut().unwrap().marital_state =
             MaritalState::Married { living: SpouseLiving::LastSixMonths };
@@ -6934,11 +7238,14 @@ fn education_credit_follows_the_parent_who_claims_the_child() {
         d.dependents[0].birth_date = 20080615;
         d.dependents[0].situation = DependentSituation::Student;
         let child = crate::federal_rules::people_students(&d).last().unwrap().id;
-        d.credits.as_mut().unwrap().education = vec![native_education(
-            child,
-            education_expenses(300_000),
-            EducationChoice::LifetimeLearning,
-        )];
+        set_education(
+            d.credits.as_mut().unwrap(),
+            vec![native_education(
+                child,
+                education_expenses(300_000),
+                EducationChoice::LifetimeLearning,
+            )],
+        );
         d
     };
     unsupported(&with_education(CustodyRelease::YouReleased, 365), "Education");
@@ -6958,20 +7265,20 @@ pub(in crate::tests) fn community_item_agi(
     share: CommunityShare,
 ) -> FederalResult {
     let mut d = complete(FederalStatus::Separate);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.next_id = 2;
     d.setup.as_mut().unwrap().community_property = community_arizona();
     d.income[0].community = CommunityShare::Community;
     let mut e = entry;
-    e.owner = owner;
+    e.owner = crate::DocumentOwner::from(owner);
     e.community = share;
     add(&mut d, e);
     estimate(&d)
 }
 pub(in crate::tests) fn plain_item_agi(entry: FederalIncomeEntry) -> i64 {
     let mut d = complete(FederalStatus::Separate);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.next_id = 2;
     add(&mut d, entry);

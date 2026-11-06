@@ -104,11 +104,11 @@ pub(in crate::tests) fn add_office_claim(
     area: u32,
 ) -> i64 {
     let owner = draft.income.iter().find(|entry| entry.id == source).unwrap().owner;
-    claim.owner = owner;
+    claim.owner = owner.owned();
     claim.activities = vec![OfficeActivity {
         activity: source,
-        gross_share: 10000,
-        expense_period_share: 10000,
+        gross_share: 100.0,
+        expense_period_share: 100.0,
         attribution_reason: alloc::string::String::new(),
         deduction_parts: 1,
     }];
@@ -118,7 +118,7 @@ pub(in crate::tests) fn add_office_claim(
         id,
         address: "Synthetic office home".into(),
         home_area: area.max(2000),
-        paid_by: if owner == Owner::Spouse {
+        paid_by: if owner == crate::DocumentOwner::Spouses {
             HomeCostOwners::Spouse
         } else {
             HomeCostOwners::Taxpayer
@@ -221,22 +221,27 @@ pub(in crate::tests) fn add_actual_office(
             if mortgage_interest != 0 || mortgage_insurance != 0 {
                 let loan_id = draft.next_id;
                 draft.next_id += 1;
-                draft.deductions.as_mut().unwrap().mortgage.push(MortgageLoan {
-                    id: loan_id,
-                    property: "Synthetic office home".into(),
-                    lender: MortgageLender::Institution,
-                    interest: mortgage_interest,
-                    mortgage_insurance_premiums: mortgage_insurance,
-                    outstanding_principal: 10_000_000,
-                    incurred: first_used,
-                    details: MortgageLoanDetails::FirstLender(MortgageLedger {
-                        home: MortgageHome::Main,
-                        purpose: MortgageUse::Home,
-                        average: MortgageAverageBalance::Statements { average_balance: 10_000_000 },
-                    }),
-                    refund_of_interest: MortgageInterestRefund::No,
-                    points: MortgagePoints::No,
-                });
+                draft.deductions.as_mut().unwrap().mortgage.push(mortgage_loan_source(
+                    MortgageLoan {
+                        printed: None,
+                        id: loan_id,
+                        property: "Synthetic office home".into(),
+                        lender: MortgageLender::Institution,
+                        interest: mortgage_interest,
+                        mortgage_insurance_premiums: mortgage_insurance,
+                        outstanding_principal: 10_000_000,
+                        incurred: first_used,
+                        details: MortgageLoanDetails::FirstLender(MortgageLedger {
+                            home: MortgageHome::Main,
+                            purpose: MortgageUse::Home,
+                            average: MortgageAverageBalance::Statements {
+                                average_balance: 10_000_000,
+                            },
+                        }),
+                        refund_of_interest: MortgageInterestRefund::No,
+                        points: MortgagePoints::No,
+                    },
+                ));
                 draft.home_sites[site_index].mortgage_loans.push(loan_id);
             }
             costs.push((HomeCostKind::PropertyTax, real_estate_taxes, HomeCostScope::WholeHome));
@@ -374,11 +379,48 @@ pub(in crate::tests) fn office_itemize(
     };
     itemized(ded).real_estate_taxes = other_property;
     if let Some(loan) = ded.mortgage.iter_mut().find(|loan| linked.contains(&loan.id)) {
-        loan.interest = interest;
-        loan.mortgage_insurance_premiums = premiums;
+        loan.form.box_1 = interest;
+        loan.form.box_5 = premiums;
     } else {
         assert_eq!((interest, premiums), (0, 0), "nonzero mortgage facts need their source");
     }
     let facts = itemized(ded).clone();
-    ded.choice = DeductionSelection::Itemized { facts };
+    {
+        ded.itemized = facts;
+        ded.itemize_override = Some(ItemizeOverride::Itemize);
+    };
+}
+
+// The fiduciary source is a personal Schedule A tax, unrelated to the
+// physical home's separately entered $6,000 real-estate tax.
+pub(in crate::tests) fn office_estate_tax_return(
+    own_income_tax: i64,
+    taxes: [i64; 4],
+) -> FederalDraft {
+    use crate::tests::cross::interview::{estate_final_amounts, estate_final_source, k1_1041};
+    let mut draft = office_return(60_000, itemizing_office(20180105));
+    office_itemize(&mut draft, own_income_tax, 600_000, 0, 0);
+    let mut page = k1_1041("Synthetic final trust");
+    page.successor = Some(true);
+    page.final_character = Some(estate_final_source(0, false));
+    page.more.final_year = estate_final_amounts(0);
+    let K1FinalYear::Final {
+        personal_property_tax,
+        real_estate_tax,
+        state_income_tax,
+        state_sales_tax,
+        ..
+    } = &mut page.more.final_year
+    else {
+        unreachable!()
+    };
+    *personal_property_tax = taxes[0];
+    *real_estate_tax = taxes[1];
+    *state_income_tax = taxes[2];
+    *state_sales_tax = taxes[3];
+    add(
+        &mut draft,
+        income(FederalIncome::EstateTrustPortfolio { data: estate_source(page.record()) }),
+    );
+    draft
 }

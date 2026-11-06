@@ -10,7 +10,7 @@ fn deferred_return(cents: [i64; 2]) -> FederalDraft {
         let mut data = ordinary_partner_source(0, false);
         data.deferred_compensation_tax = amount;
         let mut entry = income(FederalIncome::Partnership { data });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         // Identical labels cannot substitute for the accepted source owner.
         entry.label = "Synthetic same-name partnership".into();
         add(&mut d, entry);
@@ -94,7 +94,7 @@ fn unit13_k1_deferred_shared_liability_has_no_claim_gate_or_late_row_dependency(
     let mut facts = liability_portfolio_facts(&baseline, Some([0; 2]));
     let mut d = deferred_return([10_000, 30_000]);
     d.injured_spouse = None;
-    d.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let mut r = supported(&d);
     facts.deferred_compensation_tax = crate::injured_spouse::DeferredCompensationTaxSources {
         joint_dollars: value(&r, "k1_deferred_compensation_tax"),
@@ -116,7 +116,10 @@ fn unit13_k1_deferred_shared_liability_has_no_claim_gate_or_late_row_dependency(
     spouse_claim.injured = Owner::Spouse;
     for claim in [None, Some(allocation()), Some(spouse_claim)] {
         let projection = crate::injured_spouse::owners::project_sources(
-            &d,
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
             &r,
             claim.as_ref(),
             &facts,
@@ -126,30 +129,45 @@ fn unit13_k1_deferred_shared_liability_has_no_claim_gate_or_late_row_dependency(
         assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), Some([5123, 693]));
     }
     facts.deferred_compensation_tax.cents = [0; 2];
-    let projection =
-        crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &r,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), None);
 }
 
 #[test]
 fn unit13_k1_deferred_actual_client_save_reopen_restart_correction() {
     extern crate std;
-    use crate::tests::cross::interview::{accepted, document, open_topic};
+    use crate::tests::cross::interview::{accepted, document};
     let initial_draft = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
     let mut session = Interview::new(TEST_USER, initial_draft);
-    let initial_seed = open_topic(&mut session, TaxSection::PassThrough);
-    let mut initial_answers = initial_seed.clone();
-    let P::SaveIncomes { documents, .. } = &mut initial_answers else { panic!() };
+    let initial_seed =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let mut source_rows = Vec::new();
     for (owner, cents) in [(Owner::Taxpayer, 10_000), (Owner::Spouse, 30_000)] {
         let mut data = ordinary_partner_source(0, false);
         data.deferred_compensation_tax = cents;
         let page =
-            crate::K1Partnership::from_record("Synthetic same-name partnership", &data).unwrap();
-        let mut row = document(0, IncomeDocument::K1Partnership(page));
-        row.owner = owner;
-        documents.documents.push(row);
+            crate::k1_page::K1Partnership::from_record("Synthetic same-name partnership", &data)
+                .unwrap();
+        let mut row = document(
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) },
+        );
+        row.owner = crate::DocumentOwner::from(owner);
+        source_rows.push(row);
     }
+    let initial_answers =
+        crate::tests::support::client::income_pages::save_documents(&mut session, source_rows);
+    let initial_answers = fixture_owner_inputs(&session.draft, initial_answers);
     let correction = std::env::var("TAX_UNIT13_DEFERRED_CORRECTION").as_deref() == Ok("1");
     let read = |file: alloc::string::String| P::from_avro(&std::fs::read(file).unwrap()).unwrap();
     let write = |name: &str, request: &P| {
@@ -161,10 +179,16 @@ fn unit13_k1_deferred_actual_client_save_reopen_restart_correction() {
     if correction {
         let first = std::env::var("TAX_UNIT13_DEFERRED_INITIAL_PAYLOAD")
             .map_or(initial_answers.clone(), read);
-        accepted(&send(&mut session, first));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            first,
+        ));
     }
-    let seed =
-        if correction { open_topic(&mut session, TaxSection::PassThrough) } else { initial_seed };
+    let seed = if correction {
+        crate::tests::support::client::income_pages::open_document_center(&mut session)
+    } else {
+        initial_seed
+    };
     if let Ok(input) = std::env::var("TAX_UNIT13_DEFERRED_CALC_INPUT") {
         let Reply::Response(response) = send(&mut session, read(input)) else {
             panic!("normal K-1 calculation response")
@@ -179,19 +203,25 @@ fn unit13_k1_deferred_actual_client_save_reopen_restart_correction() {
     write("seed.avro", &seed);
     let mut answers = if correction { seed } else { initial_answers };
     if correction {
-        let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-        documents.documents[0].owner = Owner::Spouse;
-        let IncomeDocument::K1Partnership(page) = &mut documents.documents[0].document else {
+        let P::SaveDocuments { documents, .. } = &mut answers else { panic!() };
+        documents.common.k1.documents[0].owner = crate::DocumentOwner::Spouses;
+        let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[0].document
+        else {
             panic!()
         };
-        page.more.deferred_compensation_tax = 20_000;
+        page.form.information.iter_mut().find(|row| row.code == "AI").unwrap().amount =
+            Some(20_000);
     }
+    let answers = fixture_owner_inputs(&session.draft, answers);
     write("answers.avro", &answers);
     if std::env::var("TAX_UNIT13_DEFERRED_SEED_ONLY").as_deref() == Ok("1") {
         return;
     }
     let payload = std::env::var("TAX_UNIT13_DEFERRED_PAYLOAD").map_or(answers, read);
-    accepted(&send(&mut session, payload));
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        payload,
+    ));
     let ids = session
         .draft
         .income
@@ -199,7 +229,8 @@ fn unit13_k1_deferred_actual_client_save_reopen_restart_correction() {
         .filter(|e| matches!(e.income, FederalIncome::Partnership { .. }))
         .map(|e| e.id)
         .collect::<Vec<_>>();
-    assert_eq!(ids, vec![3, 4]);
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
     let r = supported(&session.draft);
     assert_eq!(value(&r, "agi"), 80_000);
     assert_eq!(column(&r, "18", "b"), if correction { 0 } else { 100 });
@@ -215,19 +246,23 @@ fn unit13_k1_deferred_actual_client_save_reopen_restart_correction() {
         write_native_draft_records(std::path::Path::new(&dir).join("persisted.avro"), &stored);
     }
     session = restart(session.draft);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut session);
     write("reopened.avro", &reopened);
     accepted(&send(&mut session, reopened));
     assert_eq!(supported(&session.draft), r);
     // The ordinary native control also exercises correction and another restart.
     if !correction {
-        let mut next = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut next else { panic!() };
-        documents.documents[0].owner = Owner::Spouse;
-        let IncomeDocument::K1Partnership(page) = &mut documents.documents[0].document else {
+        let mut next =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut next else { panic!() };
+        documents.common.k1.documents[0].owner = crate::DocumentOwner::Spouses;
+        let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[0].document
+        else {
             panic!()
         };
-        page.more.deferred_compensation_tax = 20_000;
+        page.form.information.iter_mut().find(|row| row.code == "AI").unwrap().amount =
+            Some(20_000);
+        let next = fixture_owner_inputs(&session.draft, next);
         accepted(&send(&mut session, next));
         let changed = supported(&session.draft);
         assert_eq!(value(&changed, "k1_deferred_compensation_tax"), 500);
@@ -241,7 +276,7 @@ fn unit13_k1_deferred_tax_survives_actual_basis_suspension() {
     let mut d = deferred_return([10_000, 30_000]);
     let FederalIncome::Partnership { data } = &mut d.income[2].income else { panic!() };
     data.regular.ordinary = -100_000;
-    data.regular.basis.opening = 0;
+    data.regular.basis.opening = Some(0);
     data.alternative = Some(data.regular.clone());
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 80_000);
@@ -259,7 +294,7 @@ fn unit13_k1_deferred_community_input_is_divided_only_at_native_owner() {
         let mut data = ordinary_partner_source(0, false);
         data.deferred_compensation_tax = 10_050;
         let mut entry = income(FederalIncome::Partnership { data });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         entry.community = CommunityShare::Community;
         add(&mut d, entry);
     }

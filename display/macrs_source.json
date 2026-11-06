@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 30000, "rule": {"select": "^<MacrsRecoverySourcePage>.class_life", "when_single_choice": "hide"}},
+    {"order": 31000, "rule": {"select": "^<MacrsRecoverySourcePage>.original_system", "when_single_choice": "hide"}}
+  ]
+}

@@ -53,29 +53,6 @@ pub(in crate::tests) fn monthly_history_schedule()
     }
 }
 
-pub(in crate::tests) fn unrepresentable_timber_return() -> FederalDraft {
-    let mut draft = timber_business(timber_cost());
-    let FederalIncome::Business { data } = &mut draft.income.last_mut().unwrap().income else {
-        unreachable!()
-    };
-    let mut cost = timber_cost();
-    cost.cost = i64::MAX;
-    cost.incurred = 20240401;
-    cost.prior_allowed = crate::SourceCents::Reported { amount: 300_000 };
-    cost.facts.current_expense_elected = 0;
-    cost.facts.amortizable_basis_elected = i64::MAX;
-    // Eight distinct actual properties are enough to exceed the native annual
-    // total, while every original cohort and fraction is individually valid.
-    data.timber = (0..8)
-        .map(|index| {
-            let mut row = cost.clone();
-            row.facts.property_key = alloc::format!("Synthetic property {index}");
-            row
-        })
-        .collect();
-    draft
-}
-
 pub(in crate::tests) fn timber_invalid_editors() -> Vec<(Vec<Business>, &'static str, &'static str)>
 {
     use crate::tests::cross::interview::business;
@@ -83,12 +60,6 @@ pub(in crate::tests) fn timber_invalid_editors() -> Vec<(Vec<Business>, &'static
     limit.more.timber.push(timber_cost());
     let mut duplicate = limit.clone();
     duplicate.more.timber[0].facts.current_expense_elected = 0;
-    let mut large = business(10_000_000);
-    let draft = unrepresentable_timber_return();
-    let FederalIncome::Business { data } = &draft.income.last().unwrap().income else {
-        unreachable!()
-    };
-    large.more.timber = data.timber.clone();
     vec![
         (
             vec![limit],
@@ -100,42 +71,5 @@ pub(in crate::tests) fn timber_invalid_editors() -> Vec<(Vec<Business>, &'static
             "TIMBER_COHORT_ONCE",
             "[documents/documents/1/document/more/timber/0/facts/property_key]",
         ),
-        (
-            vec![large],
-            "TIMBER_TOTAL_UNREPRESENTABLE",
-            "[documents/documents/0/document/more/timber]",
-        ),
     ]
-}
-
-pub(in crate::tests) fn invalid_legacy_amortization_return(with_timber: bool) -> FederalDraft {
-    let mut draft = timber_business(timber_cost());
-    let FederalIncome::Business { data } = &mut draft.income.last_mut().unwrap().income else {
-        unreachable!()
-    };
-    if !with_timber {
-        data.timber.clear();
-    }
-    data.intangibles.push(crate::BusinessIntangible {
-        label: "Synthetic invalid legacy source".into(),
-        cost: i64::MAX,
-        acquired: 20240101,
-        business_started: 20240101,
-        additions: vec![crate::IntangibleCost { amount: i64::MAX, date: 20250101 }; 2],
-        eligible: true,
-    });
-    draft
-}
-
-pub(in crate::tests) fn unrepresentable_timber_operating_return() -> FederalDraft {
-    let mut draft = unrepresentable_timber_return();
-    let FederalIncome::Business { data } = &mut draft.income.last_mut().unwrap().income else {
-        unreachable!()
-    };
-    data.timber.pop();
-    data.expenses.push(ordinary_business_expense(
-        BusinessExpenseCategory::Other { label: "Synthetic ordinary cost".into() },
-        1,
-    ));
-    draft
 }

@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 994000, "rule": {"select": "^<Form1099NecPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["compensation", "cash_tips", "tip_occupation_codes", "overtime", "direct_sales", "golden_parachute", "withholding"]}, {"fields": ["state_details"]}]}}
+  ]
+}

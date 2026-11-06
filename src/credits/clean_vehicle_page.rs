@@ -101,7 +101,8 @@ pub enum FederalCleanVehiclePage {
         model_year: u32,
         /// Sales price on the accepted seller report, including required dealer fees
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         sales_price: i64,
         /// This is the first qualifying dealer transfer since August 16, 2022
         /// The dealer's time-of-sale report for this VIN states it.
@@ -171,7 +172,8 @@ pub struct FederalCleanVehicleClaimPage {
     /// Form 2555 exclusions and housing deductions are already included from the income interview.
     #[libertas_default(0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub current_territory_addbacks: i64,
     /// Vehicles delivered in 2026
     /// ----

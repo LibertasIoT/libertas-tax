@@ -156,7 +156,7 @@ fn print_qbi_phase_in_columns_reach_the_actual_return_without_rounded_percentage
     let statement = source.qbi_statement.as_mut().unwrap();
     statement.wages = 3000000;
     statement.property = 10000000;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&d);
     for (number, expected) in [
         ("4", 30000),

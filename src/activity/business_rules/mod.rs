@@ -1,3 +1,4 @@
+pub use crate::qbi_history_model::QbiHistory;
 // Coverage: Form 8995 / 8995-A — Supported (audited 2026-09-25).
 //   Lines: 20% QBI per activity (Schedule C, rental, K-1), 2026 thresholds/phase-in, SSTB
 //   reduction, W-2 wage/UBIA limit, §199A REIT/PTP dividends, prior business and REIT/PTP loss
@@ -94,40 +95,72 @@ pub(crate) fn half_se_by_business(
     half: i64,
     optional: &alloc::collections::BTreeMap<i64, i64>,
 ) -> alloc::collections::BTreeMap<i64, i64> {
-    match half_se_by_business_with_section179(d, owner, half, optional, None, None) {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    half_se_by_business_with_claims(d, owner, half, optional, &source_claims)
+}
+
+#[cfg(test)]
+pub(crate) fn half_se_by_business_with_claims(
+    d: &crate::FederalDraft,
+    owner: usize,
+    half: i64,
+    optional: &alloc::collections::BTreeMap<i64, i64>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> alloc::collections::BTreeMap<i64, i64> {
+    match half_se_by_business_with_section179_with_claims(
+        d,
+        owner,
+        half,
+        optional,
+        None,
+        None,
+        source_claims,
+    ) {
         Ok(value) => value,
         Err(_) => unreachable!("legacy half-SE calculation has no selected allocation"),
     }
 }
 
-pub(crate) fn half_se_by_business_with_section179(
+pub(crate) fn half_se_by_business_with_section179_with_claims(
     d: &crate::FederalDraft,
     owner: usize,
     half: i64,
     optional: &alloc::collections::BTreeMap<i64, i64>,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<alloc::collections::BTreeMap<i64, i64>, crate::Section179PreparedIssue> {
     let mut entries = Vec::new();
     for e in &d.income {
         if let crate::FederalIncome::Business { data } = &e.income
-            && usize::from(e.owner == crate::Owner::Spouse) == owner
+            && usize::from(e.owner == crate::DocumentOwner::Spouses) == owner
             && !crate::statutory_wages::business(d, e.id)
         {
             let weight = match optional.get(&e.id) {
                 Some(weight) => *weight,
                 None => crate::kernel::ratio::dollars(
                     data.earned_receipts()
-                        - crate::section179_return::expenses(d, e.id, data, selected, home).map(
-                            |expense| {
-                                expense
-                                    - selected.map_or(0, |allocation| {
-                                        allocation.ordinary_risk_adjustment(e.id)
-                                    })
-                            },
-                        )?
-                        - crate::clergy::business_se_exclusion_with_section179(
-                            d, e.id, data, selected, home,
+                        - crate::section179_return::expenses_with_claims(
+                            d,
+                            e.id,
+                            data,
+                            selected,
+                            home,
+                            source_claims,
+                        )
+                        .map(|expense| {
+                            expense
+                                - selected.map_or(0, |allocation| {
+                                    allocation.ordinary_limit_adjustment(e.id)
+                                })
+                        })?
+                        - crate::clergy::business_se_exclusion_with_section179_with_claims(
+                            d,
+                            e.id,
+                            data,
+                            selected,
+                            home,
+                            source_claims,
                         )?,
                 ),
             };
@@ -666,96 +699,7 @@ fn aggregate(
     merged
 }
 
-/// Qualified business income losses carried into 2026
-/// Prior-return carryforwards; both zero when there are none. The amounts belong to the people filing this return and include all applicable QBI carryforward history. Combine separate prior returns only when their owners file this return; a former-spouse allocation, missing history or newly released suspended losses needs its own worksheet.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    libertas_macros::LibertasAvroEncode,
-    libertas_macros::LibertasAvroDecode,
-    libertas_macros::LibertasExport,
-)]
-pub struct QbiHistory {
-    /// Business loss carried from 2025 Form 8995 line 16 or Form 8995-A Schedule C line 6
-    /// Enter its magnitude as a positive amount. Include only these filers' carryforwards, even if the business closed. Do not enter an NOL, capital loss or still-suspended passive/at-risk loss here.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub business: i64,
-    /// REIT/PTP loss carried from 2025 Form 8995 line 17 or Form 8995-A line 29
-    /// Enter its magnitude as a positive amount. This separate loss category offsets qualified REIT/PTP income only, not ordinary business QBI.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub reit_ptp: i64,
-    /// Ownership of retained QBI losses
-    /// Only for a Form 8379 claim. Use actual source records; this never changes the joint calculation.
-    /// [NullText]
-    /// The retained loss ownership has not been established
-    /// [SetText]
-    /// The retained losses belong to the spouses as follows
-    #[libertas_default($null)]
-    pub injured_owners: Option<crate::InjuredQbiLossOwners>,
-}
-impl QbiHistory {
-    /// No prior QBI loss.
-    pub(crate) const NONE: Self = Self { business: 0, reit_ptp: 0, injured_owners: None };
-    pub(crate) fn amounts(&self) -> [i64; 2] {
-        [self.business, self.reit_ptp]
-    }
-    /// Whether any prior QBI loss is entered.
-    pub(crate) fn any(&self) -> bool {
-        self.amounts() != [0, 0]
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.amounts().iter().all(|v| (0..=100000000000).contains(v))
-            && self.injured_owners.as_ref().is_none_or(|v| v.valid(self.amounts()))
-    }
-}
-
-/// Section 199A dividends
-#[derive(
-    Clone,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    libertas_macros::LibertasAvroEncode,
-    libertas_macros::LibertasAvroDecode,
-    libertas_macros::LibertasExport,
-)]
-pub enum ReitDividends {
-    /// None
-    #[default]
-    None,
-    /// Form 1099-DIV box 5 or a fiduciary's Form 1041 K-1 box 14 code I statement
-    Reported {
-        /// Section 199A dividends already included in box 1a ordinary dividends
-        /// Include qualified REIT dividends passed through a regulated investment company. These are not box 1b qualified dividends or capital gain distributions.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        amount: i64,
-        /// All these dividends satisfy the holding-period and payment-obligation rules
-        /// The reporting source must satisfy the applicable share-holding and related-payment rules. For directly held shares, generally hold them for more than 45 days in the applicable 91-day period, excluding days with diminished risk. For an estate or trust allocation, use the fiduciary's qualified dividend statement. Split differently treated lots into separate income entries without duplicating amounts. Check the share-holding records or fiduciary’s qualified dividend statement. No takes no section 199A deduction on these dividends.
-        eligible: bool,
-    },
-}
-impl ReitDividends {
-    pub(crate) fn amount(&self) -> i64 {
-        match self {
-            Self::None => 0,
-            Self::Reported { amount, .. } => *amount,
-        }
-    }
-    pub(crate) fn qualified(&self) -> i64 {
-        match self {
-            Self::Reported { amount, eligible: true } => *amount,
-            _ => 0,
-        }
-    }
-}
+pub use crate::reit_dividend_source::ReitDividends;
 
 // Section 172(d), shared by regular and alternative-tax current losses.
 // Supply the income and allowed deductions of the chosen tax system; never

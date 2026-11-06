@@ -1,7 +1,7 @@
 // Coverage: prior Worksheet5-1 third-tier source totals and casualty character.
 // Independent regular/AMT records feed the existing HOME tier owner. Unknown
 // character never becomes depreciation. Sources: Pub527 Worksheet5-1; i4684;
-// dispatcher2026-10-19: floor exact remaining capacity once at the cents boundary.
+// Remaining capacity is floored once at the native cents boundary.
 use crate::kernel::ratio::exact::{self, Exact};
 use crate::kernel::source_fact::SourceFact;
 use crate::validation::ValidationIssue;
@@ -22,9 +22,9 @@ pub(crate) fn known(source: &SourceCents) -> Option<i64> {
 
 pub(crate) fn total(source: &FederalRental, amt: bool) -> Option<i64> {
     known(if amt {
-        &source.amt_home_depreciation_carryover
+        &source.home_carries().amt_home_depreciation_carryover
     } else {
-        &source.home_depreciation_carryover
+        &source.home_carries().home_depreciation_carryover
     })
 }
 
@@ -34,9 +34,9 @@ pub(crate) fn prior(
 ) -> Result<crate::casualty::home::ThirdTierCarry, &'static str> {
     let total_cents = total(source, amt).ok_or(TOTAL)?;
     let casualty_cents = known(if amt {
-        &source.amt_home_casualty_carryover
+        &source.home_carries().amt_home_casualty_carryover
     } else {
-        &source.home_casualty_carryover
+        &source.home_carries().home_casualty_carryover
     });
     if casualty_cents.is_some_and(|amount| amount > total_cents) {
         return Err(INVALID);
@@ -47,14 +47,14 @@ pub(crate) fn prior(
 pub(crate) fn issue(source: &FederalRental) -> Option<ValidationIssue> {
     for (total, casualty, total_field, casualty_field) in [
         (
-            &source.home_depreciation_carryover,
-            &source.home_casualty_carryover,
+            &source.home_carries().home_depreciation_carryover,
+            &source.home_carries().home_casualty_carryover,
             "home_depreciation_carryover",
             "home_casualty_carryover",
         ),
         (
-            &source.amt_home_depreciation_carryover,
-            &source.amt_home_casualty_carryover,
+            &source.home_carries().amt_home_depreciation_carryover,
+            &source.home_carries().amt_home_casualty_carryover,
             "amt_home_depreciation_carryover",
             "amt_home_casualty_carryover",
         ),
@@ -74,6 +74,8 @@ pub(crate) fn issue(source: &FederalRental) -> Option<ValidationIssue> {
 pub(crate) fn tiers(
     source: &FederalRental,
     amt: bool,
+    otherwise_casualty_cents: i64,
+    current_casualty_cents: i64,
     current_depreciation_cents: i64,
     capacity: &Exact,
 ) -> Result<crate::casualty::home::ThirdTierResult, &'static str> {
@@ -83,10 +85,18 @@ pub(crate) fn tiers(
     let capacity = i64::try_from(capacity.floor().to_integer()).map_err(|_| OVERFLOW)?;
     let prior = prior(source, amt)?;
     // Arithmetic safety: the cents owner's closing ledger must fit i64.
-    let closing_bound = (i128::from(current_depreciation_cents) + i128::from(prior.total_cents)
+    let closing_bound = (i128::from(current_casualty_cents)
+        + i128::from(current_depreciation_cents)
+        + i128::from(prior.total_cents)
         - i128::from(capacity))
     .max(0);
     i64::try_from(closing_bound).map_err(|_| OVERFLOW)?;
-    crate::casualty::home::third_tier(0, 0, current_depreciation_cents, prior, capacity)
-        .map_err(|_| INVALID)
+    crate::casualty::home::third_tier(
+        otherwise_casualty_cents,
+        current_casualty_cents,
+        current_depreciation_cents,
+        prior,
+        capacity,
+    )
+    .map_err(|_| INVALID)
 }

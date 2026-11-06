@@ -46,7 +46,7 @@ fn unit13_noninvestment_property_election_reaches_genuine_pre_gbc_without_claim(
                 reverse,
             ));
             d.injured_spouse = None;
-            d.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+            d.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
             d.credits.as_mut().unwrap().business_credits = Some(BusinessCreditHistory {
                 carryforwards: vec![BusinessCreditCarryforward {
                     credit: BusinessCredit::WorkOpportunity,

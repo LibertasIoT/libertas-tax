@@ -26,7 +26,7 @@ fn check(draft: &FederalDraft, ordinary: i64) -> FederalResult {
 fn k1_sale_footing_code_r_uses_2026_part_two_for_gain_and_allowed_loss() {
     for amount in [8_000, -4_000] {
         let mut data = ordinary_partner_source(15_000, true);
-        data.income.push(PartnerIncome {
+        data.income.push(PartnerIncomeTotal {
             code: PartnerIncomeCode::SpeciallyAllocatedOrdinary,
             amount: amount * 100,
         });
@@ -42,7 +42,7 @@ fn k1_sale_footing_code_r_uses_2026_part_two_for_gain_and_allowed_loss() {
 #[test]
 fn k1_sale_footing_ordinary_code_r_and_capital_box_ten_keep_separate_transfers() {
     let mut data = ordinary_partner_source(15_000, true);
-    data.income.push(PartnerIncome {
+    data.income.push(PartnerIncomeTotal {
         code: PartnerIncomeCode::SpeciallyAllocatedOrdinary,
         amount: 800_000,
     });
@@ -61,11 +61,11 @@ fn k1_sale_footing_ordinary_code_r_and_capital_box_ten_keep_separate_transfers()
 fn k1_sale_footing_section_751_gain_joins_2026_part_two_once() {
     let mut data = ordinary_partner_source(15_000, true);
     data.final_k1 = true;
-    data.regular.basis.opening = 0;
+    data.regular.basis.opening = Some(0);
     data.regular.basis.opening_liabilities = 0;
     data.regular.basis.ending_liabilities = 0;
     data.alternative = Some(data.regular.clone());
-    data.disposition = K1Disposition::Sold { proceeds: 2_000_000 };
+    data.disposition = Some(K1Disposition::Sold { proceeds: 2_000_000 });
     data.sale = PartnerSaleParts { ordinary: 300_000, collectibles: 0, unrecaptured: 0 };
     data.interest_term = Some(GainTerm::Long);
     let (draft, _) =

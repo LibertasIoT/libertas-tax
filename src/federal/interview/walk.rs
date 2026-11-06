@@ -1,64 +1,27 @@
-// Coverage: walk-owned data (2026-09-28).
-//   The walk is a function of the accepted answers: in_walk says which pages this return can
-//   open (navigation, the hubs' topics, first_open and the prune read it), first_open opens the
-//   first page in the walk whose required data is absent. Every stored datum is owned by the
-//   page that asks it, and prune goes down one table at two levels. Level 1 erases, destructuring
-//   FederalDraft exhaustively: each datum of a page outside the walk, each row whose constrained
-//   choice is outside its allowed list recomputed from the candidate (the allowed_* functions the
-//   pages use), each conditional answer its page no longer shows (every spouse answer off a joint
-//   return), and each topic's entries whose checklist tick is off (FLAGS.clear). Level 2 keeps the
-//   data: a page in the walk whose own save refuses its stored answers against the candidate
-//   (page_refuses: the page's builder and its *_candidate, no second copy of its rules) loses its
-//   finished mark, with its hub's for a topic, so the walk opens it again prefilled.
-//   FederalPayments.joint is the one context field, where no page rule can see the change:
-//   payments entered for a joint return are the couple's (erased off a joint return), one filer's
-//   stay valid on a joint return (reopened to add the spouse's). Every save prunes the candidate
-//   before it stores it; the running estimate names what the prune removes and reopens
-//   (warning_text). Tests: src/tests/cross/change_audit.rs (the audit's cases and the two generated
-//   properties saves_keep_only_walked_data and unasked_data_leaves_the_return_unchanged).
-//   Unit u5-adjust (2026-09-28): the unasked adjustments lines have owners: alimony_paid (More
-//   adjustments), social_election and required_distributions (the Retirement topic's kinds),
-//   public_safety (each 1099-R; rows whose 1099-R is gone are erased). archer,
-//   pension_contributions has no page (refused by name) and is erased. Unit B6a (2026-10-09):
-//   archer is the HSA page's (always in the walk) and able_contributions the Other income topic's
-//   kind, by owner. Tests: src/tests/federal/unasked_pages.rs leaving_joint_erases_the_spouses_rows_on_the_new_pages,
-//   answers_no_page_asks_are_erased; the generated households carry the new pages' data.
-//   u5-losses (2026-09-28): FederalPeople.parent_tax is owned by the parent's return page (in the
-//   walk while Form 8615 applies, parent_tax_in_walk); screening.nol/atnol by the Self-employment
-//   and Farming topics (their operating-loss kind).
-//   u6-alimony (2026-09-28): alimony received is an income entry (FederalIncome::Alimony) of the
-//   prizes, royalties, equipment rent and alimony topic, owned by that topic's tick and by its
-//   owner inside allowed_owners (the income line below); no new line or context field.
-//   u6-roth (2026-09-28): adjustments.roth_history is owned by the Retirement topic's "Roth IRA
-//   history" kind, row by row through allowed_owners, and by the topic's tick; the Roth IRA
-//   1099-R (codes J, Q, T) is a Retirement topic entry like any 1099-R.
-//   u6-home (2026-09-28): home sales (FederalIncome::HomeSale) are the Investment sales topic's
-//   (topic_of; its tick owns them); a sale's spouse answers are erased off a joint return
-//   (HomeSale::drop_spouse), and a joint return without them reopens Investment sales (level 2,
-//   HOME_SPOUSE_NEEDED). Form 8828's hidden home sale IDs are derived on every save.
-//   Unit B1 Form 8815 (2026-10-09): the savings bond record (FederalIncome::SavingsBonds) is the
-//   Interest and dividends topic's, owned by its tick and by its owner inside allowed_owners; each
-//   student row stays only for a person still on the return (Allowed.students), and a record left
-//   with no student goes.
-//   Unit B3 Form 1099-Q (2026-10-09): the Form 1099-Q (FederalIncome::EducationDistribution) and the
-//   529 and Coverdell expenses record (FederalIncome::EducationAccountExpenses) are the Other income
-//   topic's, owned by its tick and by its owner inside allowed_owners; a form whose chosen student
-//   left the return becomes a student not on the return with no costs assigned, an expenses row
-//   stays only for a person still on the return, and a record left with no student goes.
+// The walk follows accepted household, checklist and topic answers. Record and
+// topic owners clear their unasked facts and unavailable conditional answers.
+// Standalone documents belong to the document center; follow-ups belong to their topics;
+// checklist or household changes retain them for review and explicit correction.
+//
+// Every save prunes its candidate before storing it. A finished page whose own
+// candidate refuses its retained answers loses its completion mark, so the
+// ordinary walk reopens that editor with those answers. The same page builders
+// and candidates serve Save, preview and reopening; no second validation table
+// decides whether retained answers are acceptable.
 use super::*;
 use crate::protocol::SaveWarning;
 use alloc::vec;
 
 // Whether a page is in this return's walk: a save can reach it for these
 // answers, so it asks and keeps its data. Every other page is always in the
-// walk (the income, adjustments and credits topics, the less-common pages,
-// the payments and less-common pages).
+// walk (the income, adjustments and credits topics, the payments page and
+// the last page before the review).
 pub(super) fn in_walk(d: &FederalDraft, page: TaxSection) -> bool {
     match page {
         TaxSection::Spouse => joint(d),
         TaxSection::SelfEmployedBenefits => has_benefit_rows(d),
         TaxSection::Mortgage => mortgage_available(d),
-        TaxSection::Itemized | TaxSection::MoreItemized => itemizing(d),
+        TaxSection::Itemized => itemizing(d),
         TaxSection::OtherItemized => {
             itemizing(d)
                 || crate::investment_interest::sources(d).len() > 1
@@ -154,12 +117,24 @@ pub(crate) fn prune(d: &mut FederalDraft) -> Pruned {
 // itemized topics with the route), so the table is applied until nothing
 // changes.
 pub(super) fn prune_data(d: &mut FederalDraft) -> Vec<Removed> {
+    prune_data_with_plan(d, true)
+}
+pub(super) fn prune_data_with_plan(d: &mut FederalDraft, apply_plan: bool) -> Vec<Removed> {
     let mut removed = Vec::new();
     // Every pass only removes, so a handful of passes reaches the end.
     for _ in 0..16 {
         let before = d.clone();
-        prune_unticked(d, &mut removed);
+        if apply_plan {
+            prune_unticked(d, &mut removed);
+        }
         prune_lines(d, &mut removed);
+        crate::social_documents::reconcile(d);
+        if let Some(credits) = d.credits.as_mut() {
+            credits.reconcile_education_students();
+            credits.reconcile_education_insurance_sources(
+                before.credits.as_ref().map_or(&[], |previous| previous.education.as_slice()),
+            );
+        }
         if *d == before {
             break;
         }
@@ -252,8 +227,45 @@ pub(super) fn topic_hub(topic: TaxSection) -> Option<TaxSection> {
 }
 // Whether a topic holds anything its page would show.
 pub(super) fn topic_has_data(d: &FederalDraft, topic: TaxSection) -> bool {
-    FLAGS.iter().any(|f| f.section == topic && (f.entered)(d))
-        || (topic == TaxSection::Saver && d.credits.as_ref().is_some_and(|c| c.saver.is_some()))
+    let adjustments = d.adjustments.as_ref();
+    let deductions = d.deductions.as_ref();
+    let credits = d.credits.as_ref();
+    let entered = match topic {
+        // The gifts box is shared by the deductions page (cash) and this one.
+        TaxSection::GiftCarryovers => return deductions.is_some_and(gift_page_entered),
+        TaxSection::InvestmentSales => income_topic_entered(d, topic) || iso_entered(d),
+        topic if INCOME_TOPICS.contains(&topic) => income_topic_entered(d, topic),
+        TaxSection::SelfEmployedBenefits => !benefits_entered(d).is_empty(),
+        TaxSection::Educator => adjustments.is_some_and(|a| a.educators.any()),
+        TaxSection::StudentLoan => adjustments.is_some_and(|a| a.student_loan.any()),
+        TaxSection::EmployeeExpenses => {
+            adjustments.is_some_and(|a| !a.employee_expenses.is_empty())
+        }
+        TaxSection::Medical | TaxSection::OtherItemized => itemized_entered(d, topic),
+        TaxSection::Mortgage => deductions.is_some_and(|v| !v.mortgage.is_empty()),
+        TaxSection::Deductions => deductions.is_some_and(|v| !v.vehicle_loans.is_empty()),
+        TaxSection::Education => {
+            credits.is_some_and(|c| !c.education.is_empty())
+                || d.income
+                    .iter()
+                    .any(|entry| followup_topic(d, entry) == Some(TaxSection::Education))
+        }
+        TaxSection::Marketplace => {
+            credits.is_some_and(|c| matches!(c.marketplace, MarketplaceClaim::Yes { .. }))
+        }
+        TaxSection::OtherTaxes => {
+            !d.coverdell_excess.is_empty()
+                || d.income
+                    .iter()
+                    .any(|entry| crate::trump_account::printed_excess(entry).is_some())
+                || d.screening.as_ref().is_some_and(|s| !s.trump_accounts.is_empty())
+        }
+        TaxSection::Hsa => topic_followups_present(d, TaxSection::Hsa),
+        TaxSection::InjuredSpouse => d.injured_spouse.is_some(),
+        TaxSection::Saver => credits.is_some_and(|c| c.saver.is_some()),
+        _ => false,
+    };
+    entered || FLAGS.iter().any(|f| f.section == topic && (f.entered)(d))
 }
 // Whether a page's own save refuses the answers it opens with: the page is
 // built as the review opens it and its request is checked by the same
@@ -261,6 +273,8 @@ pub(super) fn topic_has_data(d: &FederalDraft, topic: TaxSection) -> bool {
 // answers is left to its own save.
 pub(super) fn page_refuses(s: &Interview, page: TaxSection) -> bool {
     let reply = match page {
+        TaxSection::Documents => s.document_center_page(true),
+        TaxSection::IncomeWithoutForm => s.income_without_form_page(true),
         topic if INCOME_TOPICS.contains(&topic) => s.topic_page(topic, true),
         TaxSection::Care => s.care_page(true),
         TaxSection::Hsa => s.hsa_page(true),
@@ -283,7 +297,6 @@ pub(super) fn page_refuses(s: &Interview, page: TaxSection) -> bool {
         TaxSection::OtherTaxes => s.other_taxes_page(true),
         TaxSection::MoreAdjustments => s.more_adjustments_page(true),
         TaxSection::Payments => s.payments_page(true),
-        TaxSection::MoreIncome | TaxSection::MoreItemized => s.situations_page(page, true),
         _ => return false,
     };
     match reply {
@@ -302,12 +315,42 @@ fn candidate_refuses<T, E>(candidate: impl FnOnce() -> Result<T, E>) -> bool {
 }
 
 fn request_refuses(s: &Interview, request: P) -> bool {
-    if let P::SaveIncomes { topic, documents, .. } = request {
-        return candidate_refuses(|| s.documents_candidate(topic, documents));
+    if let P::SaveDocuments { documents, document_owners, .. } = request {
+        return candidate_refuses(|| {
+            let draft =
+                s.with_document_owners(s.draft.clone(), TaxSection::Documents, &document_owners)?;
+            s.candidate_editor(draft).document_center_candidate_with_origins(documents)
+        });
+    }
+    if let P::SaveWagesAnswers { wages, followups, records, .. } = request {
+        return candidate_refuses(|| {
+            s.wages_answers_candidate(wages, followups, records, false, None)
+        });
+    }
+    if let P::SaveIncomes { topic, documents, followups, .. } = request {
+        let keys: Vec<_> = followups.iter().map(|row| row.key.clone()).collect();
+        // A reopened page already carries the accepted physical answers. Its
+        // pending questions do not erase hub completion; validate its ordinary
+        // records through their original owner. Real Save still validates answers.
+        return candidate_refuses(|| {
+            s.documents_candidate_inner_with_origins(
+                topic,
+                documents.into_edits(),
+                false,
+                None,
+                Some(&keys),
+            )
+        });
     }
     match &request {
+        P::SaveIncomeWithoutForm { value, .. } => {
+            candidate_refuses(|| s.income_without_form_candidate(value))
+        }
         P::SaveCare { value, .. } => candidate_refuses(|| s.care_candidate(value)),
-        P::SaveHsa { value, .. } => candidate_refuses(|| s.hsa_candidate(value)),
+        P::SaveHsa { value, followups, .. } => candidate_refuses(|| {
+            s.hsa_followup_candidate(followups, false)
+                .and_then(|candidate| candidate.hsa_candidate(value))
+        }),
         P::SaveSelfEmployedBenefits { value, .. } => {
             candidate_refuses(|| s.self_employed_benefits_candidate(value))
         }
@@ -335,7 +378,10 @@ fn request_refuses(s: &Interview, request: P) -> bool {
                 None,
             )
         }),
-        P::SaveEducation { value, .. } => candidate_refuses(|| s.education_candidate(value)),
+        P::SaveEducation { value, followups, .. } => candidate_refuses(|| {
+            s.education_followup_candidate(followups, false)
+                .and_then(|candidate| candidate.education_candidate(value))
+        }),
         P::SaveSaver { value, .. } => candidate_refuses(|| s.saver_candidate(value)),
         P::SaveMarketplace { value, .. } => candidate_refuses(|| s.marketplace_candidate(value)),
         P::SaveMoreCredits { value, .. } => candidate_refuses(|| {
@@ -352,19 +398,17 @@ fn request_refuses(s: &Interview, request: P) -> bool {
             candidate_refuses(|| s.more_adjustments_candidate(value))
         }
         P::SavePayments { value, .. } => candidate_refuses(|| s.payments_candidate(value)),
-        P::SaveSituations { topic, value, .. } => {
-            candidate_refuses(|| s.situations_candidate(*topic, value))
-        }
         _ => false,
     }
 }
 
-// The checklist's lines: a topic's entries are owned by its tick (FLAGS:
-// `entered` is the datum, `clear` makes it absent the way saving its page
-// with nothing on it would).
+// Beyond your documents' lines: a topic's entries are owned by its box
+// (FLAGS: `entered` is the datum, `clear` makes it absent the way saving its
+// page without it would). A document keeps its box's topic on the path, so
+// that topic loses nothing; documents themselves are never removed here.
 fn prune_unticked(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     for flag in &FLAGS {
-        if ticked(&d.checklist, flag) || !(flag.entered)(d) {
+        if ticked(&d.checklist, flag) || evidence(d, flag).is_some() || !(flag.entered)(d) {
             continue;
         }
         let before = d.clone();
@@ -378,43 +422,36 @@ fn prune_unticked(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     }
 }
 // The income documents a line removed, each named by its kind and payer.
-fn removed_rows(before: &FederalDraft, d: &FederalDraft, removed: &mut Vec<Removed>) {
+pub(super) fn removed_rows(before: &FederalDraft, d: &FederalDraft, removed: &mut Vec<Removed>) {
     for entry in &before.income {
         if !d.income.iter().any(|e| e.id == entry.id) {
             removed.push(entry_row(document_warning_kind(entry), entry, before.dependents()));
+        } else if let Some(current) = d.income.iter().find(|e| e.id == entry.id) {
+            let children = crate::k1_activity::physical_child_ids(&current.income);
+            if crate::k1_activity::physical_child_ids(&entry.income)
+                .iter()
+                .any(|id| *id > 0 && !children.contains(id))
+            {
+                let row = entry_row("SAVING_KIND_RELATED_FORM", entry, before.dependents());
+                if !removed.contains(&row) {
+                    removed.push(row);
+                }
+            }
+            if let (
+                FederalIncome::EstateTrustPortfolio { data: old },
+                FederalIncome::EstateTrustPortfolio { data: new },
+            ) = (&entry.income, &current.income)
+            {
+                for name in super::estate_followups::removed_apportionments(
+                    &old.statements,
+                    &new.statements,
+                ) {
+                    removed.push(row("SAVING_KIND_ESTATE_QBI_APPORTIONMENT", name));
+                }
+            }
         }
     }
 }
-// Saving a topic page with nothing on it: its entries and the answers it
-// owns go (documents_candidate replaces every entry of its kinds). Nothing
-// is visited: the sections recorded stay as they were.
-pub(super) fn empty_topic(d: &mut FederalDraft, topic: TaxSection) {
-    let viewing = Interview::viewing(d.clone());
-    match viewing.documents_candidate(
-        topic,
-        IncomeDocuments {
-            qbi_aggregations: crate::qbi_aggregation::project_pages(
-                d.screening.as_ref().map_or(&[], |v| v.qbi_aggregations.as_slice()),
-                &crate::qbi_aggregation::source_views(d, d),
-            ),
-            receipt_context: crate::BusinessReceiptContext::default(),
-            documents: Vec::new(),
-        },
-    ) {
-        Ok(mut draft) => {
-            draft.finished_sections = d.finished_sections.clone();
-            *d = draft;
-        }
-        // A return whose other answers the page would refuse still loses
-        // this topic's documents.
-        Err(_) => {
-            let removed: alloc::collections::BTreeSet<_> =
-                d.income.iter().filter(|e| topic_of(d, e) == Some(topic)).map(|e| e.id).collect();
-            d.income.retain(|e| !removed.contains(&e.id));
-        }
-    }
-}
-
 // What one pass reads before it changes anything: the walk and the allowed
 // lists of the candidate as the pass begins.
 struct Allowed {
@@ -425,7 +462,6 @@ struct Allowed {
     income_owners: Vec<Owner>,
     // Income rows retain property answers offered by their owning allowed set.
     community: bool,
-    itemizing: bool,
     box_c: bool,
     injured: bool,
     // Form 8615 applies: the parent's return page asks its facts.
@@ -439,8 +475,6 @@ struct Allowed {
     // The children a Form 8814 election can report (child_election_children).
     children: Vec<i64>,
     insured: Vec<i64>,
-    // The situations each page offers (allowed_situations).
-    situations: Vec<RareSituation>,
     // The repayment comparison is offered (allowed_repayment).
     repayment: bool,
     // The retirement income an annuity cost can name (annuity_contracts).
@@ -470,7 +504,6 @@ impl Allowed {
                 .collect(),
             community: crate::injured_spouse::community_answers(d)
                 .contains(&crate::community::index(crate::CommunityShare::Community)),
-            itemizing: itemizing(d),
             box_c: in_walk(d, TaxSection::IncomeByPeriod),
             injured: in_walk(d, TaxSection::InjuredSpouse),
             parent_tax: in_walk(d, TaxSection::ParentTax),
@@ -479,14 +512,6 @@ impl Allowed {
             students: education_people(d).iter().map(|p| p.id).collect(),
             children: child_election_children(d).iter().map(|c| c.id).collect(),
             insured: medical_people(d).into_iter().map(|(p, _)| p.id).collect(),
-            situations: RareSituation::ALL
-                .iter()
-                .copied()
-                .filter(|s| {
-                    let topic = s.destination().0;
-                    in_walk(d, topic) && allowed_situations(topic).contains(&situation_index(*s))
-                })
-                .collect(),
             marketplace: marketplace_in_lists(d),
             repayment: crate::claim_repayment::repayment_offered(d),
             contracts: annuity_contracts(d).iter().map(|c| c.id).collect(),
@@ -523,9 +548,6 @@ fn ira_spouse_index(spouse: &IraSpouse) -> i32 {
         }
     }) as i32
 }
-fn situation_index(situation: RareSituation) -> i32 {
-    RareSituation::ALL.iter().position(|s| *s == situation).map_or(-1, |i| i as i32)
-}
 fn owner_name_key(owner: Owner) -> &'static str {
     match owner {
         Owner::Taxpayer => "SAVING_OWNER_YOURS",
@@ -559,6 +581,64 @@ fn marketplace_in_lists(d: &FederalDraft) -> Option<FederalDraft> {
     viewing.marketplace_candidate(&value).ok()
 }
 
+// Applicability comes from the accepted source catalog, including recipient and
+// activity-specific restrictions; pruning only changes activity-owned keys.
+fn prune_related<A: crate::related_forms::Activity>(
+    keys: &mut Vec<i64>,
+    activity: i64,
+    center: &[crate::related_forms::CenterDocument],
+) -> bool {
+    let applicable: Vec<_> =
+        center.iter().filter(|source| source.eligible.contains(&activity)).cloned().collect();
+    crate::RelatedForms::prune::<A>(keys, &applicable)
+}
+
+pub(super) fn prune_entry_related(
+    entry: &mut FederalIncomeEntry,
+    related_center: &[crate::related_forms::CenterDocument],
+) -> bool {
+    match &mut entry.income {
+        FederalIncome::PartnershipActivities { data } => {
+            crate::k1_activity::prune_child_references(
+                &mut data.activities,
+                &data.entity.investment_property,
+                &data.entity.section179_sales,
+            )
+        }
+        FederalIncome::ScorpActivities { data } => crate::k1_activity::prune_child_references(
+            &mut data.activities,
+            &data.entity.investment_property,
+            &data.entity.section179_sales,
+        ),
+        FederalIncome::Business { data } => match &mut data.activity {
+            BusinessActivity::Ordinary { .. } => {
+                prune_related::<crate::Business>(&mut data.related, entry.id, related_center)
+            }
+            BusinessActivity::Farming { data } => {
+                prune_related::<crate::Farm>(&mut data.related, entry.id, related_center)
+            }
+            _ => false,
+        },
+        FederalIncome::FarmRental { data } => {
+            prune_related::<crate::FarmRental>(&mut data.farm.related, entry.id, related_center)
+        }
+        FederalIncome::Rental { data } => {
+            prune_related::<crate::Rental>(&mut data.related, entry.id, related_center)
+        }
+        FederalIncome::HobbySales { data } => {
+            prune_related::<crate::HobbySales>(&mut data.related, entry.id, related_center)
+        }
+        FederalIncome::Royalty { data } => {
+            prune_related::<crate::RoyaltyProperty>(&mut data.related, entry.id, related_center)
+        }
+        FederalIncome::NonbusinessProperty {
+            kind: crate::NonbusinessPropertyKind::PersonalRental { related, .. },
+            ..
+        } => prune_related::<crate::EquipmentRent>(related, entry.id, related_center),
+        _ => false,
+    }
+}
+
 // The ownership table: every stored field, the page that owns it and the
 // line that keeps it. A field no page asks yet is "unasked": it keeps its
 // nothing-applies value (fill_unasked) until its milestone's page owns it.
@@ -566,6 +646,13 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     let a = Allowed::of(d);
     let marketplace_family = crate::marketplace::family_people(d);
     let before = d.clone();
+    let related_center = crate::related_forms::catalog(&before);
+    let center_sources: alloc::collections::BTreeSet<_> = before
+        .income
+        .iter()
+        .filter(|entry| source_in_editor(&before, entry, TaxSection::Documents))
+        .map(|entry| entry.id)
+        .collect();
     // The marketplace page: its answers inside its allowed lists, as the
     // page saves them (its catalog and education rows follow the people).
     if let Some(saved) = &a.marketplace {
@@ -594,6 +681,7 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
                 .map(|(index, _)| index)
                 .collect()
         });
+    let is_separate = separate(d);
     let FederalDraft {
         // The return's identity and revision, not answers.
         tax_year: _,
@@ -615,6 +703,8 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         home_sites: _,
         // Each page's mark, owned with its page.
         finished_sections,
+        // The answered situations question of each document still on the return.
+        situations_unanswered,
         adjustments,
         deductions,
         credits,
@@ -622,34 +712,18 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         payments,
         // The review.
         finished: _,
-        // The situations pages: each inside its page's allowed_situations.
-        situations,
-        // The refusal kinds of More adjustments, More credits and Other
-        // taxes, pages always in the walk.
-        adjustment_refusals: _,
+        // The credit notices (More credits) and the last page before the
+        // review, both always in the walk.
         credit_refusals: _,
-        tax_refusals: _,
+        often_missed: _,
+        without_form: _,
         coverdell_excess,
-        // The checklist, always in the walk; its ticks own the topics'
-        // entries, and its joint-only whole-return items need a joint return.
-        checklist,
+        // Beyond your documents, always in the walk; its boxes own the
+        // topics' entries (prune_unticked).
+        checklist: _,
         // Form 8379's page, while the injured spouse item is ticked.
         injured_spouse,
     } = d;
-
-    if !a.joint && checklist.whole_return & crate::federal_model::WHOLE_RETURN_JOINT_ONLY != 0 {
-        let ticks = *checklist;
-        for flag in FLAGS.iter().filter(|f| {
-            f.catalog == Catalog::WholeReturn
-                && f.bit & crate::federal_model::WHOLE_RETURN_JOINT_ONLY != 0
-                && ticked(&ticks, f)
-        }) {
-            set_tick(checklist, flag, false);
-            if !removed.contains(&answer(flag.removal_key)) {
-                removed.push(answer(flag.removal_key));
-            }
-        }
-    }
 
     if let Some(people) = people.as_mut()
         && !a.joint
@@ -664,7 +738,18 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     {
         removed.push(answer("SAVING_REMOVES_YOUR_PARENT_S_RETURN_FORM_8615"));
     }
-    income.retain(|e| a.income_owners.contains(&e.owner));
+    income.retain(|e| a.income_owners.contains(&e.owner.owned()) || center_sources.contains(&e.id));
+    situations_unanswered.retain(|id| income.iter().any(|e| e.id == *id));
+    // A rental's section 179 answer exists only while the return has section 179.
+    if !crate::section179::rental_business_asked(&before) {
+        for entry in income.iter_mut() {
+            if let FederalIncome::Rental { data } = &mut entry.income
+                && data.section179_business.take().is_some()
+            {
+                removed.push(answer("SAVING_REMOVES_RENTAL_SECTION179_BUSINESS"));
+            }
+        }
+    }
     let old_coverdell = coverdell_excess.len();
     coverdell_excess.retain(|v| a.owners.contains(&v.beneficiary));
     if old_coverdell != coverdell_excess.len() {
@@ -688,7 +773,7 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     // Retain property answers for ordinary division or injured-spouse
     // allocation while the owning allowed set offers those choices.
     if !a.community {
-        for entry in income.iter_mut() {
+        for entry in income.iter_mut().filter(|entry| !center_sources.contains(&entry.id)) {
             entry.community = crate::CommunityShare::NotNeeded;
         }
     }
@@ -712,9 +797,13 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         .collect();
     for entry in income.iter_mut() {
         if let FederalIncome::Wage { data } = &mut entry.income
-            && data.paying_scorporation.is_some_and(|id| !wage_scorporations.contains(&id))
+            && let Some(answers) = data.answers_mut()
+            && answers
+                .paying_scorporation
+                .as_ref()
+                .is_some_and(|source| !wage_scorporations.contains(&source.id()))
         {
-            data.paying_scorporation = None;
+            answers.paying_scorporation = None;
             removed.push(answer("SAVING_REMOVES_W2_SCORP_EMPLOYER"));
         }
     }
@@ -822,16 +911,35 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         })
         .collect();
     for entry in income.iter_mut() {
-        if let FederalIncome::Wage { data } = &mut entry.income
-            && data.statutory_business.is_some_and(|id| {
-                !data.statutory_employee || !statutory_businesses.contains(&(id, entry.owner))
-            })
-        {
-            data.statutory_business = None;
-            removed.push(entry_row("SAVING_STATUTORY_BUSINESS_ASSOCIATION", entry, dependents));
+        if let FederalIncome::Wage { data } = &mut entry.income {
+            let statutory = crate::FederalWage::from(&*data).statutory_employee;
+            if let Some(answers) = data.answers_mut()
+                && answers.statutory_business.is_some_and(
+                    |crate::StatutoryBusiness::Business { source }| {
+                        !statutory || !statutory_businesses.contains(&(source, entry.owner))
+                    },
+                )
+            {
+                answers.statutory_business = None;
+                removed.push(entry_row("SAVING_STATUTORY_BUSINESS_ASSOCIATION", entry, dependents));
+            }
         }
     }
     for entry in income.iter_mut() {
+        // A home sale's spouse answers only on a joint return (u6-home), also for a Document Center source.
+        if let FederalIncome::HomeSale { data } = &mut entry.income
+            && !a.joint
+            && data.drop_spouse()
+        {
+            removed.push(entry_row("SAVING_KIND_HOME_SALE_S_SPOUSE_ANSWERS", entry, dependents));
+        }
+        if center_sources.contains(&entry.id) {
+            continue;
+        }
+        let related_removed = prune_entry_related(entry, &related_center);
+        if related_removed {
+            removed.push(entry_row("SAVING_KIND_RELATED_FORM", entry, dependents));
+        }
         let farm = match &mut entry.income {
             FederalIncome::Business { data } => match &mut data.activity {
                 BusinessActivity::Farming { data } => Some(data),
@@ -855,26 +963,19 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
             data.gross_personal_services = None;
             removed.push(entry_row("SAVING_KIND_PARTNERSHIP_INCOME_SOURCE", entry, dependents));
         }
-        // A home sale's spouse answers only on a joint return (u6-home).
-        if let FederalIncome::HomeSale { data } = &mut entry.income
-            && !a.joint
-            && data.drop_spouse()
-        {
-            removed.push(entry_row("SAVING_KIND_HOME_SALE_S_SPOUSE_ANSWERS", entry, dependents));
-        }
         // A Form 1099-Q whose student left the return keeps the form (its
         // amounts are the payer's): the student is now one who is not on the
         // return, with no costs assigned. A 529 and Coverdell expenses row
         // only for a person still on the return.
         if let FederalIncome::EducationDistribution { data } = &mut entry.income
-            && let crate::FederalEducationBeneficiary::Student { person } = data.beneficiary
+            && let Some(crate::FederalEducationBeneficiary::Student { person }) = data.beneficiary
             && !a.students.contains(&person)
         {
-            data.beneficiary = crate::FederalEducationBeneficiary::OtherStudent {
+            data.beneficiary = Some(crate::FederalEducationBeneficiary::OtherStudent {
                 expenses: 0,
                 assistance: 0,
                 credit_expenses: 0,
-            };
+            });
             removed.push(entry_row("SAVING_KIND_1099_Q_STUDENT", entry, dependents));
         }
         if let FederalIncome::EducationAccountExpenses { data } = &mut entry.income {
@@ -899,62 +1000,47 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
             removed.push(entry_row("SAVING_KIND_LONG_TERM_CARE_PREMIUM", entry, dependents));
         }
         // A savings-bond row only for a person still on the return.
-        if let FederalIncome::SavingsBonds { data } = &mut entry.income {
-            let before = data.students.len();
-            data.students.retain(|s| a.students.contains(&s.person));
-            if data.students.len() != before {
+        if let FederalIncome::SavingsBonds { data } = &mut entry.income
+            && let Some(answers) = &mut data.answers
+        {
+            let before = answers.students.len();
+            answers.students.retain(|s| a.students.contains(&s.person));
+            if answers.students.len() != before {
                 removed.push(entry_row("SAVING_KIND_SAVINGS_BONDS_PERSON", entry, dependents));
             }
         }
     }
     // A savings-bond record with no person left is not a record the page
     // could have written.
-    income.retain(|e| match &e.income {
-        FederalIncome::SavingsBonds { data } if data.students.is_empty() => {
-            removed.push(entry_row("SAVING_KIND_SAVINGS_BONDS", e, dependents));
-            false
+    income.retain(|e| {
+        if center_sources.contains(&e.id) {
+            return true;
         }
-        // A periods record for a person who left the return is not one the page could show.
-        FederalIncome::LtcInsured { data }
-            if matches!(
-                data.insured,
-                crate::FederalLtcInsuredPerson::OnReturn { person } if !a.students.contains(&person)
-            ) =>
-        {
-            removed.push(entry_row("SAVING_KIND_LTC_INSURED", e, dependents));
-            false
-        }
-        FederalIncome::EducationAccountExpenses { data } if data.students.is_empty() => {
-            removed.push(entry_row("SAVING_KIND_EDUCATION_ACCOUNT_EXPENSES", e, dependents));
-            false
-        }
-        _ => true,
-    });
-    // A link names a record by its identity; when that record is gone the link
-    // is cleared, so a stored link is always to a record that exists (a 1099-G
-    // box 7 or 1099-PATR farm, a 1099-LTC periods record). The document then
-    // takes the choice-less path again.
-    let farm_ids: Vec<i64> = income
-        .iter()
-        .filter(|e| match &e.income {
-            FederalIncome::Business { data } => {
-                matches!(data.activity, crate::BusinessActivity::Farming { .. })
+        match &e.income {
+            FederalIncome::SavingsBonds { data }
+                if data.answers.as_ref().is_some_and(|answers| answers.students.is_empty()) =>
+            {
+                removed.push(entry_row("SAVING_KIND_SAVINGS_BONDS", e, dependents));
+                false
             }
-            FederalIncome::FarmRental { .. } => true,
-            _ => false,
-        })
-        .map(|e| e.id)
-        .collect();
+            FederalIncome::EducationAccountExpenses { data } if data.students.is_empty() => {
+                removed.push(entry_row("SAVING_KIND_EDUCATION_ACCOUNT_EXPENSES", e, dependents));
+                false
+            }
+            _ => true,
+        }
+    });
+    // The remaining source-side link belongs to the long-term-care records.
     let periods_ids: Vec<i64> = income
         .iter()
         .filter(|e| matches!(e.income, FederalIncome::LtcInsured { .. }))
         .map(|e| e.id)
         .collect();
     for entry in income.iter_mut() {
+        if center_sources.contains(&entry.id) {
+            continue;
+        }
         let (link, ids, kind) = match &mut entry.income {
-            FederalIncome::Unemployment { data } => {
-                (&mut data.agriculture_farm, &farm_ids, "SAVING_KIND_FARM_CHOICE")
-            }
             FederalIncome::LtcBenefits { data } => {
                 (&mut data.insured, &periods_ids, "SAVING_KIND_LTC_PERIODS_CHOICE")
             }
@@ -965,20 +1051,16 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
             removed.push(entry_row(kind, entry, dependents));
         }
     }
-    situations.retain(|s| {
-        let kept = a.situations.contains(s);
-        if !kept {
-            removed.push(row_resource("SAVING_KIND_SITUATION", s.refused().name_key));
-        }
-        kept
-    });
     let injured_key = answer("SAVING_REMOVES_YOUR_INJURED_SPOUSE_ALLOCATION_FORM_8379");
     if !a.injured && injured_spouse.take().is_some() && !removed.contains(&injured_key) {
         removed.push(injured_key);
     }
 
     if let Some(FederalAdjustments {
+        social_premiums: _,
         health_employer_w2: _,
+        health_statements: _,
+        health_contribution_allocations: _,
         health_marketplace: _,
         // The retirement topic (its lump-sum kind; absent is Regular).
         social_election: _,
@@ -1063,6 +1145,7 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     }
 
     if let Some(FederalDeductions {
+        vehicle_recoveries: _,
         // Mortgage facts also serve rentals and survive deduction route changes.
         mortgage: _,
         // Borrowing is source-owned and survives deduction route changes.
@@ -1077,9 +1160,9 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         // The other itemized page (itemizing): each row for retirement
         // income in its catalog (annuity_contracts).
         annuity_losses,
-        // The deductions page's route (its allowed_routes, level 2); the
-        // itemized topics own its facts.
-        choice: _,
+        // The optional itemizing election and independent retained facts.
+        itemize_override: _,
+        itemized: _,
         spouse_itemizes: _,
         // The deductions page.
         cash_charity: _,
@@ -1091,6 +1174,8 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         hosted_students: _,
         whaling_captains: _,
         property_gifts: _,
+        vehicle_gifts: _,
+        vehicle_gift_documents: _,
         appraisals: _,
         basis_election: _,
         charity_carryovers: _,
@@ -1101,7 +1186,7 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
             removed.push(answer("SAVING_REMOVES_YOUR_EARLIER_YEAR_REPAYMENT_COMPARISON"));
         }
         annuity_losses.retain(|l| {
-            let kept = a.itemizing && a.contracts.contains(&l.income_id);
+            let kept = a.contracts.contains(&l.income_id);
             if !kept {
                 removed.push(answer("SAVING_REMOVES_YOUR_UNRECOVERED_ANNUITY_COST"));
             }
@@ -1110,13 +1195,11 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
     }
     if let Some(v) = deductions.as_mut() {
         a.owned(&mut v.whaling_captains, |c| c.owner, "SAVING_KIND_WHALING_CAPTAIN_CLAIM", removed);
-        if !a.itemizing && super::gift_page_entered(v) {
-            super::clear_gift_page(v);
-            removed.push(answer("SAVING_REMOVES_YOUR_GIFTS_OF_PROPERTY_AND_CARRYOVERS"));
+        if !is_separate {
+            v.spouse_itemizes = None;
         }
-        if let DeductionSelection::Automatic { expenses: ItemizedChoice::Yes { facts } }
-        | DeductionSelection::Itemized { facts } = &mut v.choice
         {
+            let facts = &mut v.itemized;
             // Medical page: premiums only for a person on the return.
             facts.long_term_care.retain(|p| {
                 let kept = a.insured.contains(&p.person);
@@ -1147,9 +1230,10 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         legacy_ev_passive_allowed: _,
         // The education page: rows for a person on the return.
         education,
+        students: _,
         // More credits.
         education_recapture: _,
-        // The people page (care costs), while you support someone; the
+        // Child and dependent care, while you support someone; the
         // disabled spouse's care only on a joint return.
         care,
         // The saver page: the spouse's amounts only on a joint return.
@@ -1185,14 +1269,7 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
                 *minimum_tax = None;
             }
         }
-        a.owned(tax_credit_bonds, |v| v.owner, "SAVING_KIND_TAX_CREDIT_BOND", removed);
-        education.retain(|e| {
-            let kept = a.students.contains(&e.student);
-            if !kept {
-                removed.push(Removed::Row { kind: "SAVING_KIND_EDUCATION_CREDIT", name: None });
-            }
-            kept
-        });
+        let _ = (tax_credit_bonds, education);
         // A dependent return of a person who left the return goes with them.
         if let crate::MarketplaceClaim::Yes { facts } = marketplace {
             if matches!(&facts.marriage, crate::MarketplaceMarriage::Alternative { you, spouse, .. }
@@ -1218,9 +1295,9 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         // Care facts belong to this page, independently of the current dependent list.
         // Source-constrained rows follow their actual source; the remaining answers survive.
         let old_care = care.clone();
-        care.benefits.retain(|b|income.iter().any(|e|e.id==b.wage&&matches!(&e.income,FederalIncome::Wage {data} if data.care_benefits>0&&b.in_box_1.unwrap_or(0)+b.forfeited.unwrap_or(0)<=data.care_benefits)));
+        care.benefits.retain(|b|income.iter().any(|e|e.id==b.wage&&matches!(&e.income,FederalIncome::Wage {data} if crate::FederalWage::from(data).care_benefits>0&&b.in_box_1.unwrap_or(0)+b.forfeited.unwrap_or(0)<=crate::FederalWage::from(data).care_benefits)));
         care.grace.retain(|g| a.owners.contains(&g.owner));
-        care.own_business.retain(|b|a.owners.contains(&b.owner)&&income.iter().any(|e|e.owner==b.owner&&match b.source {
+        care.own_business.retain(|b|a.owners.contains(&b.owner)&&income.iter().any(|e|e.owner==crate::DocumentOwner::from(b.owner)&&match b.source {
             crate::CareBenefitSource::Business {business}=>e.id==business&&matches!(&e.income,FederalIncome::Business {data} if !matches!(data.activity,BusinessActivity::Farming {..})),
             crate::CareBenefitSource::Farm {farm}=>e.id==farm&&matches!(&e.income,FederalIncome::Business {data} if matches!(data.activity,BusinessActivity::Farming {..})),
             crate::CareBenefitSource::Partnership {partnership}=>e.id==partnership&&matches!(e.income,FederalIncome::Partnership {..}),
@@ -1229,7 +1306,7 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
             && care.own_business.is_empty()
             && !income
                 .iter()
-                .any(|e| matches!(&e.income, FederalIncome::Wage {data} if data.care_benefits > 0))
+                .any(|e| matches!(&e.income, FederalIncome::Wage {data} if crate::FederalWage::from(data).care_benefits > 0))
         {
             care.plan_maximum = crate::CarePlanMaximum::NoBenefits;
         }
@@ -1300,6 +1377,10 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         able_contributions,
         // The investment sales topic, by owner.
         iso_exercises,
+        espp_acquisitions: _,
+        espp_sale_answers: _,
+        iso_sale_answers: _,
+        nua_sale_answers: _,
         capital_history: _,
         // Self-employment and rentals.
         section1231: _,
@@ -1336,18 +1417,14 @@ fn prune_lines(d: &mut FederalDraft, removed: &mut Vec<Removed>) {
         public_safety.retain(|p| {
             let kept = income.iter().any(|e| {
                 e.id == p.income_id && matches!(e.income, FederalIncome::Retirement { .. })
-            }) && match &p.coverage {
-                // A long-term-care policy only for a person still on the return.
-                crate::PublicSafetyCoverage::LongTermCare { person } => a.insured.contains(person),
-                _ => true,
-            };
+            });
             if !kept {
                 removed.push(answer("SAVING_REMOVES_YOUR_PUBLIC_SAFETY_OFFICER_PREMIUMS"));
             }
             kept
         });
         a.owned(trump_accounts, |v| v.owner, "SAVING_KIND_TRUMP_ACCOUNT", removed);
-        a.owned(iso_exercises, |v| v.owner, "SAVING_KIND_FORM_3921", removed);
+        let _ = iso_exercises;
         a.owned(disaster_carries, |v| v.owner, "SAVING_KIND_FORM_8915_F", removed);
         a.owned(installment_payments, |v| v.owner, "SAVING_KIND_EARLIER_INSTALLMENT_SALE", removed);
         a.owned(related_exchanges, |v| v.owner, "SAVING_KIND_EARLIER_RELATED_EXCHANGE", removed);
@@ -1392,12 +1469,12 @@ mod message_limit_tests {
     // Use the real routing inventory so adding another supported document kind
     // automatically adds its resource keys to this worst-width aggregate.
     fn supported_document_kinds() -> Vec<&'static str> {
-        let source = include_str!("mod.rs");
+        let source = include_str!("../income_names.rs");
         let routing = source
             .split("fn document_kind_keys(")
             .nth(1)
             .unwrap()
-            .split("fn document_warning_kind(")
+            .split("fn record_display_arg(")
             .next()
             .unwrap();
         let mut keys = Vec::new();

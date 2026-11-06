@@ -11,8 +11,9 @@ fn draft() -> (FederalDraft, [i64; 2]) {
     add(&mut d, income(savings_income(9000, 0)));
     let mut ids = [0; 2];
     for (index, profit) in [50_000, 30_000].into_iter().enumerate() {
-        let mut entry =
-            income(FederalIncome::Scorp { data: complete_ordinary_scorp(profit, true) });
+        let mut entry = income(FederalIncome::Scorp {
+            data: scorp_source(complete_ordinary_scorp(profit, true)),
+        });
         entry.label = alloc::format!("Synthetic research corporation {}", index + 1);
         add(&mut d, entry);
         ids[index] = d.income.last().unwrap().id;
@@ -23,7 +24,10 @@ fn draft() -> (FederalDraft, [i64; 2]) {
     let deductions = d.deductions.as_mut().unwrap();
     itemized(deductions).real_estate_taxes = 2_000_000;
     let facts = itemized(deductions).clone();
-    deductions.choice = DeductionSelection::Itemized { facts };
+    {
+        deductions.itemized = facts;
+        deductions.itemize_override = Some(ItemizeOverride::Itemize);
+    };
     deductions.investment_interest = Some(InvestmentBorrowing {
         loans: [Some(ids[0]), Some(ids[1]), None]
             .into_iter()
@@ -83,7 +87,8 @@ fn assert_return(d: &FederalDraft, ids: [i64; 2], corrected: bool) {
     }
     assert_eq!(value(&r, "general_business_credit"), if corrected { 9108 } else { 9605 });
     let loan = borrowing(d);
-    let routed = loan.route(loan.aggregate().calculate(9000, 0, 0, 0)).unwrap();
+    let routed =
+        loan.route(loan.aggregate().calculate([loan.aggregate().paid; 2], 9000, 0, 0, 0)).unwrap();
     assert_eq!(routed.forms, [[9000, 18_000], [9000, 18_000]]);
     assert_eq!(routed.sources.len(), 1);
     assert_eq!(routed.sources.get(&0), Some(&[[9000, 18_000], [9000, 18_000]]));

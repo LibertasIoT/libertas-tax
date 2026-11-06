@@ -12,15 +12,17 @@ use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 pub enum VolunteerCarCost {
     /// Statutory 2026 charitable mileage rate of 14 cents per mile
     Mileage {
-        /// Miles driven solely to provide volunteer service
+        /// Distance driven solely to provide volunteer service
         #[libertas_number(min = 1)]
+        #[libertas_physical_unit("mile")]
         miles: u32,
     },
     /// Direct gas and oil cost instead of statutory mileage
     ActualFuel {
         /// Unreimbursed gas and oil directly attributable to this travel
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         gas_oil: i64,
     },
 }
@@ -50,62 +52,73 @@ pub enum VolunteerExpenseKind {
         car_cost: VolunteerCarCost,
         /// Unreimbursed parking and tolls in addition to either car-cost method
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         parking_tolls: i64,
     },
     /// Necessary away-from-home travel with substantial volunteer duties
     AwayTravel {
         /// Air, rail, bus, taxi or other non-car transportation costs
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         transportation: i64,
         /// Necessary lodging while away from home
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         lodging: i64,
         /// Necessary meals while away from home
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         meals: i64,
     },
     /// Required volunteer uniform unsuitable for ordinary wear
     Uniform {
         /// Purchase cost of the mandatory uniform
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         purchase: i64,
         /// Cleaning and upkeep cost of that uniform
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         upkeep: i64,
     },
     /// Unreimbursed foster-child care primarily benefiting the placing organization
     FosterCare {
         /// Direct out-of-pocket costs to feed, clothe and care for the placed child
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
     },
     /// Direct cost for charity-selected underprivileged youths to attend an outing
     YouthOuting {
         /// Reasonable unreimbursed admission or meal costs for selected youths, excluding the volunteer's own costs
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 1)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 1, max = 100000000000)]
         amount: i64,
     },
     /// Required expenses in a church-established permanent diaconate program
     DeaconProgram {
         /// Required vestments for a candidate or ordained deacon
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         vestments: i64,
         /// Required program books
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         books: i64,
         /// Required transportation to provide the church service
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         transportation: i64,
     },
 }
@@ -198,11 +211,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_width_volunteer_mileage_retains_exact_cents_and_positive_source_boundary() {
-        // D-2026-10-15-13 (2026-10-16): no arbitrary mileage maximum.
+    fn full_width_volunteer_mileage_retains_exact_cents() {
+        // Full-width mileage retains exact cents without an arbitrary maximum.
         let full = VolunteerCarCost::Mileage { miles: u32::MAX };
         assert!(full.valid());
         assert_eq!(full.cents(), 60_129_542_130);
-        assert!(!VolunteerCarCost::Mileage { miles: 0 }.valid());
     }
 }

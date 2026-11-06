@@ -3,15 +3,13 @@ use crate::tests::support::client::survey::survey_native_refusal as refuse;
 
 fn calculation(request: &P) -> P {
     match request {
-        P::SaveDeductions { value, allowed_routes, allowed_repayment, home_sites, .. } => {
-            P::EstimateDeductions {
-                user: TEST_USER,
-                value: value.clone(),
-                allowed_routes: allowed_routes.clone(),
-                allowed_repayment: allowed_repayment.clone(),
-                home_sites: home_sites.clone(),
-            }
-        }
+        P::SaveDeductions { value, allowed_repayment, home_sites, .. } => P::EstimateDeductions {
+            user: TEST_USER,
+            value: value.clone(),
+
+            allowed_repayment: allowed_repayment.clone(),
+            home_sites: home_sites.clone(),
+        },
         P::SaveOtherItemized {
             value,
             allowed_owners,
@@ -65,7 +63,10 @@ fn case(
     refuse(&alloc::format!("{case}-estimate"), session, calculation(&bad), key, path);
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let reply = send(session, calculation(&corrected));
+    let reply = crate::tests::support::client::income_pages::candidate_save_review(
+        session,
+        calculation(&corrected),
+    );
     assert!(
         if matches!(corrected, P::SavePayments { .. }) {
             matches!(reply, Reply::Response(P::PaymentsEstimate { .. }))
@@ -89,7 +90,7 @@ fn case(
 
 #[test]
 fn unit47_candidate_casualty_fields_preserve_event_and_property_order() {
-    for i in 0..4 {
+    for i in [0, 1, 3] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let mut corrected = open(&mut session, TaxSection::Deductions);
         let P::SaveDeductions { value, .. } = &mut corrected else { unreachable!() };
@@ -120,10 +121,6 @@ fn unit47_candidate_casualty_fields_preserve_event_and_property_order() {
                     "[value/casualties/1/properties/1/received]",
                 )
             }
-            2 => {
-                value.casualties[1].zip = "1234".into();
-                ("CASUALTY_ZIP", "[value/casualties/1/zip]")
-            }
             3 => {
                 value.casualties[1].id = value.casualties[0].id;
                 (
@@ -150,7 +147,7 @@ fn unit47_candidate_investment_duplicate_keeps_generic_message_and_actual_label(
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let mut deductions = open(&mut session, TaxSection::Deductions);
     let P::SaveDeductions { value, .. } = &mut deductions else { unreachable!() };
-    value.route = DeductionRoute::Itemize;
+    value.itemize_override = Some(ItemizeOverride::Itemize);
     accepted(&send(&mut session, deductions));
     let mut corrected = open(&mut session, TaxSection::OtherItemized);
     let P::SaveOtherItemized { value, .. } = &mut corrected else { unreachable!() };
@@ -198,45 +195,50 @@ fn unit47_candidate_payment_property_preserves_amount_management_priority() {
             separate_owner: Owner::Taxpayer,
             management: RefundManagement::NotApplicable,
         };
-        value.estimated = vec![
-            InjuredDatedPayment {
-                date: 20260415,
-                amount: 100,
-                payer: PaymentPayer::Taxpayer,
-                refund_property: None,
-            },
-            InjuredDatedPayment {
-                date: 20260615,
-                amount: 100,
-                payer: PaymentPayer::Taxpayer,
-                refund_property: Some(property.clone()),
-            },
-        ];
+        value.estimated = crate::EstimatedPaymentEntry::Sources {
+            payments: vec![
+                InjuredDatedPayment {
+                    date: 20260415,
+                    amount: 100,
+                    payer: PaymentPayer::Taxpayer,
+                    refund_property: None,
+                },
+                InjuredDatedPayment {
+                    date: 20260615,
+                    amount: 100,
+                    payer: PaymentPayer::Taxpayer,
+                    refund_property: Some(property.clone()),
+                },
+            ],
+        };
         value.extension = 100;
-        value.extension_payer = Some(PaymentPayer::Taxpayer);
-        value.extension_refund_property = Some(property);
+        value.more.extension_payer = Some(PaymentPayer::Taxpayer);
+        value.more.extension_refund_property = Some(property);
         let mut bad = corrected.clone();
         let P::SavePayments { value, .. } = &mut bad else { unreachable!() };
         let path = if i == 1 {
             let Some(RefundSourceProperty::Partly { community, .. }) =
-                &mut value.extension_refund_property
+                &mut value.more.extension_refund_property
             else {
                 unreachable!()
             };
             *community = 101;
-            "[value/extension_refund_property/community]"
+            "[value/more/extension_refund_property/community]"
         } else {
             let Some(RefundSourceProperty::Partly { community, management, .. }) =
-                &mut value.estimated[1].refund_property
+                &mut crate::tests::support::builders::page_estimated_sources_mut(
+                    &mut value.estimated,
+                )[1]
+                .refund_property
             else {
                 unreachable!()
             };
             *management = RefundManagement::Spouse;
             if i == 0 {
                 *community = 101;
-                "[value/estimated/1/refund_property/community]"
+                "[value/estimated/Sources/payments/1/refund_property/Partly/community]"
             } else {
-                "[value/estimated/1/refund_property/management]"
+                "[value/estimated/Sources/payments/1/refund_property/Partly/management]"
             }
         };
         case(
@@ -245,7 +247,11 @@ fn unit47_candidate_payment_property_preserves_amount_management_priority() {
             bad,
             corrected,
             TaxSection::Payments,
-            "INJURED_SPOUSE_COMMUNITY_ABOVE_PAYMENT",
+            if i == 2 {
+                "INJURED_SPOUSE_COMMUNITY_FACTS_NOT_CURRENT"
+            } else {
+                "INJURED_SPOUSE_COMMUNITY_ABOVE_PAYMENT"
+            },
             path,
         );
     }

@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 601000, "rule": {"select": "^<ForeignStateTaxes>", "flatten": true}},
+    {"order": 780000, "rule": {"select": "^<ForeignStateIncome>.source", "promote": true}},
+    {"order": 781000, "rule": {"select": "^<ForeignStatePayment>.label", "promote": true}}
+  ]
+}

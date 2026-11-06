@@ -1,108 +1,21 @@
-use crate::kernel::cost_recovery::{AmortizationRegime, Month, MonthlySchedule};
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{form_count, line_cents, push_line};
+#[path = "amortization/source.rs"]
+mod source;
+use crate::amortization_records::records;
+use crate::kernel::lines::{LineValue, row as calculation_row};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{form_count, line_cents, push_line};
+use crate::{BusinessStartup, BusinessTimberCost};
 use crate::{FederalResult, FormLine, TaxForm};
-use alloc::{format, string::String, vec::Vec};
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
+use alloc::{collections::BTreeSet, format};
+pub use source::{
+    BusinessIntangible, BusinessIntangiblePage, IntangibleAcquisitionContext,
+    IntangibleConsideration, IntangibleCost, IntangibleEventKind, IntangibleKind,
+    IntangibleLeaseStatus, IntangibleObtained, IntangibleObtainedPage, IntangibleOriginEvidence,
+    IntangiblePriorClaimed, IntangiblePriorClaimedPage, IntangibleSource, IntangibleSourcePage,
+    IntangibleUseEnd,
+};
 
-/// Later capitalized acquisition cost
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct IntangibleCost {
-    /// Additional allocated business acquisition cost
-    /// Use purchase/allocation records. Exclude interest, original issue discount, amounts already included in original cost, deductible royalties, renewal costs and transfer or disposition adjustments. A renewal is a separate intangible. Include only amounts properly added to basis under your accounting method.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// Date this cost became includible in basis
-    /// Use the date supported by the acquisition obligation and accounting records, not automatically the cash-payment date. Unresolved contingent-debt interest allocation or timing needs separate review.
-    #[libertas_date_only]
-    pub date: u32,
-}
-
-/// Section 197 business intangible
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct BusinessIntangible {
-    /// Asset or right acquired
-    /// Examples include acquired goodwill, going-concern value, workforce, business records, customer/supplier relationships, a qualifying government license or a franchise. Eligibility depends on the acquisition and statutory exclusions, not the label alone.
-    #[libertas_size(min = 1)]
-    pub label: String,
-    /// Original capitalized business cost allocated to this intangible
-    /// Use the documented purchase-price allocation and original capitalized acquisition costs. Enter zero only when all cost became includible later and is entered below. Exclude personal basis. Do not deduct this cost again as an ordinary expense, start-up cost or equipment depreciation. Enter each eligible renewal separately.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub cost: i64,
-    /// Acquisition, qualifying creation or renewal date
-    #[libertas_date_only]
-    pub acquired: u32,
-    /// Later capitalized acquisition costs
-    /// Leave empty if none. Include all later costs through 2026 exactly once, including earlier-year additions. Each addition uses the original schedule's remaining months; an addition after its end is deductible immediately. These additions do not start another 15-year period.
-    pub additions: Vec<IntangibleCost>,
-    /// Date this trade or business began
-    /// Amortization starts in the later of the acquisition month and the month this business began. An existing business may begin before it acquires this asset.
-    #[libertas_date_only]
-    pub business_started: u32,
-    /// Ordinary eligible section 197 asset and complete records
-    /// Confirm acquisition after August 10, 1993, continued business ownership/use through 2026, and correct prior 180-month deductions when applicable. Exclude anti-churning/related-party restrictions, carryover-basis transfers, basis decreases, transfer/disposition basis adjustments, unresolved contingent-payment timing/interest allocation, special leases, dispositions, missed prior deductions and changed use. Self-created goodwill and most other self-created intangibles do not qualify; eligible government rights, franchises/trademarks/trade names and creation in a qualifying business acquisition follow their statutory exceptions. Standalone software, patents/copyrights, interests in entities, land, loans and other excluded rights need their own treatment. All original and added acquisition costs and their inclusion dates are supported by records and entered once. No leaves this amortization out of this estimate.
-    /// Check the acquisition agreement, basis records and earlier amortization returns.
-    pub eligible: bool,
-}
 impl BusinessIntangible {
-    pub(crate) fn valid(&self) -> bool {
-        !self.label.trim().is_empty()
-            && (0..=100000000000).contains(&self.cost)
-            && (self.cost > 0 || !self.additions.is_empty())
-            && self.additions.len() <= 100
-            && self.additions.iter().all(|a| {
-                (1..=100000000000).contains(&a.amount)
-                    && crate::federal_rules::valid_birth(a.date)
-                    && a.date >= self.acquired
-            })
-            && crate::federal_rules::valid_birth(self.acquired)
-            && crate::federal_rules::valid_birth(self.business_started)
-    }
-    pub(crate) fn started(&self) -> u32 {
-        self.acquired.max(self.business_started)
-    }
-    pub(crate) fn deduction(&self) -> i64 {
-        let started = self.started();
-        let month = Month { year: started / 10000, month: started / 100 % 100 };
-        MonthlySchedule::original_180(AmortizationRegime::Section197, month, 2026, self.cost, 0)
-            .current_allowable_cents
-            + self
-                .additions
-                .iter()
-                .map(|a| {
-                    let date = a.date.max(started);
-                    MonthlySchedule::section197_addition_180(
-                        month,
-                        Month { year: date / 10000, month: date / 100 % 100 },
-                        2026,
-                        a.amount,
-                    )
-                    .current_allowable_cents
-                })
-                .sum::<i64>()
-    }
-    pub(crate) fn remaining(&self) -> i64 {
-        let started = self.started();
-        let month = Month { year: started / 10000, month: started / 100 % 100 };
-        MonthlySchedule::original_180(AmortizationRegime::Section197, month, 2026, self.cost, 0)
-            .statutory_remaining_cents
-            + self
-                .additions
-                .iter()
-                .map(|a| {
-                    let date = a.date.max(started);
-                    MonthlySchedule::section197_addition_180(
-                        month,
-                        Month { year: date / 10000, month: date / 100 % 100 },
-                        2026,
-                        a.amount,
-                    )
-                    .statutory_remaining_cents
-                })
-                .sum::<i64>()
-    }
     pub(crate) fn report(
         &self,
         r: &mut FederalResult,
@@ -110,16 +23,16 @@ impl BusinessIntangible {
         index: usize,
         #[cfg(test)] source: &str,
     ) {
-        crate::require_localized!(
-            r,
-            self.acquired >= 19930811
-                && self.started() <= 20261231
-                && self.additions.iter().all(|a| a.date <= 20261231),
-            &crate::IssueContext::income_id(id),
-            source,
-            "ISSUE_CONFIRM_ELIGIBLE_SECTION_197_ACQUISITION_AFTER_AUGUST_10_1993_ACTIV_2860391A",
-            "Confirm eligible section 197 acquisition after August 10, 1993, active business by 2026 and continued ordinary ownership/use with correct prior deductions. All later acquisition costs must be includible in basis by 2026 with documented allocation and timing. Excluded intangibles, transfers, basis decreases or dispositions need separate rules.",
-        );
+        if let Some(key) = self.boundary() {
+            crate::issue_localized!(
+                r,
+                &crate::IssueContext::income_id(id),
+                source,
+                key,
+                &crate::Message::new(key, alloc::vec![]).english()
+            );
+            return;
+        }
         // Amortization that begins in 2026 is Form 4562-B line 1; the earlier
         // starts are only the line 2 total (report_form_4562b).
         let begins_current_year = self.started() / 10000 == 2026;
@@ -131,7 +44,10 @@ impl BusinessIntangible {
                 r,
                 tag("1(c)"),
                 &format!("business_{id}_intangible_{index}_amortizable"),
-                self.cost + self.additions.iter().map(|a| a.amount).sum::<i64>(),
+                crate::kernel::ratio::checked_sum(
+                    core::iter::once(self.cost).chain(self.additions.iter().map(|a| a.amount)),
+                )
+                .expect("validated intangible basis"),
                 &inputs,
                 source,
                 crate::Message::new(
@@ -200,7 +116,7 @@ pub(crate) fn report_form_4562b(
         .map_or(0, |_| startup.amortization())
         + intangibles
             .iter()
-            .filter(|i| earlier_start(i.started()))
+            .filter(|i| i.boundary().is_none() && earlier_start(i.started()))
             .map(BusinessIntangible::deduction)
             .sum::<i64>();
     let timber = crate::timber::totals(timber).expect("validated timber form totals");
@@ -214,7 +130,7 @@ pub(crate) fn report_form_4562b(
         .map_or(0, |_| startup.amortization())
         + intangibles
             .iter()
-            .filter(|i| !earlier_start(i.started()))
+            .filter(|i| i.boundary().is_none() && !earlier_start(i.started()))
             .map(BusinessIntangible::deduction)
             .sum::<i64>();
     let current = current.checked_add(current_other).expect("validated amortization total");
@@ -238,4 +154,324 @@ pub(crate) fn report_form_4562b(
             ))
         },
     );
+}
+
+pub(crate) fn identity_issue(
+    draft: &crate::FederalDraft,
+) -> Option<(i64, crate::validation::ValidationIssue)> {
+    let associations = crate::source_associations::SourceAssociations::new(draft);
+    for entry in &draft.income {
+        for (index, record) in records(&entry.income).iter().enumerate() {
+            if let IntangibleObtained::Renewal { previous_intangible_id: Some(_) } =
+                record.source.obtained
+            {
+                let valid = associations
+                    .intangible_predecessor(entry.id, record.id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|previous| {
+                        previous.acquired < record.acquired
+                            && match &record.source.first_existed {
+                                Some(IntangibleOriginEvidence::CreatedOn { date }) => {
+                                    *date <= previous.acquired
+                                }
+                                Some(IntangibleOriginEvidence::CreatedAfter { date }) => {
+                                    *date < previous.acquired
+                                }
+                                _ => true,
+                            }
+                    });
+                if !valid {
+                    return Some((
+                        entry.id,
+                        crate::validation::ValidationIssue::new("INTANGIBLE_PREDECESSOR_INVALID")
+                            .at_field("previous_intangible_id")
+                            .in_field("Renewal")
+                            .in_field("obtained")
+                            .in_field("source")
+                            .in_list("intangibles", index)
+                            .in_field("more"),
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+// A consolidated original direct property/year cohort is entered once across
+// activities. This identifies the actual history; it is not a record-count cap.
+pub(crate) fn timber_source_issue(
+    d: &crate::FederalDraft,
+) -> Option<(i64, crate::validation::ValidationIssue)> {
+    let separate =
+        d.setup.as_ref().is_some_and(|s| s.filing_status() == crate::FederalStatus::Separate);
+    let mut seen = BTreeSet::new();
+    let mut aggregate = 0_i64;
+    for entry in &d.income {
+        let crate::FederalIncome::Business { data } = &entry.income else { continue };
+        // Preserve all pre-existing no-timber validation paths. Never call the
+        // legacy deduction helpers until their own source bounds are proven.
+        if data.timber.is_empty()
+            || !data.startup.valid()
+            || !data.intangibles.iter().all(crate::BusinessIntangible::valid)
+            || !data.timber.iter().all(BusinessTimberCost::valid)
+        {
+            continue;
+        }
+        // The standard input validator proves the remaining source bounds
+        // before the operating-cost owner is read. Preserve its legacy error.
+        if let Err((issue, _)) = crate::federal_rules::validate_income_issue(entry) {
+            if issue.key == "TIMBER_TOTAL_UNREPRESENTABLE" {
+                return Some((entry.id, issue));
+            }
+            continue;
+        }
+        for (index, cost) in data.timber.iter().enumerate() {
+            let issue = |key, field| {
+                (
+                    entry.id,
+                    crate::validation::ValidationIssue::new(key)
+                        .at_field(field)
+                        .in_field("facts")
+                        .in_list("timber", index)
+                        .in_field("more"),
+                )
+            };
+            if !seen.insert((cost.facts.property_key.as_str(), cost.incurred / 10000)) {
+                return Some(issue("TIMBER_COHORT_ONCE", "property_key"));
+            }
+            if i64::from(cost.incurred / 10000) == i64::from(d.tax_year)
+                && !cost.election().expense_within_property_limit(
+                    cost.facts.other_current_expense,
+                    if separate { 500_000 } else { 1_000_000 },
+                )
+            {
+                return Some(issue("TIMBER_PROPERTY_EXPENSE_LIMIT", "current_expense_elected"));
+            }
+        }
+        let next =
+            data.checked_amortization_cents().and_then(|amount| aggregate.checked_add(amount));
+        let Some(next) = next else {
+            return Some((
+                entry.id,
+                crate::validation::ValidationIssue::new("TIMBER_TOTAL_UNREPRESENTABLE")
+                    .at_field("timber")
+                    .in_field("more"),
+            ));
+        };
+        aggregate = next;
+    }
+    None
+}
+
+pub(crate) fn timber_return_issue(
+    d: &crate::FederalDraft,
+) -> Option<crate::validation::ValidationIssue> {
+    timber_source_issue(d).map(|(_, issue)| crate::validation::ValidationIssue::new(issue.key))
+}
+
+pub(crate) fn report_timber(
+    costs: &[BusinessTimberCost],
+    result: &mut FederalResult,
+    id: i64,
+    #[cfg(test)] section: &str,
+) {
+    let inputs = ["income.business.timber"];
+    let source = "https://www.irs.gov/instructions/i4562";
+    for (index, cost) in costs.iter().enumerate() {
+        let context = crate::IssueContext::income_id(id).item("data.timber", index);
+        let recovered = cost.recovery(crate::year_constants::TAX_YEAR);
+        crate::require_localized!(
+            result,
+            recovered.is_some(),
+            &context,
+            section,
+            "ISSUE_TIMBER_ORIGINAL_HISTORY_NEEDED",
+            "Confirm qualified U.S. commercial timber and complete original elections, unchanged basis/use and actual prior recovery before this cohort can be calculated."
+        );
+        let Some(recovery) = recovered else { continue };
+        // The actual property owner resolves current dispositions. An unsupported
+        // original expense character or missing basis remains unavailable.
+        crate::require_localized!(
+            result,
+            crate::cohorts::timber_sale(cost).is_ok(),
+            &context,
+            section,
+            "ISSUE_TIMBER_DISPOSITION_NEEDED",
+            "This timber disposition needs its gain, loss and section 1245 expense/amortization recapture calculation. The complete return estimate is unavailable."
+        );
+        if let Ok(Some(sale)) = crate::cohorts::timber_sale(cost) {
+            crate::asset_sale::report_amortized_sale(
+                result,
+                &format!("business_{id}_timber_{index}_disposal"),
+                &sale,
+                "income.business.timber",
+            );
+        }
+        let current = cost.incurred / 10000 == crate::year_constants::TAX_YEAR;
+        let tag = |line: &str| {
+            (current && recovery.elected_basis_cents > 0)
+                .then(|| FormLine::new(TaxForm::Form4562B, line))
+        };
+        let prefix = format!("business_{id}_timber_{index}");
+        if current && recovery.elected_basis_cents > 0 {
+            use crate::kernel::lines::{LineValue, row};
+            for (line, suffix, explanation) in [
+                (
+                    "1(a)",
+                    "description",
+                    crate::Message::new(
+                        "TEXT",
+                        alloc::vec![crate::MessageArg::Text(cost.description.clone())],
+                    ),
+                ),
+                (
+                    "1(b)",
+                    "started",
+                    crate::Message::new(
+                        "TIMBER_START_DATE",
+                        alloc::vec![crate::MessageArg::DateOnly(i64::from(
+                            cost.incurred / 10000 * 10000 + 701
+                        ))],
+                    ),
+                ),
+                (
+                    "1(d)",
+                    "code",
+                    crate::Message::new("TEXT", alloc::vec![crate::MessageArg::Text("194".into())]),
+                ),
+            ] {
+                result.lines.push(row(
+                    tag(line),
+                    &format!("{prefix}_{suffix}"),
+                    LineValue::Text,
+                    &inputs,
+                    source,
+                    explanation,
+                ));
+            }
+        }
+        push_line(
+            result,
+            tag("1(c)"),
+            &format!("{prefix}_basis"),
+            recovery.elected_basis_cents,
+            &inputs,
+            source,
+            msg!("EXPLAIN_TIMBER_ELECTED_BASIS"),
+        );
+        if recovery.elected_basis_cents > 0 && current {
+            form_count(
+                result,
+                FormLine::new(TaxForm::Form4562B, "1(e)"),
+                &format!("{prefix}_period"),
+                84,
+                &inputs,
+                source,
+                msg!("EXPLAIN_TIMBER_PERIOD"),
+            );
+        }
+        push_line(
+            result,
+            tag("1(f)"),
+            &format!("{prefix}_amortization"),
+            recovery.amortization_cents,
+            &inputs,
+            source,
+            msg!("EXPLAIN_TIMBER_AMORTIZATION"),
+        );
+        line_cents(
+            result,
+            &format!("{prefix}_current_expense"),
+            recovery.current_expense_cents,
+            &inputs,
+            source,
+            msg!("EXPLAIN_TIMBER_CURRENT_EXPENSE"),
+        );
+        line_cents(
+            result,
+            &format!("{prefix}_remaining"),
+            recovery.remaining_cents,
+            &inputs,
+            source,
+            msg!("EXPLAIN_TIMBER_REMAINING"),
+        );
+    }
+}
+
+impl BusinessStartup {
+    pub(crate) fn report(&self, r: &mut FederalResult, id: i64, #[cfg(test)] source: &str) {
+        let Self::Costs { started, .. } = *self else {
+            return;
+        };
+
+        crate::require_localized!(
+            r,
+            (20041023..=20261231).contains(&started),
+            &crate::IssueContext::income_id(id),
+            source,
+            "ISSUE_CONFIRM_COMPLETE_SECTION_195_START_UP_COSTS_THE_ORIGINAL_DEDUCTION_D6F699EB",
+            "Confirm complete section 195 start-up costs, the original deduction/capitalization election and an active business begun after October 22, 2004 and continuing through 2026. Disposition, missing prior deductions or other special treatment needs its own calculation.",
+        );
+        // Amortization that begins in 2026 is Form 4562-B line 1; the earlier
+        // starts are only the line 2 total (amortization::report_form_4562b).
+        let begins_current_year = self.amortization_begins().is_some_and(|s| s / 10000 == 2026);
+        let tag = |line: &str| begins_current_year.then(|| FormLine::new(TaxForm::Form4562B, line));
+        let amortizable = match *self {
+            Self::Costs { costs, .. } if self.deducted() => costs - self.initial(),
+            _ => 0,
+        };
+        let inputs = ["income.business.startup"];
+        let source = "https://www.irs.gov/instructions/i4562";
+        push_line(
+            r,
+            None,
+            &format!("business_{id}_startup_initial"),
+            self.initial_current(),
+            &inputs,
+            source,
+            msg!("EXPLAIN_BUSINESS_N_STARTUP_N_INITIAL"),
+        );
+        if begins_current_year {
+            push_line(
+                r,
+                tag("1(c)"),
+                &format!("business_{id}_startup_amortizable"),
+                amortizable,
+                &inputs,
+                source,
+                crate::Message::new(
+                    "EXPLAIN_BUSINESS_N_STARTUP_AMORTIZABLE",
+                    alloc::vec![crate::MessageArg::DateOnly(i64::from(started))],
+                ),
+            );
+            form_count(
+                r,
+                FormLine::new(TaxForm::Form4562B, "1(e)"),
+                &format!("business_{id}_startup_period"),
+                180,
+                &inputs,
+                source,
+                msg!("EXPLAIN_BUSINESS_N_STARTUP_PERIOD"),
+            );
+        }
+        push_line(
+            r,
+            tag("1(f)"),
+            &format!("business_{id}_startup_amortization"),
+            self.amortization(),
+            &inputs,
+            source,
+            msg!("EXPLAIN_BUSINESS_N_STARTUP_N_AMORTIZATION"),
+        );
+        line_cents(
+            r,
+            &format!("business_{id}_startup_remaining_basis"),
+            self.remaining(),
+            &inputs,
+            source,
+            msg!("EXPLAIN_BUSINESS_N_STARTUP_N_REMAINING_BASIS"),
+        );
+    }
 }

@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 7000, "rule": {"select": "^<Form1099QFairMarketValue>.value", "promote": true}},
+    {"order": 8000, "rule": {"select": "^<Form1099QPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer_trustee", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross_distribution", "earnings", "basis", "trustee_to_trustee", "qtp_to_roth_ira", "distribution_from", "recipient_not_beneficiary", "fair_market_value", "distribution_code"]}]}},
+    {"order": 9000, "rule": {"select": "^<Form1099QPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer_trustee", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross_distribution", "earnings", "basis", "trustee_to_trustee", "qtp_to_roth_ira", "distribution_from", "recipient_not_beneficiary", "fair_market_value", "distribution_code"]}]}}
+  ]
+}

@@ -1,0 +1,72 @@
+{
+ "source": {
+  "title": "Instructions for Form 8615 (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 5",
+  "example": "Line 2, Example 2 (Eleanor)",
+  "url": "https://www.irs.gov/pub/irs-dft/i8615--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "ac1ec51a5367dfa8187ea9fef43fb6cbf87b4ca1324bf3084c5557407a03160f"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "the child can be claimed as a dependent on the parents' joint return, whose taxable income is $150,000",
+   "reason": "the example gives no parent facts; Form 8615 line 1 and 2 do not depend on them"
+  },
+  {
+   "fact": "the child has no other income and no itemized deductions; the Form 1099-INT payer is an unrelated bank",
+   "reason": "the example gives the child's unearned income only"
+  },
+  {
+   "fact": "the $1,500 of directly connected itemized deductions cannot be entered",
+   "reason": "the instruction's Caution says miscellaneous itemized deductions are suspended (and the App has no such input); the printed line 2 of 2,850 depends on them"
+  }
+ ],
+ "filing": "Single",
+ "birth": 20180615,
+ "dependent": true,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "interest_dividends",
+   "docs": [
+    {
+     "doc": "interest",
+     "taxable": 16000,
+     "early_penalty": 100
+    }
+   ]
+  },
+  {
+   "page": "parent",
+   "taxable": 150000
+  }
+ ],
+ "expected": [
+  {
+   "form": "calc",
+   "line": "kiddie_tax_unearned_income",
+   "amount": 15900,
+   "provenance": "printed",
+   "note": "Form 8615 line 1"
+  },
+  {
+   "form": "calc",
+   "line": "kiddie_tax_net_unearned_income",
+   "amount": 13050,
+   "provenance": "derived",
+   "derivation": "Form 8615 line 3: line 1 (15,900) less the printed line 2 (2,850)"
+  }
+ ],
+ "expect_mismatch": [
+  {
+   "form": "calc",
+   "line": "kiddie_tax_net_unearned_income",
+   "class": "C",
+   "triage": "DR-C1"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

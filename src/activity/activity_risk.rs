@@ -1,4 +1,4 @@
-// Existing Unit19 Form6198 source projection. Source owners supply native cents
+// Form6198 source projection. Source owners supply native cents
 // in original form order; shared loss_limits owners settle and close them.
 use crate::kernel::{carry, loss_limits, source_fact::SourceFact};
 use alloc::vec::Vec;
@@ -40,9 +40,29 @@ impl ProjectionIssue {
             Self::HistoryRequired => "RISK_RECAPTURE_HISTORY_REQUIRED",
         }
     }
+    pub(crate) fn context(&self, source: crate::IssueContext) -> crate::IssueContext {
+        match self.key() {
+            "RENTAL_CASUALTY_DEDUCTION_CONTEXT_UNAVAILABLE" => {
+                crate::IssueContext::Section(crate::TaxSection::Deductions)
+            }
+            "RENTAL_CASUALTY_PERSONAL_ALLOWANCE_UNAVAILABLE" => {
+                crate::IssueContext::Section(crate::TaxSection::OtherItemized)
+            }
+            _ => source,
+        }
+    }
     pub(crate) fn report(&self, id: i64, r: &mut crate::FederalResult) {
-        let source = crate::IssueContext::income_id(id);
-        let context = source.clone().manual();
+        let source = self.context(crate::IssueContext::income_id(id));
+        let context = if matches!(
+            self.key(),
+            "RENTAL_CASUALTY_DEDUCTION_CONTEXT_UNAVAILABLE"
+                | "RENTAL_CASUALTY_PERSONAL_ALLOWANCE_UNAVAILABLE"
+                | "RENTAL_CASUALTY_HOME_ALLOWANCE_UNAVAILABLE"
+        ) {
+            source.clone()
+        } else {
+            source.clone().manual()
+        };
         // The source report may already own this issue and its correction link;
         // regular, AMT and property projections must not emit it again.
         if !r.issues.iter().any(|issue| {
@@ -63,13 +83,30 @@ impl ProjectionIssue {
 pub(crate) struct SourceIssue {
     pub source: i64,
     pub issue: ProjectionIssue,
+    pub context: Option<alloc::boxed::Box<crate::IssueContext>>,
 }
 impl SourceIssue {
     pub(crate) fn new(source: i64, issue: ProjectionIssue) -> Self {
-        Self { source, issue }
+        Self { source, issue, context: None }
     }
     pub(crate) fn report(&self, r: &mut crate::FederalResult) {
-        self.issue.report(self.source, r);
+        if let Some(context) = &self.context {
+            if !r.issues.iter().any(|issue| {
+                issue.context.identity() == context.identity()
+                    && issue.display.key == self.issue.key()
+            }) {
+                crate::issue_localized!(
+                    r,
+                    context.as_ref(),
+                    "Activity loss source",
+                    self.issue.key(),
+                    "Resolve the actual source facts or representable loss amounts before completing this activity calculation."
+                );
+            }
+            crate::federal_rules::withhold_required_source_result(r);
+        } else {
+            self.issue.report(self.source, r);
+        }
     }
 }
 

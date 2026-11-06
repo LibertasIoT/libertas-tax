@@ -45,7 +45,9 @@ pub(in crate::tests) fn care_w2(
 ) {
     let e = d.income.iter_mut().find(|e| e.id == id).unwrap();
     let FederalIncome::Wage { data } = &mut e.income else { panic!("W-2 fixture source") };
+    let mut data = edit_wage(data);
     data.care_benefits = box10;
+    drop(data);
     let c = &mut d.credits.as_mut().unwrap().care;
     c.plan_maximum = CarePlanMaximum::Plans { maximum: plan };
     c.benefits.retain(|b| b.wage != id);
@@ -64,7 +66,9 @@ pub(in crate::tests) fn care_box10(d: &mut FederalDraft, index: usize, amount: i
     else {
         panic!()
     };
+    let mut data = edit_wage(data);
     data.care_benefits = amount;
+    drop(data);
 }
 pub(in crate::tests) fn care_costs(d: &mut FederalDraft, amount: i64) {
     for (i, p) in d.dependents.iter_mut().enumerate() {
@@ -78,7 +82,9 @@ pub(in crate::tests) fn care_costs(d: &mut FederalDraft, amount: i64) {
 pub(in crate::tests) fn clear_care_benefits(d: &mut FederalDraft) {
     for e in &mut d.income {
         if let FederalIncome::Wage { data } = &mut e.income {
+            let mut data = edit_wage(data);
             data.care_benefits = 0;
+            drop(data);
         }
     }
     let c = &mut d.credits.as_mut().unwrap().care;
@@ -226,4 +232,44 @@ pub(in crate::tests) fn care_own_plans(count: usize) -> FederalDraft {
     }
     draft.credits.as_mut().unwrap().care.plan_maximum = CarePlanMaximum::Plans { maximum: 750_000 };
     draft
+}
+
+pub(in crate::tests) fn section179_care_return() -> FederalDraft {
+    section179_care_with_profit(1_000)
+}
+
+fn section179_care_with_profit(profit: i64) -> FederalDraft {
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 100_000, 0);
+    let mut business = cash_business(profit);
+    let FederalIncome::Business { data } = &mut business else { unreachable!() };
+    data.assets.push(elected_asset(5_000, 5_000, BonusElection::ElectOut));
+    add(&mut d, income(business));
+    d = save_elected_business_asset(d, 2, 5_000, 5_000);
+    add_child(&mut d);
+    care_costs(&mut d, 500_000);
+    care_w2(&mut d, 1, 500_000, 0, 0, 750_000);
+    d
+}
+
+pub(in crate::tests) fn section179_care_employee_reimbursements(profit: i64) -> FederalDraft {
+    let mut d = section179_care_with_profit(profit);
+    d.adjustments.as_mut().unwrap().employee_expenses.push(EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        owner: Owner::Taxpayer,
+        occupation: "Synthetic fee-basis official".into(),
+        capacity: EmployeeCapacity::FeeBasisOfficial,
+        employers: vec![1],
+        dot_hours_of_service: false,
+        local_transportation: 100_000,
+        travel: 0,
+        other: 0,
+        meals: 0,
+        reimbursements: 200_000,
+        mileage: vec![],
+        vehicle_assets: vec![],
+        equipment_assets: vec![],
+        leased_vehicles: vec![],
+    });
+    d
 }

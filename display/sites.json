@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 685000, "rule": {"select": "^<OfficeSimplifiedMonth>.month", "promote": true}}
+  ]
+}

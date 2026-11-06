@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"order": 473000, "rule": {"select": "^<CareCosts>", "flatten": true}},
+    {"order": 579000, "rule": {"select": "^<DependentCare>", "flatten": true}},
+    {"order": 985000, "rule": {"select": "^<SaveCare>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 986000, "rule": {"select": "^<CarePage>", "layout": "tabs", "sections": [{"title": "DISPLAY_CARE_PEOPLE", "fields": ["qualifying_people", "providers"]}, {"title": "DISPLAY_CARE_BENEFITS", "fields": ["benefits", "grace", "own_business", "plan_maximum", "unpaid_return_year_care"]}, {"title": "DISPLAY_CARE_OTHER", "fields": ["filers", "filing", "prior_year"]}], "when": {"mode": "view"}}},
+    {"order": 987000, "rule": {"select": "^<CarePage>", "layout": "rows", "sections": [{"title": "DISPLAY_CARE_PEOPLE", "fields": ["qualifying_people", "providers"]}, {"title": "DISPLAY_CARE_BENEFITS", "fields": ["benefits", "grace", "own_business", "plan_maximum", "unpaid_return_year_care"]}, {"title": "DISPLAY_CARE_OTHER", "fields": ["filers", "filing", "prior_year"]}], "when": {"mode": "edit"}}},
+    {"order": 988000, "rule": {"select": "^<CareBenefitRow>.label", "promote": true}},
+    {"order": 989000, "rule": {"select": "^<CareQualifyingRow>.label", "promote": true}}
+  ]
+}

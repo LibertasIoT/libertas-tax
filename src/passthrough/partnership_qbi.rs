@@ -18,7 +18,14 @@ use crate::kernel::carry::{Amount, Cents};
 //   the actual same-PTP passive suspension. Released qualification joins only
 //   the REIT/PTP component, including without a current statement; original
 //   loss-year SSTB qualification stays unchanged. Other carried characters,
-//   partner deductions, property and full-interest sales retain source limits.
+//   property and full-interest sales retain source limits. Fully allowed,
+//   current ordinary PTP income accepts already-qualified partner deductions
+//   before current SSTB eligibility, including an exactly exhausted income.
+//   Deductions creating a qualified loss or joining other source characters
+//   still need their separate qualified-source worksheet.
+//   Positive current trades with partner deductions also retain actual
+//   ordinary basis, at-risk and same-PTP passive histories; FIFO releases
+//   keep loss-year qualification independently of current partner deductions.
 //   Evidence: qbi_current_ptp and partnership_no_statement; i8995 Tracking
 //   Losses, i8582 Special Instructions for PTPs, Reg. 1.199A-3(b)(1)(iv)/(c)(3)(ii).
 //   Loss-only EBL work temporarily joins source-tagged ordinary/PTP rows
@@ -102,12 +109,12 @@ impl PartnerQbiResult {
 const PTP_RETAINED_UNAVAILABLE: (&str, &str) = (
     "ISSUE_PARTNERSHIP_QBI_A_PUBLICLY_TRADED_PARTNERSHIP_INTEREST_WITH_77211554",
     crate::fixture_english!(
-        "The App calculates ordinary PTP qualified losses from reconciled basis, at-risk and same-PTP passive records. Combinations with partner deductions or other carried characters, EBL combinations with positive business adjustments, and retained-loss combinations with property or full-interest sales still need a separate qualified-source worksheet."
+        "The App calculates ordinary PTP qualified losses from reconciled basis, at-risk and same-PTP passive records, including positive current trades with qualified partner deductions. Other carried characters, deductions exceeding current qualified income, EBL combinations with positive business adjustments, and retained-loss combinations with property or full-interest sales still need a separate qualified-source worksheet."
     ),
 );
 
 pub(crate) fn ptp_retained_source(owner: &PartnerK1) -> Result<(), (&'static str, &'static str)> {
-    if !matches!(owner.disposition, crate::K1Disposition::Kept)
+    if !matches!(owner.disposition, Some(crate::K1Disposition::Kept))
         || owner.regular.carried != crate::K1LossCarryforwards::default()
         || owner.regular.capital_carried != crate::PartnerCapitalCarry::default()
         || owner.regular.section1231.is_some()
@@ -339,16 +346,20 @@ pub struct PartnerQbiStatement {
     /// Qualified ordinary business income or loss
     /// Signed section 199A ordinary amount before partner-level deductions and suspended-loss releases. Exclude guaranteed payments, capital gains, portfolio income, REIT dividends and PTP items. Missing source facts are not zero.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     /// Allocated section 199A W-2 wages
     /// Use the partnership statement, not an employee W-2 issued to you.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub wages: i64,
     /// Allocated unadjusted basis of qualified property
     /// UBIA from the section 199A statement, not your outside basis or depreciated property value.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub property: i64,
     /// Specified service trade or business
     /// The K-1 box 20 code Z section 199A statement reports it.
@@ -356,17 +367,22 @@ pub struct PartnerQbiStatement {
     /// Qualified business-property section 1231 gain (loss)
     /// The statement's qualified part of the box 1 business's box 10 amount, with the same sign and no larger. Its return-wide ordinary or capital character is figured before it enters QBI.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub section1231_qbi: i64,
     /// Section 199A dividends
     /// From the statement; already part of the ordinary dividends box.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub reit_dividends: i64,
     /// Qualified PTP items
     /// The statement's qualified publicly traded partnership income or loss.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub ptp_income: i64,
 }
@@ -380,7 +396,8 @@ pub struct PartnerQbiRecords {
     /// Qualified portion of gross self-employment income
     /// From the box 20 code Z statement and the box 14 code B or C gross income, before expenses, not net QBI. Must fit the separate farm/nonfarm SE gross income. Enter the full gross amount when all is qualified and zero when none is qualified or there is no box 14 code B or C amount. Exclude all guaranteed payments and amounts outside SE income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub qualified_se_gross: i64,
     /// Retained original-year qualified-loss records
     /// Prior basis, at-risk or passive balances need their actual original-year qualified portions for QBI. No records entered does not confirm those balances are zero. Missing records retain the separate QBI notice; leaving a qualified loss out can increase the QBI deduction. The income-tax loss keeps its existing limits.
@@ -596,7 +613,7 @@ impl PartnerQbiStatement {
             // pool and its wage/UBIA limit (Reg. 1.199A-1(d)(3)(iii)).
             // Retained qualification follows the actual ordinary loss owners,
             // never the current year's SSTB factor.
-            if deductions != 0
+            if deductions < 0
                 || owner.regular.carried != crate::K1LossCarryforwards::default()
                 || owner.regular.capital_carried != crate::PartnerCapitalCarry::default()
             {
@@ -607,11 +624,12 @@ impl PartnerQbiStatement {
             // earlier suspensions from the same actual loss owners as well.
             // Fully allowed current-only sources, including full-interest
             // sales, retain their exact joining path.
-            let current_pool = if owner.regular.ordinary < 0 && resolved_pool.is_none() {
-                Some(owner.pool(&owner.regular)?)
-            } else {
-                None
-            };
+            let current_pool =
+                if (owner.regular.ordinary < 0 || deductions != 0) && resolved_pool.is_none() {
+                    Some(owner.pool(&owner.regular)?)
+                } else {
+                    None
+                };
             let resolved_pool = resolved_pool.or(current_pool.as_ref());
             let retained = owner.qbi_records.history.is_some()
                 || suspended.get() != 0
@@ -642,6 +660,60 @@ impl PartnerQbiStatement {
                     return Err(PTP_RETAINED_UNAVAILABLE);
                 }
             }
+            let income = if deductions != 0 {
+                // Reg. 1.199A-3(b)(1)(vi), (c)(3)(ii): the caller already
+                // attributed these deductions to qualified income. They reduce
+                // that current trade before SSTB eligibility, without changing
+                // the partnership's basis, at-risk or passive-loss operands.
+                ptp_retained_source(owner)?;
+                let pool = resolved_pool.ok_or(PTP_RETAINED_UNAVAILABLE)?;
+                use crate::k1_loss::K1LossClass::Ordinary;
+                if owner.trade_kind != crate::ScorpTradeKind::Ordinary
+                    || owner.regular.ordinary < 0
+                    || self.ptp_income != 0
+                    || owner.regular.rentals != Default::default()
+                    || owner.income.iter().any(|row| row.amount != 0)
+                    || owner.deductions.iter().any(|row| row.amount != 0)
+                    || owner.separate.as_ref().is_some_and(|items| {
+                        [
+                            items.short,
+                            items.long,
+                            items.collectibles,
+                            items.royalties,
+                            items.unrecaptured_partnership,
+                            items.unrecaptured_fund,
+                            items.cash_charity,
+                            items.foreign_taxes,
+                        ]
+                        .into_iter()
+                        .any(|amount| amount != 0)
+                    })
+                    || owner.prior_fuel_credit.is_some()
+                    || sales.gain_cents != 0
+                    || sales.loss_cents.get() != 0
+                    || property.gain_cents != 0
+                    || property.current_loss_cents.get() != 0
+                    || property.historical_loss_cents.get() != 0
+                    || pool.activity.income.get() != owner.regular.ordinary
+                    // Financial ordinary income already reflects allowed
+                    // basis/at-risk losses. These are separate from the caller's
+                    // current qualified partner deductions and FIFO qualification.
+                    || pool.current_ordinary_with_items
+                        != owner.regular.ordinary
+                            - pool.activity.ledger.risk_allowed[Ordinary].get()
+                    // Prior passive losses join only after that financial stage.
+                    || pool.nonpassive + pool.passive + owner.regular.passive_loss
+                        != pool.current_ordinary_with_items
+                {
+                    return Err(PTP_RETAINED_UNAVAILABLE);
+                }
+                // Lift the owner's reported Dollars to cents, preserving that
+                // established amount rather than inventing source precision.
+                let net = exact::whole(income) - exact::whole(deductions) * exact::whole(100);
+                exact::rounded(&net).filter(|value| *value >= 0).ok_or(PTP_RETAINED_UNAVAILABLE)?
+            } else {
+                income
+            };
             // The ordinary trade's SSTB answer does not classify separately
             // reported PTP items from another underlying trade or business.
             // Preserve this approved source boundary until its owner supplies
@@ -741,7 +813,10 @@ impl PartnerQbiStatement {
         }
         // The caller supplies only this business's qualified share from the
         // owner-level gross-income allocation, before current SSTB eligibility.
-        let material = owner.participation.material();
+        let material = owner.participation.as_ref().map_or(
+            crate::participation::Participation::Unavailable,
+            crate::PartnerParticipation::material,
+        );
         let fuel = owner.prior_fuel_credit.as_ref().map_or(0, |p| p.taxable_amount());
         if (income > 0 || sales.gain_cents > 0 || property.gain_cents > 0 || fuel > 0)
             && material == crate::participation::Participation::Unavailable
@@ -830,24 +905,65 @@ pub(crate) enum QbiGrossError {
     UnavailableWeight(crate::IssueContext),
 }
 
+// Parent queries retain the existing sum of qualified shares. Native current
+// statements additionally consume their actual block share before eligibility.
+#[derive(Debug, Default)]
+pub(crate) struct QbiHalfSeAllocation {
+    pub sources: alloc::collections::BTreeMap<i64, i64>,
+    pub native_blocks: alloc::collections::BTreeMap<(i64, i64), i64>,
+}
+
+struct QbiGrossSource {
+    parent: i64,
+    component: Option<i64>,
+    block: Option<i64>,
+    gross: i64,
+    qualified: i64,
+}
+
+#[cfg(test)]
 pub(crate) fn half_se_by_gross(
     draft: &crate::FederalDraft,
     halves: [i64; 2],
-) -> Result<alloc::collections::BTreeMap<i64, i64>, QbiGrossError> {
+) -> Result<QbiHalfSeAllocation, QbiGrossError> {
+    let claims = crate::related_forms::effective_claimants(draft);
+    half_se_by_gross_with_claims(draft, halves, &claims)
+}
+
+pub(crate) fn half_se_by_gross_with_claims(
+    draft: &crate::FederalDraft,
+    halves: [i64; 2],
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<QbiHalfSeAllocation, QbiGrossError> {
     use crate::{BusinessActivity, BusinessSource, FederalIncome, Owner};
-    let mut result = alloc::collections::BTreeMap::new();
+    let mut result = QbiHalfSeAllocation::default();
     let mut missing = Vec::new();
     for (index, half) in halves.into_iter().enumerate() {
         let owner = if index == 0 { Owner::Taxpayer } else { Owner::Spouse };
         let mut sources = Vec::new();
         let mut owner_missing = false;
-        for entry in draft.income.iter().filter(|e| e.owner == owner) {
+        for entry in draft.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(owner)) {
             let (gross, qualified) = match &entry.income {
                 FederalIncome::Business { data }
                     if !crate::statutory_wages::business(draft, entry.id) =>
                 {
+                    let routed = if matches!(data.activity, BusinessActivity::Farming { .. }) {
+                        crate::federal_rules::farm_routed_income_with_claims(
+                            draft,
+                            index,
+                            entry.id,
+                            source_claims,
+                        )
+                        .map_err(|_| {
+                            QbiGrossError::UnavailableWeight(
+                                crate::interview::income_issue_context(entry),
+                            )
+                        })?
+                    } else {
+                        0
+                    };
                     let gross = phase::floor(
-                        data.earned_receipts()
+                        data.earned_receipts() + routed
                             - if matches!(data.activity, BusinessActivity::Farming { .. }) {
                                 0
                             } else {
@@ -865,7 +981,9 @@ pub(crate) fn half_se_by_gross(
                     )
                 }
                 FederalIncome::Partnership { data } => {
-                    if half == 0 || (data.limited_for_se && data.guaranteed_services == 0) {
+                    if half == 0
+                        || (data.limited_for_se == Some(true) && data.guaranteed_services == 0)
+                    {
                         (0, 0)
                     } else {
                         let Some(gross) = data.se_gross.as_ref() else {
@@ -887,23 +1005,84 @@ pub(crate) fn half_se_by_gross(
                         (gross, qualified)
                     }
                 }
+                FederalIncome::PartnershipActivities { data } => {
+                    if half == 0 {
+                        (0, 0)
+                    } else {
+                        match data.ordinary_se_source() {
+                            Ok(output) => {
+                                let Some(source) = output.self_employment else {
+                                    sources.push(QbiGrossSource {
+                                        parent: entry.id,
+                                        component: None,
+                                        block: None,
+                                        gross: 0,
+                                        qualified: 0,
+                                    });
+                                    continue;
+                                };
+                                if output.current_qualified.iter().any(|v| v.qualified_se_gross > 0)
+                                {
+                                    // Each block's actual qualified gross and that component's
+                                    // unqualified residual enter the ONE owner-wide allocation.
+                                    // No rounded parent share is subsequently split again.
+                                    for component in source.components {
+                                        let qualified = output
+                                            .current_qualified
+                                            .iter()
+                                            .find(|v| v.component == component.component);
+                                        sources.push(QbiGrossSource {
+                                            parent: entry.id,
+                                            component: Some(component.component),
+                                            block: qualified.map(|v| v.block),
+                                            gross: component.gross,
+                                            qualified: qualified
+                                                .map_or(0, |v| v.qualified_se_gross),
+                                        });
+                                    }
+                                    continue;
+                                }
+                                // Preserve the old single-parent zero-qualified slot, including
+                                // its rounding effect on this owner's other business sources.
+                                (source.gross, 0)
+                            }
+                            Err(_) => {
+                                missing.push(crate::interview::income_issue_context(entry));
+                                owner_missing = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
                 _ => continue,
             };
-            sources.push((entry.id, gross, qualified));
+            sources.push(QbiGrossSource {
+                parent: entry.id,
+                component: None,
+                block: None,
+                gross,
+                qualified,
+            });
         }
-        sources.sort_by_key(|v| v.0);
-        let weights: Vec<_> = sources
-            .iter()
-            .flat_map(|(_, gross, qualified)| [*qualified, gross - qualified])
-            .collect();
-        if half > 0 && !owner_missing && weights.iter().sum::<i64>() == 0 {
+        sources.sort_by_key(|v| (v.parent, v.component, v.block));
+        let weights: Vec<_> =
+            sources.iter().flat_map(|v| [v.qualified, v.gross - v.qualified]).collect();
+        if half > 0 && !owner_missing && weights.iter().all(|weight| *weight == 0) {
             return Err(QbiGrossError::UnavailableWeight(
                 crate::IssueContext::owner(crate::TaxSection::PassThrough, owner).manual(),
             ));
         }
-        let shares = crate::kernel::ratio::allocate_remaining(half, &weights);
-        for ((id, _, _), shares) in sources.into_iter().zip(shares.chunks_exact(2)) {
-            result.insert(id, shares[0]);
+        let shares = crate::kernel::ratio::allocate_remaining_exact(&exact::whole(half), &weights)
+            .ok_or_else(|| {
+                QbiGrossError::Inconsistent(
+                    crate::IssueContext::owner(crate::TaxSection::PassThrough, owner).manual(),
+                )
+            })?;
+        for (source, shares) in sources.into_iter().zip(shares.chunks_exact(2)) {
+            *result.sources.entry(source.parent).or_default() += shares[0];
+            if let Some(block) = source.block {
+                result.native_blocks.insert((source.parent, block), shares[0]);
+            }
         }
     }
     if missing.is_empty() { Ok(result) } else { Err(QbiGrossError::Missing(missing)) }
@@ -928,18 +1107,40 @@ pub(crate) fn loss_only_excess(
     activities: &mut [QbiActivity],
     excess: i64,
 ) -> Result<i64, ExcessError> {
-    loss_only_excess_with_section179(draft, rental, activities, excess, None, None)
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    loss_only_excess_with_claims(draft, rental, activities, excess, &source_claims)
+}
+
+#[cfg(test)]
+pub(crate) fn loss_only_excess_with_claims(
+    draft: &crate::FederalDraft,
+    rental: &crate::extended_rules::RentalResult,
+    activities: &mut [QbiActivity],
+    excess: i64,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<i64, ExcessError> {
+    loss_only_excess_with_section179_with_claims(
+        draft,
+        rental,
+        activities,
+        excess,
+        None,
+        None,
+        source_claims,
+    )
 }
 
 // Form 8995: only the qualified fraction of section 461(l) suspension leaves
 // current QBI. Reuse the shared proportional allocator after earlier limits.
-pub(crate) fn loss_only_excess_with_section179(
+
+pub(crate) fn loss_only_excess_with_section179_with_claims(
     draft: &crate::FederalDraft,
     rental: &crate::extended_rules::RentalResult,
     activities: &mut [QbiActivity],
     excess: i64,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<i64, ExcessError> {
     let mut count = 0;
     let mut direct_loss = 0;
@@ -964,15 +1165,20 @@ pub(crate) fn loss_only_excess_with_section179(
                 }
             }
             crate::FederalIncome::Business { data } => {
-                let expenses =
-                    crate::section179_return::expenses(draft, entry.id, data, selected, home)
-                        .map(|expense| {
-                            expense
-                                - selected.map_or(0, |allocation| {
-                                    allocation.ordinary_risk_adjustment(entry.id)
-                                })
-                        })
-                        .map_err(ExcessError::Prepared)?;
+                let expenses = crate::section179_return::expenses_with_claims(
+                    draft,
+                    entry.id,
+                    data,
+                    selected,
+                    home,
+                    source_claims,
+                )
+                .map(|expense| {
+                    expense
+                        - selected
+                            .map_or(0, |allocation| allocation.ordinary_limit_adjustment(entry.id))
+                })
+                .map_err(ExcessError::Prepared)?;
                 let net = dollars(data.receipts() - expenses);
                 // A business run abroad is resolved when its owner has no
                 // Form 2555 record, so nothing of it is excluded.
@@ -982,7 +1188,7 @@ pub(crate) fn loss_only_excess_with_section179(
                         *confirmed
                             && crate::extended_rules::foreign_claim(
                                 draft,
-                                usize::from(entry.owner == crate::Owner::Spouse),
+                                usize::from(entry.owner == crate::DocumentOwner::Spouses),
                             )
                             .is_none()
                     }
@@ -1008,6 +1214,7 @@ pub(crate) fn loss_only_excess_with_section179(
                 }
             }
             crate::FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
                 if data.section1231.is_some() {
                     return Err(ExcessError::Rule((
                         "ISSUE_PARTNERSHIP_QBI_MIXED_PARTNERSHIP_S_CORPORATION_PROPERTY_CHARACTER_NEEDS_SEPAR_A57C0231",
@@ -1175,6 +1382,7 @@ pub(crate) fn current_profit_excess(
 // A single partnership with exactly one gross loss character offset by the
 // other character's gain. Current and retained qualification come from the
 // existing owners before the net business activity is used for QBI.
+#[cfg(test)]
 pub(crate) fn excess_with_property(
     draft: &crate::FederalDraft,
     rental: &crate::extended_rules::RentalResult,
@@ -1182,6 +1390,27 @@ pub(crate) fn excess_with_property(
     excess: i64,
     taxable: i64,
     status: FederalStatus,
+) -> Result<i64, crate::section1231::SourceError> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    excess_with_property_with_claims(
+        draft,
+        rental,
+        activities,
+        excess,
+        taxable,
+        status,
+        &source_claims,
+    )
+}
+
+pub(crate) fn excess_with_property_with_claims(
+    draft: &crate::FederalDraft,
+    rental: &crate::extended_rules::RentalResult,
+    activities: &mut Vec<QbiActivity>,
+    excess: i64,
+    taxable: i64,
+    status: FederalStatus,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<i64, crate::section1231::SourceError> {
     let error = (
         "ISSUE_PARTNER_EXCESS_LOSS_QBI_AND_PROPERTY_CHARACTER",
@@ -1199,7 +1428,8 @@ pub(crate) fn excess_with_property(
                     | crate::FederalIncome::Interest { .. }
                     | crate::FederalIncome::Dividend { .. }
                     | crate::FederalIncome::Sale { .. }
-            )
+            ) && !matches!(&entry.income, crate::FederalIncome::Broker { data }
+                if crate::broker_calculation::known_components(data, true, false))
         })
     {
         return Err(error.into());
@@ -1213,8 +1443,13 @@ pub(crate) fn excess_with_property(
         return Err(error.into());
     }
     let character = crate::section1231::partner_loss_with_gain(owner, &owner.regular)?;
-    let property =
-        crate::section1231::partner_property_qbi_items(draft, rental, id, Some((taxable, status)))?;
+    let property = crate::section1231::partner_property_qbi_items_with_claims(
+        draft,
+        rental,
+        id,
+        Some((taxable, status)),
+        source_claims,
+    )?;
     let mut expected = Vec::new();
     let (current, historical, current_index) = if let Some(statement) = &owner.qbi {
         let ordinary = statement.calculate_combined(
@@ -1280,7 +1515,7 @@ pub(crate) fn excess_with_property(
     // These are the same source rows the central owner tagged before the
     // financial fingerprint check. Keep their metadata when replacing them.
     for activity in &mut expected {
-        activity.owner = Some(filer);
+        activity.owner = Some(filer.owned());
     }
     if *activities != expected {
         return Err(error.into());
@@ -1307,11 +1542,33 @@ pub(crate) fn allocate_excess(
     taxable: i64,
     status: FederalStatus,
 ) -> Result<i64, ExcessError> {
-    allocate_excess_with_section179(draft, rental, activities, excess, taxable, status, None)
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    allocate_excess_with_claims(draft, rental, activities, excess, taxable, status, &source_claims)
 }
 
-pub(crate) fn allocate_excess_with_section179(
+#[cfg(test)]
+pub(crate) fn allocate_excess_with_claims(
     draft: &crate::FederalDraft,
+    rental: &crate::extended_rules::RentalResult,
+    activities: &mut Vec<QbiActivity>,
+    excess: i64,
+    taxable: i64,
+    status: FederalStatus,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<i64, ExcessError> {
+    allocate_excess_with_section179_with_claims(
+        crate::related_forms::RelatedFormContext::original(draft, source_claims),
+        rental,
+        activities,
+        excess,
+        taxable,
+        status,
+        None,
+    )
+}
+
+pub(crate) fn allocate_excess_with_section179_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     rental: &crate::extended_rules::RentalResult,
     activities: &mut Vec<QbiActivity>,
     excess: i64,
@@ -1319,6 +1576,8 @@ pub(crate) fn allocate_excess_with_section179(
     status: FederalStatus,
     selected: Option<&crate::Section179PreparedAllocation>,
 ) -> Result<i64, ExcessError> {
+    let crate::related_forms::RelatedFormContext { draft, claims: source_claims, .. } =
+        form_context;
     // Partnership and S-corporation activities already have eligibility fixed.
     // Resolve remaining direct-business SSTB fractions once on a candidate;
     // rejected source allocation must not alter live activities.
@@ -1326,13 +1585,14 @@ pub(crate) fn allocate_excess_with_section179(
         .iter()
         .map(|v| crate::business_rules::eligible_qbi_activity(v, taxable, status))
         .collect::<Result<Vec<_>, _>>()?;
-    let qualified = match loss_only_excess_with_section179(
+    let qualified = match loss_only_excess_with_section179_with_claims(
         draft,
         rental,
         &mut candidate,
         excess,
         selected,
         None,
+        source_claims,
     ) {
         Ok(qualified) => qualified,
         Err(ExcessError::Rule(_)) => current_profit_excess(draft, rental, &mut candidate, excess)?,

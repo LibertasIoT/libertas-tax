@@ -61,7 +61,7 @@
 //   filer exists in this App), fiscal years.
 //   Evidence: forms/form_1040_es.rs (compute); federal_rules.rs (the call after Form 2210);
 //   federal_model.rs (NextYearEstimate and its farmer_fisherman_next_year answers,
-//   FederalPayments.next_year, Payments.next_year,
+//   FederalPayments.next_year, Payments.more.next_year,
 //   TaxForm::Form1040Es); interview.rs (payments_page, payments_record, payments_candidate);
 //   src/tests/payments/penalty.rs form_1040_es_worksheet_matches_hand_computation,
 //   form_1040_es_110_percent_starts_above_150000_agi,
@@ -86,9 +86,10 @@
 
 // Form 1040-ES: the 2027 Estimated Tax Worksheet projected from the finished
 // 2026 return, with the filer's expected changes where entered.
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction, positive};
+use crate::line_emission::emit as emit_lines;
 use crate::{FarmerNextYear, FederalResult, FederalStatus, FormLine, NextYearEstimate, TaxForm};
 use alloc::{format, vec::Vec};
 
@@ -140,7 +141,7 @@ pub(crate) struct Form1040EsContext<'a> {
     pub withholding: i64,
     // At least two-thirds of 2026 gross income from farming or fishing, as
     // this return shows it (underpayment::two_thirds_return_year).
-    pub farming_return_year: bool,
+    pub farming_return_year: Result<bool, &'static str>,
     pub deceased: bool,
     pub annualized: bool,
 }
@@ -197,7 +198,7 @@ pub(crate) fn compute(ctx: &Form1040EsContext<'_>, r: &mut FederalResult) {
             refused = true;
         }
     };
-    if !ctx.farming_return_year && answer_next_year == FarmerNextYear::NotNeeded {
+    if ctx.farming_return_year == Ok(false) && answer_next_year == FarmerNextYear::NotNeeded {
         return;
     }
     refuse(
@@ -221,10 +222,21 @@ pub(crate) fn compute(ctx: &Form1040EsContext<'_>, r: &mut FederalResult) {
         #[cfg(test)]
         "Form 1040-ES line 5: this return has alternative minimum tax, and Form 6251 for 2027 is not refigured for a changed income or deduction; choose the estimate from this return as it is.",
     );
+    if let Err(key) = ctx.farming_return_year
+        && answer_next_year != FarmerNextYear::Yes
+    {
+        refuse(
+            r,
+            false,
+            key,
+            #[cfg(test)]
+            "The current farmer or fisher gross-income test needs reconciled source-owner gross statements and recognized gains before other sources' losses. A known qualifying next-year farmer or fisher answer remains independent.",
+        );
+    }
     if refused {
         return;
     }
-    let farmer = ctx.farming_return_year || answer_next_year == FarmerNextYear::Yes;
+    let farmer = ctx.farming_return_year == Ok(true) || answer_next_year == FarmerNextYear::Yes;
     // Exception 1 for household employment tax on line 10: include it when
     // 2027 income tax will be withheld, or when the worksheet without it
     // already requires estimated payments.

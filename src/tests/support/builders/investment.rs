@@ -45,12 +45,12 @@ pub(in crate::tests) fn native_dividend(
 
 pub(in crate::tests) fn reit_income(ordinary: i64, reit: i64, eligible: bool) -> FederalIncome {
     FederalIncome::Dividend {
-        data: FederalDividend {
+        data: dividend_source(FederalDividend {
             ordinary: ordinary * 100,
-            section199a: ReitDividends::Reported { amount: reit * 100, eligible },
+            section199a: ReitDividends::Reported { amount: reit * 100, eligible: Some(eligible) },
             special: crate::DividendSpecial::NoneOfThese,
             ..Default::default()
-        },
+        }),
     }
 }
 
@@ -81,12 +81,15 @@ pub(in crate::tests) fn native_treasury_interest(us_obligations: i64) -> Federal
 }
 
 pub(in crate::tests) fn savings_income(interest: i64, penalty: i64) -> FederalIncome {
-    FederalIncome::Interest { data: native_interest(interest * 100, penalty * 100) }
+    FederalIncome::Interest {
+        data: interest_source(native_interest(interest * 100, penalty * 100)),
+    }
 }
 
 pub(in crate::tests) fn hobby_sales(receipts: i64, purchases: i64, closing: i64) -> FederalIncome {
     FederalIncome::HobbySales {
-        data: HobbySales {
+        data: FederalHobbySales {
+            related: vec![],
             receipts: receipts * 100,
             ordinary: true,
             inventory: BusinessInventory::Cost {
@@ -106,7 +109,7 @@ pub(in crate::tests) fn hobby_sales(receipts: i64, purchases: i64, closing: i64)
 
 pub(in crate::tests) fn personal_sale(proceeds: i64, basis: i64, term: GainTerm) -> FederalIncome {
     FederalIncome::Sale {
-        data: FederalSale {
+        data: sale_source(FederalSale {
             digital_asset: false,
             market_discount: 0,
             several_sales: false,
@@ -120,7 +123,7 @@ pub(in crate::tests) fn personal_sale(proceeds: i64, basis: i64, term: GainTerm)
             special: crate::SaleSpecial::NoneOfThese,
             adjustment: SaleAdjustment::None,
             basis_reporting: BasisReporting::NoForm1099B,
-        },
+        }),
     }
 }
 
@@ -132,36 +135,33 @@ pub(in crate::tests) fn collectible_sale(
 ) -> FederalIncome {
     let mut result = personal_sale(proceeds, basis, term);
     let FederalIncome::Sale { data } = &mut result else { panic!() };
-    data.collectible = true;
+    data.form.collectible = true;
     if !personal {
-        data.use_kind = SaleUse::Investment { wash_sale: 0 };
+        data.form.use_kind = SaleUse::Investment { wash_sale: 0 };
     }
     result
 }
 
 pub(in crate::tests) fn undistributed_gain() -> FederalIncome {
     FederalIncome::UndistributedGain {
-        data: UndistributedGain {
-            section_1202_exclusion: None,
+        data: UndistributedGainSource::printed(form2439_paper(Form2439 {
             gain: 500000,
-            unrecaptured: 0,
-            small_business: 0,
             collectibles: 300000,
             tax_paid: 105000,
-            special: false,
-        },
+            ..Default::default()
+        })),
     }
 }
 
 pub(in crate::tests) fn mixed_gain_distribution() -> FederalIncome {
     FederalIncome::Dividend {
-        data: FederalDividend {
+        data: dividend_source(FederalDividend {
             capital_distributions: 1000000,
             collectible_distributions: 300000,
             unrecaptured_distributions: 500000,
             special: crate::DividendSpecial::NoneOfThese,
             ..Default::default()
-        },
+        }),
     }
 }
 
@@ -290,7 +290,10 @@ pub(in crate::tests) fn investment_borrowing(
         income_use: InvestmentInterestUse::Unresolved,
         limited_allocation: InvestmentLimitedAllocation::SourceDetermined,
     });
-    deductions.choice = DeductionSelection::Itemized { facts };
+    {
+        deductions.itemized = facts;
+        deductions.itemize_override = Some(ItemizeOverride::Itemize);
+    };
 }
 
 pub(in crate::tests) fn elected_portfolio() -> FederalDraft {
@@ -298,13 +301,13 @@ pub(in crate::tests) fn elected_portfolio() -> FederalDraft {
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 ordinary: 2000000,
                 qualified: 2000000,
                 capital_distributions: 1000000,
                 special: crate::DividendSpecial::NoneOfThese,
                 ..Default::default()
-            },
+            }),
         }),
     );
     investment_borrowing(&mut d, 15000, 0, 0);
@@ -319,7 +322,7 @@ pub(in crate::tests) fn ordinary_investment_sale(
 ) -> FederalIncome {
     let mut sale = personal_sale(proceeds, basis, term);
     let FederalIncome::Sale { data } = &mut sale else { panic!() };
-    data.use_kind = SaleUse::Investment { wash_sale: 0 };
+    data.form.use_kind = SaleUse::Investment { wash_sale: 0 };
     sale
 }
 
@@ -337,13 +340,15 @@ pub(in crate::tests) fn sale_with_amt(
 
 // Common synthetic lot: granted January 1, 2020 and exercised January 1, 2026.
 // Prices are native cents per share; callers retain their exact share quantities.
-pub(in crate::tests) fn iso_exercise(
+pub(in crate::tests) fn native_iso_exercise(
     label: &str,
     shares: f64,
     exercise_price: i64,
     market_price: i64,
 ) -> IsoExercise {
     IsoExercise {
+        printed: None,
+        id: 0,
         exercised: 20260101,
         recognition: IsoRecognition::Exercise,
         option_cost: 0,
@@ -393,7 +398,7 @@ pub(in crate::tests) fn ordinary_espp_lot() -> EsppSale {
         sold: 20260201,
         shares: 100.0,
         grant_market: 2200,
-        grant_price: 2000,
+        grant_price: Some(2000),
         exercise_price: 2000,
         market_price: 2300,
         acquisition_costs: 0,
@@ -416,13 +421,13 @@ pub(in crate::tests) fn qsb_source_sale(
 ) -> QsbIssuerSale {
     QsbIssuerSale {
         issuer: issuer.into(),
-        prior_eligible_gain: 0,
-        special: false,
-        issuer_qualified: true,
-        active_business: true,
-        no_disqualification: true,
-        zone_60_exclusion: Some(false),
-        complete_history: true,
+        prior_eligible_gain: Some(0),
+        special: Some(false),
+        issuer_qualified: Some(true),
+        active_business: Some(true),
+        no_disqualification: Some(true),
+        zone_60_exclusion: Some(crate::QsbsZoneCertification::No),
+        complete_history: Some(true),
         lots: vec![QsbStockLot {
             issued,
             sold: 20260501,
@@ -444,13 +449,13 @@ pub(in crate::tests) fn qsb_income(
     income(FederalIncome::QualifiedSmallBusinessSale {
         data: QsbIssuerSale {
             issuer: issuer.into(),
-            prior_eligible_gain: prior,
-            special: false,
-            issuer_qualified: true,
-            active_business: true,
-            no_disqualification: true,
+            prior_eligible_gain: Some(prior),
+            special: Some(false),
+            issuer_qualified: Some(true),
+            active_business: Some(true),
+            no_disqualification: Some(true),
             zone_60_exclusion: None,
-            complete_history: true,
+            complete_history: Some(true),
             lots: vec![QsbStockLot {
                 issued: 20150601,
                 sold: 20260601,
@@ -470,39 +475,48 @@ pub(in crate::tests) fn direct_tax_credit_bond(
     box1_credit: i64,
 ) -> FederalTaxCreditBond1097 {
     FederalTaxCreditBond1097 {
+        printed: None,
+        id: 0,
         owner: Owner::Taxpayer,
-        issuer_name: alloc::format!("Synthetic issuer {identifier}"),
-        issuer_tin: "12-3456789".into(),
-        unique_identifier: identifier.into(),
-        kind,
-        box3_code_199: true,
-        issued_on: 20100101,
-        box1_credit,
-        prior_carry_dollars: 0,
-        allowed_credit_dollars: None,
-        allowed_credit_confirmed: false,
-        prior_carry_confirmed: true,
-
-        origin: crate::TaxCreditOrigin::Direct(crate::TaxCreditDirect {
-            directly_held_full_year: true,
-            direct_issuer_report: true,
-            no_direct_pay_election: true,
-            deemed_interest_not_elsewhere: true,
-            separate_interest_entered: true,
-            ordinary_investment_interest: true,
+        form: btc_paper(Form1097Btc {
+            issuer: PrintedParty {
+                name: alloc::format!("Synthetic issuer {identifier}"),
+                federal_id: "12-3456789".into(),
+                address: Default::default(),
+            },
+            recipient: Default::default(),
+            unique_identifier: identifier.into(),
+            box3_code_199: true,
+            box1_credit,
         }),
+        answers: crate::TaxCreditBondAnswers {
+            kind: Some(kind),
+            issued_on: Some(20100101),
+            prior_carry_dollars: 0,
+            allowed_credit_dollars: None,
+            allowed_credit_confirmed: Some(false),
+            prior_carry_confirmed: Some(true),
+            origin: Some(crate::TaxCreditOrigin::Direct(crate::TaxCreditDirect {
+                directly_held_full_year: true,
+                direct_issuer_report: true,
+                no_direct_pay_election: true,
+                deemed_interest_not_elsewhere: true,
+                separate_interest_entered: true,
+                ordinary_investment_interest: true,
+            })),
+        },
     }
 }
 
 pub(in crate::tests) fn single_bond_with_same_total_credit(draft: &FederalDraft) -> FederalDraft {
     let mut probe = draft.clone();
     let bonds = &mut probe.credits.as_mut().unwrap().tax_credit_bonds;
-    let total_current: i64 = bonds.iter().map(|bond| bond.box1_credit).sum();
-    let total_prior: i64 = bonds.iter().map(|bond| bond.prior_carry_dollars).sum();
-    bonds[0].box1_credit = total_current;
-    bonds[0].prior_carry_dollars = total_prior;
-    bonds[0].allowed_credit_dollars = None;
-    bonds[0].allowed_credit_confirmed = false;
+    let total_current: i64 = bonds.iter().map(|bond| bond.form.box1_credit.unwrap_or(0)).sum();
+    let total_prior: i64 = bonds.iter().map(|bond| bond.answers.prior_carry_dollars).sum();
+    bonds[0].form.box1_credit = Some(total_current);
+    bonds[0].answers.prior_carry_dollars = total_prior;
+    bonds[0].answers.allowed_credit_dollars = None;
+    bonds[0].answers.allowed_credit_confirmed = Some(false);
     bonds.truncate(1);
     probe
 }
@@ -523,7 +537,7 @@ pub(in crate::tests) fn k1_niit_portfolio_entry(
         K1PortfolioNiitSource::Partner => {
             assert!(!final_deduction);
             let mut data = ordinary_partner_source(0, true);
-            data.separate = Some(PartnerSeparateItems {
+            data.separate = Some(PartnerSeparateTotals {
                 interest: 1_000_000,
                 dividends: 600_000,
                 qualified_dividends: 200_000,
@@ -539,7 +553,7 @@ pub(in crate::tests) fn k1_niit_portfolio_entry(
                 foreign_taxes: 0,
             });
             if code_a {
-                data.income.push(PartnerIncome {
+                data.income.push(PartnerIncomeTotal {
                     code: PartnerIncomeCode::PortfolioIncome,
                     amount: 200_000,
                 });
@@ -556,7 +570,7 @@ pub(in crate::tests) fn k1_niit_portfolio_entry(
                 data.income
                     .push(ScorpIncome { code: ScorpIncomeCode::PortfolioIncome, amount: 200_000 });
             }
-            income(FederalIncome::Scorp { data })
+            income(FederalIncome::Scorp { data: scorp_source(data) })
         }
         K1PortfolioNiitSource::Estate => {
             assert!(!code_a);
@@ -565,16 +579,19 @@ pub(in crate::tests) fn k1_niit_portfolio_entry(
             let FederalIncome::EstateTrustPortfolio { data } = &mut entry.income else {
                 unreachable!()
             };
-            data.interest = 1_000_000;
-            data.ordinary_dividends = 600_000;
-            data.qualified_dividends = 200_000;
+            data.form.interest = 1_000_000;
+            data.form.ordinary_dividends = 600_000;
+            data.form.qualified_dividends = 200_000;
             if final_deduction {
-                data.final_67e_deduction = 200_000;
-                data.final_year_successor = true;
-                data.final_character = Some(crate::EstateFinalCharacter {
+                {
+                    let mut record = edit_estate(data);
+                    record.final_67e_deduction = 200_000;
+                    record.final_k1 = true;
+                }
+                data.answers.final_year_successor = Some(true);
+                data.statements.final_character = Some(crate::EstateFinalCharacter {
                     entity_terminated: true,
-                    final_beneficiary_k1: true,
-                    successor: true,
+
                     section67e_nii: 50_000,
                     section67e_in_h: false,
                     additional: vec![],
@@ -590,7 +607,10 @@ pub(in crate::tests) fn k1_niit_portfolio_entry(
                         alternative_business: None,
                     },
                 });
-                assert_eq!(crate::estate_trust::source_rule(data), None);
+                assert_eq!(
+                    crate::estate_trust::source_rule(&FederalEstateTrustPortfolioK1::from(&*data)),
+                    None
+                );
             }
             entry
         }
@@ -623,29 +643,34 @@ pub(in crate::tests) fn niit_deduction_fixture(
         injured: if owner == injured { 100_000 } else { 0 },
     });
     let mut d = injured_return((200_000, 60_000), (50_000, 10_000), 0, claim);
-    d.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Itemized { facts: itemized(d.deductions.as_mut().unwrap()).clone() };
+    d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
     if matches!(kind, NiitDeductionExpense::Estate) {
         let mut estate = estate_trust_code_c_draft(0, 0).income.pop().unwrap();
-        estate.owner = owner;
+        estate.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::EstateTrustPortfolio { data } = &mut estate.income else {
             unreachable!()
         };
-        data.interest = 1_000_000;
-        data.box_10_interest_ird_estate_tax = 100_000;
-        data.box_10_interest_ird_only = true;
+        data.form.interest = 1_000_000;
+        data.form.estate_tax_deduction = 100_000;
+        data.statements.box_10_interest_ird_only = true;
         add(&mut d, estate);
         let mut other = income(savings_income(20_000, 0));
-        other.owner = if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+        other.owner = if owner == Owner::Taxpayer {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
         add(&mut d, other);
     } else {
         for (payee, amount) in [(Owner::Taxpayer, 20_000), (Owner::Spouse, 10_000)] {
             let mut entry = income(savings_income(amount, 0));
-            entry.owner = payee;
+            entry.owner = crate::DocumentOwner::from(payee);
             if matches!(kind, NiitDeductionExpense::Foreign) && payee == owner {
                 let FederalIncome::Interest { data } = &mut entry.income else { unreachable!() };
+                let mut data = edit_interest(data);
                 data.foreign_tax = 100_000;
                 data.foreign_country = "CA".into();
+                drop(data);
             }
             add(&mut d, entry);
         }
@@ -694,10 +719,10 @@ pub(in crate::tests) fn niit_deduction_fixture(
                     code: ScorpDeductionCode::InvestmentInterest,
                     amount: 100_000,
                 });
-                FederalIncome::Scorp { data }
+                FederalIncome::Scorp { data: scorp_source(data) }
             };
             let mut entry = income(source);
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut d, entry);
         }
         NiitDeductionExpense::Estate => {}
@@ -720,10 +745,10 @@ pub(in crate::tests) fn niit_binding_fixture(injured: Owner, reversed: bool) -> 
     let mut d = injured_return((200_000, 60_000), (50_000, 10_000), 0, claim);
     for (owner, interest, paid) in [(Owner::Taxpayer, 3000, 2000), (Owner::Spouse, 2000, 10000)] {
         let mut entry = income(savings_income(interest, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
         let mut entry = income(qualified_dividend(10000));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
         let mut data = ordinary_partner_source(0, true);
         data.deductions.push(PartnerDeduction {
@@ -731,15 +756,15 @@ pub(in crate::tests) fn niit_binding_fixture(injured: Owner, reversed: bool) -> 
             amount: paid * 100,
         });
         let mut entry = income(FederalIncome::Partnership { data });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let deductions = d.deductions.as_mut().unwrap();
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     if reversed {
         d.income.reverse();
     }
-    d
+    known_fact_partnership_draft(d)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -857,7 +882,7 @@ pub(in crate::tests) fn retained_owner_source() -> PriorCapitalReturn {
 pub(in crate::tests) fn add_owner_interest(draft: &mut FederalDraft, dollars: i64) {
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(savings_income(dollars, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(draft, entry);
     }
 }
@@ -868,9 +893,12 @@ fn add_retained_niit_source(session: &mut Interview) {
     prior.injured_niit_owners =
         Some(InjuredRetainedOwners::Both { taxpayer: 400_000, spouse: 600_000 });
     let page = save_topic(
-        &session.draft,
+        session,
         TaxSection::InvestmentSales,
-        vec![document(0, IncomeDocument::CapitalLossCarryover(prior.into()))],
+        vec![document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::CapitalLossCarryover(prior.into()) },
+        )],
     );
     accepted(&send(session, page));
 }
@@ -889,10 +917,10 @@ pub(in crate::tests) fn retained_niit_return(injured: Owner, reversed: bool) -> 
     add_retained_niit_source(&mut session);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut sale = income(ordinary_investment_sale(6000, 0, GainTerm::Short));
-        sale.owner = owner;
+        sale.owner = crate::DocumentOwner::from(owner);
         add(&mut session.draft, sale);
         let mut interest = income(savings_income(5000, 0));
-        interest.owner = owner;
+        interest.owner = crate::DocumentOwner::from(owner);
         add(&mut session.draft, interest);
     }
     if reversed {
@@ -922,6 +950,8 @@ pub(in crate::tests) fn add_current_niit_property(
         farm.header = None;
         FederalIncome::FarmRental {
             data: FederalFarmRental {
+                improvement_buildings: Vec::new(),
+                interest_limit_election: None,
                 farm,
                 expenses: business.expenses,
                 assets: vec![],
@@ -938,7 +968,7 @@ pub(in crate::tests) fn add_current_niit_property(
         FederalIncome::Business { data: business }
     };
     let mut entry = income(source);
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     add(d, entry);
 }
 
@@ -963,7 +993,7 @@ fn owner_nua_sale(
             special: false,
         },
     });
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry.label = label.into();
     entry
 }
@@ -1001,7 +1031,7 @@ pub(in crate::tests) fn hobby_niit_return(
     // Existing retirement/relief source oracle: receipts10000 minus purchases
     //8000 plus closing2000 =4000 annualDollars, no SE or QBI deduction.
     let mut e = income(hobby_sales(10000, 8000, 2000));
-    e.owner = owner;
+    e.owner = crate::DocumentOwner::from(owner);
     e.label = "Actual inventory-backed hobby income".into();
     add(&mut d, e);
     if reversed {
@@ -1061,6 +1091,7 @@ pub(in crate::tests) fn noninvestment_election_fixture(
             },
             special: false,
             qbi: InstallmentQbi::NotQualified,
+            livestock: None,
         },
     }];
     if reverse {
@@ -1074,17 +1105,17 @@ pub(in crate::tests) fn unit13_election_fixture(qualified: i64, capital: i64) ->
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 ordinary: qualified * 100,
                 qualified: qualified * 100,
                 capital_distributions: capital * 100,
                 ..Default::default()
-            },
+            }),
         }),
     );
     investment_borrowing(&mut d, 1, 0, 0);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.investment_interest.as_mut().unwrap().election =
         InvestmentElection::Allocated { capital: capital * 100, dividends: qualified * 100 };
     d
@@ -1164,5 +1195,68 @@ pub(in crate::tests) fn native_investment_loan(
         paid_owners: None,
         carry_owners: None,
         private_activity: 0,
+    }
+}
+
+// Approved Form6252 current investment-land source, exact cents (F1).
+pub(in crate::tests) fn current_installment_land() -> crate::InvestmentInstallmentSale {
+    crate::InvestmentInstallmentSale {
+        property: "Synthetic investment land".into(),
+        acquired: 20190501,
+        sold: 20260301,
+        use_kind: crate::InstallmentUse::Investment,
+        collectible: false,
+        price: 20_000_000,
+        assumed_debt: 0,
+        basis: 12_000_000,
+        selling_expenses: 1_000_000,
+        payments: 4_000_000,
+        interest: crate::NoteInterest::Adequate,
+        buyer: crate::Buyer::Unrelated,
+        second_disposition: crate::SecondDisposition::None,
+        pledged: 0,
+        method: crate::InstallmentMethod::Installment,
+        other: crate::InstallmentOther::NoneOfThese,
+    }
+}
+
+// A synthetic actual W-2 source puts recognized sale income above the NIIT threshold.
+pub(in crate::tests) fn current_installment_niit_draft() -> FederalDraft {
+    let mut draft = complete(FederalStatus::Single);
+    draft.income = vec![wage(1, Owner::Taxpayer, 25_000_000, 0)];
+    draft
+}
+
+pub(in crate::tests) fn current_installment_joint_niit_draft() -> FederalDraft {
+    injured_return((250_000, 40_000), (0, 0), 0, allocation())
+}
+
+// The printed sale and its actual plan records are entered on their owning pages.
+pub(in crate::tests) fn espp_source_paper(lot: &EsppSale) -> EsppShareSale {
+    EsppShareSale::from_record("", lot).unwrap()
+}
+pub(in crate::tests) fn espp_source_answers(lot: &EsppSale, document_id: i64) -> EsppSaleAnswers {
+    EsppSaleAnswers {
+        document_id,
+        acquisition: Some(EsppAcquisitionChoice::Records {
+            facts: EsppAcquisitionFacts {
+                granted: lot.granted,
+                exercised: lot.exercised,
+                grant_market: lot.grant_market,
+                market_price: lot.market_price,
+                exercise_price: lot.exercise_price,
+                grant_price: lot
+                    .grant_price
+                    .map_or(SourceCents::Unavailable, |amount| SourceCents::Reported { amount }),
+            },
+        }),
+        wage_inclusion: Some(lot.in_wages),
+        fixed_grant_price: SourceCents::Unavailable,
+        more: EsppShareSaleMore {
+            selling_fees: lot.selling_fees,
+            acquisition_costs: lot.acquisition_costs,
+            wash_sale: lot.wash_sale,
+            special: lot.special,
+        },
     }
 }

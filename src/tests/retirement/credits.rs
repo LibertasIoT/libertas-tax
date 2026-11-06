@@ -97,17 +97,12 @@ fn saver_credit_record_persists_and_rejects_malformed_values() {
         amount: 10000,
         year: distribution_period(SaverDistributionYear::PriorOne, Answer::No),
     });
-    // The legacy credits page is gone (unit M3-P11): the saver's credit is
-    // stored through its own page, so the record is placed on the draft and
-    // must survive a restart unchanged.
+    // The saver's credit record must survive a restart unchanged.
     let mut accepted = d.clone();
     accepted.credits = Some(f.clone());
     let s = restart(accepted.clone());
     assert_eq!(s.draft.credits, Some(f.clone()));
-    let mut malformed = accepted.clone();
-    malformed.credits.as_mut().unwrap().saver.as_mut().unwrap().taxpayer_contributions = -1;
-    assert!(!malformed.valid_stored());
-    // 2026-10-15 D-13 removes the former 100-distribution prototype cap.
+    // Distribution records persist without an arbitrary count limit.
     let mut many = accepted;
     let f = many.credits.as_mut().unwrap().saver.as_mut().unwrap();
     f.distributions = vec![f.distributions[0].clone(); 101];

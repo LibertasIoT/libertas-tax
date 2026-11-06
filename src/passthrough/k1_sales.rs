@@ -17,9 +17,10 @@
 // loss-owner results to form rows and the QBI calculation.
 use crate::k1_items::{K1ItemFlows, Section179SaleResult};
 use crate::k1_loss::{K1LossClass::Section1231, LossLedger};
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::dollars;
+use crate::line_emission::emit as emit_lines;
 use crate::{
     FederalDraft, FederalIncome, FederalIncomeEntry, FederalResult, FormLine, Message, TaxForm,
 };
@@ -196,7 +197,7 @@ pub(crate) fn facts(
                     &source.rentals,
                     ledger,
                     data.material_for_losses() == crate::participation::Participation::Yes
-                        || data.disposition.ended(),
+                        || data.disposition.as_ref().is_some_and(crate::K1Disposition::ended),
                 )?,
                 statements,
                 values,
@@ -208,6 +209,7 @@ pub(crate) fn facts(
             })
         }
         FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
             let source: crate::scorp_amt::ScorpSource<'_> = if amt {
                 let Some(source) = &data.amt else {
                     crate::K1Section179Sale::views(&data.section179_sales, true)?;
@@ -231,7 +233,7 @@ pub(crate) fn facts(
                     &source.rentals,
                     ledger,
                     source.nonpassive() == crate::participation::Participation::Yes
-                        || source.disposition.ended(),
+                        || source.disposition.as_ref().is_some_and(crate::K1Disposition::ended),
                 )?,
                 statements,
                 values,

@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 886000, "rule": {"select": "^<Form8814>.other_parent", "when_single_choice": "hide"}},
+    {"order": 887000, "rule": {"select": "^<Form8814>.child", "when_single_choice": "hide"}}
+  ]
+}

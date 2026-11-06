@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 186000, "rule": {"select": "^<SaveDocuments>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}}
+  ]
+}

@@ -4,21 +4,17 @@ use crate::tests::*;
 // part. Actual qualification exclusions are documented zero in these cases.
 pub(in crate::tests) fn cooperative_personal(data: &mut FederalCooperative, amount: i64) {
     if data.allocations.is_empty() {
-        data.allocations.push(crate::cooperative::automatic(data, None));
+        data.allocations.push(crate::cooperative::automatic(data));
     }
     data.allocations[0].personal.patronage = amount;
     data.allocations[0].personal_qualification = Some(CoopQualification::default());
 }
 
-pub(in crate::tests) fn cooperative_routed_income(
-    activity: i64,
-    patronage: i64,
-    personal: i64,
-) -> FederalIncome {
+pub(in crate::tests) fn cooperative_routed_income(patronage: i64, personal: i64) -> FederalIncome {
     let mut data = FederalCooperative { patronage, ..Default::default() };
-    data.allocations.push(crate::cooperative::automatic(&data, Some(activity)));
+    data.allocations.push(crate::cooperative::automatic(&data));
     cooperative_personal(&mut data, personal);
-    FederalIncome::Cooperative { data }
+    FederalIncome::Cooperative { data: cooperative_source(data) }
 }
 
 // Accepted synthetic equipment and actual cooperative allocations. Every
@@ -54,7 +50,7 @@ pub(in crate::tests) fn cooperative_asset_refunds_on(
             sstb_items,
             ..Default::default()
         };
-        let mut allocation = crate::cooperative::automatic(&data, Some(activity));
+        let mut allocation = crate::cooperative::automatic(&data);
         allocation.properties.push(CoopPropertyRefund {
             distribution: CoopDistributionBox::Patronage,
             property: Some(property),
@@ -66,7 +62,8 @@ pub(in crate::tests) fn cooperative_asset_refunds_on(
             treatment: CoopPropertyTreatment::Purchase,
         });
         data.allocations.push(allocation);
-        add(&mut draft, income(FederalIncome::Cooperative { data }));
+        add(&mut draft, income(FederalIncome::Cooperative { data: cooperative_source(data) }));
+        claim_last_cooperative(&mut draft, activity);
     }
     (draft, activity, property)
 }
@@ -90,11 +87,7 @@ pub(in crate::tests) fn cooperative_community_mfs(draft: FederalDraft) -> Federa
     let setup = separate.setup.as_mut().unwrap();
     setup.community_property = community_arizona();
     setup.status = FilingChoice::Separate {
-        section179: Section179Spouse::Records {
-            cost: 0,
-            allocation: Section179Share::Equal,
-            eligible: true,
-        },
+        section179: Section179Spouse::Records { cost: 0, allocation: Section179Share::Equal },
     };
     for entry in &mut separate.income {
         entry.community = CommunityShare::Community;
@@ -121,7 +114,7 @@ pub(in crate::tests) fn continuing_purchase_refund_session() -> (Interview, i64,
     let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
     let mut page = business(1_000_000);
     let mut equipment = asset(100_000, 20240601, AssetClass::Five);
-    equipment.history = AssetHistory::Continuing {
+    equipment.gds_mut().unwrap().history = AssetHistory::Continuing {
         prior_depreciation: 52_000,
         first_year_179: 0,
         first_year_bonus: 0,
@@ -129,19 +122,23 @@ pub(in crate::tests) fn continuing_purchase_refund_session() -> (Interview, i64,
         mid_quarter: false,
     };
     page.assets.push(equipment);
-    documents.documents.push(document(0, IncomeDocument::Business(page)));
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
+        ))
+        .expect("record fixture"),
+    );
     accepted(&send(&mut session, request));
     let activity = session.draft.income.last().unwrap().id;
     let FederalIncome::Business { data } = &session.draft.income.last().unwrap().income else {
         unreachable!()
     };
     let property = data.assets[0].id;
-    let mut request = open_topic(&mut session, TaxSection::SelfEmployment);
-    let P::SaveIncomes { documents, cooperative_properties, .. } = &mut request else {
-        unreachable!()
-    };
+    let request = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { cooperative_properties, .. } = &request else { unreachable!() };
     assert!(cooperative_properties.iter().any(|choice| choice.id == property));
-    let mut refund = crate::tests::farm::cooperative::patr_page(30_000, 0, Some(activity));
+    let mut refund = crate::tests::farm::cooperative::patr_page(30_000, 0);
     refund.withholding = 0;
     refund.more.allocations[0].properties.push(CoopPropertyRefundInput {
         distribution: CoopDistributionBox::Patronage,
@@ -153,7 +150,87 @@ pub(in crate::tests) fn continuing_purchase_refund_session() -> (Interview, i64,
         qualified_payments: 0,
         treatment: CoopPropertyTreatment::Purchase,
     });
-    documents.documents.push(document(0, IncomeDocument::Patr1099(refund)));
-    accepted(&send(&mut session, request));
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::Farming(cooperative_document(refund)))],
+    );
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
+    ));
     (session, activity, property)
+}
+
+pub(in crate::tests) fn claim_related_component(
+    draft: &mut FederalDraft,
+    activity: i64,
+    component: i64,
+) {
+    let target = draft.income.iter_mut().find(|entry| entry.id == activity).unwrap();
+    match &mut target.income {
+        FederalIncome::Business { data } => match &mut data.activity {
+            BusinessActivity::Farming { data } => data.related.push(component),
+            BusinessActivity::Ordinary { .. } => data.related.push(component),
+            _ => unreachable!(),
+        },
+        FederalIncome::FarmRental { data } => data.farm.related.push(component),
+        FederalIncome::Rental { data } => data.related.push(component),
+        FederalIncome::HobbySales { data } => data.related.push(component),
+        FederalIncome::Royalty { data } => data.related.push(component),
+        FederalIncome::NonbusinessProperty {
+            kind: NonbusinessPropertyKind::PersonalRental { related, .. },
+            ..
+        } => related.push(component),
+        _ => unreachable!(),
+    }
+}
+
+pub(in crate::tests) fn claim_last_cooperative(draft: &mut FederalDraft, activity: i64) {
+    let FederalIncome::Cooperative { data } = &draft.income.last().unwrap().income else {
+        unreachable!()
+    };
+    let keys = data.more.allocations.iter().map(|allocation| allocation.id).collect::<Vec<_>>();
+    for key in keys {
+        claim_related_component(draft, activity, key);
+    }
+}
+
+// A printed aggregate and identified item are independent issuer facts. Personal
+// purchase and credit entitlement answers enter through the existing topic editor.
+pub(in crate::tests) fn cooperative_box12_session() -> Interview {
+    use crate::tests::cross::interview::{business, document, open_topic};
+    use crate::tests::support::client::income_pages::{
+        save_documents, save_source_fixture_request,
+    };
+    let mut session = Interview::new(TEST_USER, empty_return(FederalStatus::Single));
+    let mut page = open_topic(&mut session, TaxSection::SelfEmployment);
+    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(business(1_000_000)) },
+        ))
+        .unwrap(),
+    );
+    accepted(&send(&mut session, page));
+    let mut patr = crate::tests::farm::cooperative::patr_page(100_000, 5_000);
+    patr.more.other_credits_and_deductions = 50_067;
+    patr.more.credit_facts.work_opportunity = 20_000;
+    patr.more.credit_facts.participation = Some(true);
+    patr.more.credit_facts.notice =
+        Some(CoopNoticeStatus::Received { source: "Synthetic issuer allocation notice".into() });
+    patr.more.credit_facts.other.push(CoopOtherItemInput {
+        id: 0,
+        kind: CoopOtherKind::SmallEmployerHealth,
+        amount: 10_023,
+        activity: None,
+        income: CoopCreditIncome::None,
+        source: "Synthetic issuer health credit allocation".into(),
+    });
+    let page = save_documents(
+        &mut session,
+        vec![document(0, IncomeSource::Farming(cooperative_document(patr)))],
+    );
+    accepted(&save_source_fixture_request(&mut session, page));
+    session
 }

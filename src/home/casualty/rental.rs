@@ -2,11 +2,12 @@
 // ceased losses and kept damage with actual REG/AMT ledgers feed the existing
 // risk/PAL/ordinary/NIIT/QBI owners once, without a ScheduleE expense copy.
 // The dated recovery owner retains the original remaining depreciation clock.
-// Mixed/history, salvage, gains, nonrecurringPAL and homecarry remain named
+// Ordinary Standard home-use losses retain their section280A character.
+// Unsupported mixed/history, salvage, gains and nonrecurringPAL remain named
 // boundaries. Tests: tests::home::rental_casualty, including native lifecycle.
 // Sources: i4684 SectionB, Pub547, Pub946; Reg.1.469-2(d)(2)(xi), Pub527 ch5.
 use crate::kernel::source_fact::SourceFact;
-use crate::{FederalDraft, FederalIncome, FederalResult, RentalBuilding};
+use crate::{FederalIncome, FederalResult, RentalBuilding};
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
@@ -31,19 +32,22 @@ pub struct PropertyCasualty {
     /// Insurance or other reimbursement received or expected
     /// Include all claims, whether or not you filed them.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reimbursement: i64,
     /// Part received during this return's tax year
     /// An expected future payment does not establish a current realized gain.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub received: i64,
     /// Cost of eligible replacement property bought or planned
     /// Zero when no replacement is planned. Use the actual similar-use property
     /// records and the ordinary replacement deadline; an extension or disputed
     /// qualification needs its separate worksheet.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub replacement_cost: i64,
 }
 
@@ -59,11 +63,13 @@ pub enum CasualtyKind {
     Damaged {
         /// Fair market value immediately before
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         before: i64,
         /// Fair market value immediately after
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         after: i64,
         /// Permanent retirement from rental use
         /// Enter the actual date when the property was permanently withdrawn. Temporary repair downtime while held for rental is not retirement.
@@ -313,6 +319,8 @@ pub(crate) struct LocatedRentalCasualty {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SectionBItem {
+    // Whole-property operands remain exact; only final rental outputs project.
+    pub rental_fraction: Option<[i64; 2]>,
     pub basis_cents: i64,
     pub gain_basis_cents: i64,
     pub depreciation_cents: i64,
@@ -329,6 +337,7 @@ pub(crate) struct SectionBItem {
     // section280A limit; mixed-use property needs its actual home worksheet.
     // This amount does not establish the allowed Form4797 loss.
     pub admitted_loss_cents: SourceFact<i64>,
+    pub reported_loss_dollars: SourceFact<i64>,
     pub ordinary_recapture_cents: SourceFact<i64>,
     pub unrecaptured_gain_cents: SourceFact<i64>,
 }
@@ -363,16 +372,88 @@ fn item(
     }
     if !owned_at_event(building, rental, &records.casualty)
         || !rental.ordinary_rental
-        || !matches!(rental.personal_use, crate::RentalPersonalUse::No)
+        || (!matches!(rental.personal_use, crate::RentalPersonalUse::No)
+            && !crate::extended_rules::used_as_home(rental))
     {
         return Err("RENTAL_CASUALTY_BASIS_HISTORY_UNAVAILABLE");
     }
-    source_item(building, records, amt, &rental.property_type, tax_year)
+    if !matches!(rental.personal_use, crate::RentalPersonalUse::No)
+        && !matches!(records.casualty.kind, CasualtyKind::Damaged { retired: None, .. })
+    {
+        return Err("RENTAL_CASUALTY_BASIS_HISTORY_UNAVAILABLE");
+    }
+    let mut item = source_item(building, records, amt, &rental.property_type, tax_year)?;
+    if !matches!(rental.personal_use, crate::RentalPersonalUse::No) {
+        use crate::kernel::ratio::exact;
+        let crate::RentalPersonalUse::Yes { fair_rental_days, personal_days, .. } =
+            rental.personal_use
+        else {
+            unreachable!()
+        };
+        let fair = i64::from(fair_rental_days);
+        let days = fair + i64::from(personal_days);
+        // Pub527 Worksheet5-1: keep event-date basis and continuation whole.
+        // Project the completed loss once at the native third-tier boundary.
+        item.rental_fraction = Some([fair, days]);
+        item.raw_loss_cents = exact::rounded(
+            &(exact::whole(item.raw_loss_cents)
+                * exact::ratio(fair, days).ok_or("RENTAL_CASUALTY_OUTPUT_UNAVAILABLE")?),
+        )
+        .ok_or("RENTAL_CASUALTY_OUTPUT_UNAVAILABLE")?;
+        item.admitted_loss_cents = SourceFact::Unavailable;
+        item.reported_loss_dollars = SourceFact::Unavailable;
+    }
+    Ok(item)
+}
+
+// Form4684's rental-use source columns, before the section280A allowance.
+// Whole-property records stay exact; the printed form computes from its
+// rounded operands, and the financial consumer uses that same final line27.
+pub(crate) struct HomeSourceForm {
+    pub basis: i64,
+    pub reimbursement: i64,
+    pub before: i64,
+    pub after: i64,
+    pub decrease: i64,
+    pub limited: i64,
+    pub loss: i64,
+}
+
+fn home_form(facts: &SectionBItem) -> HomeSourceForm {
+    use crate::kernel::ratio::exact;
+    let [fair, days] = facts.rental_fraction.expect("home-use source has rental days");
+    let reported = |cents| {
+        exact::dollars(
+            &(exact::whole(cents) * exact::ratio(fair, days).expect("validated rental days")),
+        )
+        .expect("a source fraction has representable dollars")
+    };
+    let [before, after] =
+        facts.fair_values_cents.expect("supported home casualty has damaged-property values");
+    let (basis, reimbursement, before, after) = (
+        reported(facts.basis_cents),
+        reported(facts.reimbursement_cents),
+        reported(before),
+        reported(after),
+    );
+    let decrease = before - after;
+    let limited = crate::kernel::phase::cap(basis, [decrease]);
+    let loss = crate::kernel::phase::floor(limited - reimbursement, 0);
+    HomeSourceForm { basis, reimbursement, before, after, decrease, limited, loss }
+}
+
+pub(crate) fn home_source_form(
+    building: &RentalBuilding,
+    rental: &crate::FederalRental,
+    amt: bool,
+) -> Result<HomeSourceForm, &'static str> {
+    let records = building.casualty.as_ref().ok_or("RENTAL_CASUALTY_OUTPUT_UNAVAILABLE")?;
+    item(building, rental, records, amt, 2026).map(|facts| home_form(&facts))
 }
 
 // Full-property source worksheet. Rental use, ownership at the event and
 // subsequent activity settlement remain with the rental-context adapter.
-fn source_item(
+pub(super) fn source_item(
     building: &RentalBuilding,
     records: &RentalCasualty,
     amt: bool,
@@ -491,6 +572,7 @@ fn source_item(
         super::home::conversion(source.received, gain_basis, 0, Some(source.replacement_cost))
             .map_err(|_| "RENTAL_CASUALTY_OUTPUT_UNAVAILABLE")?;
     Ok(SectionBItem {
+        rental_fraction: None,
         basis_cents: basis,
         gain_basis_cents: gain_basis,
         depreciation_cents: depreciation,
@@ -510,6 +592,7 @@ fn source_item(
         recognized_gain_cents: conversion.recognized_cents,
         postponed_gain_cents: conversion.postponed_cents,
         admitted_loss_cents: SourceFact::Reported(loss.loss_cents),
+        reported_loss_dollars: SourceFact::Reported(crate::kernel::ratio::dollars(loss.loss_cents)),
         ordinary_recapture_cents: if conversion.gain_after_exclusion_cents == 0 {
             SourceFact::NotReported
         } else {
@@ -600,7 +683,7 @@ pub(crate) fn current_depreciation(
         return crate::extended_rules::depreciation_for_year(
             building,
             amt,
-            &rental.property_type,
+            (&rental.property_type, &rental.location),
             year,
             None,
             energy_basis_reduction,
@@ -616,7 +699,7 @@ pub(crate) fn current_depreciation(
     crate::extended_rules::depreciation_for_year(
         building,
         amt,
-        &rental.property_type,
+        (&rental.property_type, &rental.location),
         year,
         match source.casualty.kind {
             CasualtyKind::Damaged { retired: None, .. } => None,
@@ -629,7 +712,7 @@ pub(crate) fn current_depreciation(
 
 // The kept-property proof reads actual source facts, never a loss derived
 // from a cessation schedule standing in for unavailable survivor history.
-fn neutral_event(source: &PropertyCasualty) -> bool {
+pub(crate) fn neutral_event(source: &PropertyCasualty) -> bool {
     source.issue().is_none()
         && source.reimbursement == 0
         && source.received == 0
@@ -649,7 +732,8 @@ fn neutral(source: &LocatedRentalCasualty) -> bool {
 // For the currently supported loss-only SectionB pool, its net loss is ordinary
 // (Pub547 / i4684 PartII). A gain still needs the common casualty netting and
 // recapture owners; an exceptional nonrecurring loss needs its PAL exclusion.
-// The existing rental property source owns all subsequent risk/PAL settlement.
+// These are source losses before section280A. The rental worksheet supplies
+// home-use admission before the property owner applies risk/character limits.
 pub(crate) fn property_losses(
     rental: &crate::FederalRental,
     amt: bool,
@@ -675,16 +759,10 @@ pub(crate) fn property_losses(
         if facts.realized_gain_cents != 0 {
             return Err("RENTAL_CASUALTY_GAIN_UNAVAILABLE");
         }
-        if facts.raw_loss_cents == 0 {
-            continue;
-        }
-        // Pub527 ch5 retains280A's income limit on prior home expenses
-        // even when this year's use is purely rental. The existing carry
-        // room does not yet include this separate casualty deduction.
-        if rental.home_operating_carryover != 0
-            || crate::rental_home_carry::total(rental, amt) != Some(0)
+        if facts.raw_loss_cents == 0
+            && !(facts.rental_fraction.is_some() && home_form(&facts).loss > 0)
         {
-            return Err("RENTAL_CASUALTY_HOME_CARRY_UNAVAILABLE");
+            continue;
         }
         if !source.recurring {
             return Err("RENTAL_CASUALTY_NONRECURRING_UNAVAILABLE");
@@ -705,7 +783,19 @@ pub(crate) fn property_losses(
     Ok(losses)
 }
 
-pub(crate) fn items(draft: &FederalDraft) -> Vec<LocatedRentalCasualty> {
+#[cfg(test)]
+pub(crate) fn items(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    home_use: Option<&crate::extended_rules::HomeUseContext>,
+) -> Vec<LocatedRentalCasualty> {
+    items_with_context(form_context, home_use)
+}
+
+fn items_with_context(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    home_use: Option<&crate::extended_rules::HomeUseContext>,
+) -> Vec<LocatedRentalCasualty> {
+    let draft = form_context.draft;
     let mut result = Vec::new();
     for accepted in &draft.income {
         if !matches!(accepted.income, FederalIncome::Rental { .. }) {
@@ -713,10 +803,48 @@ pub(crate) fn items(draft: &FederalDraft) -> Vec<LocatedRentalCasualty> {
         }
         let entry = crate::community::property_entry(draft, accepted);
         let FederalIncome::Rental { data } = &entry.income else { unreachable!() };
+        let admissions = crate::extended_rules::used_as_home(data).then(|| {
+            [
+                crate::extended_rules::rental_home_casualty_losses(
+                    form_context,
+                    entry.id,
+                    data,
+                    false,
+                    home_use,
+                ),
+                crate::extended_rules::rental_home_casualty_losses(
+                    form_context,
+                    entry.id,
+                    data,
+                    true,
+                    home_use,
+                ),
+            ]
+        });
         for (index, building) in data.buildings.iter().enumerate() {
             let Some(source) = &building.casualty else { continue };
-            let regular = item(building, data, source, false, draft.tax_year);
-            let alternative = item(building, data, source, true, draft.tax_year);
+            let settled = |amt| {
+                let mut facts = item(building, data, source, amt, draft.tax_year)?;
+                if let Some(admissions) = &admissions {
+                    if let Ok(rows) = &admissions[usize::from(amt)] {
+                        facts.admitted_loss_cents = SourceFact::Reported(
+                            rows.iter()
+                                .find(|row| row.building == index)
+                                .map_or(0, |row| row.cents),
+                        );
+                    }
+                    if let Ok(rows) = &admissions[usize::from(amt)] {
+                        facts.reported_loss_dollars = SourceFact::Reported(
+                            rows.iter()
+                                .find(|row| row.building == index)
+                                .map_or(0, |row| row.dollars),
+                        );
+                    }
+                }
+                Ok::<_, &'static str>(facts)
+            };
+            let regular = settled(false);
+            let alternative = settled(true);
             let date = source.casualty.date;
             // Inherited property has its independent long-term rule. A theft
             // discovery date or a donor's service date cannot prove the actual
@@ -738,16 +866,23 @@ pub(crate) fn items(draft: &FederalDraft) -> Vec<LocatedRentalCasualty> {
             } else {
                 SourceFact::Unavailable
             };
-            let boundary =
-                regular.as_ref().err().or(alternative.as_ref().err()).copied().or(matches!(
-                    long_term,
-                    SourceFact::Unavailable
-                )
-                .then_some("RENTAL_CASUALTY_HOLDING_PERIOD_UNAVAILABLE"));
+            let admission_boundary = admissions.as_ref().and_then(|admissions| {
+                admissions
+                    .iter()
+                    .find_map(|admission| admission.as_ref().err().map(|(key, _)| *key))
+            });
+            let boundary = regular
+                .as_ref()
+                .err()
+                .or(alternative.as_ref().err())
+                .copied()
+                .or(admission_boundary)
+                .or(matches!(long_term, SourceFact::Unavailable)
+                    .then_some("RENTAL_CASUALTY_HOLDING_PERIOD_UNAVAILABLE"));
             result.push(LocatedRentalCasualty {
                 income: entry.id,
                 building: index,
-                owner: entry.owner,
+                owner: entry.owner.owned(),
                 source: source.clone(),
                 recurring: source.recurring,
                 kept: matches!(source.casualty.kind, CasualtyKind::Damaged { retired, .. } if retired != Some(source.casualty.date)),
@@ -761,9 +896,13 @@ pub(crate) fn items(draft: &FederalDraft) -> Vec<LocatedRentalCasualty> {
     result
 }
 
-pub(crate) fn report(draft: &FederalDraft, result: &mut FederalResult) {
+pub(crate) fn report(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    result: &mut FederalResult,
+) {
+    let draft = form_context.draft;
     use crate::kernel::lines::{LineValue, row};
-    let sources = items(draft);
+    let sources = items_with_context(form_context, result.rental_home_context.as_ref());
     if sources.is_empty() {
         return;
     }
@@ -778,7 +917,7 @@ pub(crate) fn report(draft: &FederalDraft, result: &mut FederalResult) {
         // property/activity owners. This does not presume those owners pass.
         source.recurring
             && [&source.regular, &source.alternative].into_iter().all(
-                |fact| matches!(fact, SourceFact::Reported(item) if item.realized_gain_cents == 0),
+                |fact| matches!(fact, SourceFact::Reported(item) if item.realized_gain_cents == 0 && !matches!(item.admitted_loss_cents, SourceFact::Unavailable)),
             )
             && draft.income.iter().find(|entry| entry.id == source.income).is_some_and(|entry| {
                 let FederalIncome::Rental { data } = &entry.income else { return false };
@@ -807,7 +946,8 @@ pub(crate) fn report(draft: &FederalDraft, result: &mut FederalResult) {
         result.financial_source_scope_complete = false;
     }
     for source in sources {
-        let context = crate::IssueContext::income_id(source.income);
+        let context = crate::activity_risk::ProjectionIssue::Source(source.boundary.unwrap_or(""))
+            .context(crate::IssueContext::income_id(source.income));
         for (prefix, facts) in [("", &source.regular), ("amt_", &source.alternative)] {
             let SourceFact::Reported(facts) = facts else { continue };
             let base =
@@ -832,11 +972,30 @@ pub(crate) fn report(draft: &FederalDraft, result: &mut FederalResult) {
                 part_i.push(("27", loss));
             }
             part_i.sort_by_key(|(line, _)| *line);
+            let home = facts.rental_fraction.map(|_| home_form(facts));
             for (line, cents) in part_i {
+                let value = if line == "27" {
+                    let SourceFact::Reported(dollars) = facts.reported_loss_dollars else {
+                        continue;
+                    };
+                    dollars
+                } else if let Some(home) = &home {
+                    match line {
+                        "20" => home.basis,
+                        "21" => home.reimbursement,
+                        "23" => home.before,
+                        "24" => home.after,
+                        "25" => home.decrease,
+                        "26" => home.limited,
+                        _ => crate::kernel::ratio::dollars(cents),
+                    }
+                } else {
+                    crate::kernel::ratio::dollars(cents)
+                };
                 result.lines.push(row(
                     Some(crate::FormLine::new(crate::TaxForm::Form4684, line)),
                     &alloc::format!("{base}_line{line}"),
-                    LineValue::MoneyDollars(crate::kernel::ratio::dollars(cents)),
+                    LineValue::MoneyDollars(value),
                     &["income.rental.buildings.casualty"],
                     "https://www.irs.gov/instructions/i4684",
                     msg!("EXPLAIN_RENTAL_CASUALTY_SOURCE"),

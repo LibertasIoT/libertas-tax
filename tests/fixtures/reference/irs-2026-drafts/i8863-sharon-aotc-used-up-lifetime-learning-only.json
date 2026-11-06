@@ -1,0 +1,65 @@
+{
+ "source": {
+  "title": "Instructions for Form 8863 (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 4",
+  "example": "Line 23, Example 1 (Sharon)",
+  "url": "https://www.irs.gov/pub/irs-dft/i8863--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "9e6bc190a572a4d2b131f493a55405297359d05fdc96eb8b698bc4937be6c745"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "student born 2004-06-15, single, the filer, enrolled at least half time in a degree program; qualified tuition $5,000 with no scholarship; wages $40,000",
+   "reason": "the example gives no income or expenses; the amounts keep the credit unreduced by phaseout and by tax"
+  },
+  {
+   "fact": "the student's earned income exceeds half of the student's own support",
+   "reason": "keeps the refundable part from the under-24 student limit (Form 8863 line 7); the example states only the 4-year eligibility"
+  },
+  {
+   "fact": "the filer is not claimed as a dependent and has no felony drug conviction",
+   "reason": "the example's other requirements are met"
+  }
+ ],
+ "filing": "Single",
+ "birth": 20040615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 40000,
+     "withholding": 0,
+     "social_wages": 40000,
+     "social_tax": 2480,
+     "medicare_wages": 40000,
+     "medicare_tax": 580
+    }
+   ]
+  },
+  {
+   "page": "education",
+   "tuition": 5000,
+   "used_up": true
+  }
+ ],
+ "expected": [
+  {
+   "form": "calc",
+   "line": "education_credit",
+   "amount": 1000,
+   "provenance": "derived",
+   "derivation": "lifetime learning credit: 20% of $5,000 qualified expenses (Form 8863 instructions); the example states that only the lifetime learning credit is available"
+  },
+  {
+   "form": "calc",
+   "line": "refundable_education_credit",
+   "amount": 0,
+   "provenance": "stated"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

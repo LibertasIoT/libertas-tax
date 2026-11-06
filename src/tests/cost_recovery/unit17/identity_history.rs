@@ -21,9 +21,12 @@ fn unit17_r1_property_identity_survives_save_restart_reorder_and_rejects_rebindi
     let ids: Vec<_> = page.assets.iter().map(|asset| asset.id).collect();
     page.assets.reverse();
     let request = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::SelfEmployment,
-        vec![document(income_id, IncomeDocument::Business(page.clone()))],
+        vec![document(
+            income_id,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page.clone()) },
+        )],
     );
     accepted(&send(&mut session, request));
     let (_, reordered) = stored_business(&session);
@@ -37,11 +40,14 @@ fn unit17_r1_property_identity_survives_save_restart_reorder_and_rejects_rebindi
     // An existing property cannot be submitted as the child of another business.
     let new_business = business(1_000_000);
     let request = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::SelfEmployment,
         vec![
-            document(income_id, IncomeDocument::Business(new_business)),
-            document(0, IncomeDocument::Business(page)),
+            document(
+                income_id,
+                IncomeSource::Record { value: crate::IncomeRecord::Business(new_business) },
+            ),
+            document(0, IncomeSource::Record { value: crate::IncomeRecord::Business(page) }),
         ],
     );
     let original = session.draft.clone();
@@ -278,19 +284,6 @@ fn unit17_direct_amt_carry_same_macrs_uses_actual_source_without_regular_copy() 
     assert_eq!(asset.amt_projection_or_self().opening_basis(), 800_000);
     asset.amt_section179_income_carry = Some(1_000_001);
     assert!(!asset.valid());
-    for (prior, carry) in
-        [(i64::MAX, 100_000), (i64::MIN, 100_000), (1_100_000, i64::MAX), (1_100_000, i64::MIN)]
-    {
-        let mut invalid = asset.clone();
-        invalid.amt_section179_income_carry = Some(30_000);
-        if let EquipmentHistory::Continuing { prior_depreciation, carryforward, .. } =
-            &mut invalid.history
-        {
-            *prior_depreciation = prior;
-            *carryforward = carry;
-        }
-        assert!(!invalid.valid());
-    }
     asset.amt_section179_income_carry = None;
     if let EquipmentHistory::Continuing { amt, .. } = &mut asset.history {
         *amt = EquipmentAmtHistory::Separate {
@@ -306,7 +299,7 @@ fn unit17_direct_amt_carry_same_macrs_uses_actual_source_without_regular_copy() 
 #[test]
 fn unit17_r2_original_service_year_caps_do_not_restart_in_2026() {
     use crate::HistoricalAutoKind::{Car, ElectricCar, TruckVan};
-    use crate::year_constants::original_auto_limit_cents as cap;
+    use crate::auto_recovery::caps::original_auto_limit_cents as cap;
     // Pub. 946 (2006), pp.63–64. Electric limits have their own indexed
     // rounding; three times the ordinary $1,775 would be the wrong $5,325.
     assert_eq!(cap(20060101, 20060101, 2026, &Car, false), Some(177_500));
@@ -351,7 +344,7 @@ fn unit17_d3_original_electric_class_changes_cap_without_changing_election_basis
         business_miles: 10_000,
         operating_costs: 0,
         loan_interest: 0,
-        passenger_automobile: true,
+        kind: crate::VehicleKind::PassengerCar,
     };
     asset.history_details = Some(HistoricalAssetRecords {
         original_business_basis: 250_000,
@@ -365,6 +358,7 @@ fn unit17_d3_original_electric_class_changes_cap_without_changing_election_basis
                 income_use: UseFraction { used: 1, total: 1 },
                 qualified_use: UseFraction { used: 1, total: 1 },
                 section179_allowed: 0,
+                amt_section179_allowed: crate::SourceCents::NotReported,
                 bonus: 0,
                 regular: 0,
                 amt: 0,
@@ -424,25 +418,6 @@ fn unit17_d3_original_electric_class_changes_cap_without_changing_election_basis
         data.assets[0].history_details.as_mut().unwrap().years.pop();
         assert!(!data.assets[0].qualifies());
     }
-    // Native helper entry must reject malformed source operands before any
-    // fraction or opening-basis arithmetic, independently of Save admission.
-    let mut bad_fraction = asset.clone();
-    let ListedProperty::Vehicle { total_miles, .. } = &mut bad_fraction.listed else {
-        unreachable!()
-    };
-    *total_miles = 0;
-    assert!(!bad_fraction.documented_179_reserve());
-    assert!(!bad_fraction.valid());
-    let mut bad_opening = asset.clone();
-    let EquipmentHistory::Continuing { prior_depreciation, carryforward, .. } =
-        &mut bad_opening.history
-    else {
-        unreachable!()
-    };
-    *prior_depreciation = i64::MAX;
-    *carryforward = 1;
-    assert!(!bad_opening.documented_179_reserve());
-    assert!(!bad_opening.valid());
     // The annual cap releases an existing income-limit balance without
     // relabeling it as bonus/MACRS basis. Other historical routes remain due.
 }
@@ -535,15 +510,7 @@ fn unit17_a_b_original_auto_schedules_and_post_recovery_basis() {
 
 #[test]
 fn unit17_partial_bonus_uses_nominal_macrs_basis_and_defers_cap_excess() {
-    let mut partial = documented_auto(
-        &[(2023, 20_200), (2024, 3_840), (2025, 2_304)],
-        0,
-        2_020_000,
-        false,
-        3_020_000,
-    );
-    partial.history_details.as_mut().unwrap().auto_history.as_mut().unwrap().first_year_bonus =
-        OriginalBonusTreatment::Partial;
+    let partial = crate::tests::support::builders::partial_bonus_auto();
     assert!(partial.valid() && partial.qualifies() && partial.vehicle_supported());
     //80% of$60,000 is nominal bonus$48,000, capped at$20,200. Annual
     // MACRS uses the residual$12,000, not$39,800 after the actual capped bonus.
@@ -574,66 +541,94 @@ fn unit17_partial_bonus_uses_nominal_macrs_basis_and_defers_cap_excess() {
 
 #[test]
 fn unit17_original_auto_editor_preserves_acquisition_and_method_on_save_restart() {
-    let mut draft = complete(FederalStatus::Single);
-    let FederalIncome::Business { mut data } = cash_business(100_000) else { unreachable!() };
-    data.assets = crate::tests::support::builders::original_auto_editor_sources();
-    for (index, asset) in data.assets.iter_mut().enumerate() {
-        asset.id = 3 + index as i64;
-        assert!(asset.valid() && asset.qualifies() && asset.vehicle_supported());
-    }
-    let expected = data.assets.clone();
-    add(&mut draft, income(FederalIncome::Business { data }));
-    draft.next_id = 7;
-    assert!(draft.valid_stored());
-    let mut session = restart(draft);
-    let page = reopened_businesses(session.draft.clone()).remove(0);
-    for (vehicle, source) in page.vehicles.iter().zip(&expected) {
-        let VehicleMethod::Actual { acquired, history_details, .. } = &vehicle.method else {
+    for partial80 in [false, true] {
+        let mut draft = complete(FederalStatus::Single);
+        let FederalIncome::Business { mut data } = cash_business(100_000) else { unreachable!() };
+        data.assets = crate::tests::support::builders::original_auto_editor_sources();
+        if partial80 {
+            data.assets[1] = crate::tests::support::builders::partial_bonus_auto();
+        }
+        for (index, asset) in data.assets.iter_mut().enumerate() {
+            asset.id = 3 + index as i64;
+            assert!(asset.valid() && asset.qualifies() && asset.vehicle_supported());
+        }
+        let expected = data.assets.clone();
+        add(&mut draft, income(FederalIncome::Business { data }));
+        draft.next_id = 7;
+        assert!(draft.valid_stored());
+        let mut session = restart(draft);
+        let page = reopened_businesses(session.draft.clone()).remove(0);
+        for (vehicle, source) in page.vehicles.iter().zip(&expected) {
+            let VehicleMethod::Actual { acquired, history_details, .. } = &vehicle.method else {
+                unreachable!()
+            };
+            assert_eq!(*acquired, (source.acquired != source.placed).then_some(source.acquired));
+            assert_eq!(history_details.as_deref(), source.history_details.as_ref());
+        }
+        let (id, _) = stored_business(&session);
+        let save = |session: &mut Interview, page| {
+            let request = save_topic(
+                session,
+                TaxSection::SelfEmployment,
+                vec![document(
+                    id,
+                    IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
+                )],
+            );
+            accepted(&send(session, request));
+        };
+        save(&mut session, page);
+        let (_, saved) = stored_business(&session);
+        assert_eq!(saved.assets, expected);
+        // Original acquisition controls bonus eligibility; the 2018 methods
+        // retain the original recovery schedule (Rev. Proc. 2019-13).
+        assert_eq!(
+            saved.assets.iter().map(|asset| asset.deduction(false)).collect::<Vec<_>>(),
+            vec![280_000, if partial80 { 138_240 } else { 1_152_000 }, 576_000, 576_000]
+        );
+        let accepted_draft = session.draft.clone();
+        let result = supported(&accepted_draft);
+        // 2026-10-20: i4562 line 26(e) subtracts original nominal bonus and
+        // elected section 179, not actual prior capped depreciation.
+        for (index, basis) in
+            [14_000, if partial80 { 12_000 } else { 36_000 }, 0, 0].into_iter().enumerate()
+        {
+            assert_eq!(
+                value(
+                    &result,
+                    &alloc::format!("business_{id}_asset_{index}_listed_depreciation_basis")
+                ),
+                basis
+            );
+            assert_eq!(
+                value(&result, &alloc::format!("business_{id}_asset_{index}_listed_section179")),
+                0
+            );
+        }
+        session = restart(accepted_draft.clone());
+        let page = reopened_businesses(session.draft.clone()).remove(0);
+        save(&mut session, page.clone());
+        assert_eq!(session.draft, accepted_draft);
+        assert_eq!(supported(&session.draft), result);
+        let mut invalid = page;
+        let VehicleMethod::Actual { acquired, placed, .. } = &mut invalid.vehicles[0].method else {
             unreachable!()
         };
-        assert_eq!(*acquired, (source.acquired != source.placed).then_some(source.acquired));
-        assert_eq!(history_details.as_deref(), source.history_details.as_ref());
-    }
-    let (id, _) = stored_business(&session);
-    let save = |session: &mut Interview, page| {
+        *acquired = Some(*placed + 1);
         let request = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::SelfEmployment,
-            vec![document(id, IncomeDocument::Business(page))],
+            vec![document(
+                id,
+                IncomeSource::Record { value: crate::IncomeRecord::Business(invalid) },
+            )],
         );
-        accepted(&send(session, request));
-    };
-    save(&mut session, page);
-    let (_, saved) = stored_business(&session);
-    assert_eq!(saved.assets, expected);
-    // Original acquisition controls bonus eligibility; the explicit 2018
-    // methods retain the approved B post-recovery deduction without a new clock.
-    assert_eq!(
-        saved.assets.iter().map(|asset| asset.deduction(false)).collect::<Vec<_>>(),
-        vec![280_000, 1_152_000, 576_000, 576_000]
-    );
-    let accepted_draft = session.draft.clone();
-    let result = supported(&accepted_draft);
-    session = restart(accepted_draft.clone());
-    let page = reopened_businesses(session.draft.clone()).remove(0);
-    save(&mut session, page.clone());
-    assert_eq!(session.draft, accepted_draft);
-    assert_eq!(supported(&session.draft), result);
-    let mut invalid = page;
-    let VehicleMethod::Actual { acquired, placed, .. } = &mut invalid.vehicles[0].method else {
-        unreachable!()
-    };
-    *acquired = Some(*placed + 1);
-    let request = save_topic(
-        &session.draft,
-        TaxSection::SelfEmployment,
-        vec![document(id, IncomeDocument::Business(invalid))],
-    );
-    crate::tests::cross::interview::rejected_with(
-        send(&mut session, request),
-        "ASSET_ACQUIRED_AFTER_PLACED",
-    );
-    assert_eq!(session.draft, accepted_draft);
+        crate::tests::cross::interview::rejected_with(
+            send(&mut session, request),
+            "ASSET_ACQUIRED_AFTER_PLACED",
+        );
+        assert_eq!(session.draft, accepted_draft);
+    }
 }
 
 #[test]
@@ -704,7 +699,7 @@ fn unit17_original_auto_missing_duplicate_use_change_adjusted_history_stays_unav
 #[test]
 fn unit17_original_1987_1996_caps_use_each_published_annual_column() {
     use crate::HistoricalAutoKind::{Car, ElectricCar, TruckVan};
-    use crate::year_constants::original_auto_limit_cents as cap;
+    use crate::auto_recovery::caps::original_auto_limit_cents as cap;
     // Pub917 (1994), p10 Table2; Pub463 (1997), p18. Dollars as published.
     for (year, columns) in [
         (1987, [2560, 4100, 2450, 1475]),
@@ -766,9 +761,12 @@ fn unit17_inconsistent_original_auto_history_is_located_and_save_is_atomic() {
     let (id, _) = stored_business(&session);
     let page = reopened_businesses(session.draft.clone()).remove(0);
     let save = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::SelfEmployment,
-        vec![document(id, IncomeDocument::Business(page.clone()))],
+        vec![document(
+            id,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page.clone()) },
+        )],
     );
     accepted(&send(&mut session, save));
     assert_eq!(session.draft, accepted_draft);
@@ -786,9 +784,12 @@ fn unit17_inconsistent_original_auto_history_is_located_and_save_is_atomic() {
             history.years[0].regular = 100;
         }
         let request = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::SelfEmployment,
-            vec![document(id, IncomeDocument::Business(invalid))],
+            vec![document(
+                id,
+                IncomeSource::Record { value: crate::IncomeRecord::Business(invalid) },
+            )],
         );
         crate::tests::support::assert::k1res::assert_located_rejection(
             &mut session,

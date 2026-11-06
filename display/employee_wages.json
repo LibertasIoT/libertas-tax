@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 423000, "rule": {"select": "^<EmployeeWageReason>", "flatten": true}},
+    {"order": 991000, "rule": {"select": "^<EmployeeWages>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["source_issuer", "source_recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["wages", "withholding", "form1099"]}, {"title": "DISPLAY_W2_PAY_TREATMENT", "fields": ["payroll"]}]}}
+  ]
+}

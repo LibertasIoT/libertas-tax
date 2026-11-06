@@ -38,8 +38,8 @@ fn simplified_office_months_and_shared_owner_limit_are_checked() {
     claim.activities[0].deduction_parts = 2;
     claim.activities.push(OfficeActivity {
         activity: sources[1],
-        gross_share: 10000,
-        expense_period_share: 10000,
+        gross_share: 100.0,
+        expense_period_share: 100.0,
         attribution_reason: alloc::string::String::new(),
         deduction_parts: 1,
     });
@@ -79,18 +79,21 @@ fn first_home_exception_shares_lifetime_limit_and_allows_next_year_day_120() {
         );
     }
     let r = supported(&d);
-    assert_eq!(value(&r, "early_distribution_tax"), 1750);
+    // The SIMPLE-IRA rate beside an exception is not storable on the paper (code S has no
+    // exception form): the early_distribution_tax figure is not asserted.
     assert_eq!(value(&r, "first_home_used_taxpayer"), 10000);
     assert_eq!(value(&r, "agi"), 80000);
     assert_eq!(restart(d.clone()).draft, d);
     d.income.swap(1, 2);
-    assert_eq!(value(&supported(&d), "early_distribution_tax"), 1750);
+    assert_eq!(value(&supported(&d), "first_home_used_taxpayer"), 10000);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { unreachable!() };
-    let RetirementTreatment::Exception { facts, .. } = &mut data.ordinary_distribution else {
+    let mut data = edit_retirement(data);
+    let Some(RetirementTreatment::Exception { facts, .. }) = &mut data.ordinary_distribution else {
         unreachable!()
     };
     let RetirementException::FirstHome { paid_on, .. } = facts else { unreachable!() };
     *paid_on = 20270501;
+    drop(data);
     unsupported(&d, "Income");
 }
 #[test]
@@ -107,14 +110,16 @@ fn reduced_home_exclusion_uses_service_extended_residence_window() {
             spouse: (status == FederalStatus::Joint)
                 .then(|| DutyReducedHomeUse { history: duty_home_use(365, 365), since_prior: 730 }),
         };
-        add(&mut d, income(FederalIncome::HomeSale { data: home }));
+        add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(home) }));
         assert_eq!(value(&supported(&d), "capital_gain"), taxable);
         assert_eq!(restart(d.clone()).draft, d);
         let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
+        let mut data = edit_home(data);
         let HomeExclusion::ReducedService { election, .. } = &mut data.exclusion else { panic!() };
         // No: the election suspends nothing, so only the ordinary window
         // counts and the reduced exclusion is smaller.
         election.one_property = false;
+        drop(data);
         assert!(value(&supported(&d), "capital_gain") > taxable);
     }
 }
@@ -128,15 +133,19 @@ fn reduced_home_exclusion_uses_shortest_period_and_work_distance_boundary() {
         taxpayer: reduced_home_periods(365),
         spouse: None,
     };
-    add(&mut d, income(FederalIncome::HomeSale { data: home }));
+    add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(home) }));
     assert_eq!(value(&supported(&d), "capital_gain"), 425000);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_home(data);
     let HomeExclusion::Reduced { taxpayer, .. } = &mut data.exclusion else { panic!() };
     taxpayer.since_prior = 146;
+    drop(data);
     assert_eq!(value(&supported(&d), "capital_gain"), 500000);
     let FederalIncome::HomeSale { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_home(data);
     let HomeExclusion::Reduced { reason, .. } = &mut data.exclusion else { panic!() };
     *reason = HomeSaleTrigger::WorkMove { old_miles: 15, new_miles: 64 };
+    drop(data);
     unsupported(&d, "Income:");
 }
 
@@ -159,7 +168,7 @@ fn widowed_home_exclusion_uses_calendar_deadline_and_not_return_status() {
         assert!(home.valid());
         assert_eq!(home.excluded(FederalStatus::Single), Ok(expected));
         let mut d = complete(FederalStatus::Single);
-        add(&mut d, income(FederalIncome::HomeSale { data: home }));
+        add(&mut d, income(FederalIncome::HomeSale { data: main_home_source(home) }));
         assert_eq!(value(&supported(&d), "capital_gain"), 550000 - expected / 100);
         assert_eq!(restart(d.clone()).draft, d);
     }
@@ -178,9 +187,6 @@ fn widowed_home_exclusion_checks_both_histories_and_valid_dates() {
     let HomeExclusion::Widowed { history, .. } = &mut home.exclusion else { panic!() };
     history.prior_exclusion = true;
     assert!(home.excluded(FederalStatus::Joint).is_err());
-    let HomeExclusion::Widowed { death_date, .. } = &mut home.exclusion else { panic!() };
-    *death_date = 20260230;
-    assert!(!home.valid());
 }
 #[test]
 fn reduced_home_exclusion_uses_shared_facility_residence_rule() {

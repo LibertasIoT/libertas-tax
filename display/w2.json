@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"order": 149000, "rule": {"select": "^<W2AnswersView>.paying_scorporation", "when_single_choice": "hide"}},
+    {"order": 150000, "rule": {"select": "^<W2AnswersView>.tip_records", "when_single_choice": "hide"}},
+    {"order": 151000, "rule": {"select": "^<W2AnswersView>.tips_listed_occupation", "when_single_choice": "hide"}},
+    {"order": 152000, "rule": {"select": "^<W2AnswersView>.overtime_flsa_required", "when_single_choice": "hide"}},
+    {"order": 153000, "rule": {"select": "^<W2AnswersView>.coverage", "when_single_choice": "hide"}},
+    {"order": 154000, "rule": {"select": "^<W2AnswersView>.disability", "when_single_choice": "hide"}},
+    {"order": 155000, "rule": {"select": "^<W2AnswersView>.abroad", "when_single_choice": "hide"}},
+    {"order": 156000, "rule": {"select": "^<W2AnswersView>.deferred_pension", "when_single_choice": "hide"}},
+    {"order": 157000, "rule": {"select": "^<W2AnswersView>.noncash_tips", "when_single_choice": "hide"}},
+    {"order": 158000, "rule": {"select": "^<W2AnswersView>.statutory_business", "when_single_choice": "hide"}},
+    {"order": 422000, "rule": {"select": "^<DailyTipRecord>", "flatten": true}},
+    {"order": 476000, "rule": {"select": "^<libertas-tax::WageDocument>", "flatten": true}},
+    {"order": 486000, "rule": {"select": "^<FormW2Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_W2_BOXES_A_F", "fields": ["calendar_year", "employer", "control_number", "employee"]}, {"title": "DISPLAY_W2_BOXES_1_6", "fields": ["wages", "withholding", "social_wages", "social_tax", "medicare_wages", "medicare_tax"]}, {"title": "DISPLAY_W2_BOXES_7_10", "fields": ["social_tips", "allocated_tips", "care_benefits"]}, {"title": "DISPLAY_W2_BOXES_11_14", "fields": ["nonqualified_plans", "box12", "statutory", "retirement_plan", "third_party_sick_pay", "box14a", "tipped_occupation_codes"]}, {"title": "DISPLAY_W2_BOXES_15_20", "fields": ["states", "localities"]}]}},
+    {"order": 487000, "rule": {"select": "^<FormW2Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_W2_BOXES_A_F", "fields": ["calendar_year", "employer", "control_number", "employee"]}, {"title": "DISPLAY_W2_BOXES_1_6", "fields": ["wages", "withholding", "social_wages", "social_tax", "medicare_wages", "medicare_tax"]}, {"title": "DISPLAY_W2_BOXES_7_10", "fields": ["social_tips", "allocated_tips", "care_benefits"]}, {"title": "DISPLAY_W2_BOXES_11_14", "fields": ["nonqualified_plans", "box12", "statutory", "retirement_plan", "third_party_sick_pay", "box14a", "tipped_occupation_codes"]}, {"title": "DISPLAY_W2_BOXES_15_20", "fields": ["states", "localities"]}]}},
+    {"order": 487100, "rule": {"select": "^<FormW2Paper>.employer", "label": "DISPLAY_W2_EMPLOYER_NAME"}},
+    {"order": 487200, "rule": {"select": "^<FormW2Paper>.employee", "label": "DISPLAY_W2_EMPLOYEE_NAME"}},
+    {"order": 488000, "rule": {"select": "^<PrintedBox12Entry>", "flatten": {"name_row": false}}},
+    {"order": 736000, "rule": {"select": "^<PrintedBox12Entry>.code", "promote": true}}
+  ]
+}

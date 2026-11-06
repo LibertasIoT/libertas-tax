@@ -100,6 +100,7 @@ fn f13_d4_earlier_installment_gain_is_on_line_4() {
             },
             special: false,
             qbi: crate::InstallmentQbi::NotQualified,
+            livestock: None,
         },
     }];
     screening.section1231 = Some(section1231_history(&[], &[]));

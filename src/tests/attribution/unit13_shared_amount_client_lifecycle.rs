@@ -13,7 +13,7 @@ fn social(injured: Owner) -> FederalDraft {
     let mut d = injured_return((60_000, 8_000), (20_000, 2_000), 0, claim);
     for (owner, amount) in [(Owner::Taxpayer, 2_000_000), (Owner::Spouse, 1_000_000)] {
         let mut entry = income(social_security_net(amount, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     d

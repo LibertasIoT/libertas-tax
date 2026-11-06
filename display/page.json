@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 670000, "rule": {"select": "^<CasualtyPropertyPage>.label", "promote": true}},
+    {"order": 671000, "rule": {"select": "^<PersonalCasualtyPage>.label", "promote": true}}
+  ]
+}

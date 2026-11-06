@@ -19,7 +19,13 @@ fn draft(method: &str) -> (FederalDraft, K1CreditCode, i64) {
         )
     };
     add(&mut d, income(FederalIncome::Partnership { data }));
-    (d, code, amount)
+    (
+        crate::interview::with_ticks(
+            crate::tests::support::builders::known_fact_partnership_draft(d),
+        ),
+        code,
+        amount,
+    )
 }
 
 fn assert_return(d: &FederalDraft, method: &str, amount: i64) {
@@ -50,7 +56,7 @@ fn assert_return(d: &FederalDraft, method: &str, amount: i64) {
 #[test]
 fn unit16_passive_methods_actual_k1_editor_save_reopen_restart_correction() {
     extern crate std;
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::accepted;
     let method = std::env::var("TAX_UNIT16_PASSIVE_METHOD").ok();
     let methods =
         method.as_deref().map_or_else(|| vec!["child", "averaging"], |method| vec![method]);
@@ -68,23 +74,29 @@ fn unit16_passive_methods_actual_k1_editor_save_reopen_restart_correction() {
         if native.calculation(&mut session) {
             return;
         }
-        let seed = open_topic(&mut session, TaxSection::PassThrough);
+        let seed = crate::tests::support::client::income_pages::open_document_center(&mut session);
         native.write("SEED", &seed);
         let mut answers = seed;
-        let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-        assert_eq!(documents.documents.len(), 1);
-        let source = documents.documents[0].id;
-        let IncomeDocument::K1Partnership(data) = &mut documents.documents[0].document else {
+        let P::SaveDocuments { documents, .. } = &mut answers else { panic!() };
+        assert_eq!(documents.common.k1.documents.len(), 1);
+        let source = documents.common.k1.documents[0].id;
+        let crate::K1Document::K1Partnership(data) = &mut documents.common.k1.documents[0].document
+        else {
             panic!()
         };
         let amount = if correction { 2000 } else { original_amount };
-        data.more.credits = vec![crate::K1CreditPage::from(K1Credit {
-            carbon_oxide_origin: None,
-            renewable_facility_origin: None,
-            code,
-            line: None,
-            amount: amount * 100,
-        })];
+        crate::tests::support::builders::set_partnership_credits(
+            data,
+            &[K1Credit {
+                carbon_oxide_origin: None,
+                renewable_facility_origin: None,
+                code,
+                line: None,
+                amount: amount * 100,
+            }],
+        );
+        data.personal.as_mut().unwrap().rental_participation =
+            code.rental().then_some(crate::K1RentalParticipation::NotActive);
         native.write("ANSWERS", &answers);
         if std::env::var("TAX_UNIT16_PASSIVE_SEED_ONLY").as_deref() == Ok("1") {
             return;
@@ -99,7 +111,8 @@ fn unit16_passive_methods_actual_k1_editor_save_reopen_restart_correction() {
         let saved = session.draft.clone();
         session = restart(saved.clone());
         assert_eq!(session.draft, saved);
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
+        let reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
         native.write("REOPENED", &reopened);
         accepted(&send(&mut session, reopened));
         assert_eq!(session.draft, saved);
@@ -107,12 +120,15 @@ fn unit16_passive_methods_actual_k1_editor_save_reopen_restart_correction() {
         if client_payload.is_none() && !correction {
             // Standalone native acceptance follows both methods through a
             // second actual Save without changing the parent/election facts.
-            let mut changed = open_topic(&mut session, TaxSection::PassThrough);
-            let P::SaveIncomes { documents, .. } = &mut changed else { panic!() };
-            let IncomeDocument::K1Partnership(data) = &mut documents.documents[0].document else {
+            let mut changed =
+                crate::tests::support::client::income_pages::open_document_center(&mut session);
+            let P::SaveDocuments { documents, .. } = &mut changed else { panic!() };
+            let crate::K1Document::K1Partnership(data) =
+                &mut documents.common.k1.documents[0].document
+            else {
                 panic!()
             };
-            data.more.credits[0].amount = 200_000;
+            data.form.credits[0].amount = Some(200_000);
             accepted(&send(&mut session, changed));
             assert_return(&session.draft, method, 2000);
             assert_eq!(session.draft.people, original_people);

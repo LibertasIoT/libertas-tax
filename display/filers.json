@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"order": 180000, "rule": {"select": "^<SaveSetup>", "button_labels": {"next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 181000, "rule": {"select": "^<SavePeople>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 182000, "rule": {"select": "^<SaveSpouse>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 182500, "rule": {"select": "^<SaveCommunityProperty>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 463000, "rule": {"select": "^<FilingChoice>", "flatten": true}},
+    {"order": 464000, "rule": {"select": "^<MaritalState>", "flatten": true}},
+    {"order": 469000, "rule": {"select": "^<Filing>", "flatten": true}},
+    {"order": 470000, "rule": {"select": "^<Claimable>", "flatten": true}},
+    {"order": 693000, "rule": {"select": "^<FederalSetup>.label", "promote": {"use_parent_name": false}}},
+    {"order": 694000, "rule": {"select": "^<ReturnSetup>.filing", "promote": {"use_parent_name": false}}},
+    {"order": 810000, "rule": {"select": "^<BeginSetup.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 811000, "rule": {"select": "^<SaveSetup.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 812000, "rule": {"select": "^<BeginPeople.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 813000, "rule": {"select": "^<SavePeople.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 814000, "rule": {"select": "^<BeginSpouse.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 815000, "rule": {"select": "^<SaveSpouse.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 815500, "rule": {"select": "^<BeginCommunityProperty.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 815600, "rule": {"select": "^<SaveCommunityProperty.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

@@ -1,0 +1,69 @@
+{
+ "source": {
+  "title": "Publication 936, Home Mortgage Interest Deduction (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 10",
+  "example": "Mortgage ending early, Example ($3,000 points on a 15-year loan prepaid in 2026)",
+  "url": "https://www.irs.gov/pub/irs-dft/p936--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "cffebfc18a51480ced26c807b771666b2f99251adc69a2b71ddcf17fb761d960"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "filer single, born 1980-06-15, with $80,000 wages; the loan is secured by the main home and is within the debt limits",
+   "reason": "the example gives only the loan facts"
+  },
+  {
+   "fact": "Form 1098 box 1 interest is $0",
+   "reason": "only the deductible points are compared"
+  },
+  {
+   "fact": "the loan originated 2015-01-01 so $200 a year was deducted through 2025",
+   "reason": "the example: $2,200 deducted through 2025"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19800615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 80000,
+     "withholding": 0,
+     "social_wages": 80000,
+     "social_tax": 4960,
+     "medicare_wages": 80000,
+     "medicare_tax": 1160
+    }
+   ]
+  },
+  {
+   "page": "mortgages",
+   "loans": [
+    {
+     "interest": 0,
+     "principal": 0,
+     "originated": 20150101,
+     "points": {
+      "kind": "amortized",
+      "amount": 3000,
+      "term_months": 180,
+      "ended": true
+     }
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "SchA",
+   "line": "8c",
+   "amount": 800,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

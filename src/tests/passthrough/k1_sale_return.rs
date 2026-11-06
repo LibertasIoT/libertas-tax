@@ -23,7 +23,7 @@ pub(in crate::tests) fn sources(
     price: i64,
 ) -> [FederalIncome; 2] {
     let mut partner = ordinary_partner_source(ordinary, true);
-    partner.regular.basis.opening = 0;
+    partner.regular.basis.opening = Some(0);
     partner.regular.risk.start = risk(0);
     partner.section179_carryover = carry * 100;
     partner.section179_carryover_sold = sold * 100;
@@ -31,7 +31,7 @@ pub(in crate::tests) fn sources(
     partner.alternative = Some(partner.regular.clone());
     let mut scorp = complete_ordinary_scorp(ordinary, true);
     scorp.loans.clear();
-    scorp.opening = 0;
+    scorp.opening = Some(0);
     scorp.risk.start = risk(0);
     scorp.risk.prior_loss = 0;
     scorp.risk.deducted = 0;
@@ -40,7 +40,10 @@ pub(in crate::tests) fn sources(
     scorp.section179_sales = vec![sale(price, false)];
     scorp.qbi_statement = None;
     mirror_scorp(&mut scorp);
-    [FederalIncome::Partnership { data: partner }, FederalIncome::Scorp { data: scorp }]
+    [
+        FederalIncome::Partnership { data: partner },
+        FederalIncome::Scorp { data: crate::tests::support::builders::scorp_source(scorp) },
+    ]
 }
 
 fn mirror_scorp(source: &mut ScorpK1) {
@@ -79,18 +82,21 @@ fn reporting(draft: &FederalDraft) -> (FederalResult, i64) {
 pub(in crate::tests) fn passive_short(mut source: FederalIncome) -> FederalIncome {
     match &mut source {
         FederalIncome::Partnership { data } => {
-            let PartnerParticipation::General { facts } = &mut data.participation else {
+            let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
                 unreachable!()
             };
             facts.minutes = 0;
-            data.regular.basis.opening = 100_000 * 100;
+            data.regular.basis.opening = Some(100_000 * 100);
             data.regular.risk.start = risk(100_000);
             data.section179_sales[0].acquired = 20260301;
             data.alternative = Some(data.regular.clone());
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             data.participation.as_mut().unwrap().minutes = 0;
-            data.opening = 100_000 * 100;
+            data.opening = Some(100_000 * 100);
             data.risk.start = risk(100_000);
             data.section179_sales[0].acquired = 20260301;
             mirror_scorp(data);
@@ -112,7 +118,11 @@ fn k1_sale_return_f2_removes_sold_carry_without_a_second_basis_deduction() {
             FederalIncome::Partnership { data } => {
                 (data.pool(&data.regular).unwrap().activity.basis.ending, "partnership")
             }
-            FederalIncome::Scorp { data } => (data.basis_result().unwrap().stock, "scorp"),
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                (data.basis_result().unwrap().stock, "scorp")
+            }
             _ => unreachable!(),
         };
         assert_eq!(crate::kernel::ratio::dollars(basis.get()), 21_000);
@@ -141,7 +151,11 @@ fn k1_sale_return_partial_sold_carry_retains_only_the_remaining_deduction() {
             FederalIncome::Partnership { data } => {
                 data.pool(&data.regular).unwrap().activity.basis.ending
             }
-            FederalIncome::Scorp { data } => data.basis_result().unwrap().stock,
+            FederalIncome::Scorp { data } => {
+                let source_view = ScorpK1::from(data);
+                let data = &source_view;
+                data.basis_result().unwrap().stock
+            }
             _ => unreachable!(),
         };
         assert_eq!(crate::kernel::ratio::dollars(basis.get()), 22_500);
@@ -171,13 +185,16 @@ fn k1_sale_return_active_property_loss_reduces_section179_business_income() {
         match &mut source {
             FederalIncome::Partnership { data } => {
                 data.section179 = 12_000 * 100;
-                data.regular.basis.opening = 100_000 * 100;
+                data.regular.basis.opening = Some(100_000 * 100);
                 data.regular.risk.start = risk(100_000);
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179 = 12_000 * 100;
-                data.opening = 100_000 * 100;
+                data.opening = Some(100_000 * 100);
                 data.risk.start = risk(100_000);
                 mirror_scorp(data);
             }
@@ -264,6 +281,9 @@ fn k1_sale_return_independent_amt_sale_rows_do_not_duplicate_printed_form() {
                     6_000 * 100
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section179_sales[0].alternative.reported_amounts_mut().unwrap().depreciation =
                     6_000 * 100
             }
@@ -295,6 +315,9 @@ fn k1_sale_return_property_gain_separates_original_box_from_sale_line_six() {
                 data.alternative = Some(data.regular.clone());
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 data.section1231 = property;
                 mirror_scorp(data);
             }

@@ -28,9 +28,11 @@
 //   Evidence: family::unit21_, farm_rental::unit21_, interview::unit21_, and
 //   schedules_1_3::assert_form_8958_divided_sources_conserve.
 use crate::{
-    CommunityProperty, CommunityRule, CommunityShare, CommunityState, FederalIncome, FederalSetup,
-    FederalStatus, Owner, RetirementKind,
+    Answer, CommunityProperty, CommunityRule, CommunityShare, CommunityState, FederalIncome,
+    FederalSetup, FederalStatus, Owner, RetirementKind,
 };
+
+pub(crate) use crate::community_share::{Divide, Share, divide_enum, divide_record};
 
 // How one kind of income divides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +54,14 @@ enum Kind {
 
 fn kind(income: &FederalIncome) -> Kind {
     match income {
-        FederalIncome::Retirement { data } if data.kind == RetirementKind::Ira => Kind::Owners,
+        FederalIncome::Retirement { data: source }
+            if {
+                let data = &crate::FederalRetirement::from(source);
+                data.kind == RetirementKind::Ira
+            } =>
+        {
+            Kind::Owners
+        }
         FederalIncome::Roth { .. }
         | FederalIncome::InheritedIra { .. }
         | FederalIncome::SocialSecurity { .. }
@@ -62,6 +71,7 @@ fn kind(income: &FederalIncome) -> Kind {
         | FederalIncome::Able { .. }
         | FederalIncome::TrumpDeath { .. }
         | FederalIncome::TrumpAbleRollover { .. }
+        | FederalIncome::BondRedemption { .. }
         | FederalIncome::SavingsBonds { .. } => Kind::Owners,
         FederalIncome::Wage { .. }
         | FederalIncome::EmployeeWages { .. }
@@ -76,6 +86,9 @@ fn kind(income: &FederalIncome) -> Kind {
         | FederalIncome::Scorp { .. }
         | FederalIncome::EstateTrustPortfolio { .. }
         | FederalIncome::NonbusinessProperty { .. } => Kind::Property,
+        // Project native components at their normal collector boundary;
+        // printed broker paper is never a divided source record.
+        FederalIncome::Broker { .. } => Kind::Other,
         _ => Kind::Other,
     }
 }
@@ -124,59 +137,6 @@ fn owner_part(
     }
 }
 
-// What the filer reports of one income item on a community-property return:
-// None when the return divides nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Share {
-    // The owner's part as a fraction; the other spouse reports the rest.
-    owner_num: i64,
-    owner_den: i64,
-    // Property gains follow ownership independently of separate-property income.
-    gain_num: i64,
-    gain_den: i64,
-    // The filer owns the document.
-    filer_owns: bool,
-}
-
-impl Share {
-    // The whole item is the filer's: nothing is divided.
-    pub(crate) fn whole(&self) -> bool {
-        self.filer_owns && self.owner_num == self.owner_den && self.gain_num == self.gain_den
-    }
-    // The filer owns the document (and so the operator's own deductions).
-    pub(crate) fn filer_owns(&self) -> bool {
-        self.filer_owns
-    }
-    // Nothing of the item is the filer's.
-    pub(crate) fn none(&self) -> bool {
-        !self.filer_owns && self.owner_num == self.owner_den && self.gain_num == self.gain_den
-    }
-    // The filer's part of `amount`; the owner keeps an odd cent so the two
-    // columns of Form 8958 add to the total.
-    pub(crate) fn filer(&self, amount: i64) -> i64 {
-        let owners = crate::kernel::ratio::fraction(amount, self.owner_num, self.owner_den);
-        if self.filer_owns { owners } else { amount - owners }
-    }
-    // Preserve the owner-first cent boundary and the other spouse's exact
-    // residual without narrowing an intermediate source expense total.
-    pub(crate) fn filer_exact(
-        &self,
-        amount: &crate::kernel::ratio::exact::Exact,
-    ) -> crate::kernel::ratio::exact::Exact {
-        use crate::kernel::ratio::exact;
-        let owners = exact::rounded_exact(
-            &(amount * exact::ratio(self.owner_num, self.owner_den).expect("owner denominator")),
-        );
-        if self.filer_owns { owners } else { amount - owners }
-    }
-    pub(crate) fn gain(&self, amount: i64) -> i64 {
-        self.for_gains().filer(amount)
-    }
-    pub(crate) fn for_gains(&self) -> Self {
-        Self { owner_num: self.gain_num, owner_den: self.gain_den, ..*self }
-    }
-}
-
 // These kinds run their own limits on the filer's divided source record.
 pub(crate) fn self_divided(income: &FederalIncome) -> bool {
     matches!(
@@ -189,82 +149,13 @@ pub(crate) fn self_divided(income: &FederalIncome) -> bool {
     )
 }
 
-// The field lists beside each source type classify money, property gains and
-// facts exhaustively. A newly added field must be classified before compilation
-// can succeed. The only arithmetic is Share's shared-kernel projection.
-pub(crate) trait Divide: Clone {
-    fn divided(&self, share: Share) -> Self;
-}
-impl Divide for i64 {
-    fn divided(&self, share: Share) -> Self {
-        share.filer(*self)
-    }
-}
-impl<T: Divide> Divide for alloc::boxed::Box<T> {
-    fn divided(&self, share: Share) -> Self {
-        alloc::boxed::Box::new((**self).divided(share))
-    }
-}
-impl<T: Divide> Divide for Option<T> {
-    fn divided(&self, share: Share) -> Self {
-        self.as_ref().map(|value| value.divided(share))
-    }
-}
-impl<T: Divide> Divide for alloc::vec::Vec<T> {
-    fn divided(&self, share: Share) -> Self {
-        self.iter().map(|value| value.divided(share)).collect()
-    }
-}
-macro_rules! divide_record {
-    ($ty:ty { amounts: [$($amount:ident),* $(,)?], gains: [$($gain:ident),* $(,)?], facts: [$($fact:ident),* $(,)?] $(,)? }) => {
-        impl crate::community::Divide for $ty {
-            fn divided(&self, share: crate::community::Share) -> Self {
-                let _ = share;
-                let Self { $($amount,)* $($gain,)* $($fact,)* } = self;
-                Self {
-                    $($amount: crate::community::Divide::divided($amount, share),)*
-                    $($gain: crate::community::Divide::divided($gain, share.for_gains()),)*
-                    $($fact: $fact.clone(),)*
-                }
-            }
-        }
-    };
-}
-pub(crate) use divide_record;
-macro_rules! divide_enum {
-    ($ty:ident {
-        records: [$($variant:ident { amounts: [$($amount:ident),* $(,)?], facts: [$($fact:ident),* $(,)?] }),* $(,)?],
-        units: [$($unit:ident),* $(,)?],
-        tuples: [$($tuple:ident),* $(,)?] $(,)?
-    }) => {
-        impl crate::community::Divide for $ty {
-            fn divided(&self, share: crate::community::Share) -> Self {
-                let _ = share;
-                match self {
-                    $(Self::$variant { $($amount,)* $($fact,)* } => Self::$variant {
-                        $($amount: crate::community::Divide::divided($amount, share),)*
-                        $($fact: $fact.clone(),)*
-                    },)*
-                    $(Self::$unit => Self::$unit,)*
-                    $(Self::$tuple(value) => Self::$tuple(crate::community::Divide::divided(value, share)),)*
-                }
-            }
-        }
-    };
-}
-pub(crate) use divide_enum;
-
 // Borrow the accepted source when it is already wholly this return's. A divided
 // value is transient; accepted answers, identity and the normal lifecycle stay intact.
 pub(crate) fn record<'a>(
     d: &crate::FederalDraft,
     entry: &'a crate::FederalIncomeEntry,
 ) -> alloc::borrow::Cow<'a, FederalIncome> {
-    let Some(share) = d
-        .setup
-        .as_ref()
-        .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))
-    else {
+    let Some(share) = d.setup.as_ref().and_then(|setup| entry_share(setup, entry)) else {
         return alloc::borrow::Cow::Borrowed(&entry.income);
     };
     if !share.whole()
@@ -304,23 +195,11 @@ pub(crate) fn divided(
             }
             FederalIncome::Partnership { data }
         }
-        FederalIncome::Scorp { data } => {
-            let mut data = data.divided(share);
-            data.credits.retain(|credit| credit.amount != 0);
-            data.investment_property.retain(|property| match property {
-                crate::K1InvestmentProperty::RehabilitationRental { expenditures, .. }
-                | crate::K1InvestmentProperty::RehabilitationOther { expenditures, .. } => {
-                    *expenditures != 0
-                }
-                crate::K1InvestmentProperty::Energy { basis, .. }
-                | crate::K1InvestmentProperty::CleanElectricity { basis, .. } => *basis != 0,
-            });
-            FederalIncome::Scorp { data }
-        }
+        FederalIncome::Scorp { data } => FederalIncome::Scorp { data: data.divided(share) },
         FederalIncome::EstateTrustPortfolio { data } => {
             let mut data = data.divided(share);
-            data.reported_credits.retain(|credit| credit.amount != 0);
-            data.investment_property.retain(|item| match &item.property {
+            data.statements.reported_credits.retain(|credit| credit.paper.amount != 0);
+            data.statements.investment_property.retain(|item| match &item.property {
                 crate::K1InvestmentProperty::RehabilitationRental { expenditures, .. }
                 | crate::K1InvestmentProperty::RehabilitationOther { expenditures, .. } => {
                     *expenditures != 0
@@ -363,11 +242,7 @@ pub(crate) fn property_entry<'a>(
     if !matches!(entry.income, FederalIncome::Rental { .. } | FederalIncome::FarmRental { .. }) {
         return self::entry(d, entry);
     }
-    let Some(share) = d
-        .setup
-        .as_ref()
-        .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))
-    else {
+    let Some(share) = d.setup.as_ref().and_then(|setup| entry_share(setup, entry)) else {
         return alloc::borrow::Cow::Borrowed(entry);
     };
     match divided(share.for_gains(), &entry.income) {
@@ -398,35 +273,107 @@ pub(crate) fn share(
     share_of_kind(setup, owner, answer, kind(income))
 }
 
+// Pub. 550 assigns jointly held investment income by the spouses' ownership;
+// Pub. 555 then applies the state's community or separate-property treatment.
+// Compose those fractions before the existing source rounding boundary.
+pub(crate) fn entry_share(
+    setup: &FederalSetup,
+    entry: &crate::FederalIncomeEntry,
+) -> Option<Share> {
+    entry_share_of_kind(setup, entry, kind(&entry.income))
+}
+
+fn entry_share_of_kind(
+    setup: &FederalSetup,
+    entry: &crate::FederalIncomeEntry,
+    kind: Kind,
+) -> Option<Share> {
+    let assignment = entry.accepted_assignment();
+    if assignment.owner != crate::DocumentRecipient::Joint {
+        // A separate return may record either spouse's financial account.
+        // Outside community property, only its owner's return reports it.
+        if setup.filing_status() == FederalStatus::Separate
+            && !matches!(setup.community_property, CommunityProperty::Yes { .. })
+            && matches!(
+                assignment.owner,
+                crate::DocumentRecipient::Taxpayer | crate::DocumentRecipient::Spouse
+            )
+            && matches!(
+                entry.income,
+                FederalIncome::Interest { .. }
+                    | FederalIncome::Dividend { .. }
+                    | FederalIncome::ReturnOfCapital { .. }
+            )
+        {
+            return Some(Share {
+                owner_num: 1,
+                owner_den: 1,
+                gain_num: 1,
+                gain_den: 1,
+                filer_owns: assignment.owner == crate::DocumentRecipient::Taxpayer,
+            });
+        }
+        return share_of_kind(setup, entry.owner.owned(), entry.community, kind);
+    }
+    if setup.filing_status() != FederalStatus::Separate {
+        return None;
+    }
+    let ([taxpayer, spouse], denominator) = assignment.owner_weights()?;
+    let part = |gains| {
+        let (numerator, divisor) = match setup.community_property {
+            CommunityProperty::Yes { state, rule } => {
+                owner_part(state, rule, kind, entry.community, gains)
+            }
+            CommunityProperty::NotAnswered | CommunityProperty::No => (1, 1),
+        };
+        (taxpayer * numerator + spouse * (divisor - numerator), denominator * divisor)
+    };
+    let (owner_num, owner_den) = part(false);
+    let (gain_num, gain_den) = part(true);
+    Some(Share { owner_num, owner_den, gain_num, gain_den, filer_owns: true })
+}
+
 // The share of the tax withheld on an item. It follows the income it was
 // withheld from (Reg. 1.31-1(a)): a Form 1099 whose amount is routed to a
 // business is withheld from that business's earnings, which section 879(a)
 // gives to the spouse who earned them, whatever share the document's other
 // boxes divide by. Any other item's withholding divides like the item.
 pub(crate) fn withholding_share(
-    setup: &FederalSetup,
-    owner: Owner,
-    answer: CommunityShare,
-    income: &FederalIncome,
+    d: &crate::FederalDraft,
+    entry: &crate::FederalIncomeEntry,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Option<Share> {
-    share_of_kind(setup, owner, answer, withholding_kind(income))
+    entry_share_of_kind(d.setup.as_ref()?, entry, withholding_kind(d, entry, source_claims))
 }
 
-fn withholding_kind(income: &FederalIncome) -> Kind {
-    let routed_to_business = crate::information_returns::flows(income)
-        .iter()
-        .any(|flow| flow.kind == crate::information_returns::Kind::Business);
-    if routed_to_business { Kind::Earned } else { kind(income) }
+fn withholding_kind(
+    d: &crate::FederalDraft,
+    entry: &crate::FederalIncomeEntry,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Kind {
+    let routed_to_business = crate::information_returns::flows(&entry.income).iter().any(|flow| {
+        crate::information_returns::resolve_flow(d, entry, flow, source_claims)
+            .is_some_and(|(kind, _)| kind == crate::information_returns::Kind::Business)
+    });
+    if routed_to_business { Kind::Earned } else { kind(&entry.income) }
 }
 
-// R8 reuses the source character of the community owner (approved R8 and
-// whole-return-situations 3D), not a non-W2-as-unearned inference. A mixed
-// K1/otherwise unclassified source remains unknown in regimes needing it.
-pub(crate) fn refund_earned(income: &FederalIncome) -> Option<bool> {
-    match withholding_kind(income) {
+// Source character follows the resolved activity; an unresolved source stays unknown.
+pub(crate) fn refund_earned(
+    d: &crate::FederalDraft,
+    entry: &crate::FederalIncomeEntry,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Option<bool> {
+    match withholding_kind(d, entry, source_claims) {
         Kind::Earned => Some(true),
         Kind::Owners | Kind::Property => Some(false),
-        Kind::Other if matches!(income, FederalIncome::Sale { .. }) => Some(false),
+        Kind::Other if matches!(entry.income, FederalIncome::Sale { .. }) => Some(false),
+        Kind::Other
+            if matches!(&entry.income, FederalIncome::Broker { data }
+            if data.projection().receipt.is_none_or(|receipt| receipt.amount == 0)) =>
+        {
+            Some(false)
+        }
         Kind::Other | Kind::Partnership => None,
     }
 }
@@ -533,11 +480,7 @@ pub(crate) fn partner_items<'a>(
     let Some(entry) = d.income.iter().find(|entry| entry.id == id) else {
         return Ok(items);
     };
-    let Some(share) = d
-        .setup
-        .as_ref()
-        .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))
-    else {
+    let Some(share) = d.setup.as_ref().and_then(|setup| entry_share(setup, entry)) else {
         return Ok(items);
     };
     if share.owner_num * share.gain_den == share.gain_num * share.owner_den {
@@ -555,7 +498,15 @@ pub(crate) fn partner_items<'a>(
     let property_items = property.items_for_record(property_source)?;
     let plan = property_source.plan(&property_items)?;
     let basis = property_source.basis.result_with(
-        property_source.ordinary + property_items.k1().box_one(),
+        property_source
+            .ordinary
+            .checked_add(
+                property_items
+                    .k1()
+                    .checked_box_one()
+                    .ok_or(crate::partnership::PartnerPlan::RANGE)?,
+            )
+            .ok_or(crate::partnership::PartnerPlan::RANGE)?,
         property_source.exempt,
         property_source.nondeductible,
         &plan,
@@ -595,20 +546,18 @@ pub(crate) fn partner_capital(
     source: &crate::PartnerActivityRecord,
 ) -> Option<[i64; 2]> {
     let ledger = partner_ledger(d, id, data, source).ok()?;
-    let (short, long) = data.separate.as_ref().map_or((0, 0), |v| (v.short, v.long));
+    let [short, long] = data.capital_gains_by_term();
     Some([
-        crate::kernel::phase::floor(short, 0)
-            - ledger.risk_allowed[crate::k1_loss::K1LossClass::ShortTerm].get(),
-        crate::kernel::phase::floor(long, 0)
-            - ledger.risk_allowed[crate::k1_loss::K1LossClass::LongTerm].get(),
+        short - ledger.risk_allowed[crate::k1_loss::K1LossClass::ShortTerm].get(),
+        long - ledger.risk_allowed[crate::k1_loss::K1LossClass::LongTerm].get(),
     ])
 }
 pub(crate) fn partner_facts<'a>(
     d: &crate::FederalDraft,
     entry: &'a crate::FederalIncomeEntry,
     data: &crate::PartnerK1,
-) -> crate::k1_totals::Facts<'a> {
-    let mut facts = data.totals_facts(entry);
+) -> Result<crate::k1_totals::Facts<'a>, (&'static str, &'static str)> {
+    let mut facts = data.totals_facts(entry)?;
     for (source, flows, disposal) in [
         (&data.regular, &mut facts.flows, &mut facts.disposal),
         (
@@ -617,11 +566,13 @@ pub(crate) fn partner_facts<'a>(
             &mut facts.amt_disposal,
         ),
     ] {
-        if let Ok(items) = partner_items(d, entry.id, data, source) {
-            (*flows, *disposal) = data.outcome_with_items(source, &items);
+        match partner_items(d, entry.id, data, source) {
+            Ok(items) => (*flows, *disposal) = data.outcome_with_items(source, &items)?,
+            Err(error) if error.0 == crate::k1_activity::ordinary::RANGE_KEY => return Err(error),
+            Err(_) => {}
         }
     }
-    facts
+    Ok(facts)
 }
 
 fn scorp_event_source(
@@ -630,17 +581,14 @@ fn scorp_event_source(
     amt: bool,
 ) -> Option<crate::scorp_amt::ScorpSource<'static>> {
     let entry = d.income.iter().find(|entry| entry.id == id)?;
-    let share = d
-        .setup
-        .as_ref()
-        .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))?;
+    let share = d.setup.as_ref().and_then(|setup| entry_share(setup, entry))?;
     if share.owner_num * share.gain_den == share.gain_num * share.owner_den {
         return None;
     }
     let FederalIncome::Scorp { data: whole } = &entry.income else {
         return None;
     };
-    let property = whole.divided(share.for_gains());
+    let property = crate::ScorpK1::from(whole).divided(share.for_gains());
     let property = if amt {
         property
             .amt
@@ -729,10 +677,7 @@ pub(crate) fn farm_rental_amount(
     amount: impl FnOnce(&crate::FederalFarmRental) -> i64,
 ) -> Option<i64> {
     let entry = d.income.iter().find(|entry| entry.id == id)?;
-    let share = d
-        .setup
-        .as_ref()
-        .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))?;
+    let share = d.setup.as_ref().and_then(|setup| entry_share(setup, entry))?;
     if share.whole() {
         return None;
     }
@@ -746,11 +691,7 @@ pub(crate) fn income_amount(d: &crate::FederalDraft, id: i64, amount: i64) -> i6
     d.income
         .iter()
         .find(|entry| entry.id == id)
-        .and_then(|entry| {
-            d.setup
-                .as_ref()
-                .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))
-        })
+        .and_then(|entry| d.setup.as_ref().and_then(|setup| entry_share(setup, entry)))
         .map_or(amount, |share| share.filer(amount))
 }
 // A linked property adjustment follows the same property view as its parcel.
@@ -762,11 +703,7 @@ pub(crate) fn property_amount(d: &crate::FederalDraft, id: i64, amount: i64) -> 
         .filter(|entry| {
             matches!(entry.income, FederalIncome::Rental { .. } | FederalIncome::FarmRental { .. })
         })
-        .and_then(|entry| {
-            d.setup
-                .as_ref()
-                .and_then(|setup| share(setup, entry.owner, entry.community, &entry.income))
-        })
+        .and_then(|entry| d.setup.as_ref().and_then(|setup| entry_share(setup, entry)))
         .map_or(amount, |share| share.gain(amount))
 }
 pub(crate) fn partner_se(
@@ -794,15 +731,19 @@ pub(crate) fn partner_se(
 // Form 8958 line 8 uses source income before the spouse's basis, at-risk
 // and passive limits. It never substitutes the post-limit preview amount.
 pub(crate) fn item_amount(
-    d: &crate::FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     entry: &crate::FederalIncomeEntry,
+    home_use: Option<&crate::extended_rules::HomeUseContext>,
 ) -> Option<i64> {
+    let d = form_context.draft;
     Some(match &entry.income {
-        FederalIncome::Rental { .. } => crate::extended_rules::whole_rental_net(d, entry).ok()?,
+        FederalIncome::Rental { .. } => {
+            crate::extended_rules::whole_rental_net(form_context, entry, home_use).ok()?
+        }
         FederalIncome::FarmRental { data } => data
             .net(
                 d,
-                usize::from(entry.owner == Owner::Spouse),
+                usize::from(entry.owner == crate::DocumentOwner::Spouses),
                 entry.id,
                 crate::depreciation::mid_quarter(d),
                 false,
@@ -816,9 +757,11 @@ pub(crate) fn item_amount(
                 + data.guaranteed_capital
         }
         FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
             data.ordinary + data.rentals.real_estate + data.rentals.other
         }
         FederalIncome::EstateTrustPortfolio { data } => {
+            let data = &crate::FederalEstateTrustPortfolioK1::from(data);
             data.interest
                 + data.ordinary_dividends
                 + data.short_gain
@@ -839,8 +782,9 @@ pub(crate) fn item_amount(
 // the counterpart uses the same actual-method owner on already limited
 // sources. Neither source set creates another limitation ledger.
 // The selected allocation and HOME context belong to the invoking return pass.
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn partner_se_lines_with_section179(
+pub(crate) fn partner_se_lines_with_section179_with_claims(
     d: &crate::FederalDraft,
     pool: &crate::extended_rules::RentalResult,
     own: (i64, &alloc::collections::BTreeMap<i64, i64>),
@@ -849,8 +793,10 @@ pub(crate) fn partner_se_lines_with_section179(
     selected: Option<&crate::Section179PreparedAllocation>,
     result: &mut crate::FederalResult,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<(), crate::Section179PreparedIssue> {
-    use crate::kernel::lines::{LineValue, emit, row};
+    use crate::kernel::lines::{LineValue, row};
+    use crate::line_emission::emit;
     let (own_tax_cents, own_half_cents) = own;
     let Some(setup) = &d.setup else { return Ok(()) };
     if !applies(setup) || !pool.inputs_complete {
@@ -870,8 +816,8 @@ pub(crate) fn partner_se_lines_with_section179(
             // rounding; deriving tax from the rounded half introduces drift.
             (own_tax_cents, source_half, weights)
         } else {
-            let actual = match crate::partnership::owner_actual_se_with_section179(
-                d,
+            let actual = match crate::partnership::owner_actual_se_with_section179_with_claims(
+                crate::related_forms::RelatedFormContext::original(d, source_claims),
                 owner,
                 counterpart_payroll[0],
                 counterpart_payroll[1],
@@ -893,7 +839,13 @@ pub(crate) fn partner_se_lines_with_section179(
                     return Ok(());
                 }
             };
-            let clergy = crate::clergy::calculate_with_section179(d, owner, selected, home)?;
+            let clergy = crate::clergy::calculate_with_section179_with_claims(
+                d,
+                owner,
+                selected,
+                home,
+                source_claims,
+            )?;
             let nonbusiness = crate::federal_rules::church_employee_se(counterpart_payroll[1])
                 + crate::kernel::ratio::fraction(
                     crate::kernel::ratio::positive(crate::kernel::ratio::dollars(
@@ -974,7 +926,7 @@ fn carry_notes(
 ) {
     let Some(setup) = &d.setup else { return };
     for entry in d.income.iter().filter(|entry| self_divided(&entry.income)) {
-        let Some(share) = share(setup, entry.owner, entry.community, &entry.income) else {
+        let Some(share) = entry_share(setup, entry) else {
             continue;
         };
         if share.whole() || share.none() {
@@ -1017,8 +969,14 @@ fn carry_notes(
 
 // Allocation provenance is emitted once from the whole supported source,
 // after the normal calculation, using the shared line-emission kernel.
-pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult) {
-    use crate::kernel::lines::{LineValue, emit, row};
+
+pub(crate) fn explain_with_claims(
+    d: &crate::FederalDraft,
+    result: &mut crate::FederalResult,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) {
+    use crate::kernel::lines::{LineValue, row};
+    use crate::line_emission::emit;
     let Some(setup) = &d.setup else { return };
     if !applies(setup) || result.state != crate::ResultState::EstimatedForSupportedScope {
         return;
@@ -1027,11 +985,15 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
         if !self_divided(&entry.income) {
             continue;
         }
-        let Some(share) = share(setup, entry.owner, entry.community, &entry.income) else {
+        let Some(share) = entry_share(setup, entry) else {
             continue;
         };
         let label = crate::interview::income_display_arg(entry);
-        let Some(total) = item_amount(d, entry) else {
+        let Some(total) = item_amount(
+            crate::related_forms::RelatedFormContext::original(d, source_claims),
+            entry,
+            result.rental_home_context.as_ref(),
+        ) else {
             crate::extended_rules::expense_output_unavailable(result, Some(entry.id));
             return;
         };
@@ -1040,12 +1002,16 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                 .separate
                 .as_ref()
                 .map_or((0, 0, 0), |v| (v.backup_withholding, v.short + v.long, v.foreign_taxes)),
-            FederalIncome::Scorp { data } => (
-                data.withholding,
-                data.capital.as_ref().map_or(0, |v| v.short + v.long),
-                data.foreign_taxes,
-            ),
+            FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                (
+                    data.withholding,
+                    data.capital.as_ref().map_or(0, |v| v.short + v.long),
+                    data.foreign_taxes,
+                )
+            }
             FederalIncome::EstateTrustPortfolio { data } => {
+                let data = &crate::FederalEstateTrustPortfolioK1::from(data);
                 (data.backup_withholding, 0, data.foreign_statement.as_ref().map_or(0, |v| v.tax))
             }
             _ => (0, 0, 0),
@@ -1053,21 +1019,46 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
         // The source gain column also includes coded capital/1256 items and
         // current entity property amounts before this return's limits/lookback.
         // Section1250 rate components are already included and never added twice.
-        portfolio_gain += match &entry.income {
+        let coded_gain = match &entry.income {
             FederalIncome::Partnership { data } => {
-                let flows = data.k1_items().flows_whole();
-                flows.capital().iter().sum::<i64>()
-                    + flows.section1256
-                    + data
-                        .regular
+                let flows = match data.regular.source_k1_items(&data.items()).and_then(|items| {
+                    items.checked_flows_whole().ok_or(crate::partnership::PartnerPlan::RANGE)
+                }) {
+                    Ok(flows) => flows,
+                    Err((key, _message)) => {
+                        crate::issue_localized!(
+                            result,
+                            &crate::interview::income_issue_context(entry),
+                            "K-1 income",
+                            key,
+                            _message
+                        );
+                        return;
+                    }
+                };
+                let Some(capital) = flows.checked_capital() else {
+                    crate::extended_rules::expense_output_unavailable(result, Some(entry.id));
+                    return;
+                };
+                let Some(gain) = crate::kernel::ratio::checked_sum([
+                    capital[0],
+                    capital[1],
+                    flows.section1256,
+                    data.regular
                         .business_property(&data.items())
                         .ok()
                         .flatten()
-                        .map_or(0, |property| property.net())
-                    + data.regular.rentals.real_estate_property.net
-                    + data.regular.rentals.other_property.net
+                        .map_or(0, |property| property.net()),
+                    data.regular.rentals.real_estate_property.net,
+                    data.regular.rentals.other_property.net,
+                ]) else {
+                    crate::extended_rules::expense_output_unavailable(result, Some(entry.id));
+                    return;
+                };
+                gain
             }
             FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
                 let flows = data.k1_items().flows_whole();
                 flows.capital().iter().sum::<i64>()
                     + flows.section1256
@@ -1077,6 +1068,19 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
             }
             _ => 0,
         };
+        let Some(projected_gain) = crate::kernel::ratio::checked_sum([portfolio_gain, coded_gain])
+        else {
+            let (key, _message) = crate::partnership::PartnerPlan::RANGE;
+            crate::issue_localized!(
+                result,
+                &crate::interview::income_issue_context(entry),
+                "K-1 income",
+                key,
+                _message
+            );
+            return;
+        };
+        portfolio_gain = projected_gain;
         let credits = match &entry.income {
             FederalIncome::Partnership { data } => {
                 data.credits.iter().map(|credit| credit.amount).sum::<i64>()
@@ -1091,6 +1095,7 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                         .map_or(0, crate::PartnerFuelTaxCredit::credit_cents)
             }
             FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
                 data.credits.iter().map(|credit| credit.amount).sum::<i64>()
                     + data
                         .investment_property
@@ -1099,6 +1104,7 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                         .sum::<i64>()
             }
             FederalIncome::EstateTrustPortfolio { data } => {
+                let data = &crate::FederalEstateTrustPortfolioK1::from(data);
                 data.reported_credits.iter().map(|credit| credit.amount).sum::<i64>()
                     + data
                         .investment_property
@@ -1113,7 +1119,10 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                 .separate
                 .as_ref()
                 .map_or([0; 3], |source| [source.interest, source.dividends, source.royalties]),
-            FederalIncome::Scorp { data } => [data.interest, data.dividends, data.royalties],
+            FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                [data.interest, data.dividends, data.royalties]
+            }
             _ => [0; 3],
         };
         let royalty_expenses = match &entry.income {
@@ -1125,20 +1134,27 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                 })
                 .map(|deduction| deduction.amount)
                 .sum::<i64>(),
-            FederalIncome::Scorp { data } => data
-                .deductions
-                .iter()
-                .filter(|deduction| deduction.code == crate::ScorpDeductionCode::RoyaltyDeductions)
-                .map(|deduction| deduction.amount)
-                .sum::<i64>(),
+            FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                data.deductions
+                    .iter()
+                    .filter(|deduction| {
+                        deduction.code == crate::ScorpDeductionCode::RoyaltyDeductions
+                    })
+                    .map(|deduction| deduction.amount)
+                    .sum::<i64>()
+            }
             _ => 0,
         };
         let property_gain = match &entry.income {
             FederalIncome::Rental { data } => {
                 match crate::asset_sale::rental_sale_amount(
+                    crate::related_forms::RelatedFormContext::original(d, source_claims),
+                    entry.id,
                     data,
                     crate::depreciation::mid_quarter(d),
                     false,
+                    result.rental_home_context.as_ref(),
                 ) {
                     Ok(value) => value,
                     Err(issue) => {
@@ -1148,8 +1164,14 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                 }
             }
             FederalIncome::FarmRental { data } => {
-                let land = crate::farm_land::source(d, entry.id, &data.farm, false)
-                    .map_or(0, |gain| gain.gain);
+                let land = crate::farm_land::source_with_claims(
+                    d,
+                    entry.id,
+                    &data.farm,
+                    false,
+                    source_claims,
+                )
+                .map_or(0, |gain| gain.gain);
                 let assets = crate::asset_sale::business_assets(
                     &data.assets,
                     crate::depreciation::mid_quarter(d),
@@ -1159,20 +1181,51 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
                 (land + assets) * 100
             }
             FederalIncome::Partnership { data } => {
-                let disposal = data.outcome(&data.regular).1;
+                let disposal = match data.outcome(&data.regular) {
+                    Ok((_, disposal)) => disposal,
+                    Err((key, _message)) => {
+                        crate::issue_localized!(
+                            result,
+                            &crate::interview::income_issue_context(entry),
+                            "K-1 income",
+                            key,
+                            _message
+                        );
+                        return;
+                    }
+                };
                 disposal.sale_gain() + disposal.distribution_gain
             }
-            FederalIncome::Scorp { data } => data.basis_result().ok().map_or(0, |basis| {
-                let disposal = data.disposal(&basis);
-                let loans = data.loan_gains(&basis).unwrap_or([0; 3]);
-                disposal.sale_gain() + disposal.distribution_gain + loans[1] + loans[2]
-            }),
+            FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                data.basis_result().ok().map_or(0, |basis| {
+                    let disposal = data.disposal(&basis);
+                    let loans = data.loan_gains(&basis).unwrap_or([0; 3]);
+                    disposal.sale_gain() + disposal.distribution_gain + loans[1] + loans[2]
+                })
+            }
             _ => 0,
         };
         // Distributive-share capital items follow the income fraction;
         // external property gains follow the independent property fraction.
-        let gain = portfolio_gain + property_gain;
-        let gain_share = share.filer(portfolio_gain) + share.gain(property_gain);
+        let Some((gain, gain_share)) =
+            crate::kernel::ratio::checked_sum([portfolio_gain, property_gain]).zip(
+                crate::kernel::ratio::checked_sum([
+                    share.filer(portfolio_gain),
+                    share.gain(property_gain),
+                ]),
+            )
+        else {
+            let (key, _message) = crate::partnership::PartnerPlan::RANGE;
+            crate::issue_localized!(
+                result,
+                &crate::interview::income_issue_context(entry),
+                "K-1 income",
+                key,
+                _message
+            );
+            return;
+        };
         let mut values = alloc::vec![
             (alloc::format!("form8958_{}_total", entry.id), total, "EXPLAIN_FORM8958_N_TOTAL"),
             (
@@ -1282,3 +1335,684 @@ pub(crate) fn explain(d: &crate::FederalDraft, result: &mut crate::FederalResult
         }
     }
 }
+
+// Monetary owner outputs retain their original precision. In particular,
+// annual Form4797 Dollars enter working cents once, before person attribution.
+// These transient rows never change the accepted physical property records.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceAmount {
+    pub whole: i64,
+    pub filer: i64,
+    pub counterpart: i64,
+}
+impl SourceAmount {
+    pub(crate) fn income(d: &crate::FederalDraft, id: i64, whole: i64) -> Self {
+        let filer = income_amount(d, id, whole);
+        Self { whole, filer, counterpart: whole - filer }
+    }
+    pub(crate) fn property(d: &crate::FederalDraft, id: i64, whole: i64) -> Self {
+        let filer = d
+            .income
+            .iter()
+            .find(|entry| entry.id == id)
+            .and_then(|entry| d.setup.as_ref().and_then(|setup| entry_share(setup, entry)))
+            .map_or(whole, |share| share.gain(whole));
+        Self { whole, filer, counterpart: whole - filer }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PropertyCents {
+    pub gain: i64,
+    pub recapture: i64,
+    pub ordinary: i64,
+    pub section1231: i64,
+    pub unrecaptured: i64,
+}
+impl PropertyCents {
+    pub(crate) fn annual(
+        value: crate::farm_land::LandGain,
+    ) -> Result<Self, crate::kernel::loss_limits::LossLimitError> {
+        let lift = crate::extended_rules::annual_dollars_to_working_cents;
+        Ok(Self {
+            gain: lift(value.gain)?,
+            recapture: lift(value.recapture)?,
+            ordinary: lift(value.ordinary)?,
+            section1231: lift(value.section1231)?,
+            unrecaptured: lift(value.unrecaptured)?,
+        })
+    }
+    pub(crate) fn limited(
+        value: &crate::business_risk::PropertySource,
+    ) -> Result<Self, crate::kernel::loss_limits::LossLimitError> {
+        let [ordinary, section1231] = value.allowed_cents;
+        let lift = crate::extended_rules::annual_dollars_to_working_cents;
+        Ok(Self {
+            gain: ordinary
+                .checked_add(section1231)
+                .ok_or(crate::kernel::loss_limits::LossLimitError::Overflow)?,
+            ordinary,
+            section1231,
+            recapture: lift(value.original.dollars.recapture)?,
+            unrecaptured: lift(value.original.dollars.unrecaptured)?,
+        })
+    }
+    fn columns(self) -> [i64; 5] {
+        [self.gain, self.recapture, self.ordinary, self.section1231, self.unrecaptured]
+    }
+    fn from_columns(value: [i64; 5]) -> Self {
+        Self {
+            gain: value[0],
+            recapture: value[1],
+            ordinary: value[2],
+            section1231: value[3],
+            unrecaptured: value[4],
+        }
+    }
+    pub(crate) fn for_source(
+        d: &crate::FederalDraft,
+        id: i64,
+        value: crate::farm_land::LandGain,
+        physical: bool,
+    ) -> Result<Self, crate::activity_risk::SourceIssue> {
+        Self::annual(value)
+            .and_then(|value| if physical { value.projected(d, id) } else { Ok(value) })
+            .map_err(|error| crate::activity_risk::SourceIssue::new(id, error.into()))
+    }
+    fn projected(
+        self,
+        d: &crate::FederalDraft,
+        id: i64,
+    ) -> Result<Self, crate::kernel::loss_limits::LossLimitError> {
+        let project = |value| SourceAmount::property(d, id, value).filer;
+        let gain = project(self.gain);
+        let ordinary = project(self.ordinary);
+        let high_end = self
+            .ordinary
+            .checked_add(self.unrecaptured)
+            .ok_or(crate::kernel::loss_limits::LossLimitError::Overflow)?;
+        Ok(Self {
+            gain,
+            recapture: project(self.recapture),
+            ordinary,
+            section1231: gain - ordinary,
+            unrecaptured: project(high_end) - ordinary,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PropertySourceProjection {
+    pub income: i64,
+    pub component: Option<crate::asset_sale::DirectBusinessPropertyId>,
+    pub whole: Option<PropertyCents>,
+    pub filer: PropertyCents,
+    pub counterpart: Option<PropertyCents>,
+    // Native realized-gain and recapture detail operands, distinct from recognized gain.
+    pub asset_detail: Option<[i64; 3]>,
+    pub installment: bool,
+    pub owner_reported: bool,
+}
+impl PropertySourceProjection {
+    fn new(
+        d: &crate::FederalDraft,
+        income: i64,
+        component: Option<crate::asset_sale::DirectBusinessPropertyId>,
+        value: crate::farm_land::LandGain,
+        physical: bool,
+    ) -> Result<Self, crate::activity_risk::SourceIssue> {
+        let whole = PropertyCents::annual(value)
+            .map_err(|error| crate::activity_risk::SourceIssue::new(income, error.into()))?;
+        Self::from_cents(d, income, component, whole, physical)
+    }
+    fn from_cents(
+        d: &crate::FederalDraft,
+        income: i64,
+        component: Option<crate::asset_sale::DirectBusinessPropertyId>,
+        whole: PropertyCents,
+        physical: bool,
+    ) -> Result<Self, crate::activity_risk::SourceIssue> {
+        let filer = if physical {
+            whole
+                .projected(d, income)
+                .map_err(|error| crate::activity_risk::SourceIssue::new(income, error.into()))?
+        } else {
+            whole
+        };
+        let counterpart = PropertyCents {
+            gain: whole.gain - filer.gain,
+            recapture: whole.recapture - filer.recapture,
+            ordinary: whole.ordinary - filer.ordinary,
+            section1231: whole.section1231 - filer.section1231,
+            unrecaptured: whole.unrecaptured - filer.unrecaptured,
+        };
+        Ok(Self {
+            income,
+            component,
+            whole: physical.then_some(whole),
+            filer,
+            counterpart: physical.then_some(counterpart),
+            asset_detail: None,
+            installment: false,
+            owner_reported: false,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BusinessIncomeProjection {
+    pub whole: Option<i64>,
+    pub filer: i64,
+    pub counterpart: Option<i64>,
+}
+impl From<SourceAmount> for BusinessIncomeProjection {
+    fn from(value: SourceAmount) -> Self {
+        Self { whole: Some(value.whole), filer: value.filer, counterpart: Some(value.counterpart) }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BusinessSourceProjection {
+    pub income: BusinessIncomeProjection,
+    pub operator_earnings: i64,
+    pub conservation_deductions: [i64; 2],
+    pub qbi_income_cents: i64,
+    pub qbi_wages_cents: i64,
+    pub qbi_property_cents: i64,
+}
+impl BusinessSourceProjection {
+    pub(crate) fn qualified_income(&self, d: &crate::FederalDraft, id: i64, amount: i64) -> i64 {
+        SourceAmount::income(d, id, amount + self.conservation_deductions[0]).filer
+            - self.conservation_deductions[1]
+    }
+    pub(crate) fn bind_qbi(
+        &mut self,
+        d: &crate::FederalDraft,
+        id: i64,
+        income: i64,
+        wages: i64,
+        property: i64,
+    ) {
+        self.qbi_income_cents = income;
+        self.qbi_wages_cents = SourceAmount::income(d, id, wages).filer;
+        self.qbi_property_cents = SourceAmount::income(d, id, property).filer;
+    }
+    pub(crate) fn produce(
+        d: &crate::FederalDraft,
+        id: i64,
+        operator: i64,
+        alternative: bool,
+        claims: &alloc::collections::BTreeMap<i64, i64>,
+    ) -> Result<Self, crate::Section179PreparedIssue> {
+        let mut income = BusinessIncomeProjection::from(SourceAmount::income(d, id, operator));
+        let mut conservation_deductions = [0; 2];
+        let conservation = d.income.iter().any(|entry| {
+            entry.id == id
+                && matches!(&entry.income,
+            FederalIncome::Business { data } if matches!(&data.activity,
+                crate::BusinessActivity::Farming { data } if data.conservation.is_some()))
+        });
+        if conservation && d.setup.as_ref().is_some_and(applies) {
+            let unavailable = || {
+                crate::Section179PreparedIssue::SourceBoundaryUnavailable(
+                    id,
+                    "WARN_FARM_CONSERVATION_GROSS_SOURCE",
+                )
+            };
+            let operator_deduction = crate::farm_conservation::operator_deduction_with_claims(
+                d,
+                id,
+                alternative,
+                claims,
+            )
+            .ok_or_else(unavailable)?;
+            let filer_deduction =
+                crate::farm_conservation::income_deduction_with_claims(d, id, alternative, claims)
+                    .ok_or_else(unavailable)?;
+            conservation_deductions = [operator_deduction, filer_deduction];
+            let other_deduction = crate::farm_conservation::counterpart_deduction_with_claims(
+                d,
+                id,
+                alternative,
+                claims,
+            );
+            let before = SourceAmount::income(d, id, operator + operator_deduction);
+            income = BusinessIncomeProjection {
+                whole: other_deduction.map(|other| before.whole - filer_deduction - other),
+                filer: before.filer - filer_deduction,
+                counterpart: other_deduction.map(|other| before.counterpart - other),
+            };
+        }
+        Ok(Self {
+            income,
+            operator_earnings: operator,
+            conservation_deductions,
+            qbi_income_cents: income.filer,
+            qbi_wages_cents: 0,
+            qbi_property_cents: 0,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceProjection {
+    pub alternative: bool,
+    pub business: alloc::collections::BTreeMap<i64, BusinessSourceProjection>,
+    pub direct: alloc::vec::Vec<PropertySourceProjection>,
+    pub native_partial_gains: alloc::vec::Vec<(i64, i64)>,
+    pub native_issue: Option<crate::activity_risk::SourceIssue>,
+    pub components: alloc::collections::BTreeMap<
+        i64,
+        Result<alloc::vec::Vec<PropertySourceProjection>, &'static str>,
+    >,
+}
+impl SourceProjection {
+    pub(crate) fn produce(
+        d: &crate::FederalDraft,
+        pool: &crate::extended_rules::RentalResult,
+        alternative: bool,
+        claims: &alloc::collections::BTreeMap<i64, i64>,
+    ) -> Result<Self, crate::activity_risk::SourceIssue> {
+        let (physical, mut parts, partial, native_issue) =
+            crate::asset_sale::physical_allowed_direct_source_packet_with_claims(
+                d,
+                pool,
+                alternative,
+                claims,
+            )?;
+        let mut result = Self { alternative, native_issue, ..Default::default() };
+        for (id, gain) in partial {
+            let cents = crate::extended_rules::annual_dollars_to_working_cents(gain)
+                .map_err(|error| crate::activity_risk::SourceIssue::new(id, error.into()))?;
+            result.native_partial_gains.push((id, cents));
+        }
+        for (id, value) in physical {
+            let business = d.income.iter().any(|entry| {
+                entry.id == id && matches!(entry.income, FederalIncome::Business { .. })
+            });
+            result.direct.push(PropertySourceProjection::new(d, id, None, value, business)?);
+        }
+        for (&id, cached) in &pool.direct_business_property {
+            parts.insert(id, Ok(cached.iter().map(|part| part.original).collect()));
+        }
+        for (id, parts) in parts {
+            let rows = match parts {
+                Ok(parts) => {
+                    let mut rows = alloc::vec::Vec::new();
+                    for part in parts {
+                        let mut row = if let Some(cached) = pool
+                            .direct_business_property
+                            .get(&id)
+                            .and_then(|rows| rows.iter().find(|row| row.original.id == part.id))
+                        {
+                            let value = PropertyCents::limited(cached).map_err(|error| {
+                                crate::activity_risk::SourceIssue::new(id, error.into())
+                            })?;
+                            if matches!(
+                                part.id,
+                                crate::asset_sale::DirectBusinessPropertyId::Partial(_)
+                            ) {
+                                result.native_partial_gains.push((id, value.gain));
+                            }
+                            PropertySourceProjection::from_cents(d, id, Some(part.id), value, true)?
+                        } else {
+                            PropertySourceProjection::new(d, id, Some(part.id), part.dollars, true)?
+                        };
+                        row.owner_reported = pool.direct_business_property.contains_key(&id);
+                        if let Some(native) = part.report.filter(|_| !row.owner_reported) {
+                            let lift = crate::extended_rules::annual_dollars_to_working_cents;
+                            let realized = native
+                                .gain
+                                .checked_sub(native.recognized())
+                                .and_then(|gain| gain.checked_add(native.postponed))
+                                .ok_or_else(|| {
+                                    crate::activity_risk::SourceIssue::new(
+                                        id,
+                                        crate::activity_risk::ProjectionIssue::Source(
+                                            "DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE",
+                                        ),
+                                    )
+                                })?;
+                            let mut details = [0; 3];
+                            for (axis, amount) in
+                                [realized, native.postponed, native.recapture_1245]
+                                    .into_iter()
+                                    .enumerate()
+                            {
+                                details[axis] = lift(amount).map_err(|error| {
+                                    crate::activity_risk::SourceIssue::new(id, error.into())
+                                })?;
+                            }
+                            row.asset_detail = Some(details);
+                            row.installment = native.installment.is_some();
+                        }
+                        rows.push(row);
+                    }
+                    let rows = Self::project_components(d, id, rows);
+                    rows.and_then(|rows| {
+                        let mut totals = [0_i64; 5];
+                        let mut whole = [0_i64; 5];
+                        for row in &rows {
+                            for (sum, amount) in whole.iter_mut().zip(
+                                row.whole
+                                    .ok_or("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED")?
+                                    .columns(),
+                            ) {
+                                *sum = sum
+                                    .checked_add(amount)
+                                    .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+                            }
+                            for (total, value) in totals.iter_mut().zip(row.filer.columns()) {
+                                *total = total
+                                    .checked_add(value)
+                                    .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+                            }
+                        }
+                        if pool.direct_business_property.contains_key(&id) {
+                            result.direct.push(
+                                PropertySourceProjection::from_cents(
+                                    d,
+                                    id,
+                                    None,
+                                    PropertyCents::from_columns(whole),
+                                    true,
+                                )
+                                .map_err(|_| "DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?,
+                            );
+                        }
+                        if let Some(source) =
+                            result.direct.iter_mut().find(|source| source.income == id)
+                        {
+                            source.filer.unrecaptured = totals[4];
+                            if let Some(whole) = source.whole {
+                                source.counterpart.as_mut().unwrap().unrecaptured =
+                                    whole.unrecaptured - totals[4];
+                            }
+                            if source.filer.columns() != totals {
+                                return Err("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE");
+                            }
+                        } else if totals != [0; 5] {
+                            return Err("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE");
+                        }
+                        Ok(rows)
+                    })
+                }
+                Err(key) => Err(key),
+            };
+            if pool.direct_business_property.contains_key(&id) {
+                rows.as_ref().map_err(|key| {
+                    crate::activity_risk::SourceIssue::new(
+                        id,
+                        crate::activity_risk::ProjectionIssue::Source(key),
+                    )
+                })?;
+            }
+            result.components.insert(id, rows);
+        }
+        Ok(result)
+    }
+    fn project_components(
+        d: &crate::FederalDraft,
+        id: i64,
+        mut parts: alloc::vec::Vec<PropertySourceProjection>,
+    ) -> Result<alloc::vec::Vec<PropertySourceProjection>, &'static str> {
+        parts.sort_by_key(|part| part.component);
+        let mut checked = [0_i64; 5];
+        let mut checked_details = [0_i64; 3];
+        for part in &parts {
+            if let Some(details) = part.asset_detail {
+                for (total, amount) in checked_details.iter_mut().zip(details) {
+                    *total = total
+                        .checked_add(amount)
+                        .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+                }
+            }
+            for (total, amount) in checked
+                .iter_mut()
+                .zip(part.whole.ok_or("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED")?.columns())
+            {
+                *total = total
+                    .checked_add(amount)
+                    .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+            }
+        }
+        let mut section_prefix = 0_i64;
+        for part in &parts {
+            section_prefix = section_prefix
+                .checked_add(part.whole.unwrap().section1231)
+                .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+            checked[2]
+                .checked_add(section_prefix)
+                .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+        }
+        let mut prefixes: [crate::kernel::ratio::Prefix; 5] =
+            core::array::from_fn(|_| Default::default());
+        let mut details: [crate::kernel::ratio::Prefix; 2] =
+            core::array::from_fn(|_| Default::default());
+        let mut section_start = checked[2];
+        for part in &mut parts {
+            let whole = part.whole.ok_or("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED")?.columns();
+            let mut filer = core::array::from_fn(|axis| {
+                prefixes[axis].next(whole[axis], |amount| {
+                    if axis == 3 {
+                        SourceAmount::property(d, id, checked[2] + amount).filer
+                            - SourceAmount::property(d, id, checked[2]).filer
+                    } else {
+                        SourceAmount::property(d, id, amount).filer
+                    }
+                })
+            });
+            let high_end = section_start
+                .checked_add(whole[4])
+                .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+            filer[4] = SourceAmount::property(d, id, high_end).filer
+                - SourceAmount::property(d, id, section_start).filer;
+            section_start = section_start
+                .checked_add(whole[3])
+                .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+            filer[0] = filer[2]
+                .checked_add(filer[3])
+                .ok_or("DIRECT_ACTIVITY_PROPERTY_SOURCE_UNAVAILABLE")?;
+            part.filer = PropertyCents::from_columns(filer);
+            if let Some(native) = part.asset_detail {
+                let projected = core::array::from_fn::<_, 2, _>(|axis| {
+                    details[axis]
+                        .next(native[axis], |amount| SourceAmount::property(d, id, amount).filer)
+                });
+                let recapture1245 = crate::kernel::ratio::allocate_remaining(
+                    part.filer.recapture,
+                    &[native[2], whole[1] - native[2]],
+                )[0];
+                part.asset_detail = Some([projected[0], projected[1], recapture1245]);
+            }
+            part.counterpart = Some(PropertyCents::from_columns(core::array::from_fn(|axis| {
+                whole[axis] - filer[axis]
+            })));
+        }
+        Ok(parts)
+    }
+    pub(crate) fn bind_business(
+        pool: &mut crate::extended_rules::RentalResult,
+        sources: &alloc::collections::BTreeMap<i64, [BusinessSourceProjection; 2]>,
+        alternative: bool,
+    ) {
+        if let Some(packet) = &mut pool.source_projection
+            && let Ok(projection) = alloc::sync::Arc::make_mut(packet)
+        {
+            projection.business =
+                sources.iter().map(|(id, rows)| (*id, rows[usize::from(alternative)])).collect();
+        }
+    }
+    pub(crate) fn report(
+        &self,
+        d: &crate::FederalDraft,
+        result: &mut crate::FederalResult,
+    ) -> Result<(), crate::activity_risk::SourceIssue> {
+        if self.alternative || !d.setup.as_ref().is_some_and(applies) {
+            return Ok(());
+        }
+        if let Some(issue) = &self.native_issue {
+            return Err(issue.clone());
+        }
+        for entry in &d.income {
+            let FederalIncome::Business { data } = &entry.income else {
+                continue;
+            };
+            let issue = |key| {
+                crate::activity_risk::SourceIssue::new(
+                    entry.id,
+                    crate::activity_risk::ProjectionIssue::Source(key),
+                )
+            };
+            let Some(parts) = self.components.get(&entry.id) else {
+                continue;
+            };
+            let parts = parts.as_ref().map_err(|key| issue(key))?;
+            for part in parts {
+                // The actual limited owner already settled these annual report
+                // rows; working cents above remain separate from that boundary.
+                if part.owner_reported {
+                    continue;
+                }
+                use crate::asset_sale::DirectBusinessPropertyId as Id;
+                let (prefix, partial, land_long) = match part
+                    .component
+                    .ok_or_else(|| issue("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED"))?
+                {
+                    Id::Asset(id) | Id::Partial(id) => {
+                        let index =
+                            data.assets.iter().position(|asset| asset.id == id).ok_or_else(
+                                || issue("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED"),
+                            )?;
+                        (
+                            alloc::format!("business_{}_asset_{index}", entry.id),
+                            matches!(part.component, Some(Id::Partial(_))),
+                            false,
+                        )
+                    }
+                    Id::Land { sale, parcel } => {
+                        let crate::BusinessActivity::Farming { data: farm } = &data.activity else {
+                            return Err(issue("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED"));
+                        };
+                        let index = farm
+                            .land_sales
+                            .iter()
+                            .position(|row| row.id == sale && row.basis_property == parcel)
+                            .ok_or_else(|| issue("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED"))?;
+                        let parcel =
+                            farm.land_basis.iter().find(|row| row.id == parcel).ok_or_else(
+                                || issue("DIRECT_BUSINESS_PROPERTY_IDENTITY_REQUIRED"),
+                            )?;
+                        (
+                            alloc::format!("farm_{}_land_{index}", entry.id),
+                            false,
+                            parcel.acquisition == crate::FarmLandAcquisition::Inherited
+                                || crate::dates::held_more_than_one_year(
+                                    parcel.acquired,
+                                    farm.land_sales[index].sold,
+                                ),
+                        )
+                    }
+                };
+                let value = part.filer;
+                let mut set = |suffix: &str, amount| {
+                    let id = alloc::format!("{prefix}_{suffix}");
+                    if let Some(row) = result.lines.iter_mut().find(|row| row.id == id) {
+                        row.amount = amount;
+                    }
+                };
+                if partial {
+                    set("partial_gain", value.gain);
+                    continue;
+                }
+                if let Some([realized, postponed, recapture1245]) = part.asset_detail {
+                    set("disposal_gain", value.gain + realized);
+                    set("disposal_postponed", postponed);
+                    set(
+                        "disposal_ordinary",
+                        if part.installment { value.recapture } else { value.ordinary },
+                    );
+                    set("disposal_section1231", value.section1231);
+                    set("disposal_1245_recapture", recapture1245);
+                    set("disposal_1250_recapture", value.recapture - recapture1245);
+                    set("disposal_installment_ordinary", value.ordinary - value.recapture);
+                    set("disposal_installment_gain", value.section1231);
+                    set("disposal_form6252_recapture", value.recapture);
+                    set("disposal_form6252_income", value.gain - value.recapture);
+                    set("disposal_form6252_ordinary", value.ordinary - value.recapture);
+                    set("disposal_form6252_gain", value.section1231);
+                    set("disposal_form6252_unrecaptured_1250", value.unrecaptured);
+                } else {
+                    set("gain", value.gain);
+                    set("ordinary", value.ordinary);
+                    set("section1231", value.section1231);
+                    set("unrecaptured", value.unrecaptured);
+                    set("conservation_recapture", value.recapture);
+                    set(
+                        "cost_sharing_recapture",
+                        if land_long { value.ordinary - value.recapture } else { 0 },
+                    );
+                    set("form6252_recapture", value.recapture);
+                    set("form6252_income", value.gain - value.recapture);
+                    set("form6252_ordinary", value.ordinary - value.recapture);
+                    set("form6252_gain", value.section1231);
+                }
+            }
+            if let Some(source) = self.direct.iter().find(|source| source.income == entry.id)
+                && let Some(whole) = source.whole
+            {
+                let label = crate::interview::income_display_arg(entry);
+                for (suffix, amount, key) in [
+                    ("total", whole.gain, "EXPLAIN_FORM8958_GAIN_N_TOTAL"),
+                    ("this_return", source.filer.gain, "EXPLAIN_FORM8958_GAIN_N_THIS_RETURN"),
+                    (
+                        "ordinary_this_return",
+                        source.filer.ordinary,
+                        "EXPLAIN_FORM8958_GAIN_ORDINARY",
+                    ),
+                    (
+                        "section1231_this_return",
+                        source.filer.section1231,
+                        "EXPLAIN_FORM8958_GAIN_SECTION1231",
+                    ),
+                ] {
+                    crate::line_emission::push_line(
+                        result,
+                        Some(crate::FormLine::new(crate::TaxForm::Form8958, "6")),
+                        &alloc::format!("form8958_gain_{}_{}", entry.id, suffix),
+                        amount,
+                        &["income", "setup.community_property"],
+                        "https://www.irs.gov/pub/irs-pdf/f8958.pdf",
+                        crate::Message::new(key, alloc::vec![label.clone()]),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn cent_direct(&self) -> alloc::vec::Vec<(i64, PropertyCents)> {
+        self.direct.iter().map(|row| (row.income, row.filer)).collect()
+    }
+}
+
+pub(crate) fn source_projection<'a>(
+    d: &crate::FederalDraft,
+    pool: &'a crate::extended_rules::RentalResult,
+    alternative: bool,
+    claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<alloc::borrow::Cow<'a, SourceProjection>, crate::activity_risk::SourceIssue> {
+    if let Some(result) = &pool.source_projection {
+        return match result.as_ref() {
+            Ok(value) if value.alternative == alternative => {
+                Ok(alloc::borrow::Cow::Borrowed(value))
+            }
+            Err(issue) => Err(issue.clone()),
+            _ => SourceProjection::produce(d, pool, alternative, claims)
+                .map(alloc::borrow::Cow::Owned),
+        };
+    }
+    SourceProjection::produce(d, pool, alternative, claims).map(alloc::borrow::Cow::Owned)
+}
+
+// Community-property projections preserve accepted source identity and facts.
+crate::community::divide_enum!(Answer { records: [], units: [Yes, No, NotSure], tuples: [] });

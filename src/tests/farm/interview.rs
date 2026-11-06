@@ -1,15 +1,17 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::support::assert::{accepted, rejected_with};
 use super::*;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::builders::native_income::{document, owned};
-use super::support::client::income_pages::{catalog_preview_document, open_topic, save_documents};
+use super::support::client::income_pages::{
+    catalog_preview_document, open_documents, open_topic, save_documents, save_topic,
+};
 use crate::tests::cross::interview::{
     PAGE_INCOME, assert_round_trip, at_the_payments_page, averaging_election, base_year, business,
-    cash_farm, farm_only_return, farm_save, figure_with, form_8615_return, go_to_from_review,
-    hub_rows, items_of, navigate, no_payments, open_payments, patr_parts, payments_value,
-    problem_text, reopened_farming, row_of, save_businesses, save_payments, stored_business,
-    stored_farm, submit, with_more,
+    cash_farm, farm_only_return, figure_with, form_8615_return, go_to_from_review, hub_rows,
+    items_of, navigate, no_payments, open_payments, patr_parts, payments_value, problem_text,
+    reopened_farming, row_of, save_businesses, save_payments, stored_business, stored_farm, submit,
+    with_more,
 };
 
 // T2-49b: Form 2210's farmer choices follow the 2026 two-thirds test that
@@ -17,12 +19,15 @@ use crate::tests::cross::interview::{
 #[test]
 fn farmer_choices_follow_the_2026_test_from_the_return() {
     let farmed_2025 = Payments {
-        penalty: figure_with(
-            PriorReturn::SameReturn,
-            WithholdingTiming::Evenly,
-            Farmer::Yes { paid_by_march_1: true },
-            Waiver::None,
-        ),
+        more: crate::PaymentsMore {
+            penalty: figure_with(
+                PriorReturn::SameReturn,
+                WithholdingTiming::Evenly,
+                Farmer::Yes { paid_by_march_1: true },
+                Waiver::None,
+            ),
+            ..no_payments().more
+        },
         ..no_payments()
     };
     // No farm (complete()'s $60,000 of wages only): the 2025 question, No or
@@ -32,12 +37,15 @@ fn farmer_choices_follow_the_2026_test_from_the_return() {
     assert_eq!(payments_value(&page).2, &[0, 1]);
     let before = s.draft.clone();
     let this_return = Payments {
-        penalty: figure_with(
-            PriorReturn::SameReturn,
-            WithholdingTiming::Evenly,
-            Farmer::ThisReturn { paid_by_march_1: false },
-            Waiver::None,
-        ),
+        more: crate::PaymentsMore {
+            penalty: figure_with(
+                PriorReturn::SameReturn,
+                WithholdingTiming::Evenly,
+                Farmer::ThisReturn { paid_by_march_1: false },
+                Waiver::None,
+            ),
+            ..no_payments().more
+        },
         ..no_payments()
     };
     // "Yes, for 2026" is refused on save when the return does not show it.
@@ -60,15 +68,18 @@ fn farmer_choices_follow_the_2026_test_from_the_return() {
     let before = s.draft.clone();
     error(send(&mut s, save_payments(&before, farmed_2025)));
     let with_worksheet = Payments {
-        next_year: NextYearEstimate::SameAsThisReturn {
-            farmer_fisherman_next_year: FarmerNextYear::NotNeeded,
+        more: crate::PaymentsMore {
+            next_year: NextYearEstimate::SameAsThisReturn {
+                farmer_fisherman_next_year: FarmerNextYear::NotNeeded,
+            },
+            penalty: figure_with(
+                PriorReturn::SameReturn,
+                WithholdingTiming::Evenly,
+                Farmer::ThisReturn { paid_by_march_1: true },
+                Waiver::None,
+            ),
+            ..this_return.more
         },
-        penalty: figure_with(
-            PriorReturn::SameReturn,
-            WithholdingTiming::Evenly,
-            Farmer::ThisReturn { paid_by_march_1: true },
-            Waiver::None,
-        ),
         ..this_return
     };
     accepted(&submit(&mut s, with_worksheet.clone()));
@@ -79,8 +90,8 @@ fn farmer_choices_follow_the_2026_test_from_the_return() {
     assert_eq!(r.state, ResultState::EstimatedForSupportedScope, "{:?}", r.issues);
     assert!(r.lines.iter().any(|l| l.id == "form_1040_es_line_12a"));
     let page = open_payments(&mut s);
-    assert_eq!(payments_value(&page).0.penalty, with_worksheet.penalty);
-    assert_eq!(payments_value(&page).0.next_year, with_worksheet.next_year);
+    assert_eq!(payments_value(&page).0.more.penalty, with_worksheet.more.penalty);
+    assert_eq!(payments_value(&page).0.more.next_year, with_worksheet.more.next_year);
 
     // Removing the farm makes the 2027 question required again without changing the accepted plan.
     let mut d = s.draft.clone();
@@ -97,14 +108,20 @@ fn farmer_choices_follow_the_2026_test_from_the_return() {
         allowed_farmer_next_year,
         vec![FarmerNextYear::Yes as i32, FarmerNextYear::No as i32]
     );
-    assert!(matches!(value.next_year, crate::federal_model::NextYearInitial::SameAsThisReturn));
-    assert!(matches!(value.penalty, PenaltyChoice::Figure { farmer: Farmer::No, .. }));
+    assert!(matches!(
+        value.more.next_year,
+        crate::federal_model::NextYearInitial::SameAsThisReturn
+    ));
+    assert!(matches!(value.more.penalty, PenaltyChoice::Figure { farmer: Farmer::No, .. }));
     assert_eq!(s.draft, before);
     let request = save_payments(
         &s.draft,
         Payments {
-            next_year: NextYearEstimate::SameAsThisReturn {
-                farmer_fisherman_next_year: FarmerNextYear::No,
+            more: crate::PaymentsMore {
+                next_year: NextYearEstimate::SameAsThisReturn {
+                    farmer_fisherman_next_year: FarmerNextYear::No,
+                },
+                ..no_payments().more
             },
             ..no_payments()
         },
@@ -112,7 +129,7 @@ fn farmer_choices_follow_the_2026_test_from_the_return() {
     accepted(&send(&mut s, request));
     let mut s = restart(s.draft);
     assert_eq!(
-        payments_value(&open_payments(&mut s)).0.next_year,
+        payments_value(&open_payments(&mut s)).0.more.next_year,
         NextYearEstimate::SameAsThisReturn { farmer_fisherman_next_year: FarmerNextYear::No }
     );
 }
@@ -122,7 +139,10 @@ fn farmer_choices_follow_the_2026_test_from_the_return() {
 #[test]
 fn farmer_2027_choices_follow_the_2026_test_and_are_checked_on_save() {
     let with_answer = |answer: FarmerNextYear| Payments {
-        next_year: NextYearEstimate::SameAsThisReturn { farmer_fisherman_next_year: answer },
+        more: crate::PaymentsMore {
+            next_year: NextYearEstimate::SameAsThisReturn { farmer_fisherman_next_year: answer },
+            ..no_payments().more
+        },
         ..no_payments()
     };
     // 2026-10-16 D05: No farm offers required Yes/No; the removed unknown is never supplied.
@@ -159,7 +179,7 @@ fn farmer_2027_choices_follow_the_2026_test_and_are_checked_on_save() {
     let (mut s, page) = at_the_payments_page(d);
     assert_eq!(payments_value(&page).3, &[FarmerNextYear::NotNeeded as i32]);
     assert_eq!(
-        payments_value(&page).0.next_year,
+        payments_value(&page).0.more.next_year,
         NextYearEstimate::SameAsThisReturn {
             farmer_fisherman_next_year: FarmerNextYear::NotNeeded
         }
@@ -192,9 +212,20 @@ fn commercial_fishing_round_trips_through_the_business_page() {
 
 #[test]
 fn patr_document_maps_onto_the_cooperative_record_and_back() {
-    let original = complete(FederalStatus::Single);
+    let mut original = complete(FederalStatus::Single);
+    // The farm that receives the PATR; the Farming page refuses it without one.
+    add(&mut original, income(crate::tests::support::builders::related_forms::receiving_farm()));
     let mut session = Interview::new(TEST_USER, original.clone());
+    let coop = |d: &FederalDraft| {
+        d.income
+            .iter()
+            .find(|e| matches!(e.income, FederalIncome::Cooperative { .. }))
+            .unwrap()
+            .clone()
+    };
     let mut patr = Patr1099 {
+        payer: Default::default(),
+        recipient: Default::default(),
         patronage: 1_600_000,
         nonpatronage: 100_000,
         per_unit_retains: 300_000,
@@ -203,28 +234,61 @@ fn patr_document_maps_onto_the_cooperative_record_and_back() {
         more: PatrMore { qualified_items: 1_900_000, ..Default::default() },
     };
     patr_parts(&mut patr, 200_000);
-    accepted(&send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::Patr1099(patr.clone()))]),
-    ));
-    let FederalIncome::Cooperative { data } = &session.draft.income[1].income else { panic!() };
+    accepted(
+        &({
+            let request = save_documents(
+                &mut session,
+                vec![document(0, IncomeSource::Farming(cooperative_document(patr.clone())))],
+            );
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        }),
+    );
+    let FederalIncome::Cooperative { data } = &coop(&session.draft).income else { panic!() };
     assert_eq!(
-        [data.patronage, data.nonpatronage, data.per_unit_retains, data.redeemed, data.withholding],
+        [
+            data.form.patronage,
+            data.form.nonpatronage,
+            data.form.per_unit_retains,
+            data.form.redeemed,
+            data.form.withholding,
+        ],
         [1_600_000, 100_000, 300_000, 200_000, 30_000]
     );
-    assert_eq!(data.allocations[0].personal.patronage, 200_000);
-    assert!(data.allocations[0].id > session.draft.income[1].id);
-    patr.more.allocations[0].id = data.allocations[0].id;
-    let P::SaveIncomes { documents, .. } = open_topic(&mut session, TaxSection::Farming) else {
-        panic!()
+    assert_eq!(data.more.allocations[0].personal.patronage, 200_000);
+    assert!(data.more.allocations[0].id > coop(&session.draft).id);
+    patr.more.allocations[0].id = data.more.allocations[0].id;
+    patr.more.credit_facts.activity = data.more.credit_facts.activity;
+    assert!(patr.more.credit_facts.activity.is_some(), "the single farm receives the PATR");
+    assert_eq!(Patr1099::from(data).more, patr.more);
+    let P::SaveDocuments { documents, .. } = open_documents(&mut session) else { panic!() };
+    let IncomeSource::Farming(expected) = expected_named_source(
+        &session.draft,
+        Owner::Taxpayer,
+        IncomeSource::Farming(cooperative_document(patr)),
+    ) else {
+        unreachable!()
     };
-    assert_eq!(documents.documents[0].document, IncomeDocument::Patr1099(patr));
+    assert_eq!(documents.other.farming.documents[0].document, expected);
+    // The single farm receives the PATR: nothing is left for the Review.
     let r = estimate(&session.draft);
-    assert_eq!(r.state, ResultState::Unsupported);
-    assert!(r.issues.iter().any(|i| i.message.contains("actual same-owner")), "{r:?}");
-    let FederalIncome::Cooperative { data } = &session.draft.income[1].income else { panic!() };
-    assert_eq!(data.withholding, 30_000);
-    assert!(r.lines.is_empty()); // Required-source unknown suppresses a provisional return.
+    assert!(
+        crate::related_forms::effective_claimants(&session.draft).contains_key(
+            &crate::related_forms::catalog(&session.draft)
+                .into_iter()
+                .find(|row| row.kind == crate::related_forms::DocumentKind::Patr1099)
+                .unwrap()
+                .id
+        )
+    );
+    assert!(!r.issues.iter().any(|issue| matches!(
+        issue.display.key.as_str(),
+        "ISSUE_RELATED_FORM_ACTIVITY_MISSING" | "ISSUE_RELATED_FORM_ACTIVITY_NOT_CHOSEN"
+    )));
+    let FederalIncome::Cooperative { data } = &coop(&session.draft).income else { panic!() };
+    assert_eq!(data.form.withholding, 30_000);
 }
 
 #[test]
@@ -232,16 +296,24 @@ fn patr_box_rules_reject_on_both_sides() {
     let original = complete(FederalStatus::Single);
     let attempt = |patr: Patr1099| {
         let mut session = Interview::new(TEST_USER, original.clone());
-        let reply = send(
-            &mut session,
-            save_documents(&original, vec![document(0, IncomeDocument::Patr1099(patr))]),
-        );
+        let reply = {
+            let request = save_documents(
+                &mut session,
+                vec![document(0, IncomeSource::Farming(cooperative_document(patr)))],
+            );
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        };
         if matches!(reply, Reply::Response(P::Problem { .. })) {
             assert_eq!(session.draft, original);
         }
         reply
     };
     let base = Patr1099 {
+        payer: Default::default(),
+        recipient: Default::default(),
         patronage: 100_000,
         nonpatronage: 20_000,
         per_unit_retains: 30_000,
@@ -249,12 +321,6 @@ fn patr_box_rules_reject_on_both_sides() {
         withholding: 0,
         more: Default::default(),
     };
-    let mut wide = base.clone();
-    wide.patronage = i64::MAX;
-    wide.nonpatronage = i64::MAX;
-    wide.withholding = i64::MAX;
-    wide.more.qualified_items = i64::MAX;
-    assert_eq!(crate::interview::document_rule(&IncomeDocument::Patr1099(wide)), None);
     let mut v = base.clone();
     v.withholding = 200_000;
     accepted(&attempt(v));
@@ -266,14 +332,34 @@ fn patr_box_rules_reject_on_both_sides() {
     accepted(&attempt(v));
     let mut v = base.clone();
     patr_parts(&mut v, 100_001);
-    let reply = attempt(v);
+    let mut session = Interview::new(TEST_USER, original.clone());
+    let desired = vec![document(0, IncomeSource::Farming(cooperative_document(v)))];
+    let request = save_documents(&mut session, desired.clone());
+    accepted(&send(&mut session, request));
+    let id = session.draft.income.last().unwrap().id;
+    let request = crate::tests::support::client::income_pages::information_return_answers(
+        &mut session,
+        &desired,
+    );
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    let row =
+        followups.iter().find(|row| row.key == alloc::format!("income/{id}/allocations")).unwrap();
+    let path: alloc::string::String = libertas::SchemaPath::root()
+        .field("followups")
+        .key(row.key.as_str())
+        .field("answer")
+        .field("value")
+        .index(0)
+        .field("personal")
+        .field("patronage")
+        .into();
+    let before = session.draft.clone();
+    let reply = send(&mut session, request);
+    assert_eq!(session.draft, before);
     let Reply::Response(P::Problem { field, .. }) = &reply else {
         panic!("personal patronage above box 1 must be refused")
     };
-    assert_eq!(
-        field.as_deref(),
-        Some("[documents/documents/0/document/more/allocations/0/personal/patronage]")
-    );
+    assert_eq!(field, &Some(path));
     // The canonical owner now carries the original allocation relationship's
     // named diagnostic, while the same equality/+1 boundary remains intact.
     rejected_with(reply, "COOP_PERSONAL_ABOVE_BOX1");
@@ -290,6 +376,8 @@ fn patr_missing_source_preserves_withholding_and_names_required_recipient() {
     let original = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
     let patr = Patr1099 {
+        payer: Default::default(),
+        recipient: Default::default(),
         patronage: 100_000,
         nonpatronage: 0,
         per_unit_retains: 0,
@@ -297,16 +385,26 @@ fn patr_missing_source_preserves_withholding_and_names_required_recipient() {
         withholding: 1_000,
         more: Default::default(),
     };
-    accepted(&send(
-        &mut session,
-        save_documents(&original, vec![document(0, IncomeDocument::Patr1099(patr))]),
-    ));
+    accepted(
+        &({
+            let request = save_documents(
+                &mut session,
+                vec![document(0, IncomeSource::Farming(cooperative_document(patr)))],
+            );
+            send(&mut session, request)
+        }),
+    );
     let r = estimate(&session.draft);
     assert_eq!(r.state, ResultState::Unsupported);
     let FederalIncome::Cooperative { data } = &session.draft.income[1].income else { panic!() };
-    assert_eq!(data.withholding, 1_000);
+    assert_eq!(data.form.withholding, 1_000);
     assert!(r.lines.is_empty());
-    assert!(r.issues.iter().any(|i| i.message.contains("actual same-owner")), "{r:?}");
+    missing_related_activity(
+        &session.draft,
+        &r,
+        crate::related_forms::DocumentKind::Patr1099,
+        &[TaxSection::SelfEmployment, TaxSection::Farming],
+    );
 }
 // Every branch of the farm kind at once.
 fn farm_parcel_fixture(acquired: u32, basis: i64) -> FarmLandBasis {
@@ -324,15 +422,15 @@ fn farm_parcel_fixture(acquired: u32, basis: i64) -> FarmLandBasis {
 }
 // Exercise the real save/reopen/select path; an unsaved parcel is not an ID.
 fn farm_parcel_parts(
-    document: &mut IncomeDocument,
+    document: &mut IncomeSource,
 ) -> Option<(&mut Vec<FarmLandBasis>, &mut Vec<LandSale>, &mut Conservation)> {
     match document {
-        IncomeDocument::Farm(farm) => Some((
+        IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } => Some((
             &mut farm.more.land_basis,
             &mut farm.more.land_sales,
             &mut farm.more.conservation,
         )),
-        IncomeDocument::FarmRental(farm) => Some((
+        IncomeSource::Record { value: crate::IncomeRecord::FarmRental(farm) } => Some((
             &mut farm.more.land_basis,
             &mut farm.more.land_sales,
             &mut farm.more.conservation,
@@ -368,30 +466,45 @@ pub(in crate::tests) fn accept_farm_sale_parcels(
             *conservation = Conservation::None;
         }
     }
-    let before = session.draft.clone();
-    accepted(&send(session, farm_save(&before, initial)));
+    accepted(&{
+        let request = save_topic(session, TaxSection::Farming, initial);
+        send(session, request)
+    });
     let P::SaveIncomes { documents, .. } = open_topic(session, TaxSection::Farming) else {
         unreachable!()
     };
+    let accepted_rows = documents
+        .documents
+        .into_iter()
+        .map(crate::IncomeRecordItem::into_income)
+        .collect::<Vec<_>>();
     for item in items {
         let name = match &item.document {
-            IncomeDocument::Farm(farm) => Some((false, farm.name.clone())),
-            IncomeDocument::FarmRental(farm) => Some((true, farm.name.clone())),
+            IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } => {
+                Some((false, farm.name.clone()))
+            }
+            IncomeSource::Record { value: crate::IncomeRecord::FarmRental(farm) } => {
+                Some((true, farm.name.clone()))
+            }
             _ => None,
         };
         let Some((rental, name)) = name else {
             continue;
         };
-        let mut accepted = documents
-            .documents
+        let matches = accepted_rows
             .iter()
-            .find(|record| match &record.document {
-                IncomeDocument::Farm(farm) => !rental && farm.name == name,
-                IncomeDocument::FarmRental(farm) => rental && farm.name == name,
+            .filter(|record| match &record.document {
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } => {
+                    !rental && farm.name == name
+                }
+                IncomeSource::Record { value: crate::IncomeRecord::FarmRental(farm) } => {
+                    rental && farm.name == name
+                }
                 _ => false,
             })
-            .unwrap()
-            .clone();
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "one accepted source for the synthetic farm fixture");
+        let mut accepted = (*matches[0]).clone();
         item.id = accepted.id;
         let (accepted_land, _, _) = farm_parcel_parts(&mut accepted.document).unwrap();
         let (land, sales, conservation) = farm_parcel_parts(&mut item.document).unwrap();
@@ -448,7 +561,6 @@ fn full_farm() -> Farm {
     farm.insurance = CropInsurance::Payments {
         physical: vec![CropLoss { crop: "Grain".into(), amount: 700_000, year: 2026 }],
         price_only: 100_000,
-        election: CropDeferralChoice::Defer { practice: crop_practice() },
         from_prior_year: 50_000,
         withholding: 10_000,
     };
@@ -487,6 +599,9 @@ fn full_farm() -> Farm {
         },
     }];
     farm.assets = vec![Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -494,16 +609,22 @@ fn full_farm() -> Farm {
         cost: 5_000_000,
         credit_reduction: 0,
         placed: 20150601,
-        class: AssetClass::Seven,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class: AssetClass::Seven,
+                history: AssetHistory::Continuing {
+                    prior_depreciation: 4_000_000,
+                    first_year_179: 0,
+                    first_year_bonus: 0,
+                    carryforward: 0,
+                    mid_quarter: false,
+                },
+            },
+        },
         business_percent: 100,
         acquired: None,
-        history: AssetHistory::Continuing {
-            prior_depreciation: 4_000_000,
-            first_year_179: 0,
-            first_year_bonus: 0,
-            carryforward: 0,
-            mid_quarter: false,
-        },
         disposal: AssetDisposal::No,
         investment_credit: crate::InvestmentCredit::No,
         earlier_business_percent: None,
@@ -581,6 +702,8 @@ fn full_farm() -> Farm {
         };
         *land_basis = vec![farm_parcel_fixture(20100301, 8_000_000)];
         *land_sales = vec![LandSale {
+            farm_rental_use: None,
+            allowed_farm_rental_use: alloc::vec::Vec::new(),
             label: "East 40 acres".into(),
             id: 0,
             basis_property: 0,
@@ -606,13 +729,29 @@ fn farm_page_maps_every_branch_onto_the_stored_farm_and_back() {
     let original = farm_only_return();
     let mut session = Interview::new(TEST_USER, original.clone());
     let mut documents = vec![
-        document(0, IncomeDocument::Farm(full_farm())),
-        document(0, IncomeDocument::FarmAveraging(averaging_election())),
-        document(0, IncomeDocument::FarmLoss(FarmLossWaiver { choice: FarmLossChoice::Waive })),
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(full_farm()) }),
+        document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::FarmAveraging(averaging_election()),
+            },
+        ),
+        document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::FarmLoss(FarmLossWaiver {
+                    choice: FarmLossChoice::Waive,
+                }),
+            },
+        ),
     ];
     accept_farm_sale_parcels(&mut session, &mut documents);
-    let before = session.draft.clone();
-    accepted(&send(&mut session, farm_save(&before, documents.clone())));
+    accepted(&{
+        let request = save_topic(&mut session, TaxSection::Farming, documents.clone());
+        send(&mut session, request)
+    });
+    accepted(&answer_crop_timing(&mut session, CropPaperTiming::Defer));
+    accepted(&answer_crop_practice(&mut session, "Grain", 750_000));
     let d = session.draft.clone();
     assert_eq!(d.income[0].label, "North field corn");
     let (data, farm) = stored_farm(&d);
@@ -633,13 +772,12 @@ fn farm_page_maps_every_branch_onto_the_stored_farm_and_back() {
     // both confirmations Yes.
     assert_eq!(
         farm.insurance,
-        FarmInsurance::Payments {
+        FarmInsuranceRecords::Payments {
             current: vec![
                 CropPayment::Physical { crop: "Grain".into(), amount: 700_000, year: 2026 },
                 CropPayment::Other { amount: 100_000 },
             ],
             previous_deferred: 50_000,
-            election: CropDeferral::Defer { practice: crop_practice() },
             withholding: 10_000,
         }
     );
@@ -731,12 +869,12 @@ fn farm_page_maps_every_branch_onto_the_stored_farm_and_back() {
     // nothing new.
     let (_, reopened) = reopened_farming(&mut session);
     // The reopened page carries the identities the save assigned to the loans.
-    let mut expected: Vec<IncomeDocument> = documents.iter().map(|i| i.document.clone()).collect();
-    if let IncomeDocument::Farm(page) = &mut expected[0] {
+    let mut expected: Vec<IncomeSource> = documents.iter().map(|i| i.document.clone()).collect();
+    if let IncomeSource::Record { value: crate::IncomeRecord::Farm(page) } = &mut expected[0] {
         bind_saved_property_ids(&mut page.assets, &mut page.vehicles, &data.assets);
         crate::tests::support::client::bind_saved_mileage_ids(&mut page.vehicles, &data.vehicles);
     }
-    if let IncomeDocument::Farm(page) = &mut expected[0]
+    if let IncomeSource::Record { value: crate::IncomeRecord::Farm(page) } = &mut expected[0]
         && let CccLoans::Loans { loans, .. } = &mut page.more.ccc
     {
         for (loan, lot) in loans.iter_mut().zip(&ccc.lots) {
@@ -744,7 +882,7 @@ fn farm_page_maps_every_branch_onto_the_stored_farm_and_back() {
             *id = lot.id;
         }
     }
-    if let IncomeDocument::Farm(page) = &mut expected[0] {
+    if let IncomeSource::Record { value: crate::IncomeRecord::Farm(page) } = &mut expected[0] {
         for (sale, record) in page.more.land_sales.iter_mut().zip(&farm.land_sales) {
             sale.id = record.id;
         }
@@ -755,10 +893,12 @@ fn farm_page_maps_every_branch_onto_the_stored_farm_and_back() {
         let P::SaveIncomes { documents, .. } = open_topic(&mut session, TaxSection::Farming) else {
             unreachable!()
         };
-        documents.documents
+        documents.documents.into_iter().map(crate::IncomeRecordItem::into_income).collect()
     };
-    let draft = session.draft.clone();
-    accepted(&send(&mut session, farm_save(&draft, items)));
+    accepted(&{
+        let request = save_topic(&mut session, TaxSection::Farming, items);
+        send(&mut session, request)
+    });
     assert_eq!(session.draft.revision, revision);
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
 }
@@ -782,10 +922,13 @@ fn accrual_farm_and_cost_sharing_round_trip() {
         more.cost_sharing = 25_000;
     });
     let documents = vec![
-        document(0, IncomeDocument::Farm(accrual)),
-        document(0, IncomeDocument::Farm(sharing)),
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(accrual) }),
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(sharing) }),
     ];
-    accepted(&send(&mut session, farm_save(&original, documents.clone())));
+    accepted(&{
+        let request = save_topic(&mut session, TaxSection::Farming, documents.clone());
+        send(&mut session, request)
+    });
     let FederalIncome::Business { data } = &session.draft.income[0].income else { unreachable!() };
     let BusinessActivity::Farming { data: farm } = &data.activity else { unreachable!() };
     assert_eq!(
@@ -840,10 +983,13 @@ fn farm_client_rules_reject_on_the_server_at_their_boundary() {
         let mut session = Interview::new(TEST_USER, original.clone());
         let mut documents = documents;
         accept_farm_sale_parcels(&mut session, &mut documents);
-        let before = session.draft.clone();
-        send(&mut session, farm_save(&before, documents))
+        {
+            let request = save_topic(&mut session, TaxSection::Farming, documents);
+            send(&mut session, request)
+        }
     };
-    let farm = |f: Farm| vec![document(0, IncomeDocument::Farm(f))];
+    let farm =
+        |f: Farm| vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(f) })];
     // FARM_COST_SHARING_NEEDS_CASH: accrual with a cost-sharing amount.
     let accrual = |sharing: i64| {
         let mut f = with_more(cash_farm(0, 0), |more| {
@@ -908,6 +1054,8 @@ fn farm_client_rules_reject_on_the_server_at_their_boundary() {
         with_more(cash_farm(1_000_000, 0), |more| {
             more.land_basis = vec![farm_parcel_fixture(acquired, 50_000)];
             more.land_sales = vec![LandSale {
+                farm_rental_use: None,
+                allowed_farm_rental_use: alloc::vec::Vec::new(),
                 label: "Parcel".into(),
                 id: 0,
                 basis_property: 0,
@@ -927,8 +1075,11 @@ fn farm_client_rules_reject_on_the_server_at_their_boundary() {
         let mut v = averaging_election();
         edit(&mut v);
         vec![
-            document(0, IncomeDocument::Farm(cash_farm(5_000_000, 0))),
-            document(0, IncomeDocument::FarmAveraging(v)),
+            document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(5_000_000, 0)) },
+            ),
+            document(0, IncomeSource::Record { value: crate::IncomeRecord::FarmAveraging(v) }),
         ]
     };
     accepted(&attempt(averaging(|v| v.base_third_prior_year = base_year(1_460_000))));
@@ -952,16 +1103,32 @@ fn farm_client_rules_reject_on_the_server_at_their_boundary() {
     );
     // FARM_AVERAGING_TWICE and FARM_LOSS_TWICE.
     let mut twice = averaging(|_| {});
-    twice.push(document(0, IncomeDocument::FarmAveraging(averaging_election())));
+    twice.push(document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::FarmAveraging(averaging_election()) },
+    ));
     rejected_with(attempt(twice), "FARM_AVERAGING_TWICE");
-    let waiver =
-        || document(0, IncomeDocument::FarmLoss(FarmLossWaiver { choice: FarmLossChoice::Waive }));
+    let waiver = || {
+        document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::FarmLoss(FarmLossWaiver {
+                    choice: FarmLossChoice::Waive,
+                }),
+            },
+        )
+    };
     accepted(&attempt(vec![waiver()]));
     rejected_with(attempt(vec![waiver(), waiver()]), "FARM_LOSS_TWICE");
     // The preview checks the farm's rules too.
     let mut session = Interview::new(TEST_USER, original.clone());
     rejected_with(
-        send(&mut session, catalog_preview_document(IncomeDocument::Farm(accrual(1)))),
+        send(
+            &mut session,
+            catalog_preview_document(IncomeSource::Record {
+                value: crate::IncomeRecord::Farm(accrual(1)),
+            }),
+        ),
         "FARM_COST_SHARING_NEEDS_CASH",
     );
 }
@@ -973,11 +1140,15 @@ fn farm_server_only_rules_reject_at_their_boundary() {
         let mut session = Interview::new(TEST_USER, original.clone());
         let mut documents = farms
             .into_iter()
-            .map(|(owner, f)| owned(owner, 0, IncomeDocument::Farm(f)))
+            .map(|(owner, f)| {
+                owned(owner, 0, IncomeSource::Record { value: crate::IncomeRecord::Farm(f) })
+            })
             .collect::<Vec<_>>();
         accept_farm_sale_parcels(&mut session, &mut documents);
-        let before = session.draft.clone();
-        send(&mut session, farm_save(&before, documents))
+        {
+            let request = save_topic(&mut session, TaxSection::Farming, documents);
+            send(&mut session, request)
+        }
     };
     let one = |f: Farm| vec![(Owner::Taxpayer, f)];
     // CROP_WITHHOLDING_ABOVE_PAYMENTS: the payments plus the 2025 amount.
@@ -986,7 +1157,6 @@ fn farm_server_only_rules_reject_at_their_boundary() {
         f.insurance = CropInsurance::Payments {
             physical: vec![CropLoss { crop: "Grain".into(), amount: 60_000, year: 2026 }],
             price_only: 30_000,
-            election: CropDeferralChoice::Include,
             from_prior_year: 10_000,
             withholding,
         };
@@ -1021,24 +1191,14 @@ fn farm_server_only_rules_reject_at_their_boundary() {
     };
     accepted(&attempt(one(paid(25_000))));
     rejected_with(attempt(one(paid(25_001))), "CONSERVATION_PAYMENTS_ABOVE_SHARE");
-    rejected_with(attempt(one(paid(i64::MAX))), "CONSERVATION_PAYMENTS_ABOVE_SHARE");
-    let mut over = insured(100_000);
-    let CropInsurance::Payments { physical, price_only, .. } = &mut over.insurance else {
-        unreachable!()
-    };
-    physical[0].amount = i64::MAX;
-    *price_only = i64::MAX;
-    assert_eq!(crate::farm_page::farm_issue(&over), None);
-    let mut over = cash_farm(i64::MAX, 0);
-    let FarmMethod::Cash { program, .. } = &mut over.accounting else { unreachable!() };
-    *program = i64::MAX;
-    assert_eq!(crate::farm_page::farm_issue(&over), None);
 
     // FARM_LAND_SOLD_OUTSIDE_CURRENT_YEAR: December 31, 2026 passes, 2027 does not.
     let sold = |date| {
         with_more(cash_farm(1_000_000, 0), |more| {
             more.land_basis = vec![farm_parcel_fixture(20100101, 50_000)];
             more.land_sales = vec![LandSale {
+                farm_rental_use: None,
+                allowed_farm_rental_use: alloc::vec::Vec::new(),
                 label: "Parcel".into(),
                 id: 0,
                 basis_property: 0,
@@ -1080,8 +1240,16 @@ fn farm_server_only_rules_reject_at_their_boundary() {
                 "income-source-2043",
                 &mut source,
                 vec![
-                    owned(Owner::Taxpayer, 0, IncomeDocument::Farm(se(true))),
-                    owned(Owner::Taxpayer, 0, IncomeDocument::Farm(se(false))),
+                    owned(
+                        Owner::Taxpayer,
+                        0,
+                        IncomeSource::Record { value: crate::IncomeRecord::Farm(se(true)) },
+                    ),
+                    owned(
+                        Owner::Taxpayer,
+                        0,
+                        IncomeSource::Record { value: crate::IncomeRecord::Farm(se(false)) },
+                    ),
                 ],
                 "FARM_OPTIONAL_SE_DIFFERS",
                 "[documents/documents/1/document/more/optional_se]",
@@ -1091,16 +1259,25 @@ fn farm_server_only_rules_reject_at_their_boundary() {
     );
     let joint = empty_return(FederalStatus::Joint);
     let mut session = Interview::new(TEST_USER, joint.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &joint,
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             vec![
-                owned(Owner::Taxpayer, 0, IncomeDocument::Farm(se(true))),
-                owned(Owner::Spouse, 0, IncomeDocument::Farm(se(false))),
+                owned(
+                    Owner::Taxpayer,
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Farm(se(true)) },
+                ),
+                owned(
+                    Owner::Spouse,
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Farm(se(false)) },
+                ),
             ],
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     assert_eq!(
         session.draft.screening.as_ref().unwrap().optional_se,
         vec![SeElection { owner: Owner::Taxpayer, farm: true, nonfarm: None }]
@@ -1112,25 +1289,30 @@ fn farm_refusals_are_named_under_the_farming_page() {
     let original = farm_only_return();
     let refused = |documents: Vec<IncomeDocumentItem>, section: &str| {
         let mut session = Interview::new(TEST_USER, original.clone());
-        accepted(&send(&mut session, farm_save(&original, documents)));
+        accepted(&{
+            let request = save_topic(&mut session, TaxSection::Farming, documents);
+            send(&mut session, request)
+        });
         let r = estimate(&session.draft);
         assert!(r.issues.iter().any(|i| i.section == section), "{section}: {:?}", r.issues);
         let items = items_of(&mut session);
         assert!(items.iter().any(|(_, _, s)| *s == TaxSection::Farming), "{section}: {items:?}");
     };
-    let farm = |f: Farm| vec![document(0, IncomeDocument::Farm(f))];
+    let farm =
+        |f: Farm| vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(f) })];
     // A named actual unentered accounting transition retains known farm
     // receipts while the missing required timing source prevents final tax.
     let mut session = Interview::new(TEST_USER, original.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &original,
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             farm(with_more(cash_farm(1_000_000, 0), |more| {
                 more.specials.limitations = vec![3];
             })),
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     let result = estimate(&session.draft);
     assert_eq!(result.tax, None);
     assert!(
@@ -1149,10 +1331,10 @@ fn farm_refusals_are_named_under_the_farming_page() {
     // Actual missing CCC ownership/basis is a mandatory source boundary;
     // the accepted loan remains instead of dropping its required income.
     let mut session = Interview::new(TEST_USER, original.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &original,
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             farm(with_more(cash_farm(1_000_000, 0), |more| {
                 more.ccc = CccLoans::Loans {
                     method: CccMethod::Loan,
@@ -1169,8 +1351,9 @@ fn farm_refusals_are_named_under_the_farming_page() {
                     },
                 };
             })),
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     assert!(
         estimate(&session.draft)
             .issues
@@ -1195,74 +1378,102 @@ fn farm_refusals_are_named_under_the_farming_page() {
         };
     }));
     accept_farm_sale_parcels(&mut session, &mut documents);
-    let current = session.draft.clone();
-    accepted(&send(&mut session, farm_save(&current, documents)));
+    accepted(&{
+        let request = save_topic(&mut session, TaxSection::Farming, documents);
+        send(&mut session, request)
+    });
     assert!(noted(&supported(&session.draft), "WARN_FARM_CONSERVATION_FACTS_OMITTED"));
     // Schedule J's Something else applies: averaging is left out.
     let mut averaging = averaging_election();
     averaging.selection.history_scope = FarmAveragingHistoryScope::ShortYearOrForeign;
     let mut session = Interview::new(TEST_USER, original.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &original,
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             vec![
-                document(0, IncomeDocument::Farm(cash_farm(5_000_000, 0))),
-                document(0, IncomeDocument::FarmAveraging(averaging)),
+                document(
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::Farm(cash_farm(5_000_000, 0)),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::FarmAveraging(averaging) },
+                ),
             ],
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     assert!(noted(&supported(&session.draft), "WARN_FARM_AVERAGING_HISTORY_LEFT_OUT"));
     // The loss carried back (refused by name), with a farm loss making an
     // NOL; the Farming page then offers the loss kind (F7).
     let mut session = Interview::new(TEST_USER, original.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &original,
-            vec![document(0, IncomeDocument::Farm(cash_farm(100_000, 3_000_000)))],
-        ),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Farm(cash_farm(100_000, 3_000_000)),
+                },
+            )],
+        );
+        send(&mut session, request)
+    });
     let (allowed, _) = reopened_farming(&mut session);
-    let loss_kind = libertas_macros::variant_index!(IncomeDocument::FarmLoss) as i32;
-    let averaging_kind = libertas_macros::variant_index!(IncomeDocument::FarmAveraging) as i32;
+    let loss_kind = libertas_macros::variant_index!(crate::IncomeSourceKind::FarmLoss) as i32;
+    let averaging_kind =
+        libertas_macros::variant_index!(crate::IncomeSourceKind::FarmAveraging) as i32;
     assert!(allowed.contains(&loss_kind), "{allowed:?}");
     assert!(!allowed.contains(&averaging_kind), "{allowed:?}");
     assert!(estimate(&session.draft).issues.iter().any(|i| i.section == "Farm loss"));
-    let farm_item =
-        document(session.draft.income[0].id, IncomeDocument::Farm(cash_farm(100_000, 3_000_000)));
-    let draft = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &draft,
+    let farm_item = document(
+        session.draft.income[0].id,
+        IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(100_000, 3_000_000)) },
+    );
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             vec![
                 farm_item.clone(),
                 document(
                     0,
-                    IncomeDocument::FarmLoss(FarmLossWaiver { choice: FarmLossChoice::Carryback }),
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::FarmLoss(FarmLossWaiver {
+                            choice: FarmLossChoice::Carryback,
+                        }),
+                    },
                 ),
             ],
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     let r = estimate(&session.draft);
     assert!(r.issues.is_empty(), "{r:?}");
     assert!(r.review_notes.iter().any(|n| n.display.key == "NOTE_FARMING_LOSS_CARRYBACK_KEPT"));
     // Waiving it computes the carryforward with the waiver note instead.
-    let draft = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &draft,
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             vec![
                 farm_item,
                 document(
                     0,
-                    IncomeDocument::FarmLoss(FarmLossWaiver { choice: FarmLossChoice::Waive }),
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::FarmLoss(FarmLossWaiver {
+                            choice: FarmLossChoice::Waive,
+                        }),
+                    },
                 ),
             ],
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     assert!(!estimate(&session.draft).issues.iter().any(|i| i.section == "Farm loss"));
 }
 
@@ -1272,14 +1483,22 @@ fn farming_page_offers_schedule_j_only_with_a_farm_profit() {
     // offers Schedule J; a stored kind stays offered.
     let original = farm_only_return();
     let mut session = Interview::new(TEST_USER, original.clone());
-    let loss_kind = libertas_macros::variant_index!(IncomeDocument::FarmLoss) as i32;
-    let averaging_kind = libertas_macros::variant_index!(IncomeDocument::FarmAveraging) as i32;
+    let loss_kind = libertas_macros::variant_index!(crate::IncomeSourceKind::FarmLoss) as i32;
+    let averaging_kind =
+        libertas_macros::variant_index!(crate::IncomeSourceKind::FarmAveraging) as i32;
     let (allowed, _) = reopened_farming(&mut session);
     assert!(!allowed.contains(&averaging_kind) && !allowed.contains(&loss_kind));
-    accepted(&send(
-        &mut session,
-        farm_save(&original, vec![document(0, IncomeDocument::Farm(cash_farm(5_000_000, 0)))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(5_000_000, 0)) },
+            )],
+        );
+        send(&mut session, request)
+    });
     let (allowed, _) = reopened_farming(&mut session);
     assert!(allowed.contains(&averaging_kind) && !allowed.contains(&loss_kind));
 }
@@ -1293,6 +1512,9 @@ fn pre_2018_farm_property_uses_150_percent_and_is_not_refused() {
     let mut session = Interview::new(TEST_USER, original.clone());
     let mut farm = cash_farm(5_000_000, 0);
     farm.assets = vec![Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -1300,25 +1522,35 @@ fn pre_2018_farm_property_uses_150_percent_and_is_not_refused() {
         cost: 4_000_000,
         credit_reduction: 0,
         placed: 20160401,
-        class: AssetClass::Seven,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class: AssetClass::Seven,
+                history: AssetHistory::Continuing {
+                    prior_depreciation: 3_000_000,
+                    first_year_179: 0,
+                    first_year_bonus: 0,
+                    carryforward: 0,
+                    mid_quarter: false,
+                },
+            },
+        },
         business_percent: 100,
         acquired: None,
-        history: AssetHistory::Continuing {
-            prior_depreciation: 3_000_000,
-            first_year_179: 0,
-            first_year_bonus: 0,
-            carryforward: 0,
-            mid_quarter: false,
-        },
         disposal: AssetDisposal::No,
         investment_credit: crate::InvestmentCredit::No,
         earlier_business_percent: None,
         partial: None,
     }];
-    accepted(&send(
-        &mut session,
-        farm_save(&original, vec![document(0, IncomeDocument::Farm(farm))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+        );
+        send(&mut session, request)
+    });
     let (data, _) = stored_farm(&session.draft);
     assert_eq!(data.assets[0].method, EquipmentMethod::Declining150);
     let r = estimate(&session.draft);
@@ -1351,13 +1583,20 @@ fn farm_owned_vehicle_uses_selected_costs_and_survives_native_save_and_restart()
         description: "Farm delivery car".into(),
         elected: 200_000,
     })];
-    accepted(&send(
-        &mut session,
-        farm_save(&original, vec![document(0, IncomeDocument::Farm(farm.clone()))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(farm.clone()) },
+            )],
+        );
+        send(&mut session, request)
+    });
     let entry = &session.draft.income[0];
     let source = entry.id;
-    assert_eq!(entry.owner, Owner::Taxpayer);
+    assert_eq!(entry.owner, crate::DocumentOwner::Yours);
     let (data, _) = stored_farm(&session.draft);
     bind_saved_property_ids(&mut farm.assets, &mut farm.vehicles, &data.assets);
     // $10,000 x 75% business use: $2,000 section179 and $5,500 bonus.
@@ -1389,12 +1628,19 @@ fn farm_owned_vehicle_uses_selected_costs_and_survives_native_save_and_restart()
         assert_eq!(selected.allocation.expenses(source), Ok(1_300_000));
     }
     let (_, reopened) = reopened_farming(&mut session);
-    assert_eq!(reopened, vec![IncomeDocument::Farm(farm)]);
+    assert_eq!(reopened, vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }]);
     let saved = session.draft.clone();
     let P::SaveIncomes { documents, .. } = open_topic(&mut session, TaxSection::Farming) else {
         unreachable!()
     };
-    accepted(&send(&mut session, farm_save(&saved, documents.documents)));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            documents.documents.into_iter().map(crate::IncomeRecordItem::into_income).collect(),
+        );
+        send(&mut session, request)
+    });
     assert_eq!(session.draft.revision, saved.revision);
     let mut cold = restart(session.draft);
     assert_eq!(reopened_farming(&mut cold).1, reopened);
@@ -1422,19 +1668,30 @@ fn farm_income_source_offers_no_services_choice_and_both_work_values_round_trip(
         let farm = with_more(cash_farm(1_000_000, 0), |more| {
             more.income_source = choice.clone();
         });
-        accepted(&send(
-            &mut session,
-            farm_save(&original, vec![document(0, IncomeDocument::Farm(farm))]),
-        ));
+        accepted(&{
+            let request = save_topic(
+                &mut session,
+                TaxSection::Farming,
+                vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+            );
+            send(&mut session, request)
+        });
         assert_eq!(stored_farm(&session.draft).0.income_source, stored);
         let (_, reopened) = reopened_farming(&mut session);
-        let IncomeDocument::Farm(farm) = &reopened[0] else { unreachable!() };
+        let IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } = &reopened[0] else {
+            unreachable!()
+        };
         assert_eq!(farm.more.income_source, choice);
         // Saving the reopened page stores no new revision.
         let revision = session.draft.revision;
-        let request = farm_save(
-            &session.draft.clone(),
-            vec![document(session.draft.income[0].id, IncomeDocument::Farm(farm.clone()))],
+        let farm_id = session.draft.income[0].id;
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                farm_id,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(farm.clone()) },
+            )],
         );
         accepted(&send(&mut session, request));
         assert_eq!(session.draft.revision, revision);
@@ -1443,25 +1700,30 @@ fn farm_income_source_offers_no_services_choice_and_both_work_values_round_trip(
     // needed, for a young filer too, who must then choose on save.
     let adult = farm_only_return();
     let mut session = Interview::new(TEST_USER, adult.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &adult,
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
             vec![document(
                 0,
-                IncomeDocument::Farm(with_more(cash_farm(1_000_000, 0), |more| {
-                    more.optional_se = true;
-                })),
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::Farm(with_more(cash_farm(1_000_000, 0), |more| {
+                        more.optional_se = true;
+                    })),
+                },
             )],
-        ),
-    ));
+        );
+        send(&mut session, request)
+    });
     let mut young = session.draft.clone();
     young.people.as_mut().unwrap().taxpayer.birth_date = 20080101;
     let FederalIncome::Business { data } = &mut young.income[0].income else { unreachable!() };
     data.income_source = BusinessIncomeSource::Services;
     let mut session = restart(young);
     let (_, reopened) = reopened_farming(&mut session);
-    let IncomeDocument::Farm(farm) = &reopened[0] else { unreachable!() };
+    let IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } = &reopened[0] else {
+        unreachable!()
+    };
     assert_eq!(farm.more.income_source, FarmIncomeSource::NotNeeded);
 }
 
@@ -1485,12 +1747,13 @@ fn farming_topic_reaches_the_schedule_f_cooperative_fixture_totals() {
     let original = farm_only_return();
     let mut session = Interview::new(TEST_USER, original.clone());
     let patr = Patr1099 {
+        payer: Default::default(),
+        recipient: Default::default(),
         patronage: 1_600_000,
         nonpatronage: 100_000,
         per_unit_retains: 300_000,
         withholding: 30_000,
         redeemed: 200_000,
-
         more: PatrMore {
             section_199a_g: 0,
             qualified_payments: 800_000,
@@ -1503,28 +1766,28 @@ fn farming_topic_reaches_the_schedule_f_cooperative_fixture_totals() {
     let mut patr = patr;
     patr_parts(&mut patr, 200_000);
     let farm = cash_farm(4_000_000, 1_000_000);
-    // The row preview is line 34 with the routed 1099-PATR on the return.
-    accepted(&send(
-        &mut session,
-        farm_save(&original, vec![document(0, IncomeDocument::Patr1099(patr.clone()))]),
-    ));
-    let Reply::Response(P::IncomePreview { preview, .. }) =
-        send(&mut session, catalog_preview_document(IncomeDocument::Farm(farm.clone())))
-    else {
-        panic!("expected a preview")
-    };
-    assert_eq!(preview, Some(5_000_000));
-    let draft = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        farm_save(
-            &draft,
-            vec![
-                document(draft.income[0].id, IncomeDocument::Patr1099(patr)),
-                document(0, IncomeDocument::Farm(farm)),
-            ],
-        ),
-    ));
+    // The farm is on the return first: the Farming page refuses the PATR without one.
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(farm.clone()) },
+            )],
+        );
+        send(&mut session, request)
+    });
+    accepted(&{
+        let request = save_documents(
+            &mut session,
+            vec![document(0, IncomeSource::Farming(cooperative_document(patr.clone())))],
+        );
+        crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            request,
+        )
+    });
     let r = supported(&session.draft);
     assert_eq!(value(&r, "self_employment_tax"), 7065);
     assert_eq!(value(&r, "agi"), 46467);
@@ -1561,7 +1824,7 @@ fn farming_topic_reaches_the_schedule_f_cooperative_fixture_totals() {
     assert!(
         hub_rows(&hub).contains(&row_of(
             "Farming",
-            "1 1099-PATR, 1 farm · $50000.00",
+            "1 farm, 1 1099-PATR · $50000.00",
             TaxSection::Farming
         )),
         "{:?}",
@@ -1570,8 +1833,11 @@ fn farming_topic_reaches_the_schedule_f_cooperative_fixture_totals() {
     let P::SaveIncomes { documents, .. } = open_topic(&mut session, TaxSection::Farming) else {
         unreachable!()
     };
-    let farm_row =
-        documents.documents.iter().find(|i| matches!(i.document, IncomeDocument::Farm(_))).unwrap();
+    let farm_row = documents
+        .documents
+        .iter()
+        .find(|i| matches!(i.document, crate::IncomeRecord::Farm(_)))
+        .unwrap();
     assert_eq!(farm_row.preview, Some(5_000_000));
 }
 
@@ -1584,7 +1850,7 @@ fn farm_ccc_and_crop_insurance_lines_are_tagged() {
     // deferred from 2025 (6d); deferring the 2026 physical loss leaves 6b =
     // 8,000 - 7,000 = 1,000, including all of it leaves 6b = 8,000.
     let original = farm_only_return();
-    let lines_for = |election: CropDeferralChoice| {
+    let lines_for = |election: CropPaperTiming| {
         let mut farm = with_more(cash_farm(5_000_000, 0), |more| {
             more.ccc = CccLoans::Loans {
                 method: CccMethod::Income,
@@ -1603,15 +1869,22 @@ fn farm_ccc_and_crop_insurance_lines_are_tagged() {
         farm.insurance = CropInsurance::Payments {
             physical: vec![CropLoss { crop: "Grain".into(), amount: 700_000, year: 2026 }],
             price_only: 100_000,
-            election,
             from_prior_year: 50_000,
             withholding: 0,
         };
         let mut session = Interview::new(TEST_USER, original.clone());
-        accepted(&send(
-            &mut session,
-            farm_save(&original, vec![document(0, IncomeDocument::Farm(farm))]),
-        ));
+        accepted(&{
+            let request = save_topic(
+                &mut session,
+                TaxSection::Farming,
+                vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+            );
+            send(&mut session, request)
+        });
+        accepted(&answer_crop_timing(&mut session, election.clone()));
+        if matches!(election, CropPaperTiming::Defer) {
+            accepted(&answer_crop_practice(&mut session, "Grain", 750_000));
+        }
         let r = supported(&session.draft);
         crate::draft_return(&r)
             .iter()
@@ -1623,13 +1896,13 @@ fn farm_ccc_and_crop_insurance_lines_are_tagged() {
             })
             .collect::<Vec<(alloc::string::String, i64)>>()
     };
-    let included = lines_for(CropDeferralChoice::Include);
+    let included = lines_for(CropPaperTiming::Include);
     for (line, amount) in
         [("5a", 300_000), ("5b", 200_000), ("6a", 800_000), ("6b", 800_000), ("6d", 50_000)]
     {
         assert!(included.contains(&(line.into(), amount)), "{line}: {included:?}");
     }
-    let deferred = lines_for(CropDeferralChoice::Defer { practice: crop_practice() });
+    let deferred = lines_for(CropPaperTiming::Defer);
     assert!(deferred.contains(&("6b".into(), 100_000)), "{deferred:?}");
 }
 
@@ -1639,27 +1912,44 @@ fn farm_left_on_nothing_follows_the_allowed_set() {
     // (Services, which a farm offers no choice for) and reopens unchanged.
     let adult = farm_only_return();
     let mut session = Interview::new(TEST_USER, adult.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(&adult, vec![document(0, IncomeDocument::Farm(cash_farm(1_000_000, 0)))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(1_000_000, 0)) },
+            )],
+        );
+        send(&mut session, request)
+    });
     assert_eq!(stored_farm(&session.draft).0.income_source, BusinessIncomeSource::Services);
     assert_eq!(
         reopened_farming(&mut session).1,
-        vec![IncomeDocument::Farm(cash_farm(1_000_000, 0))]
+        vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(1_000_000, 0)) }]
     );
     // Read (Form 8615 applies): Nothing is refused by name, since the
     // question must be answered under Something else.
     let young = form_8615_return(farm_only_return());
     let mut session = Interview::new(TEST_USER, young.clone());
     let before = session.draft.clone();
-    let message = problem_text(current_income_refusal(
-        "income-source-1612",
-        &mut session,
-        farm_save(&young, vec![document(0, IncomeDocument::Farm(cash_farm(1_000_000, 0)))]),
-        "SOURCE_FARM_NEEDED",
-        "[documents/documents/0/document/more/income_source]",
-    ));
+    let message = problem_text({
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(1_000_000, 0)) },
+            )],
+        );
+        current_income_refusal(
+            "income-source-1612",
+            &mut session,
+            request,
+            "SOURCE_FARM_NEEDED",
+            "[documents/documents/0/document/more/income_source]",
+        )
+    });
     assert!(message.contains("Form 8615 line 1") && message.contains("farm"), "{message}");
     assert_eq!(session.draft, before);
     // A farm saved while the source was not read, on a return that later
@@ -1677,16 +1967,30 @@ fn farm_left_on_nothing_follows_the_allowed_set() {
     let farm = with_more(cash_farm(1_000_000, 0), |more| {
         more.income_source = FarmIncomeSource::Capital;
     });
-    accepted(&send(&mut session, farm_save(&young, vec![document(0, IncomeDocument::Farm(farm))])));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+        );
+        send(&mut session, request)
+    });
     assert!(!noted(&estimate(&session.draft), "WARN_KIDDIE_SOURCE_ASSUMED_CAPITAL"));
 }
 fn adult_farm_draft() -> FederalDraft {
     let adult = farm_only_return();
     let mut session = Interview::new(TEST_USER, adult.clone());
-    accepted(&send(
-        &mut session,
-        farm_save(&adult, vec![document(0, IncomeDocument::Farm(cash_farm(1_000_000, 0)))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(cash_farm(1_000_000, 0)) },
+            )],
+        );
+        send(&mut session, request)
+    });
     session.draft
 }
 
@@ -1703,21 +2007,24 @@ fn qualifying_farm_payments_page_holds_no_farmer_value_outside_its_set() {
     assert_eq!(farmer_set, vec![2]);
     // Stored with the IRS figuring the penalty: no farmer value at all, so
     // choosing Figure leaves it to the singleton set.
-    assert_eq!(payments_value(&page).0.penalty, PenaltyChoice::IrsFigures);
+    assert_eq!(payments_value(&page).0.more.penalty, PenaltyChoice::IrsFigures);
     // Stored with Figure: the reopened farmer answer is inside the set.
     let figure = Payments {
-        penalty: figure_with(
-            PriorReturn::SameReturn,
-            WithholdingTiming::Evenly,
-            Farmer::ThisReturn { paid_by_march_1: false },
-            Waiver::None,
-        ),
-        next_year: NextYearEstimate::NotNeeded,
+        more: crate::PaymentsMore {
+            penalty: figure_with(
+                PriorReturn::SameReturn,
+                WithholdingTiming::Evenly,
+                Farmer::ThisReturn { paid_by_march_1: false },
+                Waiver::None,
+            ),
+            next_year: NextYearEstimate::NotNeeded,
+            ..no_payments().more
+        },
         ..no_payments()
     };
     accepted(&submit(&mut s, figure));
     let page = open_payments(&mut s);
-    let PenaltyChoice::Figure { farmer, .. } = &payments_value(&page).0.penalty else {
+    let PenaltyChoice::Figure { farmer, .. } = &payments_value(&page).0.more.penalty else {
         panic!("expected the Figure branch")
     };
     let index = match farmer {
@@ -1749,11 +2056,17 @@ fn farm_header_uses_official_codes_and_preserves_filing_answers_without_changing
         ein: Some(12345678),
         information_returns: FarmInformationReturns::NotAllFiled,
     };
-    let before = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        farm_save(&before, vec![document(0, IncomeDocument::Farm(farm.clone()))]),
-    ));
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(farm.clone()) },
+            )],
+        );
+        send(&mut session, request)
+    });
     assert_eq!(stored_farm(&session.draft).1.header, Some(FarmHeader::from(&farm.more.header)));
     let result = supported(&session.draft);
     assert!(noted(&result, "NOTE_FARM_INFORMATION_INCOMPLETE"));
@@ -1761,7 +2074,10 @@ fn farm_header_uses_official_codes_and_preserves_filing_answers_without_changing
         result.review_notes.iter().find(|note| note.display.key == "NOTE_FARM_HEADER").unwrap();
     assert!(header.display.english().contains("012345678"));
     let reopened = reopened_farming(&mut session).1;
-    assert_eq!(reopened, vec![IncomeDocument::Farm(farm.clone())]);
+    assert_eq!(
+        reopened,
+        vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(farm.clone()) }]
+    );
     let mut other = session.draft.clone();
     let FederalIncome::Business { data } = &mut other.income[0].income else { unreachable!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
@@ -1776,10 +2092,483 @@ fn farm_header_server_rejects_nonstatutory_code_even_with_forged_catalog() {
     let mut session = Interview::new(TEST_USER, original.clone());
     let mut farm = cash_farm(8_000_000, 2_000_000);
     farm.more.header.code = 123456;
-    let mut request = farm_save(&original, vec![document(0, IncomeDocument::Farm(farm))]);
+    let mut request = save_topic(
+        &mut session,
+        TaxSection::Farming,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+    );
     let P::SaveIncomes { farm_codes, .. } = &mut request else { unreachable!() };
     *farm_codes =
         vec![FarmCodeChoice { id: 123456, label: crate::common::test_label("Forged choice") }];
     rejected_with(send(&mut session, request), "FARM_HEADER_CODE_INVALID");
     assert_eq!(session.draft, original);
+}
+
+#[test]
+fn farm_heavy_vehicle_current179_reaches_native_forms_and_survives_restart() {
+    use crate::tests::support::builders::owned_section179_vehicle;
+    use crate::tests::support::client::save_reopen_native_sources;
+    let original = farm_only_return();
+    let mut session = Interview::new(TEST_USER, original.clone());
+    let mut farm = cash_farm(6_000_000, 100_000);
+    let mut vehicle =
+        owned_section179_vehicle(VehicleKind::HeavyTruckVan, 1_000_000, 200_000, 20160928);
+    let VehicleMethod::Actual { business_miles, operating_costs, loan_interest, .. } =
+        &mut vehicle.method
+    else {
+        unreachable!()
+    };
+    *business_miles = 7_500;
+    *operating_costs = 400_000;
+    *loan_interest = 200_000;
+    farm.vehicles.push(vehicle);
+    accepted(&{
+        let request = save_topic(
+            &mut session,
+            TaxSection::Farming,
+            vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+        );
+        send(&mut session, request)
+    });
+    let source = session.draft.income[0].id;
+    let asset = stored_farm(&session.draft).0.assets[0].id;
+    // Pub. 946: bought in 2016, stored unused, and first placed in service
+    // in 2026; never previously placed in personal or business use. No bonus.
+    // $7,500 business basis less $2,000 elected leaves $5,500:
+    // first-year half-year 200% GDS is $1,100; AMT 150% is $825.
+    for (system, operating) in
+        [(Section179IncomeSystem::Regular, 660_000), (Section179IncomeSystem::Alternative, 632_500)]
+    {
+        let sources = section179_direct_income_sources(&session.draft, system).unwrap();
+        assert_eq!(sources[0].operating_net_cents, 6_000_000 - operating);
+        let selected = crate::section179_return::prepare(&session.draft, system).unwrap();
+        assert_eq!(selected.allocation.allowed(source), Ok(200_000));
+    }
+    let expected = supported(&session.draft);
+    crate::tests::support::assert::assert_displayed_text_line(
+        &expected,
+        &alloc::format!("business_{source}_asset_0_listed_type"),
+        "Heavy truck or van (listed property)",
+    );
+    assert_eq!(value(&expected, "self_employment_tax"), 7_263);
+    assert_eq!(value(&expected, "qbi_deduction"), 6_334);
+    let Reply::Response(P::Review { result, .. }) =
+        send(&mut session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        panic!("native review")
+    };
+    assert_eq!(result.return_lines, crate::draft_return(&expected));
+    for (form, line, amount) in [
+        (TaxForm::ScheduleF, "10", 300_000),
+        (TaxForm::ScheduleF, "21b", 150_000),
+        (TaxForm::ScheduleF, "14", 310_000),
+        (TaxForm::ScheduleF, "33", 860_000),
+        (TaxForm::ScheduleF, "34", 5_140_000),
+    ] {
+        assert!(
+            result.return_lines.iter().any(|row| row
+                .form_line
+                .as_ref()
+                .is_some_and(|f| f.form == form && f.line == line)
+                && row.amount == amount),
+            "{form:?}/{line}"
+        );
+    }
+    for form in [TaxForm::Form4562, TaxForm::ScheduleSe, TaxForm::Form8995] {
+        assert!(
+            result
+                .return_lines
+                .iter()
+                .any(|row| row.form_line.as_ref().is_some_and(|f| f.form == form)),
+            "{form:?}"
+        );
+    }
+    let saved = session.draft.clone();
+    let cold =
+        save_reopen_native_sources(saved.clone(), &[TaxSection::Farming], &[TaxSection::Farming]);
+    assert_eq!(cold, saved);
+    assert_eq!(cold.income[0].id, source);
+    assert_eq!(stored_farm(&cold).0.assets[0].id, asset);
+}
+
+#[test]
+fn farm_suv_cap_rejects_excess_atomically_and_design_exception_accepts_it() {
+    use crate::tests::support::builders::owned_section179_vehicle;
+    use crate::tests::support::client::save_reopen_native_sources;
+    let mut session = Interview::new(TEST_USER, farm_only_return());
+    let mut farm = cash_farm(10_000_000, 0);
+    farm.vehicles.push(owned_section179_vehicle(
+        VehicleKind::HeavySuv { exception: SuvException::None },
+        6_000_000,
+        3_200_000,
+        20260310,
+    ));
+    let request = save_topic(
+        &mut session,
+        TaxSection::Farming,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+    );
+    accepted(&send(&mut session, request));
+    let source = session.draft.income[0].id;
+    let asset = stored_farm(&session.draft).0.assets[0].id;
+    let expected = supported(&session.draft);
+    // Rev. Proc. 2025-32 section 4.24 and IRC 179(b)(5):
+    // $32,000 elected, then 100% bonus on the remaining $28,000.
+    assert_eq!(value(&expected, &alloc::format!("business_{source}_asset_0_section179")), 32_000);
+    assert_eq!(value(&expected, &alloc::format!("business_{source}_asset_0_bonus")), 28_000);
+    let mut request = open_topic(&mut session, TaxSection::Farming);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let crate::IncomeRecord::Farm(farm) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
+    let VehicleMethod::Actual { history, .. } = &mut farm.vehicles[0].method else {
+        unreachable!()
+    };
+    *history = AssetHistory::New {
+        first_year: FirstYearDeduction::Section179 {
+            description: "Synthetic farm SUV".into(),
+            elected: 3_200_001,
+        },
+    };
+    let before = session.draft.clone();
+    let rejection = send(&mut session, request.clone());
+    let Reply::Response(P::Problem { field, .. }) = &rejection else { panic!("SUV cap refusal") };
+    assert_eq!(
+        field.as_deref(),
+        Some(
+            "[documents/documents/0/document/Farm/vehicles/0/method/Actual/history/New/first_year/Section179/elected]"
+        )
+    );
+    rejected_with(rejection, "ASSET_179_ABOVE_SUV_LIMIT");
+    assert_eq!(session.draft, before);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let crate::IncomeRecord::Farm(farm) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
+    let VehicleMethod::Actual { kind, history, .. } = &mut farm.vehicles[0].method else {
+        unreachable!()
+    };
+    *kind = VehicleKind::HeavySuv { exception: SuvException::SixFootCargo };
+    *history = AssetHistory::New {
+        first_year: FirstYearDeduction::Section179 {
+            description: "Synthetic six-foot farm cargo vehicle".into(),
+            elected: 3_300_000,
+        },
+    };
+    accepted(&send(&mut session, request));
+    let expected = supported(&session.draft);
+    assert_eq!(value(&expected, &alloc::format!("business_{source}_asset_0_section179")), 33_000);
+    assert_eq!(value(&expected, &alloc::format!("business_{source}_asset_0_bonus")), 27_000);
+    let saved = session.draft.clone();
+    let cold =
+        save_reopen_native_sources(saved.clone(), &[TaxSection::Farming], &[TaxSection::Farming]);
+    assert_eq!(cold, saved);
+    assert_eq!(stored_farm(&cold).0.assets[0].id, asset);
+}
+
+#[test]
+fn farm_and_schedule_c_share_income_limit_with_independent_regular_and_amt() {
+    use crate::tests::support::builders::owned_section179_vehicle;
+    use crate::tests::support::client::save_reopen_native_sources;
+    let mut session = Interview::new(TEST_USER, farm_only_return());
+    let mut vehicle =
+        owned_section179_vehicle(VehicleKind::HeavyTruckVan, 1_000_000, 500_000, 20160928);
+    let VehicleMethod::Actual { business_miles, operating_costs, loan_interest, .. } =
+        &mut vehicle.method
+    else {
+        unreachable!()
+    };
+    *business_miles = 7_500;
+    *operating_costs = 400_000;
+    *loan_interest = 200_000;
+    let mut farm = cash_farm(600_000, 100_000);
+    farm.vehicles.push(vehicle.clone());
+    let request = save_topic(
+        &mut session,
+        TaxSection::Farming,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+    );
+    accepted(&send(&mut session, request));
+    let Reply::Response(P::Review { result, .. }) =
+        send(&mut session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        panic!("native review")
+    };
+    for (line, amount) in [("11", 0), ("13", 500_000)] {
+        let row = result
+            .return_lines
+            .iter()
+            .find(|row| {
+                row.form_line
+                    .as_ref()
+                    .is_some_and(|f| f.form == TaxForm::Form4562 && f.line == line)
+            })
+            .expect("section 179 form row");
+        assert_eq!(row.money, Some(amount));
+        assert!(!row.label.is_empty());
+    }
+    let mut page = business(600_000);
+    page.vehicles.push(vehicle);
+    accepted(&save_businesses(&mut session, vec![page]));
+    // Both vehicles were bought in 2016 and stored unused until their first
+    // personal or business use in 2026 (no personal-use conversion).
+    // Form4562 line11 aggregates active C/F income. Remaining $2,500 basis
+    // costs $500 regular/$375 AMT per vehicle, rather than copying REG.
+    for (system, income_limit, allowed) in [
+        (Section179IncomeSystem::Regular, 100_000, 50_000),
+        (Section179IncomeSystem::Alternative, 125_000, 62_500),
+    ] {
+        let selected = crate::section179_return::prepare(&session.draft, system).unwrap();
+        assert_eq!(selected.allocation.income.business_income_limit_cents, income_limit);
+        assert_eq!(selected.allocation.income.total_allowed_cents, income_limit);
+        for entry in &session.draft.income {
+            assert_eq!(selected.allocation.allowed(entry.id), Ok(allowed));
+        }
+    }
+    let expected = supported(&session.draft);
+    for (id, amount) in
+        [("section179_business_income_limit", 100_000), ("section179_carryforward", 900_000)]
+    {
+        assert_eq!(crate::tests::support::assert::displayed_line_amount(&expected, id), amount);
+    }
+    let mut request = open_topic(&mut session, TaxSection::Farming);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let crate::IncomeRecord::Farm(farm) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
+    let FarmMethod::Cash { raised, .. } = &mut farm.accounting else { unreachable!() };
+    *raised = 650_000;
+    accepted(&send(&mut session, request));
+    let edited = supported(&session.draft);
+    for (id, amount) in
+        [("section179_business_income_limit", 150_000), ("section179_carryforward", 850_000)]
+    {
+        assert_eq!(crate::tests::support::assert::displayed_line_amount(&edited, id), amount);
+    }
+    let saved = session.draft.clone();
+    assert_eq!(
+        save_reopen_native_sources(
+            saved.clone(),
+            &[TaxSection::Farming, TaxSection::SelfEmployment],
+            &[TaxSection::Farming, TaxSection::SelfEmployment]
+        ),
+        saved
+    );
+}
+
+#[test]
+fn farm_and_schedule_c_share_one_return_wide_dollar_limit() {
+    use crate::tests::support::builders::owned_section179_vehicle;
+    use crate::tests::support::client::save_reopen_native_sources;
+    let mut session = Interview::new(TEST_USER, farm_only_return());
+    let vehicle =
+        owned_section179_vehicle(VehicleKind::HeavyTruckVan, 150_000_000, 128_000_000, 20260310);
+    let mut farm = cash_farm(200_000_000, 0);
+    farm.vehicles.push(vehicle.clone());
+    let request = save_topic(
+        &mut session,
+        TaxSection::Farming,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+    );
+    accepted(&send(&mut session, request));
+    let mut page = business(200_000_000);
+    page.vehicles.push(vehicle);
+    accepted(&save_businesses(&mut session, vec![page]));
+    // Rev. Proc. 2025-32 section4.24: total cost $3m stays below the
+    // $4.09m phaseout threshold. ONE $2.56m deduction applies to the return.
+    for system in [Section179IncomeSystem::Regular, Section179IncomeSystem::Alternative] {
+        let selected = crate::section179_return::prepare(&session.draft, system).unwrap();
+        assert_eq!(selected.allocation.income.total_allowed_cents, 256_000_000);
+        for entry in &session.draft.income {
+            assert_eq!(selected.allocation.allowed(entry.id), Ok(128_000_000));
+        }
+    }
+    let expected = supported(&session.draft);
+    assert_eq!(value(&expected, "section179_deduction"), 2_560_000);
+    assert_eq!(value(&expected, "section179_carryforward"), 0);
+    let saved = session.draft.clone();
+    assert_eq!(
+        save_reopen_native_sources(
+            saved.clone(),
+            &[TaxSection::Farming, TaxSection::SelfEmployment],
+            &[TaxSection::Farming, TaxSection::SelfEmployment]
+        ),
+        saved
+    );
+    // Line 9 cannot exceed line 5; dollar-cap excess is not a line 13 carry.
+    let mut request = open_topic(&mut session, TaxSection::SelfEmployment);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let crate::IncomeRecord::Business(page) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
+    let VehicleMethod::Actual { history, .. } = &mut page.vehicles[0].method else {
+        unreachable!()
+    };
+    *history = AssetHistory::New {
+        first_year: FirstYearDeduction::Section179 {
+            description: "Synthetic aggregate over-election".into(),
+            elected: 128_000_001,
+        },
+    };
+    accepted(&send(&mut session, request));
+    let result = estimate(&session.draft);
+    assert_eq!(result.state, ResultState::Unsupported);
+    assert!(result.issues.iter().any(|issue| issue.display.key
+        == "ISSUE_THE_ASSET_ELECTIONS_AND_SCHEDULE_K_1_SECTION_179_AMOUNTS_EXCEED_THE_CE43F95A"));
+    assert!(result.tax.is_none() && result.lines.is_empty());
+}
+
+#[test]
+fn farm_relations_store_only_source_keys_and_round_trip_with_the_activity() {
+    let mut page = cash_farm(100_000, 0);
+    page.related.forms.push(crate::RelatedFormView { key: 71, summary: None });
+    let stored = crate::farm_page::farm_record(&page, None);
+    let BusinessActivity::Farming { data: farm } = &stored.activity else { unreachable!() };
+    assert_eq!(farm.related, vec![71]);
+    let reopened = crate::farm_page::farm_item("", &stored, false).unwrap();
+    assert_eq!(reopened.related.forms[0].key, 71);
+    assert!(reopened.related.candidates.is_empty());
+    assert!(reopened.related.forms[0].summary.is_none());
+
+    let mut rental = crate::tests::farm::farm_rental::rental_page(1_000);
+    rental.related.forms.push(crate::RelatedFormView { key: 72, summary: None });
+    let stored = crate::farm_page::farm_rental_record(&rental);
+    assert_eq!(stored.farm.related, vec![72]);
+    let reopened = crate::farm_page::farm_rental_item("", &stored).unwrap();
+    assert_eq!(reopened.related.forms[0].key, 72);
+}
+
+#[test]
+fn farm_related_native_editors_save_reopen_and_keep_their_field_counts() {
+    extern crate std;
+    use crate::tests::support::client::unit50_interview_native::NativeInterviewCase;
+    let mut draft = complete(FederalStatus::Single);
+    draft.income.clear();
+    add(&mut draft, income(raised_farm(10_000, 0)));
+    let farm = draft.income.last().unwrap().id;
+    add(&mut draft, income(FederalIncome::FarmRental { data: farm_rental_data(8_000, 0) }));
+    let rental = draft.income.last().unwrap().id;
+    let mut keys = Vec::new();
+    for amount in [40_000, 60_000] {
+        let mut document = government_unemployment(0, &[], 0);
+        let FederalIncome::GovernmentPayment { data } = &mut document.income else {
+            unreachable!()
+        };
+        data.form.agriculture_payments = Some(amount);
+        add(&mut draft, document);
+        keys.push(farm_government_component(&draft));
+    }
+    let mut session = restart(draft);
+    let links = [(farm, keys[0]), (rental, keys[1])];
+    for (_, activity, key, prefix) in [
+        ("farm", farm, keys[0], "TAX_RF4_FARM"),
+        ("farm-rental", rental, keys[1], "TAX_RF4_FARM_RENTAL"),
+    ] {
+        let native = NativeInterviewCase(prefix);
+        let before = native.editor(&mut session, TaxSection::Farming, "BEFORE");
+        native.write_file("CAPTURE_DIR", "before.avro", &before);
+        let mut rows = crate::tests::support::client::income_pages::page_documents(&before);
+        // The Farming page refuses a save while a paper has no receiving farm, so
+        // every farm of the page links its paper in the first save.
+        for (id, paper) in links {
+            let row = rows.iter_mut().find(|row| row.id == id).unwrap();
+            let related = match &mut row.document {
+                IncomeSource::Record { value: crate::IncomeRecord::Farm(value) } => {
+                    &mut value.related
+                }
+                IncomeSource::Record { value: crate::IncomeRecord::FarmRental(value) } => {
+                    &mut value.related
+                }
+                _ => unreachable!(),
+            };
+            if id == activity {
+                assert!(related.candidates.iter().any(|candidate| candidate.id == key));
+            }
+            if !related.forms.iter().any(|form| form.key == paper) {
+                related.forms.push(crate::RelatedFormView { key: paper, summary: None });
+            }
+        }
+        let answers = save_topic(&mut session, TaxSection::Farming, rows);
+        native.save(&mut session, answers);
+        native.restart(&mut session);
+        let reopened = native.editor(&mut session, TaxSection::Farming, "REOPENED");
+        native.write_file("CAPTURE_DIR", "reopened.avro", &reopened);
+        let source = crate::farm::sources(&session.draft)
+            .find(|source| source.entry.id == activity)
+            .unwrap();
+        assert_eq!(source.farm.related, vec![key]);
+        assert_eq!(
+            crate::related_forms::effective_claimants(&session.draft).get(&key),
+            Some(&activity)
+        );
+    }
+}
+
+#[test]
+fn conservation_livestock_native_purpose_correction_reopens_with_the_same_property() {
+    let draft = conservation_livestock_return(85_000, 15_000, None);
+    let source = draft.income[1].id;
+    let mut session = Interview::new(TEST_USER, draft);
+    let (_, sources) = reopened_farming(&mut session);
+    let IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } = &sources[0] else {
+        unreachable!()
+    };
+    let property = farm.assets[0].id;
+    for purpose in [Some(LivestockPurpose::Breeding), Some(LivestockPurpose::Sport), None] {
+        // Submit the complete offered page, including the retained return-wide
+        // section1231 history; changing purpose does not delete that answer.
+        let mut request = open_topic(&mut session, TaxSection::Farming);
+        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+        let item = documents.documents.iter_mut().find(|item| item.id == source).unwrap();
+        let crate::IncomeRecord::Farm(farm) = &mut item.document else { unreachable!() };
+        let AssetDisposal::Disposed { how: DisposalKind::Sold { livestock, .. }, .. } =
+            &mut farm.assets[0].disposal
+        else {
+            unreachable!()
+        };
+        *livestock = SoldLivestock::CattleOrHorse { purpose };
+        accepted(&send(&mut session, request));
+        let mut cold = restart(session.draft.clone());
+        let (_, reopened) = reopened_farming(&mut cold);
+        let IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } = &reopened[0] else {
+            unreachable!()
+        };
+        assert_eq!(cold.draft.income[1].id, source);
+        assert_eq!(farm.assets[0].id, property);
+        assert!(
+            matches!(farm.assets[0].disposal, AssetDisposal::Disposed { how: DisposalKind::Sold { livestock: SoldLivestock::CattleOrHorse { purpose: actual }, .. }, .. } if actual == purpose)
+        );
+        let result = supported(&cold.draft);
+        assert_eq!(
+            value(&result, "farm_2_conservation_deduction"),
+            match purpose {
+                Some(LivestockPurpose::Breeding) => 25_000,
+                Some(LivestockPurpose::Sport) => 21_250,
+                _ => 0,
+            }
+        );
+        if purpose.is_none() {
+            let note = result
+                .review_notes
+                .iter()
+                .find(|note| note.display.key == "WARN_FARM_CONSERVATION_GROSS_SOURCE")
+                .unwrap();
+            let context = note.context.as_ref().unwrap();
+            assert_eq!(
+                context.identity(),
+                crate::federal_model::NoteIdentity::Item {
+                    parent: alloc::boxed::Box::new(crate::federal_model::NoteIdentity::Income(
+                        source
+                    )),
+                    collection: "assets",
+                    position: 0,
+                }
+            );
+            assert_eq!(
+                crate::interview::issue_pages(&cold.draft, context, None),
+                vec![TaxSection::Farming]
+            );
+        }
+        session = cold;
+    }
 }

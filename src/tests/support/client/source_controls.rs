@@ -20,10 +20,7 @@ pub(in crate::tests) enum SecondaryCorrection {
     AnnuitySource,
     InvestmentSource,
     InvestmentOrigin,
-    StudentSource,
-    StudentDuplicate,
     RepaymentChoice,
-    DeductionChoice,
     MedicalSource,
     SituationChoice,
     AlimonyRecapture,
@@ -31,7 +28,9 @@ pub(in crate::tests) enum SecondaryCorrection {
 
 pub(in crate::tests) fn source_calculation(request: &P) -> P {
     match request {
-        P::SaveIncomes { .. } => super::estimate_documents_from_save(request),
+        P::SaveIncomes { .. } | P::SaveDocuments { .. } | P::SaveWagesAnswers { .. } => {
+            super::estimate_documents_from_save(request)
+        }
         P::SaveHsa {
             user,
             value,
@@ -44,6 +43,7 @@ pub(in crate::tests) fn source_calculation(request: &P) -> P {
             archer_return_documents,
             ira_sources,
             archer_income,
+            followups,
             ..
         } => P::EstimateHsa {
             user: *user,
@@ -57,6 +57,8 @@ pub(in crate::tests) fn source_calculation(request: &P) -> P {
             archer_return_documents: archer_return_documents.clone(),
             ira_sources: ira_sources.clone(),
             archer_income: archer_income.clone(),
+            followups: followups.clone(),
+            questions: Vec::new(),
         },
         P::SaveSelfEmployedBenefits {
             user,
@@ -115,6 +117,7 @@ pub(in crate::tests) fn source_calculation(request: &P) -> P {
             partnerships,
             ..
         } => P::EstimateCare {
+            allowed_filing: Vec::new(),
             user: *user,
             value: value.clone(),
             allowed_injured_source_facts: allowed_injured_source_facts.clone(),
@@ -126,20 +129,32 @@ pub(in crate::tests) fn source_calculation(request: &P) -> P {
             farms: farms.clone(),
             partnerships: partnerships.clone(),
         },
-        P::SaveDeductions {
-            user, allowed_routes, allowed_repayment, home_sites, value, ..
-        } => P::EstimateDeductions {
-            user: *user,
-            allowed_routes: allowed_routes.clone(),
-            allowed_repayment: allowed_repayment.clone(),
-            home_sites: home_sites.clone(),
-            value: value.clone(),
-        },
-        P::SaveEducation { user, value, .. } => {
-            P::EstimateEducation { user: *user, value: value.clone() }
+        P::SaveDeductions { user, allowed_repayment, home_sites, value, .. } => {
+            P::EstimateDeductions {
+                user: *user,
+
+                allowed_repayment: allowed_repayment.clone(),
+                home_sites: home_sites.clone(),
+                value: value.clone(),
+            }
         }
+        P::SaveInjuredSpouse { user, value, followups, .. } => P::EstimateInjuredSpouse {
+            user: *user,
+            value: value.clone(),
+            followups: followups.clone(),
+            questions: Vec::new(),
+        },
+        P::SaveEducation { user, value, people, followups, .. } => P::EstimateEducation {
+            user: *user,
+            value: value.clone(),
+            people: people.clone(),
+            followups: followups.clone(),
+            questions: Vec::new(),
+        },
         P::SaveEmployeeExpenses { user, allowed_owners, value, .. } => {
             P::EstimateEmployeeExpenses {
+                rental_energy_buildings: Vec::new(),
+                initial_asset_amt_carry_choices: Vec::new(),
                 user: *user,
                 allowed_owners: allowed_owners.clone(),
                 value: value.clone(),
@@ -169,43 +184,26 @@ pub(in crate::tests) fn source_calculation(request: &P) -> P {
             investment_origin_choices: investment_origin_choices.clone(),
             value: value.clone(),
         },
-        P::SaveSituations { user, topic, allowed_situations, value, .. } => P::EstimateSituations {
-            user: *user,
-            topic: *topic,
-            allowed_situations: allowed_situations.clone(),
-            value: value.clone(),
-        },
+        P::SaveOftenMissed { user, value, .. } => {
+            P::EstimateOftenMissed { user: *user, value: value.clone() }
+        }
         _ => panic!("a current source editor has a calculation"),
     }
 }
 
-// Re-save the accepted income editor through its normal hot and cold lifecycle.
-// Refusal, correction, Estimate and Preview policies remain with each caller.
-pub(in crate::tests) fn income_editor_resave(
-    case: &str,
-    session: &mut Interview,
-    topic: TaxSection,
-) {
-    let saved = session.draft.clone();
-    let page = open_topic(session, topic);
-    accepted(&super::send(session, page));
-    assert_eq!(session.draft, saved, "{case}: accepted source reopen/resave");
-    let mut restored = super::restart(saved.clone());
-    assert_eq!(restored.draft, saved);
-    let page = open_topic(&mut restored, topic);
-    accepted(&super::send(&mut restored, page));
-    assert_eq!(restored.draft, saved, "{case}: accepted source restart/resave");
-}
-
 fn source_topic(request: &P) -> TaxSection {
     match request {
-        P::SaveIncomes { topic, .. } | P::SaveSituations { topic, .. } => *topic,
+        P::SaveIncomes { topic, .. } => *topic,
+        P::SaveWagesAnswers { .. } => TaxSection::Wages,
+        P::SaveOftenMissed { .. } => TaxSection::OftenMissed,
+        P::SaveDocuments { .. } => TaxSection::Documents,
         P::SaveHsa { .. } => TaxSection::Hsa,
         P::SaveSelfEmployedBenefits { .. } => TaxSection::SelfEmployedBenefits,
         P::SaveMarketplace { .. } => TaxSection::Marketplace,
         P::SaveCare { .. } => TaxSection::Care,
         P::SaveDeductions { .. } => TaxSection::Deductions,
         P::SaveEducation { .. } => TaxSection::Education,
+        P::SaveInjuredSpouse { .. } => TaxSection::InjuredSpouse,
         P::SaveEmployeeExpenses { .. } => TaxSection::EmployeeExpenses,
         P::SaveMedical { .. } => TaxSection::Medical,
         P::SaveMoreAdjustments { .. } => TaxSection::MoreAdjustments,
@@ -214,14 +212,14 @@ fn source_topic(request: &P) -> TaxSection {
     }
 }
 fn reopen(session: &mut Interview, request: &P) -> P {
+    if matches!(request, P::SaveDocuments { .. }) {
+        return super::income_pages::open_document_center(session);
+    }
     if let P::SaveIncomes { topic, .. } = request {
         return open_topic(session, *topic);
     }
     match from_review(session, source_topic(request)) {
         Reply::Edit(page) => page,
-        reply @ Reply::Response(P::BeginSituations { .. }) => {
-            crate::tests::cross::interview::save_empty_situations(reply)
-        }
         reply => panic!("accepted source editor must reopen: {reply:?}"),
     }
 }
@@ -246,7 +244,7 @@ fn correct(session: &Interview, request: &mut P, kind: SecondaryCorrection) {
                     .income
                     .iter()
                     .find(|entry| {
-                        entry.owner == form.owner
+                        entry.owner == crate::DocumentOwner::from(form.owner)
                             && matches!(entry.income, FederalIncome::Wage { .. })
                     })
                     .expect("actual same-owner W-2");
@@ -271,7 +269,6 @@ fn correct(session: &Interview, request: &mut P, kind: SecondaryCorrection) {
                     match row {
                         MoreAdjustment::AlimonyPaid(row) => row.owner = Owner::Taxpayer,
                         MoreAdjustment::MovingExpenses(row) => row.owner = Owner::Taxpayer,
-                        _ => unreachable!(),
                     }
                 }
             }
@@ -291,19 +288,21 @@ fn correct(session: &Interview, request: &mut P, kind: SecondaryCorrection) {
             }
             _ => unreachable!(),
         },
-        P::SaveEducation { value, .. } => {
-            if matches!(kind, C::StudentDuplicate) {
-                value.students.truncate(1);
-            }
-            value.students[0].student = value.people[0].id;
+        P::SaveDocuments { documents, .. } => {
+            let mut accepted = super::restart(session.draft.clone());
+            let P::SaveDocuments { documents: previous, .. } =
+                super::income_pages::open_document_center(&mut accepted)
+            else {
+                unreachable!()
+            };
+            documents.common.education = previous.common.education;
         }
         P::SaveDeductions { value, .. } => match kind {
             C::RepaymentChoice => value.repayment = crate::RepaymentClaim::None,
-            C::DeductionChoice => value.route = DeductionRoute::Standard,
             _ => unreachable!(),
         },
         P::SaveMedical { value, .. } => value.long_term_care[0].person = value.people[0].id,
-        P::SaveSituations { value, .. } => value.situations.clear(),
+        P::SaveOftenMissed { value, .. } => value.unprepared = None,
         _ => unreachable!(),
     }
 }
@@ -320,6 +319,57 @@ pub(in crate::tests) fn current_source_refusal(
     path: Option<&str>,
     scope: SourceScope,
 ) -> Reply {
+    if let Some((mut candidate, topic_request, topic_path)) = path
+        .and_then(|path| super::income_pages::topic_fixture_control(session, &request, key, path))
+    {
+        let before = candidate.draft.clone();
+        let dirty = candidate.dirty;
+        let reply = super::send(&mut candidate, topic_request.clone());
+        let message = assert_problem(case, &reply, key, Some(&topic_path));
+        assert_eq!(candidate.draft, before, "{case}: actual topic refusal is atomic");
+        assert_eq!(candidate.dirty, dirty);
+        let mut cold = super::restart(before.clone());
+        let reply_cold = super::send(&mut cold, topic_request.clone());
+        assert_eq!(assert_problem(case, &reply_cold, key, Some(&topic_path)), message);
+        assert_eq!(cold.draft, before, "{case}: cold actual topic refusal is atomic");
+        let running = super::estimate_documents_from_save(&topic_request);
+        let calculated = super::send(&mut cold, running);
+        if super::survey::unanswered_personal_refusal(&topic_request, key) {
+            assert!(
+                matches!(calculated, Reply::Response(P::IncomeRunningEstimate { .. })),
+                "{case}: missing personal answers permit a provisional estimate: {calculated:?}"
+            );
+        } else {
+            assert_eq!(assert_problem(case, &calculated, key, Some(&topic_path)), message);
+        }
+        assert_eq!(cold.draft, before, "{case}: actual topic estimate is transient");
+        let mut original = super::restart(session.draft.clone());
+        let P::SaveDocuments { documents: original_documents, .. } =
+            super::income_pages::open_document_center(&mut original)
+        else {
+            unreachable!()
+        };
+        // A replacement source save can delete original IDs. Normal saves cannot
+        // resurrect those IDs; the original caller remains untouched by this cold probe.
+        let original_ids: Vec<_> = original.draft.income.iter().map(|entry| entry.id).collect();
+        if original_ids.iter().all(|id| cold.draft.income.iter().any(|entry| entry.id == *id)) {
+            let mut correction = super::income_pages::open_document_center(&mut cold);
+            let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+            *documents = original_documents;
+            accepted(&super::income_pages::save_source_fixture_request(&mut cold, correction));
+            let mut expected = estimate(&session.draft);
+            expected.revision = cold.draft.revision;
+            assert_eq!(
+                estimate(&cold.draft),
+                expected,
+                "{case}: source restoration preserves the complete result"
+            );
+        }
+        if let Reply::Response(problem) = &reply {
+            crate::tests::unit47_rule_cases::export_unit47_rule_case(case, &topic_request, problem);
+        }
+        return reply;
+    }
     let before = session.draft.clone();
     if matches!(scope, SourceScope::Secondary(_) | SourceScope::Fieldless) {
         assert!(before.valid_stored(), "{case}: accepted Draft is valid");
@@ -355,10 +405,44 @@ pub(in crate::tests) fn current_source_refusal(
     if matches!(scope, SourceScope::Fieldless) {
         return reply;
     }
+    let mut request = request;
+    if matches!(scope, SourceScope::Income) {
+        // Admit the unchanged accepted owner through its actual editor before
+        // proving correction is a no-op. A first visit is a normal saved fact.
+        let accepted_owner = reopen(&mut lifecycle, &request);
+        accepted(&super::send(&mut lifecycle, accepted_owner));
+        lifecycle = super::restart(lifecycle.draft.clone());
+        match &mut request {
+            P::SaveIncomes { cookie, revision, .. } | P::SaveDocuments { cookie, revision, .. } => {
+                *cookie = lifecycle.draft.cookie.clone();
+                *revision = lifecycle.draft.revision;
+            }
+            _ => unreachable!(),
+        }
+        let accepted_state = lifecycle.draft.clone();
+        let refused = super::send(&mut lifecycle, request.clone());
+        assert_eq!(assert_problem(case, &refused, key, path), message);
+        assert_eq!(lifecycle.draft, accepted_state, "{case}: visited-owner refusal is atomic");
+        assert!(!lifecycle.dirty);
+    }
+    let before = lifecycle.draft.clone();
     if path.is_some() {
-        let calculated = super::send(&mut lifecycle, source_calculation(&request));
-        if matches!(scope, SourceScope::CommitOnly) {
-            accepted(&calculated);
+        let calculated = crate::tests::support::client::income_pages::candidate_save_review(
+            &mut lifecycle,
+            source_calculation(&request),
+        );
+        if matches!(scope, SourceScope::CommitOnly)
+            && !matches!(calculated, Reply::Response(P::Problem { .. }))
+        {
+            // This existing scope permits transient invalid drafts, but never a
+            // usable estimate for them. The authoritative Save remains refused.
+            let Reply::Response(P::IncomeRunningEstimate { estimate: Some(estimate), .. }) =
+                &calculated
+            else {
+                panic!("{case}: expected unavailable transient estimate: {calculated:?}")
+            };
+            assert_eq!(crate::Message::decode(&estimate.line).key, "ESTIMATE_UNAVAILABLE");
+            assert!(!estimate.remaining_items.is_empty());
         } else {
             assert_eq!(
                 assert_problem(case, &calculated, key, path),
@@ -377,10 +461,16 @@ pub(in crate::tests) fn current_source_refusal(
     } else {
         reopen(&mut lifecycle, &request)
     };
-    let corrected_estimate = super::send(&mut lifecycle, source_calculation(&correction));
+    let corrected_estimate = crate::tests::support::client::income_pages::candidate_save_review(
+        &mut lifecycle,
+        source_calculation(&correction),
+    );
     if matches!(scope, SourceScope::Income) {
         assert!(
-            matches!(corrected_estimate, Reply::Response(P::IncomeRunningEstimate { .. })),
+            matches!(
+                corrected_estimate,
+                Reply::Response(P::IncomeRunningEstimate { .. } | P::Review { .. })
+            ),
             "{case}: accepted correction returns the income estimate"
         );
     } else {
@@ -419,15 +509,11 @@ pub(in crate::tests) fn current_source_refusal(
             }
         }
         SourceScope::Secondary(SecondaryCorrection::SituationChoice) => {
-            assert_eq!(saved.tax_refusals, before.tax_refusals);
-            assert!(saved.tax_refusals.contains(&OtherTaxRefusal::Section965));
-            assert_eq!(financial.state, ResultState::Unsupported);
-            assert!(
-                financial
-                    .issues
-                    .iter()
-                    .any(|issue| issue.display.key == "ISSUE_SITUATION_SECTION965")
-            );
+            // The corrected list is empty and the page's other answers stay.
+            assert!(saved.often_missed.unprepared.is_empty());
+            assert_eq!(saved.often_missed.benefits, before.often_missed.benefits);
+            assert!(saved.valid_stored());
+            supported(&saved);
         }
         SourceScope::Secondary(_) => {
             assert!(saved.valid_stored());
@@ -464,10 +550,17 @@ pub(in crate::tests) fn current_document_refusal(
     key: &str,
     path: &str,
 ) -> Reply {
-    let topic = super::income_pages::topic_for(&documents[0].document);
-    let mut request = open_topic(session, topic);
-    let P::SaveIncomes { documents: page, .. } = &mut request else { unreachable!() };
-    page.documents = documents;
+    let request = if documents.iter().all(|row| matches!(row.document, IncomeSource::Record { .. }))
+    {
+        let topic = super::income_pages::topic_for(&documents[0].document);
+        super::income_pages::save_topic(session, topic, documents)
+    } else {
+        assert!(
+            documents.iter().all(|row| !matches!(row.document, IncomeSource::Record { .. })),
+            "accept prerequisite sources explicitly before testing a record refusal"
+        );
+        super::income_pages::save_documents(session, documents)
+    };
     current_income_refusal(case, session, request, key, path)
 }
 pub(in crate::tests) fn current_income_key(
@@ -494,10 +587,16 @@ pub(in crate::tests) fn current_source_acceptance(
 ) -> Reply {
     let before = session.draft.clone();
     let dirty = session.dirty;
-    let calculated = super::send(session, source_calculation(&request));
-    if matches!(&request, P::SaveIncomes { .. }) {
+    let calculated = crate::tests::support::client::income_pages::candidate_save_review(
+        session,
+        source_calculation(&request),
+    );
+    if matches!(&request, P::SaveIncomes { .. } | P::SaveDocuments { .. }) {
         assert!(
-            matches!(calculated, Reply::Response(P::IncomeRunningEstimate { .. })),
+            matches!(
+                calculated,
+                Reply::Response(P::IncomeRunningEstimate { .. } | P::Review { .. })
+            ),
             "{case}: accepted source returns the income estimate"
         );
     } else {
@@ -505,7 +604,11 @@ pub(in crate::tests) fn current_source_acceptance(
     }
     assert_eq!(session.draft, before, "{case}: positive estimate is transient");
     assert_eq!(session.dirty, dirty);
-    let reply = super::send(session, request.clone());
+    let reply = if matches!(request, P::SaveDocuments { .. }) {
+        super::income_pages::save_source_fixture_request(session, request.clone())
+    } else {
+        super::send(session, request.clone())
+    };
     accepted(&reply);
     let saved = session.draft.clone();
     assert!(saved.valid_stored());
@@ -520,4 +623,185 @@ pub(in crate::tests) fn current_source_acceptance(
     assert_eq!(cold.draft, saved, "{case}: cold reopen/resave");
     assert_eq!(estimate(&cold.draft), result, "{case}: complete cold result");
     reply
+}
+
+pub(in crate::tests) fn railroad_answer_case(
+    case: &str,
+    session: &mut Interview,
+    replace_id: Option<i64>,
+    bad: crate::RailroadSource,
+    corrected: crate::RailroadSource,
+    key: &str,
+) {
+    use crate::tests::support::builders::native_income::document;
+    use crate::tests::support::client::income_pages::{
+        information_return_answers_for_topic, open_document_center, page_documents, save_documents,
+        save_information_return_answers,
+    };
+    let prior: Vec<_> = session.draft.income.iter().map(|entry| entry.id).collect();
+    let mut rows = page_documents(&open_document_center(session));
+    let source = IncomeSource::Retirement {
+        value: crate::RetirementDocument::Rrb1099R(railroad_document(corrected.clone())),
+    };
+    if let Some(id) = replace_id {
+        let row = rows.iter_mut().find(|row| row.id == id).unwrap();
+        row.document = source;
+    } else {
+        rows.push(document(0, source));
+    }
+    let request = save_documents(session, rows);
+    accepted(&send(session, request));
+    let id = session.draft.income.iter().find(|entry| replace_id.map_or(!prior.contains(&entry.id), |id| entry.id == id)
+        && matches!(&entry.income, FederalIncome::Retirement { data } if matches!(crate::FederalRetirement::from(data).taxable, Some(crate::RetirementTaxable::Railroad { .. })))).unwrap().id;
+    let desired = |form| {
+        vec![document(
+            id,
+            IncomeSource::Retirement { value: crate::RetirementDocument::Rrb1099R(form) },
+        )]
+    };
+    save_information_return_answers(session, &desired(railroad_document(corrected.clone())));
+    let expected = estimate(&session.draft);
+    let replace_paper = |session: &mut Interview, mut form: crate::FormRrb1099RPaper| {
+        let mut request = open_document_center(session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let row =
+            documents.common.retirement.documents.iter_mut().find(|row| row.id == id).unwrap();
+        let crate::RetirementDocument::Rrb1099R(current) = &row.document else { unreachable!() };
+        form.issuer = current.issuer.clone();
+        form.recipient = current.recipient.clone();
+        row.document = crate::RetirementDocument::Rrb1099R(form);
+        accepted(&send(session, request));
+        assert!(session.draft.valid_stored());
+    };
+    replace_paper(session, railroad_paper(bad.form.clone()));
+    let request = information_return_answers_for_topic(
+        session,
+        &desired(railroad_document(bad.clone())),
+        TaxSection::Retirement,
+    )
+    .unwrap();
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    let index = followups
+        .iter()
+        .position(|row| row.key == alloc::format!("income/{id}/railroad_repayments"))
+        .unwrap();
+    let path = alloc::string::String::from(
+        libertas::SchemaPath::root()
+            .field("followups")
+            .key(followups[index].key.as_str())
+            .field("answer")
+            .field("value"),
+    );
+    super::survey::survey_refusal(case, session, request.clone(), key, &path);
+    let running = super::estimate_documents_from_save(&request);
+    if bad.repayments.is_empty() {
+        let before = session.draft.clone();
+        assert!(matches!(
+            crate::tests::support::client::income_pages::candidate_save_review(session, running),
+            Reply::Response(P::IncomeRunningEstimate { .. })
+        ));
+        assert_eq!(session.draft, before);
+    } else {
+        super::survey::survey_refusal(
+            &alloc::format!("{case}-estimate"),
+            session,
+            running,
+            key,
+            &path,
+        );
+    }
+    replace_paper(session, railroad_paper(corrected.form.clone()));
+    save_information_return_answers(session, &desired(railroad_document(corrected)));
+    let mut expected = expected;
+    expected.revision = session.draft.revision;
+    assert_eq!(estimate(&session.draft), expected);
+    let saved = session.draft.clone();
+    for source in [true, false] {
+        let page = if source {
+            super::income_pages::open_documents(session)
+        } else {
+            open_topic(session, TaxSection::Retirement)
+        };
+        accepted(&send(session, page));
+        assert_eq!(session.draft, saved, "{case}: accepted owner reopen/resave");
+        let mut restored = restart(saved.clone());
+        let page = if source {
+            super::income_pages::open_documents(&mut restored)
+        } else {
+            open_topic(&mut restored, TaxSection::Retirement)
+        };
+        accepted(&send(&mut restored, page));
+        assert_eq!(restored.draft, saved, "{case}: accepted owner restart/resave");
+    }
+}
+
+pub(in crate::tests) fn information_return_refusal(
+    case: &str,
+    session: &mut Interview,
+    bad: &[IncomeDocumentItem],
+    good: Vec<IncomeDocumentItem>,
+    key: &str,
+    source_path: &str,
+) {
+    super::income_pages::save_each_topic(session, good);
+    let request = super::income_pages::information_return_answers_for_topic(
+        session,
+        bad,
+        TaxSection::OtherIncome,
+    )
+    .unwrap();
+    let P::SaveIncomes { followups, .. } = &request else { unreachable!() };
+    let index = followups
+        .iter()
+        .position(|row| matches!(row.answer, crate::DocumentAnswer::LtcContract { .. }))
+        .unwrap();
+    let tail = source_path.split_once("/contract").unwrap().1;
+    let mut path = libertas::SchemaPath::root()
+        .field("followups")
+        .key(followups[index].key.as_str())
+        .field("answer")
+        .field("value");
+    for segment in tail.trim_end_matches(']').split('/').filter(|segment| !segment.is_empty()) {
+        path = match segment.parse::<usize>() {
+            Ok(index) => path.index(index),
+            Err(_) => path.field(segment),
+        };
+    }
+    let path: alloc::string::String = path.into();
+    super::survey::survey_refusal(case, session, request.clone(), key, &path);
+    super::survey::survey_refusal(
+        &alloc::format!("{case}-estimate"),
+        session,
+        super::estimate_documents_from_save(&request),
+        key,
+        &path,
+    );
+}
+
+// A corrected printed statement keeps personal answers; only their topic refuses the conflict.
+pub(in crate::tests) fn retained_marketplace_conflict(draft: &FederalDraft) {
+    assert!(draft.valid_stored());
+    let facts = crate::marketplace::facts(&draft.credits.as_ref().unwrap().marketplace).unwrap();
+    let issue = facts
+        .forms
+        .iter()
+        .find_map(|policy| crate::marketplace::policy_answer_issue(facts, draft, policy))
+        .expect("the original Marketplace owner identifies the conflict");
+    let mut session = super::restart(draft.clone());
+    let Reply::Response(P::Review { remaining_items, allowed_actions, .. }) =
+        super::send(&mut session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        panic!("accepted paper remains reviewable")
+    };
+    assert!(remaining_items.iter().any(|row| row.section == TaxSection::Marketplace
+        && crate::Message::decode(&row.item).key == "DOCUMENT_PENDING_ANSWER"));
+    assert!(!allowed_actions.contains(&(libertas_macros::variant_index!(P::StartFinish) as i32)));
+    let Reply::Edit(request @ P::SaveMarketplace { .. }) =
+        from_review(&mut session, TaxSection::Marketplace)
+    else {
+        panic!("actual Marketplace topic")
+    };
+    let before = session.draft.clone();
+    crate::tests::support::assert::rejected_with(super::send(&mut session, request), issue.key);
+    assert_eq!(session.draft, before);
 }

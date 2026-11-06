@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Assemble display/<form>.json into display.json; --check verifies without writing.
+
+Each source entry has an explicit integer order and a normal Display Template rule.
+Order is global: fragment filename and discovery order never affect precedence.
+"""
+import argparse
+import json
+from pathlib import Path
+
+
+def assemble(root):
+    source = root / 'display'
+    template = json.loads((source / '_template.json').read_text())
+    if 'rules' in template:
+        raise ValueError('_template.json contains metadata only')
+    ordered = {}
+    for path in sorted(source.glob('*.json')):
+        if path.name == '_template.json':
+            continue
+        fragment = json.loads(path.read_text())
+        if set(fragment) != {'rules'} or not isinstance(fragment['rules'], list):
+            raise ValueError(f'{path}: expected a rules array')
+        for entry in fragment['rules']:
+            if not isinstance(entry, dict) or set(entry) != {'order', 'rule'}:
+                raise ValueError(f'{path}: expected order and rule')
+            order, rule = entry['order'], entry['rule']
+            if type(order) is not int or not isinstance(rule, dict):
+                raise ValueError(f'{path}: order must be an integer and rule an object')
+            if order in ordered:
+                raise ValueError(f'{path}: duplicate display rule order {order}')
+            ordered[order] = rule
+    # Match the project's compact, one-rule-per-line template representation.
+    lines = ['{']
+    lines.extend('  ' + json.dumps(key) + ': ' + json.dumps(value, ensure_ascii=False) + ','
+                 for key, value in template.items())
+    lines.append('  "rules": [')
+    rules = [json.dumps(ordered[key], ensure_ascii=False) for key in sorted(ordered)]
+    lines.append(',\n'.join('    ' + rule for rule in rules))
+    lines.extend(['  ]', '}'])
+    return '\n'.join(lines) + '\n', len(rules)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true')
+    parser.add_argument('root', nargs='?', type=Path,
+                        default=Path(__file__).resolve().parent.parent)
+    args = parser.parse_args()
+    try:
+        generated, count = assemble(args.root)
+    except (ValueError, OSError) as error:
+        parser.exit(1, f'{error}\n')
+    output = args.root / 'display.json'
+    if args.check:
+        if not output.exists() or output.read_text() != generated:
+            parser.exit(1, 'display.json is stale; run tools/assemble-display\n')
+    else:
+        output.write_text(generated)
+    print(f'display.json: {count} ordered rules' + (' checked' if args.check else ' assembled'))
+
+
+if __name__ == '__main__':
+    main()

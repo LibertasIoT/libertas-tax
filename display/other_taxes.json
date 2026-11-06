@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 203000, "rule": {"select": "^<SaveOtherTaxes>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 562000, "rule": {"select": "^<OtherTax>", "flatten": true}},
+    {"order": 770000, "rule": {"select": "^<OtherTaxes>.taxes", "promote": true}},
+    {"order": 839000, "rule": {"select": "^<SaveOtherTaxes.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

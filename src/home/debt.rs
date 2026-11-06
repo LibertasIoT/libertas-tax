@@ -38,10 +38,11 @@
 //   ccc_1099a_forfeiture_is_counted_once_with_or_without_the_section_77_election;
 //   src/tests/farm/farm_rental.rs a_form_1099a_names_its_forfeited_lot_exactly_even_when_two_lots_share_
 //   a_principal, the_1099_a_and_1099_g_pages_keep_their_chosen_loan_and_farm.
-//   Refused by name: 1e/10b (pre-2026 written arrangements), line 3 election, chapter 7/11
+//   A main home foreclosure with a gain is the home sale of the same price on the Sale of your main
+//   home page (section 121 exclusion there). Refused by name: 1e/10b (pre-2026 written arrangements), line 3 election, chapter 7/11
 //   estates, taxable business debt (Schedule C line 6, Schedule E line 3, Schedule F line 8, Form
-//   4835 line 6) incl. any farm or real property debt above its limit, nonrecourse 1099-C, main
-//   home foreclosure gain (section 121), abandonment/partial/mixed-use transfers, multiple
+//   4835 line 6) incl. any farm or real property debt above its limit, nonrecourse 1099-C,
+//   abandonment/partial/mixed-use transfers, multiple
 //   discharges per filer (1.1017-1(b)(2)), joint-return carryovers (1.108-7(d)), partial
 //   reduction of mixed short/long capital carryovers, excess business loss carryforward, credit
 //   or foreign-tax carrybacks reached by the reduction, minimum tax credit from 2026 AMT (Form
@@ -65,11 +66,12 @@
 // Debt cancellation and secured-property transfers: IRC 61(a)(11), 102, 108,
 // 1001, 1017; Pub. 4681; Form 982 (Rev. March 2018) with its instructions.
 use crate::federal_rules::{issue_message, valid_birth};
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{line, line_cents, push_line};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{self, Exact};
 use crate::kernel::ratio::{dollars, fraction};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{line, line_cents, push_line};
 use crate::{
     FederalDraft, FederalIncome, FederalResult, FormLine, GainTerm, Message, MessageArg, Owner,
     TaxForm,
@@ -89,23 +91,51 @@ fn date_current_year(date: u32) -> bool {
 /// One actual cancellation allocated to this filer. Reconcile the creditor's discharge and any Form 1099-C; a form is not an additional amount, and continued collection or a disputed discharge needs resolution. The absence of a form does not make canceled debt tax-free.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PersonalDebtCancellation {
+    /// Interest included in the debt discharged — Form 1099-C box 3
+    /// [NullText]
+    /// Box 3 is blank
+    /// [SetText]
+    /// The printed box 3 interest is
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub interest: Option<i64>,
+    /// Description of debt — Form 1099-C box 4
+    pub debt_description: String,
+    /// Identifiable event code — Form 1099-C box 6
+    pub event_code: String,
+    /// Printed fair market value — Form 1099-C box 7
+    /// This value alone does not establish a transfer of property.
+    /// [NullText]
+    /// Box 7 is blank
+    /// [SetText]
+    /// The printed box 7 value is
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub box7_fmv: Option<i64>,
     /// Actual cancellation date
     #[libertas_date_only]
     pub date: u32,
     /// This filer's canceled principal, interest and fees
     /// Include nondeductible personal interest even if separately shown in Form 1099-C box 3. Use only this filer's allocated discharge; if joint borrowers each received a form showing the whole debt, do not duplicate the whole amount. Exclude debt paid in the settlement and amounts still owed.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Cancellation treatment
     /// The canceled amount is this filer's actual discharge and the selected treatment applies. The gift choice requires a genuine gift or inheritance, not a negotiated commercial write-off or payment for services.
-    pub treatment: PersonalDebtTreatment,
+    /// [NullText]
+    /// The cancellation treatment is not established
+    /// [SetText]
+    /// The cancellation treatment is
+    pub treatment: Option<PersonalDebtTreatment>,
     /// Personally liable for repayment
     /// Form 1099-C box 5. A debt secured only by property, with no personal liability, is nonrecourse.
     #[libertas_default(true)]
     pub personally_liable: bool,
     /// Property the creditor took
-    /// Form 1099-C box 7. Leave empty when no property was foreclosed, repossessed or given back in 2026.
+    /// The actual personal disposition, retained independently of the printed box 7 value.
     #[libertas_default($null)]
     pub transfer: Option<PropertyTransfer>,
 }
@@ -124,17 +154,20 @@ pub enum PersonalDebtTreatment {
     PriceReduction {
         /// Property's adjusted basis immediately before the reduction
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         basis: i64,
         /// Fair market value of all this filer's assets immediately before reduction
         /// Include exempt assets and retirement accounts, not just this property.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         assets: i64,
         /// All this filer's liabilities immediately before reduction
         /// Include the seller debt before the reduction and all other liabilities.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         liabilities: i64,
         /// Later sale in 2026
         /// Leave absent if still owned at year end. Enter the sale here only, not again as an income-document sale.
@@ -233,25 +266,25 @@ impl UnsupportedDebt {
 /// Property the creditor took
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PropertyTransfer {
-    /// Fair market value of the property
-    /// Form 1099-C box 7.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub value: i64,
     /// What the property was
-    pub property: TransferredProperty,
+    /// [NullText]
+    /// The property is not established
+    /// [SetText]
+    /// The property was
+    pub property: Option<TransferredProperty>,
 }
 
 /// What the property was
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum TransferredProperty {
     /// Your main home
-    /// A loss is not deductible.
+    /// A loss is not deductible. A gain is a home sale: enter it on the Sale of your main home page, with the amount realized that this entry shows as the price.
     MainHome {
         /// Adjusted basis
         /// What you paid plus improvements, less any casualty losses or earlier basis reductions.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         basis: i64,
     },
     /// Other personal-use property
@@ -259,7 +292,8 @@ pub enum TransferredProperty {
     PersonalUse {
         /// Adjusted basis
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         basis: i64,
         /// Holding period
         #[libertas_default(Long)]
@@ -274,7 +308,8 @@ pub enum TransferredProperty {
     Investment {
         /// Adjusted basis
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         basis: i64,
         /// Holding period
         #[libertas_default(Long)]
@@ -303,13 +338,51 @@ impl TransferredProperty {
 }
 impl PropertyTransfer {
     fn valid(&self) -> bool {
-        money(self.value) && self.property.valid()
+        self.valid_with_mode(true)
     }
+    fn valid_with_mode(&self, require_answers: bool) -> bool {
+        (!require_answers || self.property.is_some())
+            && self.property.as_ref().is_none_or(TransferredProperty::valid)
+    }
+}
+
+// The pages where this owner's business, farm or rental property sale is
+// entered: the owner's own activities, or all three when there are none.
+pub(crate) fn business_sale_pages(d: &FederalDraft, id: i64) -> Vec<crate::TaxSection> {
+    let owner = d.income.iter().find(|entry| entry.id == id).map(|entry| entry.owner);
+    let mut sections = Vec::new();
+    for entry in &d.income {
+        if owner.is_some_and(|owner| owner != entry.owner) {
+            continue;
+        }
+        let section = match &entry.income {
+            FederalIncome::Business { data }
+                if matches!(data.activity, crate::BusinessActivity::Farming { .. }) =>
+            {
+                crate::TaxSection::Farming
+            }
+            FederalIncome::FarmRental { .. } => crate::TaxSection::Farming,
+            FederalIncome::Business { .. } => crate::TaxSection::SelfEmployment,
+            FederalIncome::Rental { .. } => crate::TaxSection::Rentals,
+            _ => continue,
+        };
+        if !sections.contains(&section) {
+            sections.push(section);
+        }
+    }
+    if sections.is_empty() {
+        sections.extend([
+            crate::TaxSection::SelfEmployment,
+            crate::TaxSection::Farming,
+            crate::TaxSection::Rentals,
+        ]);
+    }
+    sections
 }
 
 // Sale prices of the business, farm and rental property sold in 2026, the
 // Form 4797 dispositions a business property transfer must match.
-fn business_dispositions(d: &FederalDraft) -> Vec<i64> {
+pub(crate) fn business_dispositions(d: &FederalDraft) -> Vec<i64> {
     let mut prices = Vec::new();
     for e in &d.income {
         match &e.income {
@@ -333,6 +406,20 @@ fn business_dispositions(d: &FederalDraft) -> Vec<i64> {
         }
     }
     prices
+}
+
+// Prices of the main homes sold in 2026, the sales a main home transfer's gain
+// must match.
+fn home_sale_prices(d: &FederalDraft) -> Vec<i64> {
+    d.income
+        .iter()
+        .filter_map(|e| match &e.income {
+            FederalIncome::HomeSale { data } if !data.other_property() => {
+                Some(crate::HomeSale::from(data).price)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 // The forfeited CCC lot a Form 1099-A names, with the note that says where
@@ -461,13 +548,17 @@ fn transfer_sale(
     };
     match property {
         TransferredProperty::MainHome { basis } => {
+            // A gain is a home sale (Pub. 4681): it goes on the Sale of your main
+            // home page, with the amount realized shown here as its price, so the
+            // section 121 exclusion applies there.
             crate::require_localized!(
                 r,
-                realized <= *basis,
-                &crate::IssueContext::income_id(id).manual(),
+                realized <= *basis || home_sale_prices(d).contains(&realized),
+                &crate::IssueContext::income_id(id)
+                    .alternatives(&[crate::TaxSection::InvestmentSales]),
                 section,
                 "ISSUE_A_MAIN_HOME_FORECLOSURE_WITH_A_GAIN_NEEDS_THE_HOME_SALE_EXCLUSION_S_02E3DE73",
-                "A main home foreclosure with a gain needs the home-sale exclusion (section 121; Form 8949 and Schedule D), which is not calculated from this entry.",
+                "A main home foreclosure with a gain is entered on the Sale of your main home page, with the amount realized shown here as its price, so the home-sale exclusion applies (section 121; Pub. 4681).",
             );
             line_cents(
                 r,
@@ -486,38 +577,10 @@ fn transfer_sale(
             Some(sale(*basis, *term, *collectible, crate::SaleUse::Investment { wash_sale: 0 }))
         }
         TransferredProperty::Business => {
-            let owner = d.income.iter().find(|entry| entry.id == id).map(|entry| entry.owner);
-            let mut sections = Vec::new();
-            for entry in &d.income {
-                if owner.is_some_and(|owner| owner != entry.owner) {
-                    continue;
-                }
-                let section = match &entry.income {
-                    FederalIncome::Business { data }
-                        if matches!(data.activity, crate::BusinessActivity::Farming { .. }) =>
-                    {
-                        crate::TaxSection::Farming
-                    }
-                    FederalIncome::FarmRental { .. } => crate::TaxSection::Farming,
-                    FederalIncome::Business { .. } => crate::TaxSection::SelfEmployment,
-                    FederalIncome::Rental { .. } => crate::TaxSection::Rentals,
-                    _ => continue,
-                };
-                if !sections.contains(&section) {
-                    sections.push(section);
-                }
-            }
-            if sections.is_empty() {
-                sections.extend([
-                    crate::TaxSection::SelfEmployment,
-                    crate::TaxSection::Farming,
-                    crate::TaxSection::Rentals,
-                ]);
-            }
             crate::federal_rules::require_message(
                 r,
                 business_dispositions(d).contains(&realized),
-                &crate::IssueContext::income_id(id).alternatives(&sections),
+                &crate::IssueContext::income_id(id).alternatives(&business_sale_pages(d, id)),
                 #[cfg(test)]
                 section,
                 #[cfg(test)]
@@ -540,7 +603,7 @@ fn transfer_sale(
         TransferredProperty::Other => {
             crate::issue_localized!(
                 r,
-                &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+                &crate::IssueContext::Section(crate::TaxSection::Documents),
                 section,
                 "ISSUE_ABANDONED_PROPERTY_THE_LENDER_HAS_NOT_TAKEN_A_PARTIAL_TRANSFER_OR_M_1D9AC0DD",
                 "Abandoned property the lender has not taken, a partial transfer or mixed-use property (Pub. 4681 chapters 2 and 3; Form 4797 or Form 8949) is not calculated.",
@@ -552,10 +615,20 @@ fn transfer_sale(
 
 impl PersonalDebtCancellation {
     pub(crate) fn valid(&self) -> bool {
+        self.valid_with_mode(true)
+    }
+    pub(crate) fn valid_with_mode(&self, require_answers: bool) -> bool {
         date_current_year(self.date)
             && money(self.amount)
-            && self.transfer.as_ref().is_none_or(PropertyTransfer::valid)
-            && match &self.treatment {
+            && self.interest.is_none_or(money)
+            && self.box7_fmv.is_none_or(money)
+            && (!require_answers || self.treatment.is_some())
+            && (!require_answers || self.box7_fmv.is_none() || self.transfer.is_some())
+            && (!require_answers || self.transfer.is_none() || self.box7_fmv.is_some())
+            && self.transfer.as_ref().is_none_or(|transfer| {
+                if require_answers { transfer.valid() } else { transfer.valid_with_mode(false) }
+            })
+            && self.treatment.as_ref().is_none_or(|treatment| match treatment {
                 PersonalDebtTreatment::Insolvent { data } => data.valid(),
                 PersonalDebtTreatment::Bankruptcy { data } => data.valid(),
                 PersonalDebtTreatment::FarmDebt { data } => data.valid(),
@@ -564,15 +637,17 @@ impl PersonalDebtCancellation {
                     basis, assets, liabilities, sale, ..
                 } => {
                     [*basis, *assets, *liabilities].into_iter().all(money)
-                        && sale.as_ref().is_none_or(|v| v.valid(self.date))
+                        && sale.as_ref().is_none_or(|v| {
+                            v.valid(if require_answers { self.date } else { v.date })
+                        })
                 }
                 _ => true,
-            }
+            })
     }
     // The canceled amount this record excludes under Form 982 Part I, before
     // the farm and real property limits that follow the current-year tax.
     fn excluded_before_limits(&self) -> Option<i64> {
-        Some(match &self.treatment {
+        Some(match self.treatment.as_ref()? {
             PersonalDebtTreatment::Insolvent { data } => data.excluded(self.amount),
             PersonalDebtTreatment::Bankruptcy { .. }
             | PersonalDebtTreatment::FarmDebt { .. }
@@ -588,21 +663,25 @@ impl PersonalDebtCancellation {
         owner: Owner,
         #[cfg(test)] section: &str,
     ) -> i64 {
+        // The availability owner withholds a return with missing personal records.
+        let Some(treatment) = self.treatment.as_ref() else {
+            return 0;
+        };
         crate::require_localized!(
             r,
             self.personally_liable,
-            &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+            &crate::IssueContext::Section(crate::TaxSection::Documents),
             section,
             "ISSUE_FORM_1099_C_BOX_5_IS_NOT_CHECKED_A_NONRECOURSE_DEBT_CANCELED_WITH_I_7768A375",
             "Form 1099-C box 5 is not checked: a nonrecourse debt canceled with its property is part of the amount realized, not canceled-debt income. Enter the property on a Form 1099-A entry with the whole debt as box 2. A nonrecourse debt reduced without a transfer (Pub. 4681) is not calculated.",
         );
-        let taxable = match &self.treatment {
+        let taxable = match treatment {
             PersonalDebtTreatment::Insolvent { data } => {
                 let taxable = self.amount - data.excluded(self.amount);
                 crate::require_localized!(
                     r,
                     !data.business_debt || taxable == 0,
-                    &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+                    &crate::IssueContext::Section(crate::TaxSection::Documents),
                     "Insolvency tax attributes",
                     "ISSUE_THE_PART_OF_A_BUSINESS_FARM_OR_RENTAL_DEBT_ABOVE_YOUR_INSOLVENCY_IS_CFEE5ABB",
                     "The part of a business, farm or rental debt above your insolvency is Schedule C line 6, Schedule E line 3, Schedule F line 8 or Form 4835 line 6 income, which is not calculated.",
@@ -616,7 +695,7 @@ impl PersonalDebtCancellation {
                         && *liabilities >= self.amount
                         && *basis >= self.amount
                         && (sale.is_none() || self.transfer.is_none()),
-                    &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+                    &crate::IssueContext::Section(crate::TaxSection::Documents),
                     "Seller purchase-price adjustment",
                     "ISSUE_CONFIRM_THE_ORIGINAL_SELLER_S_REDUCTION_OF_PURCHASE_PRINCIPAL_SOLVE_7D3164A4",
                     "Confirm the original seller's reduction of purchase principal, solvency, no bankruptcy or debt transfer, adequate property basis and retained personal ownership or the disclosed ordinary sale. Other cases need their cancellation or disposition worksheet.",
@@ -684,7 +763,7 @@ impl PersonalDebtCancellation {
             PersonalDebtTreatment::Unsupported { situation } => {
                 crate::issue_localized!(
                     r,
-                    &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+                    &crate::IssueContext::Section(crate::TaxSection::Documents),
                     section,
                     situation.refusal_key(),
                     situation.refusal(),
@@ -709,7 +788,7 @@ impl PersonalDebtCancellation {
         taxable
     }
     // The sales this record adds to Form 8949: the later sale after a seller's
-    // price adjustment, and the property the creditor took (box 7).
+    // price adjustment, and an established transfer using the canonical box 7 value.
     pub(crate) fn sales(
         &self,
         d: &FederalDraft,
@@ -722,9 +801,11 @@ impl PersonalDebtCancellation {
             sales.push(sale);
         }
         if let Some(transfer) = &self.transfer
+            && let Some(property) = &transfer.property
+            && let Some(value) = self.box7_fmv
             && let Some(sale) = transfer_sale(
-                &transfer.property,
-                transfer.value,
+                property,
+                value,
                 d,
                 r,
                 id,
@@ -744,24 +825,32 @@ impl PersonalDebtCancellation {
 /// A foreclosure, repossession or deed in lieu of foreclosure reported on Form 1099-A. When the lender also canceled debt, enter its Form 1099-C separately, without box 7.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct PropertyAcquisition {
+    /// Description of property — Form 1099-A box 6
+    pub description: String,
     /// Date the lender acquired the property
     #[libertas_date_only]
     pub date: u32,
     /// Balance of principal outstanding
     /// Form 1099-A box 2.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub balance: i64,
     /// Fair market value of the property
     /// Form 1099-A box 4.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub value: i64,
     /// Personally liable for repayment
     /// Form 1099-A box 5.
     pub personally_liable: bool,
     /// What the property was
-    pub property: TransferredProperty,
+    /// [NullText]
+    /// The property is not established
+    /// [SetText]
+    /// The property was
+    pub property: Option<TransferredProperty>,
     /// Forfeited CCC loan
     /// The record identity of the CCC loan lot of a farm or farm rental that this form reports. Set only for a crop; the property is then a business, farm or rental property.
     #[libertas_number(min = 1)]
@@ -770,12 +859,21 @@ pub struct PropertyAcquisition {
 }
 impl PropertyAcquisition {
     pub(crate) fn valid(&self) -> bool {
+        self.valid_with_mode(true)
+    }
+    pub(crate) fn valid_with_mode(&self, require_answers: bool) -> bool {
         date_current_year(self.date)
             && money(self.balance)
             && money(self.value)
-            && self.property.valid()
+            && (!require_answers || self.property.is_some())
+            && self.property.as_ref().is_none_or(TransferredProperty::valid)
             && self.crop.is_none_or(|key| {
-                key >= 1 && matches!(self.property, TransferredProperty::Business)
+                key >= 1
+                    && match self.property.as_ref() {
+                        Some(TransferredProperty::Business) => true,
+                        None => !require_answers,
+                        _ => false,
+                    }
             })
     }
     // Pub. 4681 Table 1-1 and chapter 2: recourse debt realizes the smaller
@@ -790,6 +888,7 @@ impl PropertyAcquisition {
         id: i64,
         #[cfg(test)] section: &str,
     ) -> Option<crate::FederalSale> {
+        let property = self.property.as_ref()?;
         if self.personally_liable && self.balance > self.value {
             r.review_notes.push(crate::federal_model::ReviewNote::localized(
                 #[cfg(test)] alloc::format!(
@@ -810,7 +909,7 @@ impl PropertyAcquisition {
             ));
         }
         transfer_sale(
-            &self.property,
+            property,
             self.realized(),
             d,
             r,
@@ -904,11 +1003,13 @@ pub struct DebtPropertySale {
     pub collectible: bool,
     /// Net sale proceeds after selling costs
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub proceeds: i64,
     /// Federal income tax withheld on this sale
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub withholding: i64,
 }
 impl DebtPropertySale {
@@ -920,7 +1021,8 @@ impl DebtPropertySale {
 }
 impl PersonalDebtCancellation {
     pub(crate) fn sale(&self) -> Option<crate::FederalSale> {
-        if let PersonalDebtTreatment::PriceReduction { basis, sale: Some(v), .. } = &self.treatment
+        if let Some(PersonalDebtTreatment::PriceReduction { basis, sale: Some(v), .. }) =
+            &self.treatment
         {
             Some(crate::FederalSale {
                 digital_asset: false,
@@ -950,33 +1052,38 @@ pub struct PersonalInsolvency {
     /// Total liabilities immediately before cancellation
     /// Include the canceled debt and all other enforceable liabilities under the IRS insolvency worksheet, allocated to this filer. Settlement payments already made are not still owed.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub liabilities: i64,
     /// Fair market value of all assets immediately before cancellation
     /// Include everything owned, including cash, retirement accounts, exempt assets and collateral, not just property creditors can seize. Use this filer's share of jointly owned assets. Fair market value is not tax basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub assets: i64,
     /// Total property tax basis plus money immediately after cancellation
     /// Use the separate post-discharge snapshot; it is not the fair market value above. Remaining liabilities are the before-discharge total less canceled debt.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_and_cash_after: i64,
     /// Alternative minimum tax basis plus money immediately after cancellation
     /// Leave empty when your property's alternative minimum tax basis equals its regular basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt_basis_and_cash_after: Option<i64>,
     /// Property held at the beginning of January 1, 2027
     /// List every asset once, with a distinct label and its adjusted basis. Exclude money.
+    #[libertas_unordered]
     /// ----
     /// Property
-    #[libertas_unordered]
     pub property: Vec<DebtProperty>,
     /// Canceled debt you elect to apply first to depreciable property
     /// Form 982 line 5. Leave zero unless you make this election.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depreciable_first: i64,
     /// Business, farm or rental debt
@@ -995,7 +1102,8 @@ pub struct DebtProperty {
     pub kind: DebtPropertyKind,
     /// Adjusted basis before the January 1, 2027 reduction
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: i64,
     /// Alternative minimum tax adjusted basis
     /// Leave empty when it equals the regular basis.
@@ -1004,7 +1112,8 @@ pub struct DebtProperty {
     /// [SetText]
     /// Different AMT adjusted basis is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
     pub amt_basis: Option<i64>,
 }
@@ -1121,28 +1230,32 @@ pub struct PersonalBankruptcy {
     /// Total property tax basis plus money immediately after discharge
     /// All property and money belonging to this filer, not fair market value.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_and_cash_after: i64,
     /// Alternative minimum tax basis plus money immediately after discharge
     /// Leave empty when your property's alternative minimum tax basis equals its regular basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt_basis_and_cash_after: Option<i64>,
     /// Total liabilities remaining immediately after discharge
     /// Include debts that survive the court's discharge; exclude discharged amounts and settlement payments already made.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub liabilities_after: i64,
     /// Property held at the beginning of January 1, 2027
     /// List every asset once, with a distinct label and its adjusted basis. Exclude money.
+    #[libertas_unordered]
     /// ----
     /// Property
-    #[libertas_unordered]
     pub property: Vec<DebtProperty>,
     /// Canceled debt you elect to apply first to depreciable property
     /// Form 982 line 5. Leave zero unless you make this election.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depreciable_first: i64,
 }
@@ -1162,21 +1275,25 @@ pub struct DebtInsolvency {
     /// Total liabilities immediately before cancellation
     /// Include the canceled debt and all other enforceable liabilities.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub liabilities: i64,
     /// Fair market value of all assets immediately before cancellation
     /// Include everything owned, including retirement accounts and exempt assets.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub assets: i64,
     /// Total property tax basis plus money immediately after cancellation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_and_cash_after: i64,
     /// Alternative minimum tax basis plus money immediately after cancellation
     /// Leave empty when your property's alternative minimum tax basis equals its regular basis.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt_basis_and_cash_after: Option<i64>,
 }
 impl DebtInsolvency {
@@ -1199,14 +1316,15 @@ pub struct FarmDebtExclusion {
     pub insolvency: Option<DebtInsolvency>,
     /// Property held at the beginning of January 1, 2027
     /// List every asset once, with a distinct label and its adjusted basis. Exclude money.
+    #[libertas_unordered]
     /// ----
     /// Property
-    #[libertas_unordered]
     pub property: Vec<DebtProperty>,
     /// Canceled debt you elect to apply first to depreciable property
     /// Form 982 line 5. Leave zero unless you make this election.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depreciable_first: i64,
 }
@@ -1228,34 +1346,39 @@ pub struct RealPropertyDebtExclusion {
     pub insolvency: Option<DebtInsolvency>,
     /// Outstanding principal of this debt immediately before the cancellation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub principal: i64,
     /// Fair market value of the real property securing the debt
     /// Immediately before the cancellation.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub value: i64,
     /// Other qualified real property business debt secured by that property
     /// Its outstanding principal immediately before the cancellation.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub other_secured: i64,
     /// Adjusted basis of all your depreciable real property immediately before the cancellation
     /// Exclude property acquired in contemplation of the cancellation.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depreciable_basis: i64,
     /// Property held at the beginning of January 1, 2027
     /// List every asset once, with a distinct label and its adjusted basis. Exclude money.
+    #[libertas_unordered]
     /// ----
     /// Property
-    #[libertas_unordered]
     pub property: Vec<DebtProperty>,
     /// Canceled debt you elect to apply first to depreciable property
     /// Form 982 line 5, for the part excluded because of insolvency. Leave zero unless you make this election.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depreciable_first: i64,
 }
@@ -1476,7 +1599,7 @@ fn event_of(id: i64, data: &PersonalDebtCancellation) -> Option<Event<'_>> {
         ]
     };
     let amount = data.amount;
-    Some(match &data.treatment {
+    Some(match data.treatment.as_ref()? {
         PersonalDebtTreatment::Insolvent { data: facts } => {
             let after = facts.liabilities - amount;
             Event {
@@ -1571,7 +1694,7 @@ fn stop(
 ) -> bool {
     issue_message(
         r,
-        &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+        &crate::IssueContext::Section(crate::TaxSection::Documents),
         #[cfg(test)]
         section,
         #[cfg(test)]
@@ -1818,6 +1941,7 @@ pub(crate) fn reduce_attributes(
         let FederalIncome::PersonalDebt { data } = &entry.income else {
             continue;
         };
+        let data = &PersonalDebtCancellation::from(data);
         if !data.personally_liable {
             continue;
         }
@@ -1830,7 +1954,7 @@ pub(crate) fn reduce_attributes(
             .filter(|other| {
                 other.owner == entry.owner
                     && matches!(&other.income, FederalIncome::PersonalDebt { data }
-                        if data.excluded_before_limits().is_some())
+                        if PersonalDebtCancellation::from(data).excluded_before_limits().is_some())
             })
             .count();
         if !require_ok(
@@ -1876,7 +2000,7 @@ fn require_ok(
     if !ok {
         issue_message(
             r,
-            &crate::IssueContext::Section(crate::TaxSection::CanceledDebt),
+            &crate::IssueContext::Section(crate::TaxSection::Documents),
             #[cfg(test)]
             section,
             #[cfg(test)]
@@ -2235,12 +2359,14 @@ pub struct HealthLoanAssistance {
     pub program: HealthLoanProgram,
     /// Assistance received or paid on this filer's behalf
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Portion paying interest included in the student-loan interest entry
     /// Enter only interest also included in Adjustments, including reimbursed interest. If no deduction is requested or the servicer total there excludes this interest, enter zero. The App subtracts this overlap before applying the deduction cap and income phaseout. Do not repeat interest across program entries.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub interest: i64,
     /// Program eligibility, assistance and interest allocation confirmed
     /// Retain program approval and payment records. This is the selected statutory health-service program, not an application, ordinary employer benefit or unsupported service award. No unentered part of the program-paid interest is being claimed as a deduction. No treats the assistance as taxable, with a notice.

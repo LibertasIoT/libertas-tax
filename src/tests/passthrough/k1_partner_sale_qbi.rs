@@ -27,9 +27,10 @@ fn source(ordinary: i64, rows: Vec<K1Section179Sale>, capacity: i64) -> PartnerK
     };
     data.qbi = Some(partner_qbi_statement(ordinary));
     data.section179_sales = rows;
-    data.regular.basis.opening = capacity * 100;
+    data.regular.basis.opening = Some(capacity * 100);
     data.regular.risk.start =
         ScorpRiskStart::Detailed { capacity: capacity * 100, profit: 0, loss: 0 };
+    data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     data.alternative = Some(data.regular.clone());
     data
 }
@@ -190,7 +191,9 @@ fn k1_sale_qbi_partner_property_risk_limit_preserves_its_own_qualified_carry() {
 #[test]
 fn k1_sale_qbi_partner_property_passive_limit_uses_its_character_cut() {
     let mut data = source(0, vec![sale(-2_000), sale(1_000)], 5_000);
-    let PartnerParticipation::General { facts } = &mut data.participation else { unreachable!() };
+    let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
+        unreachable!()
+    };
     facts.minutes = 0;
     let (d, id) = draft_of(data);
     let (property, business) = calculate(&d, id, 0);
@@ -538,12 +541,19 @@ fn k1_sale_qbi_partner_property_linear_current_and_prior_shares_survive_all_thre
         let statement = data.qbi.as_mut().unwrap();
         statement.section1231_qbi = -200_000;
         statement.service = service;
-        let PartnerParticipation::General { facts } = &mut data.participation else {
+        let Some(PartnerParticipation::General { facts }) = &mut data.participation else {
             unreachable!()
         };
         facts.minutes = 0;
         let (mut d, id) = draft_of(data);
-        add(&mut d, income(FederalIncome::Scorp { data: complete_ordinary_scorp(5_000, false) }));
+        add(
+            &mut d,
+            income(FederalIncome::Scorp {
+                data: crate::tests::support::builders::scorp_source(complete_ordinary_scorp(
+                    5_000, false,
+                )),
+            }),
+        );
         let (property, business) = calculate(&d, id, taxable);
         // Current $6k loss has $4k potential QBI; prior basis/risk/passive
         // $6k/$4k/$2k qualify under the approved listing convention.

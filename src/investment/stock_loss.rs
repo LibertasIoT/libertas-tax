@@ -31,7 +31,8 @@ pub enum StockLossEvent {
         date: u32,
         /// Proceeds after selling expenses
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         proceeds: i64,
     },
     /// Became completely worthless in 2026
@@ -50,12 +51,14 @@ pub enum StockLossBasis {
     Cash {
         /// Cash paid for these shares; no unentered basis adjustment
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         cost: i64,
         /// Later cash capital contributions allocated to these same shares
         /// Enter zero if none. Contributions increase basis but do not qualify for section 1244 ordinary loss. A payment for newly issued shares is a separate lot, not an addition here.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         added: i64,
     },
     /// Investment property exchanged tax-free for the original shares
@@ -63,16 +66,19 @@ pub enum StockLossBasis {
     Property {
         /// Property's adjusted tax basis immediately before the exchange
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         basis: i64,
         /// Property's fair market value at the exchange
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         value: i64,
         /// Property liabilities assumed by the corporation in the exchange
         /// Enter zero if none. Include only liabilities treated as assumed under section 357 that reduce stock basis under section 358; exclude liabilities whose payment would create a deduction. No section 357(b) tax-avoidance treatment or section 357(c) gain.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         liabilities: i64,
         /// Original acquisition date of the exchanged investment property
         /// Its holding period carries into the shares. Excludes property whose holding period requires other attribution or adjustments.

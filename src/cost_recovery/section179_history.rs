@@ -9,7 +9,8 @@ pub struct Asset179Carryover {
     pub year: u32,
     /// Unused elected cost after prior allowed amounts and dispositions
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
 }
 
@@ -53,18 +54,20 @@ impl Asset179Carryover {
 pub struct Section179IncomeCarryHistory {
     /// AMT income-limit carryover before removing the sold-property part
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub gross: i64,
     /// Part belonging to property the entity sold
     /// This restores the sold property's basis and is no longer available as a deduction.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub sold: i64,
     /// Remaining carryover by original election year
     /// Allocate the remaining amount after the sold-property part. Keep each actual original year; do not assign an unknown year.
+    #[libertas_unordered]
     /// ----
     /// Original election
-    #[libertas_unordered]
     pub vintages: Vec<Asset179Carryover>,
 }
 

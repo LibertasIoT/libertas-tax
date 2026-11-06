@@ -1,20 +1,5 @@
-// Deduction-specific Save requiredness uses shared person attribution.
-// The native financial source owners retain these final actual operands.
-// Final native operands retained for Save requiredness. None is an unavailable
-// native component, not a known zero. This packet never reruns an expense cap.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ExpenseRoleDollars {
-    pub(crate) itemizing: bool,
-    pub(crate) itemized_dollars: i64,
-    pub(crate) property_dollars: i64,
-    pub(crate) interest_dollars: Option<i64>,
-    pub(crate) connected_dollars: Option<i64>,
-    pub(crate) salt_dollars: i64,
-    pub(crate) income_tax_category_dollars: i64,
-    pub(crate) foreign_dollars: i64,
-    pub(crate) current_paid_dollars: Option<i64>,
-    pub(crate) retained_carry_dollars: Option<i64>,
-}
+pub(crate) use crate::return_carriers::ExpenseRoleDollars;
+
 impl ExpenseRoleDollars {
     fn needs_split(&self, draft: &crate::FederalDraft) -> bool {
         draft

@@ -25,10 +25,41 @@ pub struct EmployeeTips {
     /// Noncash tips not included in box 1
     /// Fair market value of tickets, goods and other noncash tips. These are taxable wages but are not subject to Social Security or Medicare tip tax.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub noncash: i64,
     /// Payroll coverage for this employer
     pub coverage: TipCoverage,
+}
+
+/// Cash and charged employee tips not reported on a W-2
+/// Use your daily tip records, one record per employer. Do not enter the same unreported tips in the W-2 editor. Tips already included in wages belong only in the reported portion below; self-employed tips belong with your business.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct CashTipsWithoutW2 {
+    /// Employer name
+    #[libertas_size(min = 1)]
+    pub employer: alloc::string::String,
+    /// Monthly cash and charged tips
+    /// Include reported tips in each month's total so the $20 monthly payroll-tax rule uses all tips from this employer. Only the unreported portion adds income. Omit months with no tips; enter each month once.
+    // Tax structure: one record per calendar month.
+    #[libertas_size(max = 12)]
+    /// ----
+    /// Month
+    pub months: Vec<CashTipMonth>,
+    /// Payroll coverage for this employer
+    pub coverage: TipCoverage,
+    /// These tips qualify for the tips deduction
+    /// Confirm a voluntarily tipped occupation on the IRS list, not a specified service trade or business. Check your occupation and tip records. No keeps the tips taxable without a deduction. The App applies the return's other deduction limits.
+    pub qualified_occupation: bool,
+}
+impl CashTipsWithoutW2 {
+    pub(crate) fn tips(&self) -> EmployeeTips {
+        EmployeeTips {
+            cash: CashTipRecords::Actual { months: self.months.clone() },
+            noncash: 0,
+            coverage: self.coverage.clone(),
+        }
+    }
 }
 
 /// Source of cash tip amounts
@@ -38,10 +69,10 @@ pub enum CashTipRecords {
     Actual {
         /// Months with cash or charged tips
         /// Actual records establish income even when different from W-2 box 8. Omit months with no tips; do not repeat a month for the same employer.
-        /// ----
-        /// Month
         // Tax structure: actual cash-tip records have one unique entry per calendar month.
         #[libertas_size(max = 12)]
+        /// ----
+        /// Month
         months: Vec<CashTipMonth>,
     },
     /// W-2 allocated tips without adequate actual records
@@ -49,7 +80,8 @@ pub enum CashTipRecords {
         /// Box 8 allocated tips
         /// Enter the employer's amount when adequate records do not establish actual unreported tips. Do not add it again to box 1 or to actual monthly records.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
     },
 }
@@ -64,11 +96,13 @@ pub struct CashTipMonth {
     /// Total cash, charged and shared tips received
     /// Include the reported portion below. Exclude tips paid over to other employees and noncash tips.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub received: i64,
     /// Portion reported to this employer and included in box 1
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reported: i64,
 }
 
@@ -154,24 +188,28 @@ impl crate::FederalWage {
 pub struct W2UncollectedTax {
     /// Code A — Social Security tax on reported tips
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub tip_social: i64,
     /// Code B — Medicare tax on reported tips
     /// Ordinary Medicare only; do not include Additional Medicare tax.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub tip_medicare: i64,
     /// Code M — Social Security tax on former-employee group-term life insurance
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub life_social: i64,
     /// Code N — Medicare tax on former-employee group-term life insurance
     /// Ordinary Medicare only; do not include Additional Medicare tax.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub life_medicare: i64,
 }

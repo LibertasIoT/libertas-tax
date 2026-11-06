@@ -1,10 +1,10 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::support::assert::{accepted, rejected_with};
 use super::support::client::unit50_interview_native::NativeInterviewCase;
 use super::*;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::builders::native_income::{document, owned};
-use super::support::client::income_pages::{open_topic, save_topic};
+use super::support::client::income_pages::{open_documents, save_documents, save_topic};
 use crate::tests::cross::interview::{
     assert_round_trip, asset, business, k1_1065, k1_1065_continuing, k1_1120s,
     k1_sale_input_statement, save_businesses, stored_business, value_of, with_first_year,
@@ -14,6 +14,9 @@ use crate::tests::cross::interview::{
 fn first_year_choices_map_onto_179_and_bonus() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let continuing = Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -21,16 +24,22 @@ fn first_year_choices_map_onto_179_and_bonus() {
         cost: 400_000,
         credit_reduction: 0,
         placed: 20240315,
-        class: AssetClass::Seven,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class: AssetClass::Seven,
+                history: AssetHistory::Continuing {
+                    prior_depreciation: 160_000,
+                    first_year_179: 0,
+                    first_year_bonus: 100_000,
+                    carryforward: 0,
+                    mid_quarter: false,
+                },
+            },
+        },
         business_percent: 100,
         acquired: None,
-        history: AssetHistory::Continuing {
-            prior_depreciation: 160_000,
-            first_year_179: 0,
-            first_year_bonus: 100_000,
-            carryforward: 0,
-            mid_quarter: false,
-        },
         disposal: crate::AssetDisposal::No,
         investment_credit: crate::InvestmentCredit::No,
         earlier_business_percent: None,
@@ -173,7 +182,11 @@ fn first_year_choices_map_onto_179_and_bonus() {
     assert_eq!(session.draft, before);
 }
 fn asset_with_history(history: AssetHistory) -> Asset {
-    Asset { history, ..asset(100_000, 20240101, AssetClass::Five) }
+    {
+        let mut page = asset(100_000, 20240101, AssetClass::Five);
+        page.gds_mut().unwrap().history = history;
+        page
+    }
 }
 
 #[test]
@@ -189,7 +202,7 @@ fn bonus_election_must_match_within_a_class() {
         current_document_refusal(
             "income-source-1152",
             &mut session,
-            vec![document(0, IncomeDocument::Business(mixed))],
+            vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Business(mixed) })],
             "ASSET_BONUS_ELECTION_BY_CLASS",
             "[documents/documents/0/document/assets/1]",
         ),
@@ -223,6 +236,7 @@ fn bonus_election_must_match_within_a_class() {
     // The election is return-wide: rented equipment of the 7-year class
     // must elect out as the business did.
     let rent = |first_year| EquipmentRent {
+        related: crate::RelatedForms::default(),
         receipts: 150_000,
         expenses: 0,
         basis: 300_000,
@@ -231,9 +245,14 @@ fn bonus_election_must_match_within_a_class() {
         history: PersonalRentalHistory::NONE,
     };
     let request = save_topic(
-        &session.draft.clone(),
+        &mut session,
         TaxSection::OtherIncome,
-        vec![document(0, IncomeDocument::EquipmentRental(rent(FirstYearDeduction::Bonus)))],
+        vec![document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::EquipmentRental(rent(FirstYearDeduction::Bonus)),
+            },
+        )],
     );
     rejected_with(
         current_income_refusal(
@@ -246,9 +265,14 @@ fn bonus_election_must_match_within_a_class() {
         "ASSET_BONUS_ELECTION_BY_CLASS",
     );
     let request = save_topic(
-        &session.draft.clone(),
+        &mut session,
         TaxSection::OtherIncome,
-        vec![document(0, IncomeDocument::EquipmentRental(rent(FirstYearDeduction::Regular)))],
+        vec![document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::EquipmentRental(rent(FirstYearDeduction::Regular)),
+            },
+        )],
     );
     accepted(&send(&mut session, request));
     supported(&session.draft);
@@ -259,13 +283,11 @@ fn unit17_ptp179_actual_two_rows_complete_save_reopen_restart() {
     let client = NativeInterviewCase("TAX_UNIT17_PTP");
     let draft = complete(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, draft);
-    let seed = open_topic(&mut session, TaxSection::PassThrough);
+    let seed = open_documents(&mut session);
     if client.required_calculation(&mut session) {
         return;
     }
-    let mut answers = seed.clone();
-    let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
-    documents.documents = [
+    let rows = [
         ("Synthetic PTP A", 2_000_000, 500_000, 200_000),
         ("Synthetic PTP B", 1_000_000, 300_000, 0),
     ]
@@ -287,16 +309,25 @@ fn unit17_ptp179_actual_two_rows_complete_save_reopen_restart() {
                 vec![Asset179Carryover { year: 2023, amount: carry }]
             },
         });
-        page.interest =
-            PartnerInterest::General { participation: Participation::Over500Hours { hours: 600 } };
+        (page.participation, page.limited_for_se) = (
+            Some(crate::PartnerParticipation::General {
+                facts: (Participation::Over500Hours { hours: 600 }).record(),
+            }),
+            Some(false),
+        );
         page.basis.start = k1_1065_continuing(
             10_000_000,
             ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
         );
         page.qbi = PartnerQbi::NoStatement;
-        owned(Owner::Taxpayer, 0, IncomeDocument::K1Partnership(page))
+        owned(
+            Owner::Taxpayer,
+            0,
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) },
+        )
     })
     .collect();
+    let answers = save_documents(&mut session, rows);
     if client
         .files("SEED_DIR", &[("seed.avro", seed.to_avro()), ("answers.avro", answers.to_avro())])
     {
@@ -341,7 +372,13 @@ fn unit17_ptp179_actual_two_rows_complete_save_reopen_restart() {
                 system,
                 &[],
                 &sources,
-                |_, _, _| Some(Section179OtherLimitedDeduction { system, amount_cents: 0 }),
+                |_, _, _| {
+                    Some(Section179OtherLimitedDeduction {
+                        system,
+                        amount_cents: 0,
+                        coordinated_owner_sources: Default::default(),
+                    })
+                },
             )
             .unwrap()
         });
@@ -410,7 +447,7 @@ fn unit17_ptp179_actual_two_rows_complete_save_reopen_restart() {
         .allocation
         .income
     );
-    // 2026-10-16 D6 source coordination consumes the actual selected PTP
+    // Source coordination consumes the actual selected PTP
     // allocation. Both AMT income-carry histories are explicitly supplied
     // above; the original native source/PAL figures now reach the return.
     let production = supported(&saved);
@@ -426,18 +463,19 @@ fn unit17_ptp179_actual_two_rows_complete_save_reopen_restart() {
         );
     }
     client.restart(&mut session);
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
+    let reopened = open_documents(&mut session);
     client.write_file("OUTPUT_DIR", "reopened.avro", &reopened);
     let request = client.input("REOPEN_PAYLOAD").unwrap_or(reopened);
     accepted(&send(&mut session, request));
     assert_eq!(session.draft, saved);
     assert_eq!(estimate(&session.draft), production);
-    let mut correction = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-    let IncomeDocument::K1Partnership(page) = &mut documents.documents[1].document else {
+    let mut correction = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[1].document
+    else {
         unreachable!()
     };
-    page.more.section179 = 200_000;
+    page.form.section179 = Some(200_000);
     accepted(&send(&mut session, correction));
     assert_eq!(
         crate::section179_return::prepare(&session.draft, Section179IncomeSystem::Regular)
@@ -482,11 +520,11 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
             continue;
         }
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let seed = open_topic(&mut session, TaxSection::PassThrough);
+        let seed = open_documents(&mut session);
         if let Some(request) = client.input("CALC_INPUT") {
             if let Ok(file) = std::env::var("TAX_UNIT17_SALE_CALC_DRAFT") {
                 session = restart(read_native_draft(file));
-                let _ = open_topic(&mut session, TaxSection::PassThrough);
+                let _ = open_documents(&mut session);
             }
             let Reply::Response(response) = send(&mut session, request) else {
                 panic!("calculation response")
@@ -521,22 +559,23 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
                 let mut page = k1_1065(name);
                 let record = page.record().regular;
                 page.more.section179_sales = sales;
-                page.amt = PartnerAmtRecords::Separate { record };
-                IncomeDocument::K1Partnership(page)
+                page.amt = Some(PartnerAmtRecords::Separate { record });
+                IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
             } else {
                 let mut page = k1_1120s(name);
-                let record = ScorpAmtRecords::same_as(&page.record());
+                let record = ScorpAmtRecords::same_as(&page.record()).unwrap();
                 page.more.section179_sales = sales;
-                page.amt = ScorpAmtRecords::Separate { record };
-                IncomeDocument::K1Scorp(page)
+                page.amt = Some(ScorpAmtRecords::Separate { record });
+                IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
             }
         };
-        let mut request = seed.clone();
-        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        documents.documents = vec![
-            document(0, make("First actual source", properties.clone())),
-            document(0, make("Other actual parent", vec![properties[0].clone()])),
-        ];
+        let request = save_documents(
+            &mut session,
+            vec![
+                document(0, make("First actual source", properties.clone())),
+                document(0, make("Other actual parent", vec![properties[0].clone()])),
+            ],
+        );
         if client.files(
             "SEED_DIR",
             &[("seed.avro", seed.to_avro()), ("answers.avro", request.to_avro())],
@@ -544,7 +583,10 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
             return;
         }
         let request = client.input("PAYLOAD").unwrap_or(request);
-        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            P::from_avro(&request.to_avro()).unwrap(),
+        ));
         let saved = session.draft.clone();
         let entries: Vec<_> = saved
             .income
@@ -560,7 +602,7 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
         assert!(!ids.contains(&foreign));
         let sales = |income: &FederalIncome| match income {
             FederalIncome::Partnership { data } => data.section179_sales.clone(),
-            FederalIncome::Scorp { data } => data.section179_sales.clone(),
+            FederalIncome::Scorp { data } => ScorpK1::from(data).section179_sales.clone(),
             _ => unreachable!(),
         };
         let actual = sales(&entries[0].income);
@@ -600,7 +642,7 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
             );
         }
         client.restart(&mut session);
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
+        let reopened = open_documents(&mut session);
         client.files("OUTPUT_DIR", &[("reopened.avro", reopened.to_avro())]);
         if let Ok(directory) = std::env::var("TAX_UNIT17_SALE_OUTPUT_DIR") {
             write_native_draft(std::path::Path::new(&directory).join("draft.avro"), &saved);
@@ -608,18 +650,18 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
         let unchanged = client.input("REOPEN_PAYLOAD").unwrap_or(reopened.clone());
         accepted(&send(&mut session, unchanged));
         assert_eq!(session.draft, saved);
-        fn page_sales(doc: &mut IncomeDocument) -> &mut Vec<crate::K1Section179Sale> {
+        fn page_sales(doc: &mut crate::K1Document) -> &mut Vec<crate::K1Section179Sale> {
             match doc {
-                IncomeDocument::K1Partnership(page) => &mut page.more.section179_sales,
-                IncomeDocument::K1Scorp(page) => &mut page.more.section179_sales,
+                crate::K1Document::K1Partnership(page) => &mut page.statements.section179_sales,
+                crate::K1Document::K1Scorp(page) => &mut page.statements.section179_sales,
                 _ => unreachable!(),
             }
         }
         if disjoint40 {
             for amt in [false, true] {
                 let mut invalid = reopened.clone();
-                let P::SaveIncomes { documents, .. } = &mut invalid else { unreachable!() };
-                let rows = page_sales(&mut documents.documents[0].document);
+                let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+                let rows = page_sales(&mut documents.common.k1.documents[0].document);
                 if amt {
                     rows[0].alternative = rows[20].alternative.clone();
                 } else {
@@ -635,14 +677,14 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
             (saved.next_id, "ISSUE_INTERVIEW_A_RECORD_NO_LONGER_BELONGS_TO_51E52C2C"),
         ] {
             let mut invalid = reopened.clone();
-            let P::SaveIncomes { documents, .. } = &mut invalid else { unreachable!() };
-            page_sales(&mut documents.documents[0].document)[0].id = bad;
+            let P::SaveDocuments { documents, .. } = &mut invalid else { unreachable!() };
+            page_sales(&mut documents.common.k1.documents[0].document)[0].id = bad;
             rejected_with(send(&mut session, invalid), key);
             assert_eq!(session.draft, saved);
         }
         let mut correction = reopened;
-        let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-        let rows = page_sales(&mut documents.documents[0].document);
+        let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+        let rows = page_sales(&mut documents.common.k1.documents[0].document);
         if absence_correction {
             rows[0].alternative = crate::K1Section179SaleAmtSource::NotReported;
         } else {
@@ -675,24 +717,25 @@ fn unit17_k1_sale_identity_complete_editor_save_reopen_restart() {
 fn unit17_k1_sale_amt_unavailable_save_reopen_restart_and_correction() {
     for partner in [true, false] {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
         let mut sale = k1_sale_input_statement();
         sale.alternative = crate::K1Section179SaleAmtSource::Unavailable;
         let page = if partner {
             let mut page = k1_1065("Known regular sale, unknown AMT source");
             page.more.section179_sales = vec![sale.clone()];
             // The parent convention cannot override explicit unknown property data.
-            page.amt = PartnerAmtRecords::SameAsRegular;
-            IncomeDocument::K1Partnership(page)
+            page.amt = Some(PartnerAmtRecords::SameAsRegular);
+            IncomeSource::K1 { value: crate::K1Document::K1Partnership((page).into()) }
         } else {
             let mut page = k1_1120s("Known regular sale, unknown AMT source");
             page.more.section179_sales = vec![sale.clone()];
-            page.amt = ScorpAmtRecords::SameAsRegular;
-            IncomeDocument::K1Scorp(page)
+            page.amt = Some(ScorpAmtRecords::SameAsRegular);
+            IncomeSource::K1 { value: crate::K1Document::K1Scorp((page).into()) }
         };
-        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        documents.documents = vec![document(0, page)];
-        accepted(&send(&mut session, P::from_avro(&request.to_avro()).unwrap()));
+        let request = save_documents(&mut session, vec![document(0, page)]);
+        accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+            &mut session,
+            P::from_avro(&request.to_avro()).unwrap(),
+        ));
         let saved = session.draft.clone();
         let source = saved
             .income
@@ -701,7 +744,7 @@ fn unit17_k1_sale_amt_unavailable_save_reopen_restart_and_correction() {
             .unwrap();
         let sales = |entry: &FederalIncome| match entry {
             FederalIncome::Partnership { data } => data.section179_sales.clone(),
-            FederalIncome::Scorp { data } => data.section179_sales.clone(),
+            FederalIncome::Scorp { data } => ScorpK1::from(data).section179_sales.clone(),
             _ => unreachable!(),
         };
         let actual = sales(&source.income);
@@ -717,17 +760,40 @@ fn unit17_k1_sale_amt_unavailable_save_reopen_restart_and_correction() {
         assert_eq!(native_draft_records(&decoded), stored);
         assert_eq!(decoded, saved);
         let mut session = restart(decoded);
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
+        let reopened = open_documents(&mut session);
         accepted(&send(&mut session, P::from_avro(&reopened.to_avro()).unwrap()));
         assert_eq!(session.draft, saved);
-        let mut correction = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-        let rows = match &mut documents.documents[0].document {
-            IncomeDocument::K1Partnership(page) => &mut page.more.section179_sales,
-            IncomeDocument::K1Scorp(page) => &mut page.more.section179_sales,
+        let mut correction = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+        let rows = match &mut documents.common.k1.documents[0].document {
+            crate::K1Document::K1Partnership(page) => &mut page.statements.section179_sales,
+            crate::K1Document::K1Scorp(page) => &mut page.statements.section179_sales,
             _ => unreachable!(),
         };
         rows[0].alternative = crate::K1Section179SaleAmtSource::NotReported;
+        accepted(&send(&mut session, P::from_avro(&correction.to_avro()).unwrap()));
+        // The corrected statement reports no AMT sale. Clear the independent
+        // same-as-regular answer on its topic so it cannot supply that sale.
+        let mut correction = crate::tests::support::client::income_pages::open_topic(
+            &mut session,
+            TaxSection::PassThrough,
+        );
+        let P::SaveIncomes { followups, .. } = &mut correction else { unreachable!() };
+        let mut corrected_parent = false;
+        for row in followups {
+            match &mut row.answer {
+                crate::DocumentAnswer::K1PartnerAmt { value: amt } => {
+                    *amt = None;
+                    corrected_parent = true;
+                }
+                crate::DocumentAnswer::K1ScorpAmt { value: amt } => {
+                    *amt = None;
+                    corrected_parent = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(corrected_parent);
         accepted(&send(&mut session, P::from_avro(&correction.to_avro()).unwrap()));
         let current = session.draft.income.iter().find(|e| e.id == source.id).unwrap();
         let corrected = sales(&current.income);
@@ -736,5 +802,56 @@ fn unit17_k1_sale_amt_unavailable_save_reopen_restart_and_correction() {
         assert_eq!(corrected[0].monetary_view(true), Some(None));
         assert!(crate::k1_sales::facts(current, true, None).unwrap().is_none());
         assert_eq!(restart(session.draft.clone()).draft, session.draft);
+    }
+}
+
+#[test]
+fn section179_conversion_uses_the_final_recovery_year_convention_after_native_save() {
+    // 2026-10-19 correction: Pub. 946 ch. 4, disposition in the final
+    // recovery year; Tables A-1/A-2/A-5 and their short-year footnotes.
+    // $10,000.51 exercises cent precision in the recomputed allowances.
+    for (placed, mid_quarter, date, recomputed, recaptured) in [
+        (20210301, false, 20260301, 1_000_051, 0),
+        (20220301, false, 20260301, 884_845, 115_206),
+        (20210301, true, 20260301, 1_000_051, 0),
+        (20211101, true, 20260301, 917_933, 82_118),
+        (20211101, true, 20261101, 1_000_051, 0),
+    ] {
+        let mut property = asset(1_000_051, placed, AssetClass::Five);
+        property.allowed_amt_carry = vec![0];
+        property.gds_mut().unwrap().history = AssetHistory::Continuing {
+            prior_depreciation: 1_000_051,
+            first_year_179: 1_000_051,
+            first_year_bonus: 0,
+            carryforward: 0,
+            mid_quarter,
+        };
+        property.disposal =
+            crate::AssetDisposal::Disposed { date, how: crate::DisposalKind::PersonalUse };
+        let mut page = business(15_000_000);
+        page.assets = vec![property];
+        let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
+        accepted(&save_businesses(&mut session, vec![page.clone()]));
+        let (id, _) = stored_business(&session);
+        let result = supported(&session.draft);
+        for (suffix, expected, line) in [
+            ("section179_prior", 1_000_051, "35(a)"),
+            ("section179_recomputed", recomputed, "36(a)"),
+            ("section179_recapture", recaptured, "37(a)"),
+        ] {
+            let key = alloc::format!("business_{id}_asset_0_{suffix}");
+            assert_eq!(line_amount(&result, &key), expected, "{placed}/{date}");
+            assert_eq!(printed_line(&result, &key), (TaxForm::Form4797, line.into()));
+        }
+        assert_eq!(
+            line_amount(&result, &alloc::format!("business_{id}_net_profit")),
+            15_000_000 + recaptured
+        );
+        assert_round_trip(&mut session, &[page]);
+        let saved = session.draft.clone();
+        let records = native_draft_records(&saved);
+        let decoded = draft_from_native_records(saved.tax_year, &records);
+        assert_eq!(decoded, saved);
+        assert_eq!(supported(&restart(decoded).draft), result);
     }
 }

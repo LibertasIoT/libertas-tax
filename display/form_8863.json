@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {"order": 24000, "rule": {"select": "^<StudentMorePage>.insurance_refund_current_expenses", "when_single_choice": "hide"}},
+    {"order": 119000, "rule": {"select": "^<EducationDocumentView>.documents", "layout": "summary", "paths": ["student", "tuition", "scholarships"]}},
+    {"order": 199000, "rule": {"select": "^<SaveEducation>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 554000, "rule": {"select": "^<Form1098TPaper>", "flatten": {"name_row": false}}},
+    {"order": 604000, "rule": {"select": "^<ScholarshipInclusion>", "flatten": true}},
+    {"order": 759000, "rule": {"select": "^<Form1098TPaper>.student", "promote": {"use_parent_name": false}}},
+    {"order": 767000, "rule": {"select": "^<StudentCreditView>.student", "promote": {"use_parent_name": false}}},
+    {"order": 767001, "rule": {"select": "^<EducationStudentPage>.student", "promote": {"use_parent_name": false}}},
+    {"order": 767002, "rule": {"select": "^<EducationStudentPage>", "suppress_label": true}},
+    {"order": 835000, "rule": {"select": "^<SaveEducation.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 1005000, "rule": {"select": "^<StudentCreditView>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_STUDENT", "fields": ["id", "student"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["tuition", "scholarships", "following_year_academic_period", "insurance_reimbursements", "half_time", "graduate"]}, {"fields": ["prior_tuition_adjustment", "prior_scholarship_adjustment"]}]}}
+  ]
+}

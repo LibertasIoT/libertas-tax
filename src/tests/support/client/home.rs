@@ -10,7 +10,7 @@ pub(in crate::tests) fn save_home_offices(d: &FederalDraft, sites: Vec<HomeOffic
         page: crate::tests::cross::interview::PAGE_INCOME,
         previous: crate::tests::cross::interview::PAGE_INCOME,
         review: true,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         mortgage_loans: vec![],

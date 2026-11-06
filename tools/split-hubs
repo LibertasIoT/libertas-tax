@@ -1,0 +1,879 @@
+#!/usr/bin/env python3
+"""Split the Tax App's hub files into one module per form.
+
+Usage:
+    tools/split-hubs [--check] [ROOT]     split ROOT (default: the current checkout)
+    tools/split-hubs --adopt [SPLIT]      bring a branch made before the split onto it
+
+--check changes nothing and exits 1 when a run would change the tree.
+
+What it does. Each hub in HUBS keeps the items shared by many forms; every other
+top-level item (struct, enum, fn, const, type, trait, a whole impl block, or one
+method of a hub type's inherent impl such as `impl Interview`) whose name matches a
+form's names moves, with its leading comments and attributes, to that form's module
+`src/<owner area>/<form>_<suffix>.rs`. The hub declares it at its end (`#[path] mod`
+plus a glob re-export), so every existing path (`crate::federal_model::W2`,
+`Interview::hsa_page`) still resolves; the module starts with `use super::*;`, so
+the moved text compiles unchanged in the hub's scope. Text moves byte for byte
+except the rewrite that keeps visibility identical one module deeper: none ->
+`pub(super)`, `pub(super)` -> the hub parent's, on the item, a moved struct's fields
+and a moved inherent impl's members. An impl follows its self type; a split impl
+keeps its header in each module. `use`, `mod`, macros, macro invocations and items
+using `self::`/`super::` paths stay in the hub.
+
+Deterministic and idempotent: the output depends only on the hub text and the
+tables below. A second run changes nothing; a new hub item whose name matches a
+form (e.g. a new `W2...` type or `hsa_...` page method) is appended to its form's
+module, so new work lands in per-form files. rustfmt runs on the files written.
+
+Bringing an open branch up to main (do not just run the tool and merge: the form
+modules would be added on both sides with no common base, so every difference
+would conflict):
+    tools/split-hubs --adopt          # for each split on origin/main the branch lacks,
+                                      # oldest first: merge main just before it (stop on a
+                                      # conflict: resolve, commit, rerun), then merge the
+                                      # split with this branch split by that split's tool
+    git merge origin/main             # base is the last split: only real overlaps conflict
+Run from main's copy if your branch lacks the tool:
+    git show origin/main:tools/split-hubs > /tmp/split-hubs && python3 /tmp/split-hubs --adopt
+Splits so far: the model/page/test hubs, then federal_rules.rs. Every commit that changes
+this tool must be a split: the tool's output on its parent plus the tool, nothing else.
+A branch started after the last split merges main normally; run the tool (and commit)
+first only when it added items to a hub.
+
+To give a form its module, add its names to the tables and rerun; to keep a new
+item shared, give it a name no form matches. Names are exact or globs (`*`).
+"""
+
+import fnmatch
+import os
+import re
+import subprocess
+import sys
+
+# (form, owner area under src/, names). A name is exact or a glob (`*` matches any text):
+# an exact name wins, then the glob with the longest text before its first `*`, then the
+# first in table order.
+MODEL_FORMS = [
+    ("filers", "family", """FederalStatus FilingChoice SpouseLiving MaritalState Relationship
+        FilerDependency FinalReturn FederalPerson attained_on age_on age_on_rule age_at_year_end
+        birthday_age_at_close_or_death after_65th_birthday FederalSetup FederalPeople ReturnSetup
+        Filing SeparateSpouseBoxes HeadMarital DeathYear Filer* Spouse* MoreAboutYou
+        Identification Claimable YourSituations"""),
+    ("dependents", "family", """Dependents PersonUse Dependent* FederalDependent* CompetingClaim
+        ClaimBasis PersonFacts CustodyRelease LivedWithYou PersonChoice SupportShare"""),
+    ("community_property", "attribution", "Community*"),
+    ("w2", "income", """W2* FederalWage* WageDeductionEligibility DailyTipRecord StatutoryBusiness
+        Box12Entry WageDocument"""),
+    ("form_1099_int", "investment", """FederalInterest* Int1099* IntMore IntCall* IntBoxes*
+        IntNominee* IntAfterDeath* Interest*"""),
+    ("form_1099_div", "investment", """FederalDividend* Div* Dividend* CapitalReturn1099Div
+        CapitalDistributionKind LiquidationProperty UndistributedGain Form2439 FundQsbsExclusion"""),
+    ("form_1099_oid", "investment", "FederalOid* Oid*"),
+    ("form_8815", "investment", "FederalSavingsBond* SavingsBond* FinalBond*"),
+    ("form_8814", "family", "FederalChildElection ChildIncome ChildStatementKept"),
+    ("form_1099_b", "investment", """Sale* FederalSale* BasisReporting CapitalSaleAmt GainTerm
+        Contracts1099B FederalSection1256 InvestmentSaleDocument SecurityAcquisition
+        WorthlessSecurity NonbusinessBadDebt BadDebt* Guarantee*"""),
+    ("form_1099_r", "retirement", """R1099 RMore RCalls Retirement* FederalRetirement*
+        Distribution* DisabilityWages LumpSumTax InheritedLumpSumTax Disposition
+        SimpleDisposition EarlyException ExceptionRepayment RolloverTarget PublicSafetyAnswer
+        InPlanRothBasis TaxableMethod QcdGift Form8606"""),
+    ("ssa_1099", "retirement", "Social* FederalSocial* Ssa1099* Rrb1099R* Railroad*"),
+    ("form_1099_g", "payments", """Unemployment* FederalUnemployment* Form1099G* GrantUse
+        Refund1099G RefundDeduction GovernmentPaymentDocument"""),
+    ("form_w2g", "income", "FederalGambling W2g GamblingLosses ProfessionalGambling"),
+    ("form_1099_patr", "farm", "Patr*"),
+    ("form_4136", "credits", """FederalFuel* Fuel* FUEL_* FederalEmulsionBlender*
+        FederalAlternativeFuel* AlternativeFuel* FederalCommercialAviation*
+        FederalForeignTradeAviation* FederalFarmAviation* FederalCashFuel*
+        FederalPartialCashFuel* FederalBusFuel* FederalOtherFuel* FederalAviationGasoline*
+        FederalForeignTradeAircraft* VENDOR_STATE_* FederalPersonalRefueling
+        FederalHomeKerosene*"""),
+    ("schedule_c", "business", """Business* FederalBusiness* W2Coverage OtherExpense Vehicle
+        VehicleMethod Mileage* Asset* FirstYearDeduction SelfEmploymentDocument"""),
+    ("schedule_e", "investment", """PersonalRentalHistory NonbusinessPropertyKind
+        ProfessionalRental* Rental* Building Improvement PersonalUse SuspendedLoss
+        RoyaltyProperty EquipmentRent"""),
+    ("estate_trust_k1", "passthrough", "FederalEstateTrust* EstateTrust* FinalEstateTrust*"),
+    ("disaster", "home", """Disaster* FederalDisaster* FederalWildfire* FederalCasualtyLiving*
+        FederalHomeLossOfUse"""),
+    ("form_8889", "health", "Hsa* FederalHsa* FamilySplit"),
+    ("se_benefits", "health", """SelfEmployedBenefits BusinessBenefits HealthPlanPage SeHealth
+        SeRetirement PartnerBenefits PartnerPlan"""),
+    ("ira_contributions", "retirement", "Ira* FederalIra*"),
+    ("educator", "deductions", "Educator*"),
+    ("form_2106", "business", "EmployeeExpense* WageChoice"),
+    ("form_1098_e", "deductions", "StudentLoan* Form1098E*"),
+    ("schedule_1a", "deductions", "FederalWorkDeductions TipsClaim OvertimeClaim FederalVehicleInterest"),
+    ("adjustments", "deductions", "FederalAdjustments MoreAdjustment* AlimonyItem MovingItem"),
+    ("schedule_a", "deductions", """Deductions Deduction* Medical CarePremium Taxes SaltElection
+        OtherItemized* FinalAnnuityLoss AnnuityContract Itemized* FederalDeductions
+        BondPremium*"""),
+    ("form_1098", "home", "Mortgage* AverageBalance"),
+    ("form_8396", "home", "FederalMortgageCredit MortgageSubsidy* FederalMortgageCertificate* MortgageCertificate*"),
+    ("charity", "deductions", "GiftCarryovers LessCommonGift WhalingCaptain GoodsKind VehicleUse"),
+    ("form_8863", "family", "Education* FederalEducation* Student* ScholarshipInclusion"),
+    ("form_8880", "credits", "Saver* FederalSaver*"),
+    ("form_8962", "health", "PolicyAmounts PolicyMonth SeparateRelief DependentReturn"),
+    ("form_2441", "family", "CareCosts DependentCare CarePage CareQualifyingRow CareBenefitRow"),
+    ("credits", "credits", "FederalCredits MoreCredit*"),
+    ("form_8936", "credits", "FederalCleanVehicle* CleanVehicle*"),
+    ("bba_audit", "passthrough", "FederalBbaAudit*"),
+    ("other_taxes", "payments", "OtherTaxes OtherTax"),
+    ("payments", "payments", """RefundChoice Payments* OverpaymentRecipient FederalPayments
+        Withheld"""),
+    ("form_1040_es", "payments", "NextYear* FarmerNextYear"),
+    ("form_2210", "payments", "PenaltyChoice PriorReturn WithholdingTiming IncomeTiming Farmer Waiver IncomeByPeriod"),
+    ("checklist", "core", """Checklist ActivityTopics PaidTopics CarryoverTopics FederalScreening
+        OftenMissed* Missed* Unprepared RareSituation"""),
+]
+
+PAGE_FORMS = [
+    ("filers", "family", """setup_issue filer_issue federal_setup return_setup YOUR_SITUATIONS
+        SPOUSE_SITUATIONS situations_issue federal_person professional_election
+        professional_filer filer NOBODY_CLAIMS filing_key return_label spouse_page
+        setup_candidate you_candidate spouse_candidate"""),
+    ("dependents", "family", """dependent_* lived_index allowed_lived filer_births
+        unmarked_refusals days_alive_of person_credits federal_dependent dependents_candidate"""),
+    ("w2", "income", """w2_* wage_* box12_* unreported_tips_* employee_wage_choices
+        cash_tips_record allowed_wage_scorporations"""),
+    ("form_1099_int", "investment", "interest_* int_* project_interest_issue seller_interest_record"),
+    ("form_1099_div", "investment", "dividend_* div_* project_dividend_issue capital_return_* retain_dividend_*"),
+    ("form_1099_oid", "investment", "oid_* project_oid_issue"),
+    ("investment_statements", "investment", "investment_statement_* investment_final_return"),
+    ("form_8815", "investment", "savings_bonds_*"),
+    ("form_1099_q", "family", "q1099_* education_expenses_record education_expenses_item"),
+    ("form_1099_b", "investment", "sale_record sale_item sale_issue contracts_* capital_sale_choices"),
+    ("form_1099_g", "payments", "unemployment_* refund_history refund_deduction"),
+    ("form_1099_patr", "farm", """cooperative_* prepare_cooperative_source_ids
+        project_cooperative_issue patr_*"""),
+    ("schedule_c", "business", """equipment_class asset_* equipment_history refresh_macrs_questions
+        macrs_question_* refresh_asset_macrs_questions refresh_record_macrs_questions
+        refresh_building_recovery_questions vehicles_in_stored_order mileage_* vehicle_*
+        expense_lines expense_records expense_items document_asset_rows business_record
+        business_item investment_issue disposal_issue history_issue business_issue
+        shared_business_issue equipment_rent_issue has_ordinary_business"""),
+    ("schedule_e", "investment", """rental_* building_record improvement_record building_item
+        improvement_item personal_use_record"""),
+    ("form_8889", "health", """hsa_* health_* allowed_family_split family_split_* derive_hsa_employer
+        source_choice family_share_record archer_* correction_return_documents"""),
+    ("se_benefits", "health", """has_benefit_rows business_benefit_rows partner_benefit_*
+        activity_partner_benefit_* activity_scorp_benefit_rows scorp_benefit_rows
+        benefits_entered benefits_needed partner_plan_* se_health_* se_retirement*
+        self_employed_benefits_*"""),
+    ("ira_contributions", "retirement", """ira_* form_8606_year_end form_5329_traditional_value
+        follow_ira_year_end page_ira"""),
+    ("form_1099_r", "retirement", """distribution_treatment disposition_treatment retirement_*
+        apply_retirement_personal_records trump_* distribution_code
+        special_retirement_answer_issue social_election_record missed_distribution_records
+        roth_* qcd_records income_inherited_iras income_inherited_roth_iras inherited_catalog"""),
+    ("ssa_1099", "retirement", "rrb_* railroad_* ssa_*"),
+    ("educator", "deductions", "educator_*"),
+    ("form_2106", "business", "employee_expense_form employee_expenses_*"),
+    ("form_1098_e", "deductions", "student_loan_*"),
+    ("schedule_a", "deductions", """itemized_* no_itemized_facts itemizing deduction_route
+        route_key medical_* person_age care_premium_item personal_tax_record salt_item taxes_*
+        deductions_rule deductions_page deductions_candidate less_common_* LessCommonGifts
+        annuity_contracts gambling_losses other_itemized_* expense_owner_candidate"""),
+    ("form_1098", "home", "mortgage_*"),
+    ("charity", "deductions", """gift_* appraisal_catalog allowed_repayment repayment_index
+        property_gifts_entered clear_property_gifts gifts_entered clear_gift_page"""),
+    ("form_8863", "family", "education_* student_credit_* student_on_return coverdell_corrections"),
+    ("form_8880", "credits", "saver_* follow_saver"),
+    ("form_8962", "health", "marketplace_* MarketplaceCatalog allowed_separate"),
+    ("form_2441", "family", "care_*"),
+    ("credits", "credits", "more_credit_* apply_more_credits more_credits_* credits_hub* credits_count"),
+    ("adjustments", "deductions", """more_adjustment_* more_adjustments_* alimony_issue
+        adjustments_hub* adjustments_count"""),
+    ("other_taxes", "payments", "other_tax_* apply_other_taxes other_taxes_* bind_home_sales follow_home_sales"),
+    ("payments", "payments", """return_before_penalty withheld full_year_period even_period box_c
+        follow_full_year waiver_* next_year_* penalty_item payments_* refund_choice
+        refund_candidate income_by_period_* allowed_prior_returns allowed_farmer
+        allowed_farmer_next_year farming_return_year"""),
+    ("checklist", "core", """checklist_* catalog_bits catalog_bits_mut ticked set_tick
+        undeclared_ticks evidenced evidence_notes follow_ticks with_ticks planned
+        planned_flags planned_page planned_sections MISSED_INCOME MISSED_BENEFITS missed_*
+        told_us often_missed_*"""),
+    ("injured_spouse", "attribution", "injured_spouse_*"),
+    ("form_8615", "family", "parent_tax_*"),
+    ("disaster", "home", "disaster_*"),
+]
+
+# The federal return's per-form calculations and line emitters (federal_rules.rs). Its two
+# monolithic passes (collect_with_claims, estimate_with_ira_pass_with_claims), the
+# refusal tables and the income validators are shared and stay in the hub.
+RULES_FORMS = [
+    ("w2", "income", """w2_box12_refusal payroll_source_issue unsettled_payroll_agi
+        known_payroll_row withhold_required_source_result"""),
+    ("form_8959", "income", "additional_medicare_parts"),
+    ("schedule_c", "business", "schedule_c_line schedule_c_lines_with_claims direct_business_receipt_*"),
+    ("schedule_se", "business", "self_employment church_employee_se se_from_net schedule_se_lines_with_claims"),
+    ("form_461", "business", "excess_business_loss_amount"),
+    ("form_4562", "cost_recovery", """form_4562_* business_depreciation_with_section179_with_claims
+        vehicle_columns"""),
+    ("form_4797", "investment", "asset_disposition_rows_with_claims business_sale_rows personal_equipment_sale"),
+    ("form_8949", "investment", """employee_personal_parts rental_personal_part collect_sale
+        validate_sale fund_section_1202 qof_deferral"""),
+    ("schedule_d", "investment", """preferential_tax* schedule_d_tax add_short add_long exclude_short
+        exclude_long bypass_line_3e add_short_outside_line_3e add_long_outside_line_3e
+        restore_k1_capital_gross amt_capital_operands"""),
+    ("form_1099_div", "investment", "capital_return"),
+    ("form_8960", "investment", "Form8960Amounts form_8960_lines"),
+    ("form_8995", "activity", "qbi_lines installment_qbi_shares_with_claims standalone_installment_qbi"),
+    ("schedule_e", "investment", """professional professional_joint professional_group_owner
+        professional_election_editor professional_elections reconcile_professional_election
+        any_professional"""),
+    ("schedule_f", "farm", """Routing routed_farm farm_receipt_requirements farm_1099g_program
+        FarmCooperativeTotals farm_cooperative* farm_routed_income_* farm_receipts_*"""),
+    ("estate_trust_k1", "passthrough", "estate_final_nol"),
+    ("k1", "passthrough", "k1_credit_code"),
+    ("nol", "federal", "nol_modified_income_with_claims"),
+    ("ssa_1099", "retirement", "social_taxable"),
+    ("ira_contributions", "retirement", "ira_issue_context"),
+    ("form_8889", "health", "medical_distribution"),
+    ("form_8962", "health", "HealthSpecialKind HealthSpecials HealthRentalSnapshot MarketplaceSnapshot"),
+    ("schedule_1a", "deductions", "additional_deductions"),
+    ("schedule_a", "deductions", "final_annuity_losses salt_cap_current_year"),
+    ("standard_deduction", "deductions", "standard_base dependent_standard standard_deduction"),
+    ("dependents", "family", """Family FamilyPurpose family_for household dependent_ids
+        medical_dependent_ids self_employed_dependent_ids short_year_days family
+        validate_dependent unclaimed_filers"""),
+    ("form_8615", "family", "kiddie_age young_8615 FORM_8615_UNEARNED form_8615_applies"),
+    ("form_2441", "family", "care_earned_input"),
+    ("form_8863", "family", "people_students resolved_scholarship_choices_with_claims"),
+    ("form_8880", "credits", "saver_rate saver_potential*"),
+    ("form_8396", "home", "mortgage_credit_line3"),
+    ("form_2210", "payments", "estimated_timing_only"),
+    # Phase modules of the per-form refactor of the two passes: no hub item matches
+    # them; each starts empty and receives its form's phase function directly.
+    ("form_8911", "credits", ""),
+    ("form_8834", "credits", ""),
+    ("form_8859", "credits", ""),
+    ("form_8936", "credits", ""),
+    ("form_5695", "credits", ""),
+    ("form_3800", "credits", ""),
+    ("form_8801", "credits", ""),
+    ("form_8912", "credits", ""),
+    ("form_4136", "credits", ""),
+    ("schedule_r", "credits", ""),
+    ("schedule_3", "credits", ""),
+    ("schedule_3a", "credits", ""),
+    ("schedule_8812", "family", ""),
+    ("eic", "family", ""),
+    ("form_8839", "family", ""),
+    ("form_8814", "family", ""),
+    ("form_6251", "federal", ""),
+    ("form_1040", "federal", ""),
+    ("schedule_1", "federal", ""),
+    ("schedule_2", "federal", ""),
+    ("form_1116", "foreign", ""),
+    ("form_2555", "foreign", ""),
+    ("form_4952", "investment", ""),
+    ("form_6781", "investment", ""),
+    ("form_6252", "investment", ""),
+    ("form_1099_int", "investment", ""),
+    ("form_8815", "investment", ""),
+    ("form_8582", "activity", ""),
+    ("form_1099_r", "retirement", ""),
+    ("form_5329", "retirement", ""),
+    ("form_1099_g", "payments", ""),
+    ("payments", "payments", ""),
+    ("form_1040_es", "payments", ""),
+    ("form_8853", "health", ""),
+    ("home_sale", "home", ""),
+    ("form_4684", "home", ""),
+    ("form_4835", "farm", ""),
+    ("form_1099_patr", "farm", ""),
+    ("schedule_j", "farm", ""),
+    ("other_income", "income", ""),
+    ("form_2106", "business", ""),
+    ("educator", "deductions", ""),
+    ("charity", "deductions", ""),
+    ("form_1098_e", "deductions", ""),
+    ("form_8978", "passthrough", ""),
+    ("form_8379", "attribution", ""),
+]
+
+# The test client's per-form fixture savers (src/tests/support/client/income_pages.rs).
+TEST_PAGE_FORMS = [
+    ("w2", "tests/support/client", "*wage_fixture*"),
+    ("form_1099_int", "tests/support/client", "*interest_fixture*"),
+    ("form_1099_div", "tests/support/client", "*dividend_fixture* *dividend_gap*"),
+    ("form_1099_oid", "tests/support/client", "*oid_fixture*"),
+    ("form_1099_b", "tests/support/client", "*espp_lot* *sale_fixture*"),
+    ("form_1099_c", "tests/support/client", "*debt_fixture*"),
+    ("information_returns", "tests/support/client", "*information_return*"),
+    ("k1", "tests/support/client", "*k1_*"),
+]
+
+# The test builders' per-form native documents (src/tests/support/builders/native_income.rs).
+TEST_NATIVE_FORMS = [
+    ("w2", "tests/support/builders", "*w2* *wage*"),
+    ("form_1099_int", "tests/support/builders", "*int1099* *interest*"),
+    ("form_1099_div", "tests/support/builders", "*div1099* *dividend*"),
+    ("form_1099_oid", "tests/support/builders", "*oid1099*"),
+    ("form_1098", "tests/support/builders", "*mortgage*"),
+]
+
+# (hub file, its module path, module suffix, visibility replacing `pub(super)` one
+# module deeper, forms)
+HUBS = [
+    ("src/federal/federal_model.rs", "crate::federal_model", "model", "pub(crate)", MODEL_FORMS),
+    ("src/federal/interview/mod.rs", "crate::interview", "page", "pub(crate)", PAGE_FORMS),
+    ("src/federal/federal_rules.rs", "crate::federal_rules", "rules", "pub(crate)", RULES_FORMS),
+    ("src/tests/support/client/income_pages.rs", "crate::tests::support::client::income_pages",
+     "pages", "pub(in crate::tests::support::client)", TEST_PAGE_FORMS),
+    ("src/tests/support/builders/native_income.rs", "crate::tests::support::builders::native_income",
+     "native", "pub(in crate::tests::support::builders)", TEST_NATIVE_FORMS),
+]
+
+MARKER = "// Per-form modules split out by tools/split-hubs; the tool regenerates this block."
+END_MARKER = "// End of the tools/split-hubs block."
+
+
+# ---------------------------------------------------------------- Rust lexing
+
+def code_mask(src):
+    """1 for each character that is code, 0 inside comments and string/char literals."""
+    n = len(src)
+    mask = bytearray(n)
+    i = 0
+    while i < n:
+        c = src[i]
+        if c == '/' and i + 1 < n and src[i + 1] == '/':
+            j = src.find('\n', i)
+            i = n if j < 0 else j
+            continue
+        if c == '/' and i + 1 < n and src[i + 1] == '*':
+            depth, i = 1, i + 2
+            while depth:
+                if src.startswith('/*', i):
+                    depth, i = depth + 1, i + 2
+                elif src.startswith('*/', i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            continue
+        prev_ident = i > 0 and (src[i - 1].isalnum() or src[i - 1] == '_')
+        if c in 'rb' and not prev_ident:
+            m = re.compile(r'b?r(#*)"').match(src, i)
+            if m:
+                end = src.index('"' + m.group(1), m.end()) + 1 + len(m.group(1))
+                mask[i] = 1  # the literal is one code token
+                i = end
+                continue
+            if c == 'b' and i + 1 < n and src[i + 1] in '"\'':
+                mask[i] = 1
+                i += 1
+                c = src[i]
+                prev_ident = True
+        if c == '"':
+            mask[i] = 1
+            i += 1
+            while src[i] != '"':
+                i += 2 if src[i] == '\\' else 1
+            i += 1
+            continue
+        if c == "'":
+            mask[i] = 1
+            if src[i + 1] == '\\':
+                i = src.index("'", i + 3) + 1
+                continue
+            if i + 2 < n and src[i + 2] == "'":
+                i += 3
+                continue
+            i += 1  # a lifetime or label: the rest is an identifier
+            continue
+        mask[i] = 1
+        i += 1
+    return mask
+
+
+class Text:
+    def __init__(self, src):
+        self.src = src
+        self.mask = code_mask(src)
+
+    def skip_trivia(self, i, end):
+        while i < end and (not self.mask[i] or self.src[i].isspace()):
+            i += 1
+        return i
+
+    def match_close(self, i):
+        """Index after the bracket matching the one at i."""
+        depth = 0
+        while True:
+            if self.mask[i]:
+                c = self.src[i]
+                if c in '([{':
+                    depth += 1
+                elif c in ')]}':
+                    depth -= 1
+                    if depth == 0:
+                        return i + 1
+            i += 1
+
+    def skip_attrs(self, i, end):
+        """Position of an item's first token after its attributes and comments."""
+        i = self.skip_trivia(i, end)
+        while self.src.startswith('#[', i) or self.src.startswith('#![', i):
+            i = self.skip_trivia(self.match_close(self.src.index('[', i)), end)
+        return i
+
+    def items(self, start, end):
+        """Top-level items in [start, end): dicts with lead (start of leading trivia),
+        start (first attribute or token) and end (after the item and its line)."""
+        src, mask = self.src, self.mask
+        out, lead, i = [], start, start
+        while True:
+            i = self.skip_trivia(i, end)
+            if i >= end:
+                return out, lead
+            first = i
+            body = self.skip_attrs(i, end)
+            semi_only = re.compile(r'(?:pub(?:\s*\([^)]*\))?\s+)?(?:const|static|use|type|let)\s').match(src, body) \
+                and not re.compile(r'(?:pub(?:\s*\([^)]*\))?\s+)?const\s+(?:fn|unsafe|async|extern)\b').match(src, body)
+            depth, j = 0, body
+            while True:
+                if mask[j]:
+                    c = src[j]
+                    if c in '([{':
+                        depth += 1
+                    elif c in ')]}':
+                        depth -= 1
+                        if depth == 0 and c == '}' and not semi_only:
+                            j += 1
+                            break
+                    elif c == ';' and depth == 0:
+                        j += 1
+                        break
+                j += 1
+            m = re.compile(r'[ \t]*(//[^\n]*)?\n').match(src, j)
+            if m:
+                j = m.end()
+            out.append({'lead': lead, 'start': first, 'body': body, 'end': j})
+            lead = i = j
+
+
+VIS = re.compile(r'pub(\s*\((crate|super|self|in\s[^)]*)\))?\s*')
+NAMED = re.compile(r'(?:pub(?:\s*\([^)]*\))?\s+)?((?:const|async|unsafe|extern\s+"[^"]*")\s+)*'
+                   r'(fn|struct|enum|union|trait|type|const|static|mod|use|extern\s+crate)\b\s*([A-Za-z_][A-Za-z0-9_]*)?')
+
+
+def describe(t, it):
+    """(kind, name) of an item; for impls the self type."""
+    s, b = t.src, it['body']
+    m = NAMED.match(s, b)
+    if m and not s.startswith('impl', b):
+        kind = m.group(2)
+        return ('const' if kind == 'const' else kind.split()[0]), m.group(3)
+    if re.compile(r'(?:unsafe\s+)?impl\b').match(s, b):
+        return 'impl', impl_self(t, b)
+    if re.compile(r'macro_rules\s*!').match(s, b):
+        return 'macro_rules', None
+    return 'macro', None
+
+
+def impl_self(t, b):
+    s = t.src
+    brace = b
+    while not (t.mask[brace] and s[brace] == '{'):
+        brace += 1
+    hdr = s[b:brace]
+    hdr = re.sub(r'\bwhere\b.*', '', hdr, flags=re.S)
+    hdr = re.sub(r'^(unsafe\s+)?impl\s*', '', hdr)
+    if hdr.startswith('<'):
+        hdr = hdr[angle_end(hdr, 0):]
+    depth = 0
+    for k, c in enumerate(hdr):
+        if c == '<':
+            depth += 1
+        elif c == '>' and hdr[k - 1] != '-':
+            depth -= 1
+        elif depth == 0 and re.match(r'\sfor\s', hdr[k:k + 5]):
+            hdr = hdr[k + 5:]
+            break
+    m = re.match(r"\s*&?\s*(?:'\w+\s+)?(?:mut\s+)?(?:\w+::)*(\w+)", hdr)
+    return m.group(1) if m else None
+
+
+def angle_end(s, i):
+    depth = 0
+    for k in range(i, len(s)):
+        if s[k] == '<':
+            depth += 1
+        elif s[k] == '>' and s[k - 1] != '-':
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    raise ValueError('unbalanced generics')
+
+
+def is_trait_impl(t, it):
+    s = t.src
+    brace = it['body']
+    while not (t.mask[brace] and s[brace] == '{'):
+        brace += 1
+    hdr = re.sub(r'\bwhere\b.*', '', s[it['body']:brace], flags=re.S)
+    return re.search(r'\sfor\s', hdr) is not None
+
+
+# ------------------------------------------------------- visibility rewrite
+
+def deeper_vis(src, i, parent):
+    """Edit (start, end, replacement) that keeps an item's visibility one module deeper,
+    or None when it is unchanged. i is the item's first token after attributes."""
+    m = VIS.match(src, i)
+    if not m or not re.match(r'pub\b', src[i:i + 4]):
+        return (i, i, 'pub(super) ')
+    inner = (m.group(2) or '').strip()
+    if inner == 'super':
+        return (i, m.end(), parent + ' ')
+    if inner == 'self':
+        return (i, m.end(), 'pub(super) ')
+    if inner.startswith('in') and re.match(r'in\s+(self|super)\b', inner):
+        raise ValueError('relative pub(in ...) path')
+    return None
+
+
+def item_edits(t, it, kind, parent):
+    """Visibility edits for a moved item: the item, struct fields, inherent impl members."""
+    s = t.src
+    edits = []
+    if kind in ('fn', 'struct', 'enum', 'union', 'trait', 'type', 'const', 'static'):
+        e = deeper_vis(s, it['body'], parent)
+        if e:
+            edits.append(e)
+    if kind in ('struct', 'union'):
+        edits += field_edits(t, it, parent)
+    if kind == 'impl' and not is_trait_impl(t, it):
+        open_ = it['body']
+        while not (t.mask[open_] and s[open_] == '{'):
+            open_ += 1
+        members, _ = t.items(open_ + 1, t.match_close(open_) - 1)
+        for mb in members:
+            k, _ = describe(t, mb)
+            if k in ('fn', 'type', 'const'):
+                e = deeper_vis(s, mb['body'], parent)
+                if e:
+                    edits.append(e)
+    return edits
+
+
+def field_edits(t, it, parent):
+    s, mask = t.src, t.mask
+    j = NAMED.match(s, it['body']).end()
+    while j < it['end'] and not (mask[j] and s[j] in '{(;'):
+        if mask[j] and s[j] == '<':
+            j = angle_end(s, j)
+            continue
+        j += 1
+    if s[j] == ';':
+        return []
+    close = t.match_close(j) - 1
+    edits = []
+    starts = [j + 1]
+    depth, k = 0, j + 1
+    while k < close:
+        if mask[k]:
+            c = s[k]
+            if c in '([{<':
+                if c == '<' or True:
+                    depth += 1
+            elif c in ')]}' or (c == '>' and s[k - 1] != '-'):
+                depth -= 1
+            elif c == ',' and depth == 0:
+                starts.append(k + 1)
+        k += 1
+    for st in starts:
+        f = t.skip_attrs(st, close)
+        if f >= close:
+            continue
+        if s[j] == '{' and not re.compile(r'(?:pub(?:\s*\([^)]*\))?\s+)?[A-Za-z_]\w*\s*:(?!:)').match(s, f):
+            raise ValueError('unrecognized field at %d' % f)
+        e = deeper_vis(s, f, parent)
+        if e:
+            edits.append(e)
+    return edits
+
+
+def apply_edits(src, base, edits):
+    out, pos = [], base
+    for a, b, r in sorted(edits):
+        out.append(src[pos:a])
+        out.append(r)
+        pos = b
+    return out, pos
+
+
+def moved_text(t, start, end, edits):
+    out, pos = apply_edits(t.src, start, [e for e in edits if start <= e[0] < end])
+    out.append(t.src[pos:end])
+    return ''.join(out)
+
+
+# ------------------------------------------------------------- the split
+
+def form_matcher(forms):
+    exact, globs = {}, []
+    for order, (form, area, names) in enumerate(forms):
+        for name in names.split():
+            if '*' in name:
+                globs.append((-len(name.split('*')[0]), order, name, form))
+            else:
+                exact.setdefault(name, form)
+    globs.sort()
+    def match(name):
+        if name is None:
+            return None
+        if name in exact:
+            return exact[name]
+        for _, _, pattern, form in globs:
+            if fnmatch.fnmatchcase(name, pattern):
+                return form
+        return None
+    return match
+
+
+RELATIVE_PATH = re.compile(r'(?<![\w:])(self|super)::')
+
+
+def uses_relative_path(t, a, b):
+    for m in RELATIVE_PATH.finditer(t.src, a, b):
+        if t.mask[m.start()]:
+            return True
+    return False
+
+
+def registered_modules(t, items, hub_dir):
+    """Modules declared inside the hub's actual top-level generated block."""
+    bounds = []
+    for marker in (MARKER, END_MARKER):
+        line = re.search(r'(?m)^' + re.escape(marker) + r'(?=\n|$)', t.src)
+        if (not line or (line.start() and not t.mask[line.start() - 1])
+                or any(it['start'] <= line.start() < it['end'] for it in items)):
+            return set()
+        bounds.append(line)
+    start, end = bounds
+    if start.end() >= end.start():
+        return set()
+    registered = set()
+    for it in items:
+        if not start.end() <= it['start'] < it['end'] <= end.start():
+            continue
+        kind, name = describe(t, it)
+        path = re.fullmatch(r'#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*',
+                            t.src[it['start']:it['body']])
+        if kind == 'mod' and path and re.fullmatch(r'mod\s+\w+\s*;\s*',
+                                                  t.src[it['body']:it['end']]):
+            registered.add((name, os.path.normpath(os.path.join(hub_dir, path.group(1)))))
+    return registered
+
+
+def split_hub(root, hub, suffix, parent, forms):
+    path = os.path.join(root, hub)
+    with open(path, encoding='utf-8') as f:
+        t = Text(f.read())
+    src = t.src
+    match = form_matcher(forms)
+    hub_dir = os.path.dirname(path)
+    items, tail = t.items(0, len(src))
+    registered = registered_modules(t, items, hub_dir)
+    moved = {}  # form -> list of chunks
+    keep = []   # output pieces of the hub
+    pos = 0
+    for it in items:
+        kind, name = describe(t, it)
+        if kind in ('use', 'mod', 'extern', 'macro', 'macro_rules') or src.startswith('#!', it['start']):
+            continue
+        form = match(name)
+        relative = uses_relative_path(t, it['start'], it['end'])
+        if form and not relative:
+            edits = item_edits(t, it, kind, parent)
+            moved.setdefault(form, []).append(moved_text(t, it['lead'], it['end'], edits))
+            keep.append(src[pos:it['lead']])
+            pos = it['end']
+            continue
+        if kind != 'impl' or is_trait_impl(t, it):
+            continue
+        # A hub type's inherent impl: move the members whose names belong to a form.
+        open_ = it['body']
+        while not (t.mask[open_] and src[open_] == '{'):
+            open_ += 1
+        close = t.match_close(open_) - 1
+        members, _ = t.items(open_ + 1, close)
+        plan = []
+        for mb in members:
+            k, n = describe(t, mb)
+            f = match(n) if k in ('fn', 'const', 'type') else None
+            if f and uses_relative_path(t, mb['start'], mb['end']):
+                f = None
+            plan.append((mb, k, f))
+        if not any(f for _, _, f in plan):
+            continue
+        header = src[it['start']:open_ + 1]
+        by_form = {}
+        for mb, k, f in plan:
+            if f:
+                e = deeper_vis(src, mb['body'], parent) if k in ('fn', 'const', 'type') else None
+                by_form.setdefault(f, []).append(moved_text(t, mb['lead'], mb['end'], [e] if e else []))
+        whole = all(f for _, _, f in plan)
+        for n, (f, chunks) in enumerate(by_form.items()):
+            chunks[0] = re.sub(r'\A(?:[ \t]*\n)+', '', chunks[0])
+            lead = src[it['lead']:it['start']] if whole and n == 0 else '\n'
+            moved.setdefault(f, []).append(lead + header + '\n' + ''.join(chunks) + '}\n')
+        keep.append(src[pos:it['lead']])
+        if whole:
+            pos = it['end']
+            continue
+        keep.append(src[it['lead']:open_ + 1])
+        p = open_ + 1
+        for mb, k, f in plan:
+            if f:
+                keep.append(src[p:mb['lead']])
+                p = mb['end']
+        keep.append(src[p:it['end']])
+        pos = it['end']
+    keep.append(src[pos:])
+    new_hub = ''.join(keep)
+
+    # Every form in the table has its module, even an empty one, so the hub's module
+    # block depends only on the table and two branches adding a form's first items
+    # never both edit the hub. `pub use` re-exports each item at its own visibility.
+    changed = []
+    block_mods, block_uses, sources = [], [], [os.path.basename(path)]
+    for module, form, area in sorted(('%s_%s' % (f, suffix), f, a) for f, a, _ in forms):
+        base = ('src', 'federal', 'rules') if suffix == 'rules' else ('src',)
+        child = os.path.join(root, *base, area, module + '.rs')
+        if os.path.exists(child):
+            with open(child, encoding='utf-8') as f:
+                text = f.read()
+            if ((module, os.path.normpath(child)) not in registered
+                    and 'split out by tools/split-hubs' not in text.split('\n', 1)[0]):
+                raise SystemExit('%s exists and is not a split-hubs module' % child)
+        else:
+            text = ('// %s items of %s, split out by tools/split-hubs.\n'
+                    '#[allow(unused_imports)]\nuse super::*;\n' % (form, hub))
+            changed.append((child, text))
+        if form in moved:
+            changed = [c for c in changed if c[0] != child] + [(child, text + ''.join(moved[form]))]
+        block_mods.append('#[path = "%s"]\nmod %s;\n' % (os.path.relpath(child, hub_dir), module))
+        # An empty module, or one whose items the hub's other code never names, leaves
+        # its glob unused; the glob never changes resolution.
+        block_uses.append('#[allow(unused_imports)]\npub use %s::*;\n' % module)
+        sources.append(os.path.relpath(child, hub_dir))
+    # Source-reading tests read the hub's whole text through HUB_SOURCE (unused
+    # while no test reads that hub).
+    source = ('#[cfg(test)]\n#[allow(dead_code)]\npub(crate) const HUB_SOURCE: &str = concat!(\n'
+              + ''.join('    include_str!("%s"),\n' % s for s in sources) + ');\n')
+    block_uses.sort(key=lambda u: [(int(c), '') if c.isdigit() else (-1, c)
+                                   for c in re.split(r'(\d+)', u.split('pub use ')[1])])
+    new_hub = replace_block(new_hub, MARKER + '\n' + ''.join(block_mods) + ''.join(block_uses)
+                            + source + END_MARKER + '\n')
+    if new_hub != src:
+        changed.append((path, new_hub))
+    return changed
+
+
+def replace_block(src, block):
+    lines = src.split('\n')
+    if MARKER in lines:
+        i, j = lines.index(MARKER), lines.index(END_MARKER) + 1
+        return '\n'.join(lines[:i] + block.rstrip('\n').split('\n') + lines[j:])
+    return src.rstrip('\n') + '\n\n' + block
+
+
+INCLUDE_STR = re.compile(r'include_str!\("([^"]+)"\)')
+
+
+def redirect_source_reads(root, hubs):
+    """Point every `include_str!` of a hub file elsewhere in src at the hub's HUB_SOURCE."""
+    targets = {os.path.normpath(os.path.join(root, h)): m + '::HUB_SOURCE' for h, m in hubs}
+    changed = []
+    for d, _, files in os.walk(os.path.join(root, 'src')):
+        for f in sorted(files):
+            p = os.path.join(d, f)
+            if not f.endswith('.rs') or p in targets:
+                continue
+            src = open(p, encoding='utf-8').read()
+            new = INCLUDE_STR.sub(lambda m: targets.get(
+                os.path.normpath(os.path.join(d, m.group(1))), m.group(0)), src)
+            if new != src:
+                changed.append((p, new))
+    return changed
+
+
+def git(*args, **kw):
+    return subprocess.run(['git'] + list(args), check=True, text=True, stdout=subprocess.PIPE, **kw).stdout.strip()
+
+
+def ancestor(rev, root):
+    return subprocess.run(['git', 'merge-base', '--is-ancestor', rev, 'HEAD'], cwd=root).returncode == 0
+
+
+def adopt(argv):
+    """Bring the current branch onto every split of MAIN (default origin/main) it lacks,
+    oldest first. A split is a commit changing this tool; it holds the tool's output on
+    its parent. For each: merge its parent (main just before it; stop on a conflict for
+    the person to resolve, commit and rerun), then record the split as merged with this
+    branch's own tree split by that split's tool, so later merges use it as their base."""
+    root = git('rev-parse', '--show-toplevel')
+    main_ref = argv[0] if argv else 'origin/main'
+    if git('status', '--porcelain', cwd=root):
+        raise SystemExit('commit or stash your changes first')
+    splits = git('log', '--reverse', '--format=%H', main_ref, '--', 'tools/split-hubs', cwd=root).split()
+    for split in splits:
+        if ancestor(split, root):
+            continue
+        if not ancestor(split + '^', root):
+            if subprocess.run(['git', 'merge', '--no-edit', split + '^'], cwd=root).returncode:
+                raise SystemExit('resolve the conflicts with main before split %s, commit, and run '
+                                 '--adopt again' % split[:12])
+        tool = git('show', '%s:tools/split-hubs' % split, cwd=root)
+        path = os.path.join(git('rev-parse', '--git-dir', cwd=root), 'split-hubs-%s.py' % split[:12])
+        with open(path if os.path.isabs(path) else os.path.join(root, path), 'w', encoding='utf-8') as f:
+            f.write(tool + '\n')
+        git('merge', '-s', 'ours', '--no-commit', '--no-ff', split, cwd=root)
+        git('checkout', split, '--', 'tools/split-hubs', cwd=root)
+        subprocess.run([sys.executable, '-I', os.path.join(root, path), root], cwd=root, check=True,
+                       stdout=subprocess.DEVNULL)
+        git('add', '-A', 'src', 'tools/split-hubs', cwd=root)
+        git('commit', '--no-edit', '-m', 'Adopt the hub split %s: its tools/split-hubs run on this branch'
+            % split[:12], cwd=root)
+        print('adopted', split[:12])
+    print('now: git merge %s' % main_ref)
+    return 0
+
+
+def main(argv):
+    if argv[:1] == ['--adopt']:
+        return adopt(argv[1:])
+    check = '--check' in argv
+    args = [a for a in argv if a != '--check']
+    root = os.path.abspath(args[0]) if args else git('rev-parse', '--show-toplevel')
+    return split_tree(root, check)
+
+
+def split_tree(root, check=False):
+    changed = []
+    for hub, _, suffix, parent, forms in HUBS:
+        changed += split_hub(root, hub, suffix, parent, forms)
+    changed += redirect_source_reads(root, [(h, m) for h, m, _, _, _ in HUBS])
+    if check:
+        for p, _ in changed:
+            print('would change', os.path.relpath(p, root))
+        return 1 if changed else 0
+    for p, text in changed:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(text)
+    if changed:
+        subprocess.run(['rustfmt', '--edition', '2024'] + sorted({p for p, _ in changed}), cwd=root, check=True)
+    for p, _ in changed:
+        print('wrote', os.path.relpath(p, root))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

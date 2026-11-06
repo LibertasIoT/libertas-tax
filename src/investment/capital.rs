@@ -18,11 +18,12 @@
 //   sales), N (nominee, column (g) backs out the gain), E (option premium), Y and Z (qualified
 //   opportunity funds, opportunity_fund.rs) and O (the section 1231 pair) are calculated, a
 //   written option is always short-term (section 1234(b)) and an empty basis counts as zero.
-//   T3-6252 (2026-09-27): lines 4 and 11 carry Form 6252 line
+//   Form 6252 (2026-09-27): lines 4 and 11 carry Form 6252 line
 //   26 of earlier-year installment sales of investment property (installment::earlier_capital)
 //   and are emitted as capital_gain_4 and capital_gain_11 (federal_rules.rs
-//   Totals.schedule_d_line_4 and schedule_d_line_11); InstallmentSale stays only for a 2026
-//   installment sale of investment property. Unit B2 (2026-10-09): the same totals take Form
+//   Totals.schedule_d_line_4 and schedule_d_line_11). Current-year investment/personal installments
+//   join those same cells through the current-sale owner; full recognition uses Form 8949.
+//   The same totals take Form
 //   6781 line 8 (40% short-term) and line 9 (60% long-term) of section 1256 contracts
 //   (section1256.rs), with the net section 1256 contracts loss carryback election reducing the
 //   2026 loss and the carryover (tests: form_6781_* in src/tests/investment/investment.rs). Unit F4 (2026-10-10,
@@ -56,7 +57,8 @@
 // https://www.irs.gov/instructions/i1040sd
 use crate::kernel::phase;
 
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
+use crate::line_emission::emit as emit_lines;
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CapitalAmounts {
     pub short: i64,
@@ -103,7 +105,7 @@ pub(crate) fn schedule_d_source_cell(
     source: &str,
     explanation: crate::Message,
 ) {
-    crate::kernel::lines::form_line(
+    crate::line_emission::form_line(
         r,
         form.clone(),
         id,
@@ -113,7 +115,7 @@ pub(crate) fn schedule_d_source_cell(
         explanation.clone(),
     );
     if cents % 100 != 0 {
-        crate::kernel::lines::form_value(
+        crate::line_emission::form_value(
             r,
             crate::FormLine::subrow(form.form, &form.line),
             &alloc::format!("{id}_unrounded"),
@@ -126,7 +128,8 @@ pub(crate) fn schedule_d_source_cell(
 }
 
 // PRINT consumes the settled regular netting owner. K-1 and fund source rows
-// retain admitted cents; carryovers and net totals keep the owner's dollars.
+// print whole dollars with admitted cents in supporting subrows; carryovers
+// and net totals keep the owner's dollars.
 // Shareholder loan repayments are separate disposition sources, never K-1
 // portfolio gains. Neither the tax-rate-limited pools nor Form172's internal
 // modified income may replace the actual ScheduleD worksheet amounts.
@@ -139,36 +142,33 @@ impl CapitalResult {
         r: &mut crate::FederalResult,
     ) {
         let gains = self.long > 0 && self.short + self.long > 0;
-        emit_lines(
-            r,
-            &mut (),
-            [
-                ("5", LineValue::MoneyCents(k1[0]), true),
-                ("6", LineValue::MoneyDollars(-prior[0]), true),
-                ("7", LineValue::MoneyDollars(self.short), true),
-                ("12", LineValue::MoneyCents(k1[1]), true),
-                ("13", LineValue::MoneyCents(distributions), true),
-                ("14", LineValue::MoneyDollars(-prior[1]), true),
-                ("15", LineValue::MoneyDollars(self.long), true),
-                ("16", LineValue::MoneyDollars(self.short + self.long), true),
-                ("18", LineValue::MoneyDollars(self.line18), gains),
-                ("19", LineValue::MoneyDollars(self.line19), gains),
-                ("21", LineValue::MoneyDollars(self.income), self.short + self.long < 0),
-            ],
-            |(number, value, applies), _, _| {
-                if !applies {
-                    return None;
-                }
-                Some(calculation_row(
-                    Some(crate::FormLine::new(crate::TaxForm::ScheduleD, number)),
-                    &alloc::format!("schedule_d_line_{number}"),
-                    value,
-                    &["income", "screening.capital_history"],
-                    "https://www.irs.gov/pub/irs-dft/f1040sd--dft.pdf",
-                    msg!("EXPLAIN_SCHEDULE_D_COMPUTED_TOTAL"),
-                ))
-            },
-        );
+        for (number, value, applies) in [
+            ("5", LineValue::MoneyCents(k1[0]), true),
+            ("6", LineValue::MoneyDollars(-prior[0]), true),
+            ("7", LineValue::MoneyDollars(self.short), true),
+            ("12", LineValue::MoneyCents(k1[1]), true),
+            ("13", LineValue::MoneyCents(distributions), true),
+            ("14", LineValue::MoneyDollars(-prior[1]), true),
+            ("15", LineValue::MoneyDollars(self.long), true),
+            ("16", LineValue::MoneyDollars(self.short + self.long), true),
+            ("18", LineValue::MoneyDollars(self.line18), gains),
+            ("19", LineValue::MoneyDollars(self.line19), gains),
+            ("21", LineValue::MoneyDollars(self.income), self.short + self.long < 0),
+        ] {
+            if !applies {
+                continue;
+            }
+            let form = crate::FormLine::new(crate::TaxForm::ScheduleD, number);
+            let id = alloc::format!("schedule_d_line_{number}");
+            let inputs = &["income", "screening.capital_history"];
+            let source = "https://www.irs.gov/pub/irs-dft/f1040sd--dft.pdf";
+            let explanation = msg!("EXPLAIN_SCHEDULE_D_COMPUTED_TOTAL");
+            if let LineValue::MoneyCents(cents) = value {
+                schedule_d_source_cell(r, form, &id, cents, inputs, source, explanation);
+            } else {
+                crate::line_emission::form_value(r, form, &id, value, inputs, source, explanation);
+            }
+        }
     }
 }
 
@@ -235,6 +235,7 @@ impl CapitalAmounts {
     // Pub974's Iterative work keeps cents before filing-row rounding. Reuse
     // this same admitted-character netting owner and only scale its statutory
     // loss limit; this does not reclassify a sale or reconstruct prior returns.
+    #[cfg(test)]
     pub(crate) fn calculate_cents(
         self,
         prior: [i64; 2],
@@ -251,10 +252,31 @@ impl CapitalAmounts {
         nol_modification: bool,
         units: i64,
     ) -> CapitalResult {
-        let short = self.short - prior[0];
-        let long = self.long - prior[1];
+        self.checked_calculate_with_limit(prior, separate, nol_modification, units)
+            .expect("admitted native capital netting")
+    }
+
+    pub(crate) fn checked_calculate_cents(
+        self,
+        prior: [i64; 2],
+        separate: bool,
+        nol_modification: bool,
+    ) -> Option<CapitalResult> {
+        self.checked_calculate_with_limit(prior, separate, nol_modification, 100)
+    }
+
+    fn checked_calculate_with_limit(
+        self,
+        prior: [i64; 2],
+        separate: bool,
+        nol_modification: bool,
+        units: i64,
+    ) -> Option<CapitalResult> {
+        let short = i64::try_from(i128::from(self.short) - i128::from(prior[0])).ok()?;
+        let long = i64::try_from(i128::from(self.long) - i128::from(prior[1])).ok()?;
+        let net = i64::try_from(i128::from(short) + i128::from(long)).ok()?;
         let income = phase::floor(
-            short + long,
+            net,
             if separate {
                 -crate::year_constants::CAPITAL_LOSS_LIMIT_SEPARATE_DOLLARS * units
             } else {
@@ -262,8 +284,8 @@ impl CapitalAmounts {
             },
         );
         let income = if nol_modification { phase::floor(income, 0) } else { income };
-        let rates = Self { short, long, ..self }.rate_pools(prior[1]);
-        CapitalResult {
+        let rates = Self { short, long, ..self }.checked_rate_pools(prior[1])?;
+        Some(CapitalResult {
             short,
             long,
             income,
@@ -272,7 +294,7 @@ impl CapitalAmounts {
             line19: rates.line19,
             collectible_gain: rates.collectible_gain,
             unrecaptured_gain: rates.unrecaptured_gain,
-        }
+        })
     }
 
     // short/long have already absorbed their respective retained carryovers;
@@ -280,20 +302,30 @@ impl CapitalAmounts {
     // prior_long is the same actual retained long loss already subtracted
     // from long; it also reduces the 28% pool in the worksheet's own order.
     pub(crate) fn rate_pools(self, prior_long: i64) -> CapitalRatePools {
-        let short = self.short;
-        let long = self.long;
-        let net_gain = phase::cap(phase::floor(long, 0), [phase::floor(short + long, 0)]);
+        self.checked_rate_pools(prior_long).expect("admitted native capital rate pools")
+    }
+
+    fn checked_rate_pools(self, prior_long: i64) -> Option<CapitalRatePools> {
+        let short = i128::from(self.short);
+        let long = i128::from(self.long);
+        let net_gain = long.max(0).min((short + long).max(0));
         // Long-term carryovers and net short-term losses first offset the
         // collectible pool; remaining losses then reduce the section 1250 pool.
-        let collectible_after_losses = self.collectibles - prior_long + phase::cap(short, [0]);
-        let line18 = phase::floor(collectible_after_losses, 0);
-        let line19 =
-            phase::floor(self.unrecaptured - phase::floor(-collectible_after_losses, 0), 0);
+        let collectible_after_losses =
+            i128::from(self.collectibles) - i128::from(prior_long) + short.min(0);
+        let line18 = collectible_after_losses.max(0);
+        let line19 = (i128::from(self.unrecaptured) - (-collectible_after_losses).max(0)).max(0);
         // The tax worksheet retains the 25% pool before the 28% pool when
         // limiting both by the aggregate net capital gain.
-        let unrecaptured_gain = phase::cap(net_gain, [line19]);
-        let collectible_gain = phase::cap(net_gain - unrecaptured_gain, [line18]);
-        CapitalRatePools { net_gain, line18, line19, collectible_gain, unrecaptured_gain }
+        let unrecaptured_gain = net_gain.min(line19);
+        let collectible_gain = (net_gain - unrecaptured_gain).min(line18);
+        Some(CapitalRatePools {
+            net_gain: i64::try_from(net_gain).ok()?,
+            line18: i64::try_from(line18).ok()?,
+            line19: i64::try_from(line19).ok()?,
+            collectible_gain: i64::try_from(collectible_gain).ok()?,
+            unrecaptured_gain: i64::try_from(unrecaptured_gain).ok()?,
+        })
     }
 }
 
@@ -355,7 +387,13 @@ pub(crate) struct Form8949Row {
 
 impl Form8949Row {
     pub(crate) fn gain(&self) -> i64 {
-        self.proceeds - self.basis + self.adjustment
+        self.checked_gain().expect("admitted Form 8949 row gain")
+    }
+    pub(crate) fn checked_gain(&self) -> Option<i64> {
+        i64::try_from(
+            i128::from(self.proceeds) - i128::from(self.basis) + i128::from(self.adjustment),
+        )
+        .ok()
     }
 
     // The four amount lines of a printed row. The explanation names the entry, the box and the

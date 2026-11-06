@@ -1,0 +1,80 @@
+{
+ "source": {
+  "title": "Publication 915, Social Security and Equivalent Railroad Retirement Benefits (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 5",
+  "example": "Are Any of Your Benefits Taxable, Example",
+  "url": "https://www.irs.gov/pub/irs-dft/p915--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "83c99be25e9562a1be4999dd2a108f5c84f654555ccb1a626ac3483834a1bdf3"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "taxpayer born 1960-06-15 (over 65 at year end)",
+   "reason": "the example gives only 'over age 65'"
+  },
+  {
+   "fact": "the pension is an ordinary fully taxable 1099-R, no withholding",
+   "reason": "the example says 'taxable pension'"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19600615,
+ "pages": [
+  {
+   "page": "documents",
+   "topic": "interest_dividends",
+   "docs": [
+    {
+     "doc": "interest",
+     "taxable": 700
+    }
+   ]
+  },
+  {
+   "page": "documents",
+   "topic": "retirement",
+   "docs": [
+    {
+     "doc": "pension",
+     "printed": "7",
+     "gross": 17000,
+     "taxable": 17000
+    },
+    {
+     "doc": "ssa",
+     "benefits": 1500
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "1040",
+   "line": "2b",
+   "amount": 700,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "5b",
+   "amount": 17000,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "6a",
+   "amount": 1500,
+   "provenance": "printed"
+  },
+  {
+   "form": "1040",
+   "line": "6b",
+   "amount": 0,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

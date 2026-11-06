@@ -1,5 +1,4 @@
 use super::*;
-use crate::tests::cross::interview::{accepted, from_review, open_topic};
 use crate::tests::support::builders::injured_credit::fuel_credit_owner_sources::fixture;
 use crate::tests::support::client::injured_credit::fuel_credit_owner_sources::{
     assert_owner_symmetry, saved,
@@ -82,26 +81,13 @@ fn unit13_fuel_credit_sources_closed_annual_zero_needs_no_home_choice() {
         for reverse in [false, true] {
             let mut draft = fixture([0, 0], injured, reverse);
             draft.injured_spouse.as_mut().unwrap().allocations.clear();
-            draft
-                .payments
-                .as_mut()
-                .unwrap()
-                .home_kerosene
-                .as_mut()
-                .unwrap()
-                .thousandths_of_gallon = 2016;
+            draft.payments.as_mut().unwrap().home_kerosene.as_mut().unwrap().gallons = 2.016;
             let mut session = restart(draft);
             for _ in 0..2 {
-                for topic in [TaxSection::Wages, TaxSection::PassThrough] {
-                    let page = open_topic(&mut session, topic);
-                    accepted(&send(&mut session, page));
-                }
-                let Reply::Edit(page @ P::SaveMoreCredits { .. }) =
-                    from_review(&mut session, TaxSection::MoreCredits)
-                else {
-                    panic!()
-                };
-                accepted(&send(&mut session, page));
+                crate::tests::support::client::save_native_credit_sources(
+                    &mut session,
+                    &[TaxSection::Documents],
+                );
                 let result = supported(&session.draft);
                 assert_eq!(value(&result, "agi"), 30_000);
                 assert_eq!(value(&result, "taxable_income"), 0);
@@ -179,7 +165,10 @@ fn unit13_fuel_credit_sources_missing_or_unfooted_packet_stays_unknown() {
         };
         let overpayment = result.refund.expect("ordinary pre-election overpayment");
         crate::injured_spouse::allocate(
-            &draft,
+            crate::related_forms::RelatedFormContext::original(
+                &draft,
+                &crate::related_forms::effective_claimants(&draft),
+            ),
             &mut result,
             draft.injured_spouse.as_ref().unwrap(),
             &facts,

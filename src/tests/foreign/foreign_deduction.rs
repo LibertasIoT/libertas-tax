@@ -4,7 +4,7 @@ use crate::tests::foreign::foreign::{k3_answer, k3_blank, k3_partner, k3_row};
 fn itemizing(status: FederalStatus) -> FederalDraft {
     let mut d = complete(status);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     d
 }
 fn tax(income: ForeignTaxIncome, dollars: i64) -> ForeignTaxDeducted {
@@ -17,7 +17,7 @@ fn tax(income: ForeignTaxIncome, dollars: i64) -> ForeignTaxDeducted {
 }
 fn interest(amount: i64, tax: i64) -> FederalIncome {
     FederalIncome::Interest {
-        data: FederalInterest {
+        data: interest_source(FederalInterest {
             taxable: amount * 100,
             foreign_tax: tax * 100,
             us_obligations: 0,
@@ -32,7 +32,7 @@ fn interest(amount: i64, tax: i64) -> FederalIncome {
             accrued_interest: 0,
             after_death: None,
             ..Default::default()
-        },
+        }),
     }
 }
 fn deduction(d: &mut FederalDraft, taxes: Vec<ForeignTaxDeducted>) {
@@ -96,7 +96,7 @@ fn foreign_deduction_uses_each_owners_actual_net_exclusion() {
     d.income.clear();
     add(&mut d, income(foreign_pay(200_000)));
     let mut spouse = income(foreign_pay(100_000));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     set_claim(&mut d, foreign_claim(Owner::Taxpayer));
     set_claim(&mut d, foreign_claim(Owner::Spouse));
@@ -212,7 +212,7 @@ fn foreign_deduction_portfolio_and_passive_taxes_have_distinct_4952_footings() {
 fn foreign_deduction_rounds_aggregate_source_cents_once() {
     let mut d = itemizing(FederalStatus::Single);
     let FederalIncome::Interest { mut data } = interest(100, 0) else { unreachable!() };
-    data.foreign_tax = 50;
+    edit_interest(&mut data).foreign_tax = 50;
     add(&mut d, income(FederalIncome::Interest { data }));
     let mut row = tax(ForeignTaxIncome::Investment, 1);
     row.tax = 50;
@@ -301,7 +301,7 @@ fn foreign_deduction_sanctioned_tax_stays_out_of_other_credit_income() {
         InvestmentInterestUse::Ordinary;
     assert_eq!(estimate(&accrued).state, ResultState::Unsupported);
 
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
     assert_eq!(value(&r, "other_taxes_deduction"), 0);
     assert!(noted(&r, "WARN_FTC_SANCTIONED_COUNTRY_TAX"));
@@ -371,7 +371,7 @@ fn foreign_deduction_royalty_route_keeps_actual_regular_and_amt_expenses() {
     }
     assert!(!noted(&r, "NOTE_INVESTMENT_DESTINATION_UNAVAILABLE"));
     assert_eq!(supported(&restart(d.clone()).draft), r);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 60_000);
     assert_eq!(value(&r, "investment_form_line5"), 1_000);
@@ -396,8 +396,10 @@ fn foreign_deduction_preserves_mixed_royalty_omission_and_safe_automatic_endpoin
     // Automatic can safely retain the same source routing before its choice.
     let mut d = royalty_foreign_tax_return(11_000, 2_000, 2_000);
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Automatic { expenses: ItemizedChoice::Yes { facts } };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = None;
+    };
     let r = supported(&d);
     assert!(!noted(&r, "NOTE_INVESTMENT_DESTINATION_UNAVAILABLE"));
     assert_eq!(value(&r, "agi"), 68_000);
@@ -410,19 +412,20 @@ fn foreign_deduction_preserves_mixed_royalty_omission_and_safe_automatic_endpoin
 #[test]
 fn foreign_deduction_keeps_credit_neutral_estate_and_charity_combinations() {
     let mut d = estate_trust_code_c_draft(0, 0);
-    d.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Itemized { facts: itemized(d.deductions.as_mut().unwrap()).clone() };
-    let estate = estate_trust_code_d_data(&mut d);
+    d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    let mut estate = estate_trust_code_d_data(&mut d);
     estate.interest = 100_000;
     estate.box_10_interest_ird_estate_tax = 10_000;
     estate.box_10_interest_ird_only = true;
-    estate.final_year_successor = true;
+    estate.final_k1 = true;
+    estate.final_year_successor = Some(true);
     estate.final_67e_deduction = 20_000;
     estate.final_67e_no_niit_allocation = true;
     estate.final_state_income_tax = 30_000;
     estate.final_taxes_only = true;
     estate.amt_box12a = 40_000;
     estate.amt_box12a_standalone = true;
+    drop(estate);
     let before = supported(&d);
     deduction(&mut d, vec![tax(ForeignTaxIncome::Investment, 50)]);
     let after = supported(&d);

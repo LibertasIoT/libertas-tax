@@ -1,4 +1,4 @@
-use crate::tests::cross::interview::{document, r1099};
+use crate::tests::cross::interview::{document, open_topic, r1099};
 use crate::tests::*;
 
 pub(in crate::tests) fn retirement_entry(
@@ -7,23 +7,28 @@ pub(in crate::tests) fn retirement_entry(
     gross: i64,
     treatment: RetirementTreatment,
 ) -> FederalIncomeEntry {
-    let mut entry = income(FederalIncome::Retirement {
-        data: FederalRetirement {
-            box_9b: None,
-            box_10: 0,
-            disability: DisabilityIncome::None,
-            disability_wages: crate::DisabilityWages::None,
-            kind,
-            gross: gross * 100,
-            taxable: RetirementTaxable::Payer { amount: gross * 100 },
-            withholding: 12300,
-            box7: crate::DistributionCodes::CODE_7.0,
-            ordinary_distribution: treatment,
-            disaster: crate::DisasterDistribution::No,
-            after_death: None,
-        },
-    });
-    entry.owner = owner;
+    let mut native = native_retirement(kind, gross * 100, (RetirementTaxable::Payer, gross * 100));
+    native.withholding = 12300;
+    let simple = matches!(treatment, RetirementTreatment::Exception { early_simple: true, .. });
+    native.ordinary_distribution = Some(treatment);
+    let mut source = retirement_source(native);
+    if let RetirementSource::R1099(source) = &mut source
+        && let Some(code) = &source.code
+        && !matches!(code, DistributionCode::Other)
+    {
+        source.form.box7 = box7_of(code);
+        if simple {
+            // A SIMPLE IRA's early distribution is printed as code S alone.
+            source.form.box7 = DistributionCodes::CODE_S.0;
+        }
+        if kind == RetirementKind::Nonqualified
+            && source.form.box7 & DistributionCodes::CODE_W.0 == 0
+        {
+            source.form.box7 |= DistributionCodes::CODE_D.0;
+        }
+    }
+    let mut entry = income(FederalIncome::Retirement { data: source });
+    entry.owner = crate::DocumentOwner::from(owner);
     entry
 }
 pub(in crate::tests) fn qcd(owner: Owner, date: u32, amount: i64, prior: i64) -> QualifiedCharity {
@@ -57,7 +62,9 @@ pub(in crate::tests) fn basis_distribution(
 ) -> FederalIncomeEntry {
     let mut e = retirement_entry(owner, RetirementKind::Ira, gross, treatment);
     let FederalIncome::Retirement { data } = &mut e.income else { panic!() };
-    data.taxable = RetirementTaxable::IraBasis;
+    let mut data = edit_retirement(data);
+    data.taxable = Some(RetirementTaxable::IraBasis);
+    drop(data);
     e
 }
 
@@ -65,7 +72,9 @@ pub(in crate::tests) fn ira_contribution_distribution(wages: i64, covered: Answe
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, wages * 100, 0);
     let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.retirement_plan = covered == Answer::Yes;
+    drop(data);
     add(&mut d, basis_distribution(Owner::Taxpayer, 10000, RetirementTreatment::Early));
     d.adjustments.as_mut().unwrap().ira_basis = vec![prior_ira_basis(Owner::Taxpayer, 0, 40000)];
     d.adjustments.as_mut().unwrap().iras = ira_facts(750000, 0, covered);
@@ -109,25 +118,36 @@ pub(in crate::tests) fn disability_pension_with(
     wages: DisabilityWages,
 ) -> FederalIncome {
     FederalIncome::Retirement {
-        data: FederalRetirement {
+        data: retirement_source(FederalRetirement {
+            form_boxes: Default::default(),
+            trump: false,
+            box_2a: amount * 100,
+            box_3: 0,
+            box_6: 0,
+            box_8a: 0,
+            box_8b_percent: None,
+            box_9a_percent: None,
+            ira: (RetirementKind::Pension).ira()
+                && (crate::DistributionCodes::CODE_3.0) & crate::DistributionCodes::CODE_N.0 == 0,
             box_9b: None,
             box_10: 0,
+            box_10_basis: None,
             disability: DisabilityIncome::Qualifying { amount: amount * 100, eligible: true },
             kind: RetirementKind::Pension,
             disability_wages: wages,
             gross: amount * 100,
-            taxable: RetirementTaxable::Payer { amount: amount * 100 },
+            taxable: Some(RetirementTaxable::Payer),
             withholding: 12000,
             box7: crate::DistributionCodes::CODE_3.0,
-            ordinary_distribution: RetirementTreatment::Exception {
+            ordinary_distribution: Some(RetirementTreatment::Exception {
                 second: None,
                 distributed: 20261231,
                 facts: RetirementException::Disability { began: 20240301 },
                 early_simple: false,
-            },
+            }),
             disaster: crate::DisasterDistribution::No,
             after_death: None,
-        },
+        }),
     }
 }
 
@@ -244,7 +264,9 @@ pub(in crate::tests) fn pension_entry(data: PensionBasis, gross: i64) -> Federal
         RetirementTreatment::Ordinary,
     );
     if let FederalIncome::Retirement { data: v } = &mut entry.income {
-        v.taxable = RetirementTaxable::Simplified { data };
+        let mut v = edit_retirement(v);
+        v.taxable = Some(RetirementTaxable::Simplified { data });
+        drop(v);
     }
     entry
 }
@@ -261,14 +283,17 @@ pub(in crate::tests) fn railroad_pension(
         RetirementTreatment::Ordinary,
     );
     if let FederalIncome::Retirement { data } = &mut e.income {
-        data.taxable = RetirementTaxable::Railroad {
+        let mut data = edit_retirement(data);
+        data.taxable = Some(RetirementTaxable::Railroad {
+            repaid: 0,
             repayments: vec![],
             contributory: contributory * 100,
             box_5: (gross - contributory) * 100,
             box_6: 0,
-            holder: crate::RailroadHolder::Employee,
+            holder: Some(crate::RailroadHolder::Employee),
             basis,
-        };
+        });
+        drop(data);
     }
     e
 }
@@ -365,7 +390,9 @@ pub(in crate::tests) fn old_general_entry(
 ) -> FederalIncomeEntry {
     let mut e = retirement_entry(Owner::Taxpayer, kind, 12000, RetirementTreatment::Ordinary);
     let FederalIncome::Retirement { data: v } = &mut e.income else { unreachable!() };
-    v.taxable = RetirementTaxable::GeneralAnnuity { data };
+    let mut v = edit_retirement(v);
+    v.taxable = Some(RetirementTaxable::GeneralAnnuity { data });
+    drop(v);
     e
 }
 
@@ -384,7 +411,7 @@ pub(in crate::tests) fn qualified_fixed_pension(
         RetirementTreatment::Ordinary,
     );
     let FederalIncome::Retirement { data: v } = &mut entry.income else { unreachable!() };
-    v.taxable = RetirementTaxable::GeneralAnnuity { data };
+    edit_retirement(v).taxable = Some(RetirementTaxable::GeneralAnnuity { data });
     entry
 }
 
@@ -403,7 +430,10 @@ pub(in crate::tests) fn nonqualified_exception(facts: RetirementException) -> Fe
         },
     );
     if let FederalIncome::Retirement { data } = &mut entry.income {
-        data.taxable = RetirementTaxable::Payer { amount: 500000 };
+        let mut data = edit_retirement(data);
+        data.box_2a = 500000;
+        data.taxable = Some(RetirementTaxable::Payer);
+        drop(data);
     }
     add(&mut d, entry);
     d
@@ -430,8 +460,9 @@ pub(in crate::tests) fn deferred_withdrawal_group(
 ) -> FederalDraft {
     let mut d = nonqualified_exception(RetirementException::Disability { began: 20250101 });
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_retirement(data);
     data.gross = 700000;
-    data.taxable = RetirementTaxable::DeferredWithdrawal {
+    data.taxable = Some(RetirementTaxable::DeferredWithdrawal {
         data: crate::AnnuityDistribution {
             loan_pledge,
             related,
@@ -439,8 +470,9 @@ pub(in crate::tests) fn deferred_withdrawal_group(
             investment,
             eligible: true,
         },
-    };
-    data.ordinary_distribution = RetirementTreatment::Early;
+    });
+    data.ordinary_distribution = Some(RetirementTreatment::Early);
+    drop(data);
     d
 }
 
@@ -458,13 +490,15 @@ pub(in crate::tests) fn qualified_withdrawal(
         RetirementTreatment::Early,
     );
     let FederalIncome::Retirement { data } = &mut e.income else { panic!() };
-    data.taxable = RetirementTaxable::QualifiedWithdrawal {
+    let mut data = edit_retirement(data);
+    data.taxable = Some(RetirementTaxable::QualifiedWithdrawal {
         data: crate::PlanDistribution {
             value: value * 100,
             investment: investment * 100,
             eligible: true,
         },
-    };
+    });
+    drop(data);
     add(&mut d, e);
     d
 }
@@ -472,11 +506,13 @@ pub(in crate::tests) fn qualified_withdrawal(
 pub(in crate::tests) fn incoming_plan_rollover() -> FederalDraft {
     let mut d = qualified_withdrawal(5000, 12500, 10000);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = RetirementTreatment::Rollover {
+    let mut data = edit_retirement(data);
+    data.ordinary_distribution = Some(RetirementTreatment::Rollover {
         destination: RolloverDestination::Ira,
         amount: 500000,
         early: false,
-    };
+    });
+    drop(data);
     d.adjustments.as_mut().unwrap().ira_basis = vec![prior_ira_basis(Owner::Taxpayer, 0, 15000)];
     d
 }
@@ -490,9 +526,11 @@ pub(in crate::tests) fn contract_discharge(
     d.income[0] = wage(1, Owner::Taxpayer, 21000000, 0);
     let mut e = retirement_entry(Owner::Taxpayer, kind, gross, RetirementTreatment::Early);
     let FederalIncome::Retirement { data } = &mut e.income else { panic!() };
-    data.taxable = RetirementTaxable::FullDischarge {
+    let mut data = edit_retirement(data);
+    data.taxable = Some(RetirementTaxable::FullDischarge {
         data: crate::ContractDischarge { investment: investment * 100, eligible: true },
-    };
+    });
+    drop(data);
     add(&mut d, e);
     d
 }
@@ -545,12 +583,14 @@ pub(in crate::tests) fn plan_gross_exception(
     let mut d = qualified_withdrawal(20000, 100000, investment);
     d.income[0] = wage(1, Owner::Taxpayer, 12000000, 0);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.ordinary_distribution = RetirementTreatment::Exception {
+    let mut data = edit_retirement(data);
+    data.ordinary_distribution = Some(RetirementTreatment::Exception {
         second: None,
         distributed: 20260601,
         facts,
         early_simple: false,
-    };
+    });
+    drop(data);
     d
 }
 
@@ -608,8 +648,11 @@ pub(in crate::tests) fn special_ira_repayment_example(repaid: i64, date: u32) ->
 pub(in crate::tests) fn care_return(facts: RetirementException, investment: i64) -> FederalDraft {
     let mut d = plan_gross_exception(facts, investment);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
+    let mut data = edit_retirement(data);
     // Payer source already incorporates the special pretax-first allocation.
-    data.taxable = RetirementTaxable::Payer { amount: 1600000 };
+    data.box_2a = 1600000;
+    data.taxable = Some(RetirementTaxable::Payer);
+    drop(data);
     d
 }
 
@@ -673,8 +716,13 @@ pub(in crate::tests) fn railroad_repayment_draft() -> FederalDraft {
     d.income.pop(); // Replace the unemployment repayment source.
     let mut e = railroad_pension(0, 0, None);
     let FederalIncome::Retirement { data } = &mut e.income else { unreachable!() };
-    let RetirementTaxable::Railroad { repayments, .. } = &mut data.taxable else { unreachable!() };
+    let mut data = edit_retirement(data);
+    let Some(RetirementTaxable::Railroad { repayments, repaid, .. }) = &mut data.taxable else {
+        unreachable!()
+    };
+    *repaid = 500000;
     repayments.push(RailroadRepayment { received_year: 2023, amount: 500000, contributory: false });
+    drop(data);
     add(&mut d, e);
     let RepaymentClaim::Claim { years, .. } = &mut d.deductions.as_mut().unwrap().repayment else {
         unreachable!()
@@ -706,7 +754,8 @@ pub(in crate::tests) fn child_annuity_draft() -> FederalDraft {
         },
     );
     let FederalIncome::Retirement { data } = &mut entry.income else { unreachable!() };
-    data.taxable = RetirementTaxable::ChildAnnuity {
+    let mut data = edit_retirement(data);
+    data.taxable = Some(RetirementTaxable::ChildAnnuity {
         data: ChildAnnuity {
             ended: None,
             started: 20250101,
@@ -719,7 +768,8 @@ pub(in crate::tests) fn child_annuity_draft() -> FederalDraft {
                 .collect(),
             confirmed: true,
         },
-    };
+    });
+    drop(data);
     add(&mut d, entry);
     d
 }
@@ -728,15 +778,135 @@ pub(in crate::tests) fn child_annuity_draft() -> FederalDraft {
 pub(in crate::tests) fn box7(printed: &str) -> u32 {
     printed.chars().map(DistributionCodes::of).sum()
 }
+
+pub(in crate::tests) fn retirement_question_catalog(
+    session: &Interview,
+    box7: u32,
+    ira: bool,
+    trump: bool,
+    box_10: i64,
+) -> (Vec<i32>, Vec<i32>, crate::RCalls) {
+    use crate::tests::support::client::income_pages::save_documents;
+    let mut cold = restart(session.draft.clone());
+    let row = R1099 {
+        payer: Default::default(),
+        payer_telephone: alloc::string::String::new(),
+        account_number: alloc::string::String::new(),
+        recipient: Default::default(),
+        taxable_not_determined: true,
+        total_distribution: false,
+        employee_contributions: Some(0),
+        excess_contribution_earnings: Some(0),
+        state_details: Default::default(),
+        gross: 1_000_000,
+        taxable: Some(0),
+        withholding: Some(0),
+        box7,
+        ira,
+        trump,
+        box_3: Some(0),
+        box_6: Some(0),
+        box_8a: Some(0),
+        box_8b_percent: None,
+        box_9a_percent: None,
+        box_9b: None,
+        box_10: Some(box_10),
+        first_roth_year: 0,
+        fatca: false,
+        payment_date: None,
+    };
+    let expected_methods = DistributionCodes::methods(&row);
+    let request = save_documents(
+        &mut cold,
+        vec![document(
+            0,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_paper(row)),
+            },
+        )],
+    );
+    accepted(&send(&mut cold, request));
+    let page = open_topic(&mut cold, TaxSection::Retirement);
+    let P::SaveIncomes {
+        followups,
+        source_documents: Some(crate::TopicDocumentViews::Retirement { documents }),
+        ..
+    } = page
+    else {
+        unreachable!()
+    };
+    let treatment = followups
+        .iter()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::RetirementTreatment { .. }))
+        .unwrap()
+        .allowed_values
+        .clone();
+    let method = followups
+        .iter()
+        .find(|row| matches!(row.answer, crate::DocumentAnswer::RetirementMethod { .. }))
+        .map_or_else(
+            || {
+                assert_eq!(expected_methods, vec![0], "only the settled method may be omitted");
+                expected_methods
+            },
+            |row| row.allowed_values.clone(),
+        );
+    let crate::RetirementDocument::R1099(row) = &documents[0].value.document else {
+        unreachable!()
+    };
+    (
+        treatment,
+        method,
+        crate::RCalls::for_boxes(row.box7, row.ira, row.trump, row.box_10.unwrap_or(0)),
+    )
+}
+
+pub(in crate::tests) fn retirement_followup_path(
+    page: &P,
+    source: i64,
+    local: &str,
+) -> alloc::string::String {
+    let P::SaveIncomes { followups, .. } = page else { unreachable!() };
+    let (field, prefix, target) = [
+        // 2026-10-27: question_field maps box 3 to RetirementTreatment's `code`.
+        ("treatment", "more/box_3", "code"),
+        ("treatment", "more/box_6", "code"),
+        ("treatment", "more/box_8a", "code"),
+        ("treatment", "more/box_8b_percent", "code"),
+        ("treatment", "more/box_9a_percent", "code"),
+        ("treatment", "more/box_9b", "code"),
+        ("treatment", "more/box_10", "code"),
+        ("treatment", "code", "code"),
+        ("method", "more/taxable_method", "method"),
+        ("basis", "more/box_10_basis", "basis"),
+        ("disability", "more/disability", "disability"),
+        ("disaster", "disaster", "value"),
+        ("public_safety", "public_safety", "value"),
+        ("after_death", "after_death", "value"),
+    ]
+    .into_iter()
+    .find(|(_, prefix, _)| local == *prefix || local.starts_with(&alloc::format!("{prefix}/")))
+    .unwrap_or(("treatment", "", ""));
+    let key = alloc::format!("income/{source}/{field}");
+    let row = followups.iter().find(|row| row.key == key).unwrap();
+    let tail = local.strip_prefix(prefix).unwrap();
+    let mapped = if prefix.is_empty() { local.into() } else { alloc::format!("{target}{tail}") };
+    mapped
+        .split('/')
+        .fold(
+            libertas::SchemaPath::root().field("followups").key(row.key.as_str()).field("answer"),
+            |path, step| match step.parse::<usize>() {
+                Ok(index) => path.index(index),
+                Err(_) => path.field(step),
+            },
+        )
+        .into()
+}
 // The 1099-R reprinted with these box 7a codes and the treatments they
-// lead to, as Box7Options would set them.
-pub(in crate::tests) fn printed_as(r: R1099, printed: &str) -> R1099 {
-    R1099 {
-        box7: box7(printed),
-        allowed_treatments: DistributionCodes::treatments(box7(printed), r.ira, false),
-        allowed_methods: DistributionCodes::methods(box7(printed), r.ira, false),
-        ..r
-    }
+// lead to, using the same owner as the topic catalog.
+pub(in crate::tests) fn printed_as(mut r: R1099Answered, printed: &str) -> R1099Answered {
+    r.source_mut().form.box7 = box7(printed);
+    r
 }
 // The one box 7a code a calculated treatment branch is printed as.
 pub(in crate::tests) fn box7_of(code: &DistributionCode) -> u32 {
@@ -777,7 +947,7 @@ pub(crate) fn public_safety_pensions(count: usize) -> Vec<IncomeDocumentItem> {
             // The ordinary source question affirms the pension is from the
             // officer's governmental employer after qualifying retirement. These
             // are two distinct actual coverage kinds, not duplicate premiums.
-            pension.public_safety = vec![
+            pension.set_public_safety(vec![
                 PublicSafetyPaid {
                     coverage: PublicSafetyPaidCoverage::Medical,
                     premiums: 100,
@@ -788,8 +958,13 @@ pub(crate) fn public_safety_pensions(count: usize) -> Vec<IncomeDocumentItem> {
                     premiums: 100,
                     funded: 100,
                 },
-            ];
-            document(0, IncomeDocument::R1099(pension))
+            ]);
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(pension)),
+                },
+            )
         })
         .collect()
 }
@@ -826,8 +1001,10 @@ pub(in crate::tests) fn special_repayment_capacity_return() -> FederalDraft {
             },
         );
         let FederalIncome::Retirement { data } = &mut entry.income else { unreachable!() };
+        let mut data = edit_retirement(data);
         data.withholding = 0;
         data.box7 = crate::DistributionCodes::CODE_1.0;
+        drop(data);
         let id = d.next_id;
         add(&mut d, entry);
         b.special_repayments.push(special_ira_repayment(id, 100, 20261201));
@@ -840,19 +1017,35 @@ pub(in crate::tests) fn special_repayment_capacity_return() -> FederalDraft {
 pub(in crate::tests) fn native_retirement(
     kind: RetirementKind,
     gross: i64,
-    taxable: RetirementTaxable,
+    taxable: (RetirementTaxable, i64),
 ) -> FederalRetirement {
     FederalRetirement {
+        form_boxes: Default::default(),
+        trump: false,
+        box_2a: taxable.1,
+        box_3: 0,
+        box_6: 0,
+        box_8a: 0,
+        box_8b_percent: None,
+        box_9a_percent: None,
+        ira: kind.ira(),
         kind,
         gross,
-        taxable,
+        taxable: Some(taxable.0),
         box_9b: None,
         box_10: 0,
+        box_10_basis: None,
         disability: DisabilityIncome::None,
         disability_wages: crate::DisabilityWages::None,
         withholding: 0,
-        box7: crate::DistributionCodes::CODE_7.0,
-        ordinary_distribution: RetirementTreatment::Ordinary,
+        box7: match kind {
+            RetirementKind::Inherited => DistributionCodes::CODE_4.0,
+            RetirementKind::Nonqualified => {
+                DistributionCodes::CODE_7.0 | DistributionCodes::CODE_D.0
+            }
+            RetirementKind::Ira | RetirementKind::Pension => DistributionCodes::CODE_7.0,
+        },
+        ordinary_distribution: Some(RetirementTreatment::Ordinary),
         disaster: crate::DisasterDistribution::No,
         after_death: None,
     }

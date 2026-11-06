@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 659000, "rule": {"select": "^<UnemploymentQualification>", "flatten": true}}
+  ]
+}

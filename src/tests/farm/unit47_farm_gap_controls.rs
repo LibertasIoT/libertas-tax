@@ -9,23 +9,14 @@ fn form_total(result: &FederalResult, form: TaxForm, line: &str) -> i64 {
         .lines
         .iter()
         .filter(|row| {
-            row.form_line
-                .as_ref()
-                .is_some_and(|tag| tag.form == form && tag.line == line)
+            row.form_line.as_ref().is_some_and(|tag| tag.form == form && tag.line == line)
         })
         .map(|row| row.amount)
         .sum()
 }
 
-fn gap_page(session: &mut Interview, topic: TaxSection, documents: Vec<IncomeDocument>) -> P {
-    save_topic(
-        &session.draft,
-        topic,
-        documents
-            .into_iter()
-            .map(|value| document(0, value))
-            .collect(),
-    )
+fn gap_page(session: &mut Interview, topic: TaxSection, documents: Vec<IncomeSource>) -> P {
+    save_topic(session, topic, documents.into_iter().map(|value| document(0, value)).collect())
 }
 
 fn farm_gap_control(
@@ -35,11 +26,9 @@ fn farm_gap_control(
     index: usize,
     expected: (&str, &str),
     financial: &[(TaxForm, &str, i64)],
-    mutate: impl FnOnce(&mut IncomeDocument),
+    mutate: impl FnOnce(&mut crate::IncomeRecord),
 ) {
-    let P::SaveIncomes { topic, .. } = &positive else {
-        unreachable!()
-    };
+    let P::SaveIncomes { topic, .. } = &positive else { unreachable!() };
     let topic = *topic;
     accepted(&send(session, positive));
     let corrected = open_topic(session, topic);
@@ -53,19 +42,11 @@ fn farm_gap_control(
         );
     }
     let mut invalid = corrected.clone();
-    let P::SaveIncomes { documents, .. } = &mut invalid else {
-        unreachable!()
-    };
+    let P::SaveIncomes { documents, .. } = &mut invalid else { unreachable!() };
     mutate(&mut documents.documents[index].document);
     let path = alloc::format!("[documents/documents/{index}/document/{}]", expected.1);
     let running = credit_estimate_documents_from_save(&invalid);
-    credit_refusal(
-        &alloc::format!("farm-gap-{case}-save"),
-        session,
-        invalid,
-        expected.0,
-        &path,
-    );
+    credit_refusal(&alloc::format!("farm-gap-{case}-save"), session, invalid, expected.0, &path);
     credit_refusal(
         &alloc::format!("farm-gap-{case}-estimate"),
         session,
@@ -76,16 +57,13 @@ fn farm_gap_control(
     let saved = session.draft.clone();
     let dirty = session.dirty;
     assert!(matches!(
-        send(session, credit_estimate_documents_from_save(&corrected)),
+        crate::tests::support::client::income_pages::candidate_save_review(session, credit_estimate_documents_from_save(&corrected)),
         Reply::Response(P::IncomeRunningEstimate { .. })
     ));
     assert_eq!(session.draft, saved);
     assert_eq!(session.dirty, dirty);
     accepted(&send(session, corrected));
-    assert_eq!(
-        session.draft, saved,
-        "{case}: correction preserves actual source IDs/facts"
-    );
+    assert_eq!(session.draft, saved, "{case}: correction preserves actual source IDs/facts");
     assert_eq!(estimate(&session.draft), baseline);
     let reopened = open_topic(session, topic);
     accepted(&send(session, reopened));
@@ -107,21 +85,9 @@ fn unit47_farm_126_source_components_and_prior_years_have_native_save_controls()
         let positive = open_topic(&mut session, TaxSection::Farming);
         let (case, key, field) = match branch {
             0 => ("126-cost", "FARM126_COST_REQUIRED", "total_cost"),
-            1 => (
-                "126-owner",
-                "FARM126_OWNER_ABOVE_COST",
-                "owner_contribution",
-            ),
-            2 => (
-                "126-government",
-                "FARM126_OWNER_ABOVE_COST",
-                "government_received",
-            ),
-            3 => (
-                "126-components",
-                "FARM126_COMPONENTS_ABOVE_COST",
-                "current_deductible",
-            ),
+            1 => ("126-owner", "FARM126_OWNER_ABOVE_COST", "owner_contribution"),
+            2 => ("126-government", "FARM126_OWNER_ABOVE_COST", "government_received"),
+            3 => ("126-components", "FARM126_COMPONENTS_ABOVE_COST", "current_deductible"),
             4 => (
                 "126-prior-range",
                 "FARM126_PRIOR_INCOME_YEARS",
@@ -139,14 +105,9 @@ fn unit47_farm_126_source_components_and_prior_years_have_native_save_controls()
             positive,
             0,
             (key, &alloc::format!("more/specials/cost_sharing/0/{field}")),
-            &[
-                (TaxForm::ScheduleF, "4a", 49_000_000),
-                (TaxForm::ScheduleF, "4b", 345_000),
-            ],
+            &[(TaxForm::ScheduleF, "4a", 49_000_000), (TaxForm::ScheduleF, "4b", 345_000)],
             |document| {
-                let IncomeDocument::Farm(farm) = document else {
-                    unreachable!()
-                };
+                let crate::IncomeRecord::Farm(farm) = document else { unreachable!() };
                 let source = &mut farm.more.specials.cost_sharing[0];
                 match branch {
                     0 => source.total_cost = 0,
@@ -180,23 +141,11 @@ fn unit47_farm_263a_receipt_and_production_dates_keep_native_source_owners() {
                 facts: FarmSmallBusiness {
                     first_tax_year: if branch == 3 { 2026 } else { 2024 },
                     receipts: if branch == 3 {
-                        vec![FarmGrossYear {
-                            year: 2026,
-                            months: 12,
-                            gross: 100_000_000,
-                        }]
+                        vec![FarmGrossYear { year: 2026, months: 12, gross: 100_000_000 }]
                     } else {
                         vec![
-                            FarmGrossYear {
-                                year: 2024,
-                                months: 6,
-                                gross: 1_600_000_000,
-                            },
-                            FarmGrossYear {
-                                year: 2025,
-                                months: 12,
-                                gross: 3_200_000_000,
-                            },
+                            FarmGrossYear { year: 2024, months: 6, gross: 1_600_000_000 },
+                            FarmGrossYear { year: 2025, months: 12, gross: 3_200_000_000 },
                         ]
                     },
                     tax_shelter: false,
@@ -207,19 +156,13 @@ fn unit47_farm_263a_receipt_and_production_dates_keep_native_source_owners() {
         let positive = gap_page(
             &mut session,
             TaxSection::Farming,
-            vec![IncomeDocument::Farm(farm)],
+            vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }],
         );
         let (case, key, field) = match branch {
-            0 => (
-                "263a-duplicate",
-                "FARM263A_RECEIPT_YEARS",
-                "tax_treatment/facts/receipts/1/year",
-            ),
-            1 => (
-                "263a-count",
-                "FARM263A_RECEIPT_YEARS",
-                "tax_treatment/facts/receipts",
-            ),
+            0 => {
+                ("263a-duplicate", "FARM263A_RECEIPT_YEARS", "tax_treatment/facts/receipts/1/year")
+            }
+            1 => ("263a-count", "FARM263A_RECEIPT_YEARS", "tax_treatment/facts/receipts"),
             2 => (
                 "263a-prior-range",
                 "FARM263A_RECEIPT_YEARS",
@@ -230,11 +173,7 @@ fn unit47_farm_263a_receipt_and_production_dates_keep_native_source_owners() {
                 "FARM263A_RECEIPT_YEARS",
                 "tax_treatment/facts/receipts/0/year",
             ),
-            _ => (
-                "production-before-began",
-                "FARM_PRODUCTION_DATES",
-                "productive",
-            ),
+            _ => ("production-before-began", "FARM_PRODUCTION_DATES", "productive"),
         };
         let total_expenses = if branch == 4 { 140_000 } else { 1_190_000 };
         farm_gap_control(
@@ -249,9 +188,7 @@ fn unit47_farm_263a_receipt_and_production_dates_keep_native_source_owners() {
                 (TaxForm::ScheduleF, "33", total_expenses),
             ],
             |document| {
-                let IncomeDocument::Farm(farm) = document else {
-                    unreachable!()
-                };
+                let crate::IncomeRecord::Farm(farm) = document else { unreachable!() };
                 let cohort = &mut farm.more.specials.production[0];
                 assert!(cohort.id > 0);
                 if branch == 4 {
@@ -313,17 +250,13 @@ fn unit47_farm_fertilizer_hedge_and_supply_contracts_save_at_actual_fields() {
                 }],
                 carried: vec![],
                 exception: SupplyException::NotNeeded,
-                poultry: PoultryRecords {
-                    current: vec![],
-                    resale: vec![],
-                    production: vec![],
-                },
+                poultry: PoultryRecords { current: vec![], resale: vec![], production: vec![] },
             };
         }
         let positive = gap_page(
             &mut session,
             TaxSection::Farming,
-            vec![IncomeDocument::Farm(farm)],
+            vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }],
         );
         let (case, key, field) = match branch {
             0 => (
@@ -352,47 +285,32 @@ fn unit47_farm_fertilizer_hedge_and_supply_contracts_save_at_actual_fields() {
                 "more/supplies/advances/0/purchase/business_purpose",
             ),
         };
-        let financial = if branch == 2 {
-            vec![(TaxForm::ScheduleF, "8", -50_000)]
-        } else {
-            vec![]
-        };
-        farm_gap_control(
-            case,
-            &mut session,
-            positive,
-            0,
-            (key, field),
-            &financial,
-            |document| {
-                let IncomeDocument::Farm(farm) = document else {
+        let financial = if branch == 2 { vec![(TaxForm::ScheduleF, "8", -50_000)] } else { vec![] };
+        farm_gap_control(case, &mut session, positive, 0, (key, field), &financial, |document| {
+            let crate::IncomeRecord::Farm(farm) = document else { unreachable!() };
+            if branch < 2 {
+                let source = &mut farm.more.specials.fertilizer[0];
+                let FarmFertilizerTreatment::Capitalize { recovery } = &mut source.treatment else {
                     unreachable!()
                 };
-                if branch < 2 {
-                    let source = &mut farm.more.specials.fertilizer[0];
-                    let FarmFertilizerTreatment::Capitalize { recovery } = &mut source.treatment
-                    else {
-                        unreachable!()
-                    };
-                    recovery.prior_recovered = if branch == 0 { source.cost + 1 } else { 1 };
-                } else if branch == 2 {
-                    let FarmOtherIncome::Hedge { facts } = &mut farm.more.specials.other_income[0]
-                    else {
-                        unreachable!()
-                    };
-                    facts.settled = 20260101;
+                recovery.prior_recovered = if branch == 0 { source.cost + 1 } else { 1 };
+            } else if branch == 2 {
+                let FarmOtherIncome::Hedge { facts } = &mut farm.more.specials.other_income[0]
+                else {
+                    unreachable!()
+                };
+                facts.settled = 20260101;
+            } else {
+                let PrepaidSupplies::Supplies { advances, .. } = &mut farm.more.supplies else {
+                    unreachable!()
+                };
+                if branch == 3 {
+                    advances[0].purchase.quantity_price_terms.clear();
                 } else {
-                    let PrepaidSupplies::Supplies { advances, .. } = &mut farm.more.supplies else {
-                        unreachable!()
-                    };
-                    if branch == 3 {
-                        advances[0].purchase.quantity_price_terms.clear();
-                    } else {
-                        advances[0].purchase.business_purpose.clear();
-                    }
+                    advances[0].purchase.business_purpose.clear();
                 }
-            },
-        );
+            }
+        });
     }
 }
 
@@ -427,15 +345,12 @@ fn unit47_farm_land_history_keeps_acquisition_and_original_parcel_identity() {
         let positive = gap_page(
             &mut session,
             TaxSection::Farming,
-            vec![IncomeDocument::Farm(farm)],
+            vec![IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }],
         );
         let (case, field) = match branch {
             0 => ("land-current-regular", "prior_conservation"),
             1 => ("land-current-amt", "prior_amt_conservation"),
-            2 => (
-                "land-history-before-acquired",
-                "prior_cost_sharing/0/received",
-            ),
+            2 => ("land-history-before-acquired", "prior_cost_sharing/0/received"),
             _ => ("land-history-current-year", "prior_cost_sharing/0/received"),
         };
         farm_gap_control(
@@ -443,15 +358,10 @@ fn unit47_farm_land_history_keeps_acquisition_and_original_parcel_identity() {
             &mut session,
             positive,
             0,
-            (
-                "FARM_LAND_BASIS_SOURCE",
-                &alloc::format!("more/land_basis/0/{field}"),
-            ),
+            ("FARM_LAND_BASIS_SOURCE", &alloc::format!("more/land_basis/0/{field}")),
             &[(TaxForm::ScheduleF, "2", 1_000_000)],
             |document| {
-                let IncomeDocument::Farm(farm) = document else {
-                    unreachable!()
-                };
+                let crate::IncomeRecord::Farm(farm) = document else { unreachable!() };
                 let parcel = &mut farm.more.land_basis[0];
                 assert!(parcel.id > 0);
                 match branch {
@@ -470,28 +380,32 @@ fn conservation_gap_seed(rental: bool, acquired: u32) -> (Interview, P, i64) {
     let document = if rental {
         let mut farm = crate::tests::farm::farm_rental::rental_page(32_000);
         farm.more.land_basis = vec![farm_parcel(acquired)];
-        IncomeDocument::FarmRental(farm)
+        IncomeSource::Record { value: crate::IncomeRecord::FarmRental(farm) }
     } else {
         let mut farm = cash_farm(3_200_000, 0);
         farm.more.land_basis = vec![farm_parcel(acquired)];
-        IncomeDocument::Farm(farm)
+        IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }
     };
     let page = gap_page(&mut session, TaxSection::Farming, vec![document]);
     accepted(&send(&mut session, page));
     let page = open_topic(&mut session, TaxSection::Farming);
     let parcel = match &page_documents(&page)[0].document {
-        IncomeDocument::Farm(farm) => farm.more.land_basis[0].id,
-        IncomeDocument::FarmRental(farm) => farm.more.land_basis[0].id,
+        IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) } => {
+            farm.more.land_basis[0].id
+        }
+        IncomeSource::Record { value: crate::IncomeRecord::FarmRental(farm) } => {
+            farm.more.land_basis[0].id
+        }
         _ => unreachable!(),
     };
     assert!(parcel > 0);
     (session, page, parcel)
 }
 
-fn conservation_on(document: &mut IncomeDocument) -> &mut Conservation {
+fn conservation_on(document: &mut crate::IncomeRecord) -> &mut Conservation {
     match document {
-        IncomeDocument::Farm(farm) => &mut farm.more.conservation,
-        IncomeDocument::FarmRental(farm) => &mut farm.more.conservation,
+        crate::IncomeRecord::Farm(farm) => &mut farm.more.conservation,
+        crate::IncomeRecord::FarmRental(farm) => &mut farm.more.conservation,
         _ => unreachable!(),
     }
 }
@@ -502,15 +416,9 @@ fn unit47_farm_and_farm_rental_conservation_dates_use_actual_parcel_sources() {
         for branch in 0..5 {
             let (mut session, mut positive, parcel) = conservation_gap_seed(
                 rental,
-                if branch == 0 || branch == 4 {
-                    20260401
-                } else {
-                    20250101
-                },
+                if branch == 0 || branch == 4 { 20260401 } else { 20250101 },
             );
-            let P::SaveIncomes { documents, .. } = &mut positive else {
-                unreachable!()
-            };
+            let P::SaveIncomes { documents, .. } = &mut positive else { unreachable!() };
             let cost = ConservationCostInput {
                 property: parcel,
                 paid_or_incurred: Some(20260401),
@@ -557,19 +465,10 @@ fn unit47_farm_and_farm_rental_conservation_dates_use_actual_parcel_sources() {
             };
             *conservation_on(&mut documents.documents[0].document) = conservation;
             let (key, field) = match branch {
-                0 | 4 => (
-                    "FARM_CONSERVATION_BEFORE_ACQUIRED",
-                    "costs/0/paid_or_incurred",
-                ),
+                0 | 4 => ("FARM_CONSERVATION_BEFORE_ACQUIRED", "costs/0/paid_or_incurred"),
                 1 => ("FARM_CONSERVATION_BEFORE_ACQUIRED", "carry/0/year"),
-                2 => (
-                    "FARM_CONSERVATION_BEFORE_ACQUIRED",
-                    "assessments/0/payments/0/year",
-                ),
-                _ => (
-                    "FARM_CONSERVATION_PAYMENT_DATE",
-                    "assessments/0/payments/0/current_date",
-                ),
+                2 => ("FARM_CONSERVATION_BEFORE_ACQUIRED", "assessments/0/payments/0/year"),
+                _ => ("FARM_CONSERVATION_PAYMENT_DATE", "assessments/0/payments/0/current_date"),
             };
             let financial = if !rental && branch == 0 {
                 vec![(TaxForm::ScheduleF, "12", 800_000)]
@@ -584,12 +483,7 @@ fn unit47_farm_and_farm_rental_conservation_dates_use_actual_parcel_sources() {
                 (key, &alloc::format!("more/conservation/{field}")),
                 &financial,
                 |document| match conservation_on(document) {
-                    Conservation::Deduct {
-                        costs,
-                        carry,
-                        assessments,
-                        ..
-                    } => match branch {
+                    Conservation::Deduct { costs, carry, assessments, .. } => match branch {
                         0 => costs[0].paid_or_incurred = Some(20260331),
                         1 => carry[0].year = 2024,
                         2 => assessments[0].payments[0].year = 2024,
@@ -612,7 +506,7 @@ fn unit47_farm_rental_credit_and_rental_179_are_rejected_before_financial_mutati
         let document = if farm_rental {
             let mut farm = crate::tests::farm::farm_rental::rental_page(40_000);
             farm.assets = vec![asset(12_000_000, 20260501, AssetClass::Five)];
-            IncomeDocument::FarmRental(farm)
+            IncomeSource::Record { value: crate::IncomeRecord::FarmRental(farm) }
         } else {
             let mut rental = rental_page(1_200_000);
             rental.assets = crate::interview::vehicle_and_asset_records(
@@ -629,27 +523,17 @@ fn unit47_farm_rental_credit_and_rental_179_are_rejected_before_financial_mutati
             .into_iter()
             .map(Into::into)
             .collect();
-            IncomeDocument::Rental(rental)
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(rental) }
         };
         let positive = gap_page(
             &mut session,
-            if farm_rental {
-                TaxSection::Farming
-            } else {
-                TaxSection::Rentals
-            },
+            if farm_rental { TaxSection::Farming } else { TaxSection::Rentals },
             vec![document],
         );
         let expected = if farm_rental {
-            (
-                "FARM_RENTAL_NO_INVESTMENT_CREDIT",
-                "assets/0/investment_credit",
-            )
+            ("FARM_RENTAL_NO_INVESTMENT_CREDIT", "assets/0/investment_credit")
         } else {
-            (
-                "RENTAL_ASSET_NO_SECTION_179",
-                "assets/0/history/section179/elected",
-            )
+            ("RENTAL_ASSET_NO_SECTION_179", "assets/0/history/section179/elected")
         };
         farm_gap_control(
             &alloc::format!("rental-investment-{farm_rental}"),
@@ -660,18 +544,13 @@ fn unit47_farm_rental_credit_and_rental_179_are_rejected_before_financial_mutati
             &[],
             |document| {
                 if farm_rental {
-                    let IncomeDocument::FarmRental(farm) = document else {
-                        unreachable!()
-                    };
+                    let crate::IncomeRecord::FarmRental(farm) = document else { unreachable!() };
                     farm.assets[0].investment_credit = solar_asset(20250915).investment_credit;
                 } else {
-                    let IncomeDocument::Rental(rental) = document else {
-                        unreachable!()
-                    };
+                    let crate::IncomeRecord::Rental(rental) = document else { unreachable!() };
                     let EquipmentHistory::New {
-                        section179: Section179::Eligible { elected },
-                        ..
-                    } = &mut rental.assets[0].history
+                        section179: Section179::Eligible { elected }, ..
+                    } = &mut rental.assets[0].macrs_mut().unwrap().history
                     else {
                         unreachable!()
                     };
@@ -683,11 +562,7 @@ fn unit47_farm_rental_credit_and_rental_179_are_rejected_before_financial_mutati
 }
 
 fn partial_gap() -> PartialDisposition {
-    PartialDisposition {
-        date: 20260602,
-        cost_of_part: 10_000,
-        proceeds: 0,
-    }
+    PartialDisposition { date: 20260602, cost_of_part: 10_000, proceeds: 0 }
 }
 
 #[test]
@@ -702,7 +577,7 @@ fn unit47_farm_and_rental_partial_dispositions_require_a_later_service_date() {
         let document = if branch == 0 {
             let mut farm = cash_farm(4_000_000, 0);
             farm.assets = vec![component];
-            IncomeDocument::Farm(farm)
+            IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) }
         } else {
             let mut rental = rental_page(2_400_000);
             match branch {
@@ -725,15 +600,11 @@ fn unit47_farm_and_rental_partial_dispositions_require_a_later_service_date() {
                     rental.more.improvements = vec![improvement];
                 }
             }
-            IncomeDocument::Rental(rental)
+            IncomeSource::Record { value: crate::IncomeRecord::Rental(rental) }
         };
         let positive = gap_page(
             &mut session,
-            if branch == 0 {
-                TaxSection::Farming
-            } else {
-                TaxSection::Rentals
-            },
+            if branch == 0 { TaxSection::Farming } else { TaxSection::Rentals },
             vec![document],
         );
         let field = match branch {
@@ -749,11 +620,14 @@ fn unit47_farm_and_rental_partial_dispositions_require_a_later_service_date() {
             ("PARTIAL_DISPOSITION_BEFORE_SERVICE", field),
             &[],
             |document| match document {
-                IncomeDocument::Farm(farm) => {
+                crate::IncomeRecord::Farm(farm) => {
                     farm.assets[0].partial.as_mut().unwrap().date = 20260601
                 }
-                IncomeDocument::Rental(rental) => match branch {
-                    1 => rental.assets[0].partial.as_mut().unwrap().date = 20260601,
+                crate::IncomeRecord::Rental(rental) => match branch {
+                    1 => {
+                        rental.assets[0].macrs_mut().unwrap().partial.as_mut().unwrap().date =
+                            20260601
+                    }
                     2 => {
                         rental.building.in_service = rental.building.partial.as_ref().unwrap().date
                     }
@@ -770,22 +644,19 @@ fn unit47_farm_and_rental_partial_dispositions_require_a_later_service_date() {
 
 fn mortgage_gap_session() -> (Interview, i64) {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let Reply::Edit(mut page @ P::SaveMortgages { .. }) =
-        from_review(&mut session, TaxSection::Mortgage)
-    else {
-        unreachable!()
-    };
-    let P::SaveMortgages { value, .. } = &mut page else {
-        unreachable!()
-    };
-    value.loans = vec![Mortgage1098 {
+    let mut page = crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    let form = Mortgage1098 {
+        lender: Default::default(),
+        // The 1098 prints the household borrower, so Save associates it.
+        borrower: accepted_document_names(&session.draft, Owner::Taxpayer).recipient,
         id: 0,
         interest: 600_000,
         principal: 10_000_000,
         originated: 20200601,
         refund: 0,
         insurance: 0,
-        points: Points::None,
+        points: 0,
         more: MortgageMore {
             property: "Actual first lender for shared residence".into(),
             details: MortgageDetails::FirstLender(MortgageFirstLender {
@@ -795,8 +666,17 @@ fn mortgage_gap_session() -> (Interview, i64) {
             }),
             ..Default::default()
         },
-    }];
-    accepted(&send(&mut session, page));
+    };
+    let more = form.more.clone();
+    documents.common.mortgages.documents = vec![mortgage_document(form)];
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        page,
+    ));
+    accepted(&crate::tests::cross::interview::save_mortgage_answers(
+        &mut session,
+        &[(more, crate::MortgagePointTreatment::None)],
+    ));
     let id = session.draft.deductions.as_ref().unwrap().mortgage[0].id;
     assert!(id > 0);
     (session, id)
@@ -809,7 +689,7 @@ fn linked_rental_gap(id: i64) -> Rental {
         overlap_days: 0,
         direct_expenses: 0,
     };
-    rental.mortgage_loans = vec![id];
+    rental.related = crate::tests::support::builders::related_forms::related_keys(&[id]);
     rental
 }
 
@@ -820,22 +700,19 @@ fn unit47_rental_mortgage_source_uniqueness_uses_real_saved_first_lender_ids() {
         let first = linked_rental_gap(root);
         let documents = if branch == 1 {
             vec![
-                IncomeDocument::Rental(first),
-                IncomeDocument::Rental(rental_page(600_000)),
+                IncomeSource::Record { value: crate::IncomeRecord::Rental(rental_page(600_000)) },
+                IncomeSource::Record { value: crate::IncomeRecord::Rental(first) },
             ]
         } else {
-            vec![IncomeDocument::Rental(first)]
+            vec![IncomeSource::Record { value: crate::IncomeRecord::Rental(first) }]
         };
         let positive = gap_page(&mut session, TaxSection::Rentals, documents);
         let (key, index, field) = match branch {
-            0 => ("RENTAL_MORTGAGE_ROOT_TWICE", 0, "mortgage_loans/1"),
-            1 => ("RENTAL_MORTGAGE_ROOT_TWICE", 1, "mortgage_loans/0"),
-            2 => ("RENTAL_MORTGAGE_SINGLE_SOURCE", 0, "mortgage_loans"),
-            _ => (
-                "RENTAL_MORTGAGE_SINGLE_SOURCE",
-                0,
-                "expenses/mortgage_interest",
-            ),
+            0 => ("PROBLEM_RELATED_FORM_UNAVAILABLE", 0, "Rental/related/forms/1/key"),
+            // Put the new competing claim first: the shared validator locates the first claimant.
+            1 => ("PROBLEM_RELATED_FORM_UNAVAILABLE", 0, "Rental/related/forms/0/key"),
+            2 => ("PROBLEM_RELATED_FORM_UNAVAILABLE", 0, "Rental/related/forms/0/key"),
+            _ => ("RENTAL_MORTGAGE_SINGLE_SOURCE", 0, "expenses/mortgage_interest"),
         };
         farm_gap_control(
             &alloc::format!("rental-root-{branch}"),
@@ -845,14 +722,13 @@ fn unit47_rental_mortgage_source_uniqueness_uses_real_saved_first_lender_ids() {
             (key, field),
             &[],
             |document| {
-                let IncomeDocument::Rental(rental) = document else {
-                    unreachable!()
-                };
+                let crate::IncomeRecord::Rental(rental) = document else { unreachable!() };
                 match branch {
-                    0 => rental.mortgage_loans.push(root),
+                    0 => rental.related.forms.push(RelatedFormView { key: root, summary: None }),
                     1 => {
                         rental.personal_use = linked_rental_gap(root).personal_use;
-                        rental.mortgage_loans = vec![root];
+                        rental.related =
+                            crate::tests::support::builders::related_forms::related_keys(&[root]);
                     }
                     2 => rental.personal_use = PersonalUse::No,
                     _ => rental.expenses.mortgage_interest = 1,
@@ -867,11 +743,8 @@ fn unit47_royalty_kind_and_cost_percentage_unit_bounds_are_native_source_control
     for branch in 0..3 {
         let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
         let royalty = RoyaltyProperty {
-            kind: if branch == 0 {
-                RoyaltyKind::Intangible
-            } else {
-                RoyaltyKind::OilGas
-            },
+            related: crate::RelatedForms::default(),
+            kind: if branch == 0 { RoyaltyKind::Intangible } else { RoyaltyKind::OilGas },
             receipts: 200_000,
             advance: 0,
             expenses: no_rental_expenses(),
@@ -895,15 +768,12 @@ fn unit47_royalty_kind_and_cost_percentage_unit_bounds_are_native_source_control
         let positive = gap_page(
             &mut session,
             TaxSection::Rentals,
-            vec![IncomeDocument::Royalties(royalty)],
+            vec![IncomeSource::Record { value: crate::IncomeRecord::Royalties(royalty) }],
         );
         let expected = if branch == 0 {
             ("ROYALTY_INTANGIBLE_NO_DEPLETION", "depletion")
         } else {
-            (
-                "ROYALTY_UNITS_SOLD_WITHIN_RECOVERABLE",
-                "depletion/units_sold",
-            )
+            ("ROYALTY_UNITS_SOLD_WITHIN_RECOVERABLE", "depletion/units_sold")
         };
         farm_gap_control(
             &alloc::format!("royalty-depletion-{branch}"),
@@ -913,9 +783,7 @@ fn unit47_royalty_kind_and_cost_percentage_unit_bounds_are_native_source_control
             expected,
             &[(TaxForm::ScheduleE, "4", 200_000)],
             |document| {
-                let IncomeDocument::Royalties(royalty) = document else {
-                    unreachable!()
-                };
+                let crate::IncomeRecord::Royalties(royalty) = document else { unreachable!() };
                 if branch == 0 {
                     royalty.depletion = RoyaltyDepletion::Cost {
                         adjusted_basis: 100_000,

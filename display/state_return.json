@@ -1,0 +1,13 @@
+{
+  "rules": [
+    {"order": 17000, "rule": {"select": "^<PrintedParty>.name", "promote": true}},
+    {"order": 19000, "rule": {"select": "^<PrintedPartyNameAddress>.name", "promote": true}},
+    {"order": 737000, "rule": {"select": "^<StateIncomeTax>.state", "promote": true}},
+    {"order": 738000, "rule": {"select": "^<StateTaxWithholding>.state", "promote": true}},
+    {"order": 739000, "rule": {"select": "^<LocalIncomeTax>.locality", "promote": true}},
+    {"order": 740000, "rule": {"select": "^<TaxExemptStateIncome>.state", "promote": true}},
+    {"order": 741000, "rule": {"select": "^<W2OtherItem>.label", "promote": true}},
+    {"order": 742000, "rule": {"select": "^<TippedOccupationCode>.code", "promote": true}},
+    {"order": 743000, "rule": {"select": "^<BusinessStateDocument>.form", "promote": true}}
+  ]
+}

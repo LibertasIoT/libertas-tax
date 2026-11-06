@@ -1,3 +1,7 @@
+pub use crate::disaster_carry_model::{
+    DisasterCarry, EarlierForm8915, Form8915Repayments, Form8915Year,
+};
+use crate::disaster_source::{DisasterDistribution, DisasterSpread, LIMIT};
 // PRINT projection (2026-10-13): disaster/projection.rs emits2026 draft
 // PartI columns2-5c/limits/unused gross, conditional8-26/28-32 and actual
 // traditional/Roth/payer21 components. Copies keep filer and disaster year;
@@ -58,12 +62,12 @@
 
 mod projection;
 
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::fraction;
+use crate::line_emission::emit as emit_lines;
 use crate::{FederalDraft, FederalIncome, FederalResult, Owner, RetirementKind, RetirementTaxable};
 use alloc::collections::BTreeMap;
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
 // Form 8606 line 6 (i8606, "Certain 2026 retirement plan distribution repayments treated as
 // rollovers"): the part of this owner's 2026 IRA qualified disaster distributions that was
@@ -71,9 +75,15 @@ use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 pub(crate) fn repaid_in_return_year(d: &FederalDraft, owner: Owner) -> i64 {
     d.income
         .iter()
-        .filter(|e| e.owner == owner)
+        .filter(|e| e.owner == crate::DocumentOwner::from(owner))
         .filter_map(|e| match &e.income {
-            FederalIncome::Retirement { data } if data.kind == RetirementKind::Ira => {
+            FederalIncome::Retirement { data: source }
+                if {
+                    let data = &crate::FederalRetirement::from(source);
+                    data.kind == RetirementKind::Ira
+                } =>
+            {
+                let data = &crate::FederalRetirement::from(source);
                 match data.disaster {
                     DisasterDistribution::Qualified { ref repaid, .. } => {
                         Some(repaid.in_return_year())
@@ -84,467 +94,6 @@ pub(crate) fn repaid_in_return_year(d: &FederalDraft, owner: Owner) -> i64 {
             _ => None,
         })
         .sum()
-}
-
-// Per-disaster limit for 2021 and later disasters (Form 8915-F line 1a): owned by year_constants.rs.
-pub(crate) const LIMIT: i64 = crate::year_constants::DISASTER_DISTRIBUTION_LIMIT_CENTS;
-
-/// This was a qualified disaster distribution
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum DisasterDistribution {
-    /// No
-    No,
-    /// Yes: my main home was in a FEMA major disaster area and the disaster caused me an economic loss
-    /// Loss of or damage to property, displacement from your home, or lost work. No 10% additional tax applies to the part you treat as a qualified disaster distribution.
-    Qualified {
-        /// FEMA disaster number
-        /// The digits of the DR number at fema.gov/disaster/declarations, for example 4834 for DR-4834-FL.
-        #[libertas_number(min = 1)]
-        fema: u32,
-        /// Disaster beginning date
-        /// The first day of the incident period.
-        #[libertas_date_only]
-        // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-        #[libertas_number(min = 20210126, max = 20261231)]
-        began: u32,
-        /// Disaster declaration date
-        #[libertas_date_only]
-        // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-        #[libertas_number(min = 20200101, max = 20261231)]
-        declared: u32,
-        /// Date of this distribution
-        #[libertas_date_only]
-        // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        distributed: u32,
-        /// Amount you treat as a qualified disaster distribution
-        /// Up to box 1. For one disaster, all your plans and years together allow at most $22,000.
-        #[libertas_money("USD", 2)]
-        // IRC 72(t)(11): qualified disaster distributions and their repayments share the $22,000 limit.
-        #[libertas_number(min = 1, max = $DISASTER_DISTRIBUTION_LIMIT_CENTS)]
-        amount: i64,
-        /// Qualified disaster distributions for this disaster in earlier years
-        /// Form 8915-F line 1b. Enter the same amount on each 1099-R for this disaster.
-        #[libertas_money("USD", 2)]
-        // IRC 72(t)(11): qualified disaster distributions and their repayments share the $22,000 limit.
-        #[libertas_number(min = 0, max = $DISASTER_DISTRIBUTION_LIMIT_CENTS)]
-        #[libertas_default(0)]
-        earlier: i64,
-        /// When to include the taxable part
-        #[libertas_default(OverThreeYears)]
-        spread: DisasterSpread,
-        /// Repaid to a retirement plan or IRA by the time you file
-        /// Within 3 years of the distribution. Not a required minimum distribution or a beneficiary's distribution.
-        #[libertas_default(No)]
-        repaid: DisasterRepayment,
-    },
-    /// Yes, to buy or build a main home in a disaster area
-    /// A hardship distribution from a 401(k) or 403(b) plan, or an IRA first-home distribution, for a main home in the disaster area that was not bought or built because of the disaster (Form 8915-F Part IV).
-    HomePurchase {
-        /// FEMA disaster number
-        /// The digits of the DR number at fema.gov/disaster/declarations, for example 4834 for DR-4834-FL.
-        #[libertas_number(min = 1)]
-        fema: u32,
-        /// Disaster beginning date
-        /// The first day of the incident period.
-        #[libertas_date_only]
-        // Form 8915-F home-purchase relief: the incident and declaration window includes 2027.
-        #[libertas_number(min = 20210126, max = 20271231)]
-        began: u32,
-        /// Disaster ending date
-        /// The last day of the incident period.
-        #[libertas_date_only]
-        // Form 8915-F home-purchase relief: the incident and declaration window includes 2027.
-        #[libertas_number(min = 20210126, max = 20271231)]
-        ended: u32,
-        /// Disaster declaration date
-        #[libertas_date_only]
-        // Form 8915-F home-purchase relief: the incident and declaration window includes 2027.
-        #[libertas_number(min = 20210126, max = 20271231)]
-        declared: u32,
-        /// Date of this distribution
-        #[libertas_date_only]
-        // Tax structure: a current-return distribution or its source event cannot be after December 31, 2026.
-        #[libertas_number(min = 20260101, max = 20261231)]
-        distributed: u32,
-        /// Taxable part repaid to a retirement plan or IRA
-        /// Repaid by 180 days after the later of the beginning and declaration dates, and before you file. Repayments after you file need an amended return. Do not include a repayment of an after-tax amount.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        taxable_repaid: i64,
-    },
-    /// Yes, but the disaster has no FEMA DR number or I am not sure
-    NotDeclared,
-}
-
-/// Repaid to a retirement plan or IRA by the time you file
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum DisasterRepayment {
-    /// Nothing repaid
-    No,
-    /// Repaid
-    Yes {
-        /// Total repaid by the time you file
-        #[libertas_money("USD", 2)]
-        // IRC 72(t)(11): qualified disaster distributions and their repayments share the $22,000 limit.
-        #[libertas_number(min = 1, max = $DISASTER_DISTRIBUTION_LIMIT_CENTS)]
-        total: i64,
-        /// Of that, repaid during 2026
-        /// Only the deposits made on or before December 31, 2026. For an IRA distribution this amount is already in your December 31 IRA value, so Form 8606 line 6 subtracts it.
-        #[libertas_money("USD", 2)]
-        // IRC 72(t)(11): qualified disaster distributions and their repayments share the $22,000 limit.
-        #[libertas_number(min = 0, max = $DISASTER_DISTRIBUTION_LIMIT_CENTS)]
-        #[libertas_default(0)]
-        in_return_year: i64,
-    },
-}
-impl DisasterRepayment {
-    pub(crate) fn total(&self) -> i64 {
-        match self {
-            Self::No => 0,
-            Self::Yes { total, .. } => *total,
-        }
-    }
-    pub(crate) fn in_return_year(&self) -> i64 {
-        match self {
-            Self::No => 0,
-            Self::Yes { in_return_year, .. } => *in_return_year,
-        }
-    }
-}
-
-/// When to include the taxable part
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-#[libertas_inline_choices]
-pub enum DisasterSpread {
-    /// Over 2026, 2027 and 2028
-    OverThreeYears,
-    /// All in 2026
-    AllInReturnYear,
-}
-
-/// Earlier Form 8915-F
-/// A 2024 or 2025 Form 8915-F whose spread income or repayments continue in 2026.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct EarlierForm8915 {
-    /// Tax year of that form (item A)
-    pub year: Form8915Year,
-    /// Year the disasters began (item B)
-    // Form 8915-F: the retained disaster-year worksheet precedes the 2026 tax year.
-    #[libertas_number(min = 2021, max = 2025)]
-    pub disaster_year: u32,
-    /// Line 11
-    /// Employer-plan income spread over 3 years. Enter 0 if you checked the box on line 11.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub line_11: i64,
-    /// Line 22
-    /// IRA income spread over 3 years. Enter 0 if you checked the box on line 22.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub line_22: i64,
-    /// Repayments after you filed that form
-    pub repayments: Form8915Repayments,
-}
-
-/// Tax year of that form (item A)
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum Form8915Year {
-    // Actual historical form year and line layout, not a prior-year alias.
-    /// 2025
-    Filed2025 {
-        /// Line 13
-        /// Leave lines 13, 14, 24 and 25 at zero when lines 14 and 25 are blank.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        line_13: i64,
-        /// Line 14
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        line_14: i64,
-        /// Line 24
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        line_24: i64,
-        /// Line 25
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        line_25: i64,
-    },
-    // Actual historical form year, not a second-prior-year alias.
-    /// 2024
-    Filed2024,
-    /// 2023 or earlier
-    Earlier,
-}
-
-/// Repayments after you filed that form
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub struct Form8915Repayments {
-    /// Repaid to an employer plan by the time you file for 2026
-    /// Of the distributions that form reported, within 3 years of each. Only the taxable part.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub plan_repaid: i64,
-    /// Repaid to an IRA by the time you file for 2026
-    /// Of the distributions that form reported, within 3 years of each. Only the taxable part.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub ira_repaid: i64,
-    /// Line 14 excess you already carried back on an amended return
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub plan_carried_back: i64,
-    /// Line 25 excess you already carried back on an amended return
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    #[libertas_default(0)]
-    pub ira_carried_back: i64,
-}
-
-/// Earlier Form 8915-F of one filer
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct DisasterCarry {
-    /// Whose form
-    pub owner: Owner,
-    /// Form amounts
-    pub form: EarlierForm8915,
-}
-
-impl DisasterDistribution {
-    pub(crate) fn valid(&self, gross: i64) -> bool {
-        match self {
-            Self::Qualified { amount, earlier, repaid, .. } => {
-                (1..=gross.min(LIMIT)).contains(amount)
-                    && (0..=LIMIT - amount).contains(earlier)
-                    && (0..=*amount).contains(&repaid.total())
-                    && (0..=repaid.total()).contains(&repaid.in_return_year())
-                    && (matches!(repaid, DisasterRepayment::No) || repaid.total() > 0)
-            }
-            Self::HomePurchase { began, ended, declared, distributed, taxable_repaid, .. } => {
-                [*began, *ended, *declared].iter().all(|d| {
-                    (20210126..=20271231).contains(d) && crate::federal_rules::valid_date(*d)
-                }) && (20260101..=20261231).contains(distributed)
-                    && crate::federal_rules::valid_date(*distributed)
-                    && (0..=100000000000).contains(taxable_repaid)
-            }
-            _ => true,
-        }
-    }
-    // The client rules of the 1099-R page about the qualified disaster distribution period,
-    // the home purchase window and what else happened to the money, checked again on save
-    // (the keys are the client rules' keys), first failure first.
-    pub(crate) fn code_issue(
-        &self,
-        v: &crate::R1099,
-    ) -> Option<crate::validation::ValidationIssue> {
-        use crate::dates::add_days;
-        let plain = matches!(
-            v.code,
-            crate::DistributionCode::Normal { .. } | crate::DistributionCode::Early { .. }
-        );
-        let roth_rolled = match v.code {
-            crate::DistributionCode::RothIra { rolled_over, .. } => Some(rolled_over),
-            _ => None,
-        };
-        match self {
-            Self::Qualified { began, declared, distributed, amount, .. } => {
-                // Form 8915-F Part I: from the incident's beginning through 179 days after
-                // the later of the beginning and declaration dates.
-                if !(*distributed >= *began
-                    && (*distributed <= add_days(*began, 179)
-                        || *distributed <= add_days(*declared, 179)))
-                {
-                    return Some(
-                        crate::validation::ValidationIssue::new("DISASTER_OUTSIDE_PERIOD")
-                            .at_field("distributed")
-                            .in_field("disaster"),
-                    );
-                }
-                if matches!(v.code, crate::DistributionCode::DirectRollover { .. }) {
-                    return Some(
-                        crate::validation::ValidationIssue::new("DISASTER_DIRECT_ROLLOVER")
-                            .at_field("code"),
-                    );
-                }
-                if let Some(rolled) = roth_rolled
-                    && amount + rolled > v.gross
-                {
-                    return Some(
-                        crate::validation::ValidationIssue::new(
-                            "DISASTER_AND_ROLLOVER_ABOVE_GROSS",
-                        )
-                        .at_field("amount")
-                        .in_field("disaster"),
-                    );
-                }
-                if plain {
-                    let other = match crate::retirement::disposition_of(&v.code) {
-                        Some(
-                            crate::Disposition::RolledOver { amount, .. }
-                            | crate::Disposition::Converted { amount }
-                            | crate::Disposition::SoldAndRolledOver { amount, .. },
-                        ) => *amount,
-                        _ => 0,
-                    };
-                    if amount + other > v.gross {
-                        return Some(
-                            crate::validation::ValidationIssue::new(
-                                "DISASTER_AND_ROLLOVER_ABOVE_GROSS",
-                            )
-                            .at_field("amount")
-                            .in_field("disaster"),
-                        );
-                    }
-                }
-                None
-            }
-            Self::HomePurchase { began, ended, distributed, taxable_repaid, .. } => {
-                // Form 8915-F Part IV: received no more than 180 days before the first day and
-                // no later than 30 days after the last day of the disaster.
-                if !(*distributed >= add_days(*began, -180) && *distributed <= add_days(*ended, 30))
-                {
-                    Some(
-                        crate::validation::ValidationIssue::new("DISASTER_HOME_OUTSIDE_PERIOD")
-                            .at_field("distributed")
-                            .in_field("disaster"),
-                    )
-                } else if *ended < *began {
-                    Some(
-                        crate::validation::ValidationIssue::new("DISASTER_ENDED_BEFORE_BEGAN")
-                            .at_field("ended")
-                            .in_field("disaster"),
-                    )
-                } else if *taxable_repaid > v.taxable {
-                    Some(
-                        crate::validation::ValidationIssue::new(
-                            "DISASTER_HOME_REPAID_ABOVE_TAXABLE",
-                        )
-                        .at_field("taxable_repaid")
-                        .in_field("disaster"),
-                    )
-                } else if !plain {
-                    Some(
-                        crate::validation::ValidationIssue::new("DISASTER_HOME_KEPT")
-                            .at_field("code"),
-                    )
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-    // The client rules of the 1099-R page, checked again on save.
-    pub(crate) fn issue(&self, gross: i64) -> Option<crate::validation::ValidationIssue> {
-        match self {
-            Self::Qualified { amount, .. } if *amount > gross => Some(
-                crate::validation::ValidationIssue::new("R_DISASTER_ABOVE_GROSS")
-                    .at_field("amount"),
-            ),
-            Self::Qualified { amount, earlier, .. } if amount + earlier > LIMIT => Some(
-                crate::validation::ValidationIssue::new("DISASTER_ABOVE_LIMIT").at_field("earlier"),
-            ),
-            Self::Qualified { amount, repaid, .. } if repaid.total() > *amount => Some(
-                crate::validation::ValidationIssue::new("DISASTER_REPAID_ABOVE_AMOUNT")
-                    .at_field("total")
-                    .in_field("repaid"),
-            ),
-            Self::Qualified { repaid, .. } if repaid.in_return_year() > repaid.total() => Some(
-                crate::validation::ValidationIssue::new("DISASTER_REPAID_2026_ABOVE_REPAID")
-                    .at_field("in_return_year")
-                    .in_field("repaid"),
-            ),
-            _ => None,
-        }
-    }
-}
-
-impl EarlierForm8915 {
-    // The client rules of the kind, checked again on save.
-    pub(crate) fn rule(&self) -> Option<&'static str> {
-        self.issue().map(|issue| issue.key)
-    }
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        if matches!(self.year, Form8915Year::Filed2024) && self.disaster_year > 2024 {
-            return Some(
-                crate::validation::ValidationIssue::new("FORM_8915_DISASTER_AFTER_FORM")
-                    .at_field("disaster_year"),
-            );
-        }
-        let (plan_back, ira_back) =
-            (self.repayments.plan_carried_back, self.repayments.ira_carried_back);
-        let (plan_excess, ira_excess) = self.excess_2025();
-        if plan_back != 0 && plan_back > plan_excess {
-            Some(
-                crate::validation::ValidationIssue::new("FORM_8915_CARRIED_BACK_ABOVE_EXCESS")
-                    .at_field("plan_carried_back")
-                    .in_field("repayments"),
-            )
-        } else if ira_back != 0 && ira_back > ira_excess {
-            Some(
-                crate::validation::ValidationIssue::new("FORM_8915_CARRIED_BACK_ABOVE_EXCESS")
-                    .at_field("ira_carried_back")
-                    .in_field("repayments"),
-            )
-        } else {
-            None
-        }
-    }
-    // Worksheets 3 and 5 line 3a: last year's line 14 (25) over line 13 (24).
-    // A carried-back amount is allowed only against a 2025 form's excess.
-    fn excess_2025(&self) -> (i64, i64) {
-        match &self.year {
-            Form8915Year::Filed2025 { line_13, line_14, line_24, line_25 } => {
-                (phase::floor(line_14 - line_13, 0), phase::floor(line_25 - line_24, 0))
-            }
-            _ => (0, 0),
-        }
-    }
-    fn year(&self) -> Option<u32> {
-        match self.year {
-            Form8915Year::Filed2025 { .. } => Some(2025),
-            Form8915Year::Filed2024 => Some(2024),
-            Form8915Year::Earlier => None,
-        }
-    }
-    fn repaid(&self) -> (i64, i64, i64, i64) {
-        let Form8915Repayments { plan_repaid, ira_repaid, plan_carried_back, ira_carried_back } =
-            self.repayments;
-        (plan_repaid, ira_repaid, plan_carried_back, ira_carried_back)
-    }
-    pub(crate) fn valid(&self) -> bool {
-        let (a, b, c, d) = self.repaid();
-        let lines = match &self.year {
-            Form8915Year::Filed2025 { line_13, line_14, line_24, line_25 } => {
-                [*line_13, *line_14, *line_24, *line_25]
-            }
-            _ => [0; 4],
-        };
-        (2021..=2025).contains(&self.disaster_year)
-            && [self.line_11, self.line_22, a, b, c, d]
-                .iter()
-                .chain(lines.iter())
-                .all(|v| (0..=100000000000).contains(v))
-            && self.rule().is_none()
-    }
 }
 
 // The incident beginning date of a designated entry, or the refusal that a disaster
@@ -580,17 +129,17 @@ pub(crate) fn home_repaid(v: &crate::FederalRetirement, taxable: i64) -> i64 {
 fn taxable_before_rollover(
     e: &crate::FederalIncomeEntry,
     v: &crate::FederalRetirement,
-    basis: &crate::retirement::BasisResult,
+    basis: &crate::retirement_return::BasisResult,
     qcd: i64,
 ) -> i64 {
     // A linked inherited payment's group supplies its share separately. With
     // no group, preserve the existing payer-amount fallback used by collect.
     let source_taxable = match v.taxable {
-        RetirementTaxable::Inherited { payer, .. } => payer,
+        Some(RetirementTaxable::Inherited { .. }) => v.box_2a,
         _ => basis.taxable(e.id, v),
     };
     let after = phase::floor(source_taxable - qcd, 0);
-    if v.taxable == RetirementTaxable::IraBasis {
+    if v.taxable == Some(RetirementTaxable::IraBasis) {
         // The Form 8606 ratio applies to every dollar that was not converted or given away.
         let funding = basis.hsa_funding.get(&e.id).copied().unwrap_or(0);
         let kept =
@@ -610,12 +159,12 @@ fn taxable_before_rollover(
 // 5329 line 1 (retirement::early_tax); the rest keeps its 1099-R treatment.
 pub(crate) fn designated(
     d: &FederalDraft,
-    basis: &crate::retirement::BasisResult,
-    qcd: &crate::retirement::QcdResult,
+    basis: &crate::retirement_return::BasisResult,
+    qcd: &crate::retirement_return::QcdResult,
 ) -> BTreeMap<i64, i64> {
     let mut out = basis.inherited.designated.clone();
     for e in &d.income {
-        let FederalIncome::Retirement { data: v } = &e.income else {
+        let Some(v) = e.income.retirement() else {
             continue;
         };
         let DisasterDistribution::Qualified { amount, .. } = v.disaster else {
@@ -635,7 +184,7 @@ pub(crate) fn designated(
             continue;
         }
         let amount = phase::cap(amount, [whole]);
-        let taxable = taxable_before_rollover(e, v, basis, gift);
+        let taxable = taxable_before_rollover(e, &v, basis, gift);
         out.insert(e.id, phase::cap(fraction(taxable, amount, whole), [amount]));
     }
     out
@@ -682,8 +231,8 @@ pub(crate) struct DisasterResult {
 pub(crate) fn calculate(
     d: &FederalDraft,
     r: &mut FederalResult,
-    basis: &crate::retirement::BasisResult,
-    qcd: &crate::retirement::QcdResult,
+    basis: &crate::retirement_return::BasisResult,
+    qcd: &crate::retirement_return::QcdResult,
 ) -> DisasterResult {
     let mut forms: BTreeMap<(usize, u32), Form> = BTreeMap::new();
     let mut limits: BTreeMap<(usize, u32), (i64, i64)> = BTreeMap::new();
@@ -700,25 +249,43 @@ pub(crate) fn calculate(
     for e in &d.income {
         match &e.income {
             FederalIncome::Retirement { data } => {
-                rows.push((e, alloc::borrow::Cow::Borrowed(data), false));
+                rows.push((
+                    e,
+                    alloc::borrow::Cow::Owned(crate::FederalRetirement::from(data)),
+                    false,
+                ));
             }
-            FederalIncome::Roth { data: w }
-                if matches!(w.disaster, DisasterDistribution::Qualified { .. }) =>
+            FederalIncome::Roth { data: source }
+                if matches!(
+                    crate::RothWithdrawal::from(source).disaster,
+                    DisasterDistribution::Qualified { .. }
+                ) =>
             {
+                let w = &crate::RothWithdrawal::from(source);
                 rows.push((
                     e,
                     alloc::borrow::Cow::Owned(crate::FederalRetirement {
+                        form_boxes: Default::default(),
+                        trump: false,
+                        box_2a: 0,
+                        box_3: 0,
+                        box_6: 0,
+                        box_8a: 0,
+                        box_8b_percent: None,
+                        box_9a_percent: None,
+                        ira: (RetirementKind::Ira).ira(),
                         disability: crate::DisabilityIncome::None,
                         kind: RetirementKind::Ira,
                         disability_wages: crate::DisabilityWages::None,
                         gross: w.gross - w.rolled_over,
-                        taxable: RetirementTaxable::Payer { amount: 0 },
+                        taxable: Some(RetirementTaxable::Payer),
                         withholding: 0,
                         box7: 0,
-                        ordinary_distribution: crate::RetirementTreatment::Ordinary,
+                        ordinary_distribution: Some(crate::RetirementTreatment::Ordinary),
                         disaster: w.disaster.clone(),
                         after_death: None,
                         box_10: 0,
+                        box_10_basis: None,
                         box_9b: None,
                     }),
                     true,
@@ -735,7 +302,7 @@ pub(crate) fn calculate(
         }
         #[cfg(test)]
         let source = alloc::format!("Income: {}", e.label);
-        let owner = usize::from(e.owner == Owner::Spouse);
+        let owner = usize::from(e.owner == crate::DocumentOwner::Spouses);
         // Part IV: a distribution for a main home. The taxable amount less the part repaid
         // stays in income (line 32) and keeps the row's 10% path (retirement::early_tax).
         if let DisasterDistribution::HomePurchase { began, taxable_repaid: repaid, .. } = v.disaster
@@ -859,7 +426,7 @@ pub(crate) fn calculate(
             crate::require_localized!(
                 r,
                 false,
-                &crate::IssueContext::Review,
+                &crate::IssueContext::Section(crate::TaxSection::Retirement),
                 "Form 8915-F",
                 "ISSUE_A_FORM_8915_F_FROM_2023_OR_EARLIER_HAS_NO_2026_INCOME_A_2026_REPAYM_8F28E5B6",
                 "A Form 8915-F from 2023 or earlier has no 2026 income; a 2026 repayment of those distributions is carried back to 2023-2025 on amended returns (Form 1040-X, Form 8915-F lines 14 and 25), which this App does not prepare.",

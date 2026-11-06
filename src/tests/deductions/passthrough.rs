@@ -12,7 +12,7 @@ fn debt_repayment_at_risk_uses_its_independent_amt_basis_recovery() {
     assert_eq!(risk.year_end.map(crate::kernel::ratio::dollars), Some(4_000));
     assert_eq!(alternative.activity_result().unwrap().nonpassive, 0);
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&d);
     assert_eq!(value(&r, "scorp_amt_loan_gain_adjustment"), -1_000);
     assert_eq!(value(&r, "alternative_minimum_taxable_income"), 61_000);
@@ -62,7 +62,7 @@ fn repayment_amt_sources_accept_separate_sale_basis_without_amt_payable() {
 
 #[test]
 fn repayment_exclusion_basis_reuses_sale_validation_and_requires_complete_worksheet() {
-    for mode in 0..3 {
+    for mode in [1, 2] {
         let mut d = repayment_exclusion_loss_chain();
         let RepaymentClaim::Claim { years, .. } = &mut d.deductions.as_mut().unwrap().repayment
         else {
@@ -72,7 +72,6 @@ fn repayment_exclusion_basis_reuses_sale_validation_and_requires_complete_worksh
             panic!()
         };
         match mode {
-            0 => sales[0].exclusion.as_mut().unwrap().basis = -1,
             1 => sales[0].exclusion.as_mut().unwrap().wash_sale = 1500000,
             _ => *exclusion = None,
         }

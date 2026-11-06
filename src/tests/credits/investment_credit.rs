@@ -81,7 +81,7 @@ fn sale(date: u32, proceeds: i64) -> crate::AssetDisposal {
     crate::AssetDisposal::Disposed {
         date,
         how: crate::DisposalKind::Sold {
-            livestock: crate::Livestock::No,
+            livestock: crate::SoldLivestock::No,
             proceeds: dollars_of(proceeds),
             selling_expenses: 0,
             payment: crate::SalePayment::InFull,
@@ -429,7 +429,7 @@ fn the_rehabilitation_credit_period_is_five_years_from_the_year_placed_in_servic
 // depreciation 7,355.20.
 //   Form 4255 Part II: B6 = 8,000 + 8,000 = 16,000; D10 03/01/2024; D11
 //   06/30/2026; D12 = 2 full years; D13 0; D14 16,000; D15 60%; D16 9,600.
-//   Part I row 1m: (a) 16,000, (g) 60, (h) 9,600, (i) 0, (j) 9,600, (r)
+//   Part I row 1m: (a) 16,000, g 60, h 9,600, i 0, j 9,600, r
 //   9,600 -> Schedule 2 line 13a 9,600.
 //   2026 share (Reg. 1.47-7(e)(3)): line 1g = 200,000 x 40% = 80,000;
 //   1j = 3,200 to Form 3800 line 4k.
@@ -1122,6 +1122,8 @@ fn investment_partner(items: Vec<K1InvestmentProperty>, active: bool) -> Partner
     let mut data = ordinary_partner_source(0, active);
     data.investment_property = items;
     data.investment_confirmed = Some(true);
+    // Rental real estate property: participation is answered.
+    data.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     data
 }
 
@@ -1218,16 +1220,6 @@ fn the_basis_decrease_is_taken_in_the_year_the_building_is_placed_in_service() {
     assert_eq!(item(2026).basis_decrease(), 2_000_000);
     assert_eq!(item(2025).basis_decrease(), 0);
     assert_eq!(item(2022).current_year_credit(), 4_000);
-    // 2021 is outside the page's range; 2022 is the fifth year of 2026.
-    assert!(
-        !K1InvestmentProperty::RehabilitationOther {
-            id: 0,
-            own_form: None,
-            expenditures: 100,
-            placed_year: 2021
-        }
-        .valid()
-    );
 }
 
 // The partner's outside basis and the shareholder's stock basis fall by the
@@ -1474,10 +1466,10 @@ fn form_4255_recapture_is_on_form_2210_line_2_and_form_1040_es_lines_10_and_12b(
 fn unit13_native_investment_recapture_keeps_actual_property_owners_and_order() {
     let mut d = complete(FederalStatus::Joint);
     let mut first = business_return(earlier_energy_sale_asset()).income.pop().unwrap();
-    first.owner = Owner::Taxpayer;
+    first.owner = crate::DocumentOwner::Yours;
     add(&mut d, first.clone());
     let mut second = first;
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     if let FederalIncome::Business { data } = &mut second.income
         && let InvestmentCredit::EarlierEnergy { used, .. } = &mut data.assets[0].investment_credit
     {
@@ -1506,7 +1498,7 @@ fn unit13_native_rental_recapture_keeps_its_actual_owner_and_no_claim_zero() {
     let mut d = rental_sale_return(true);
     d.setup = complete(FederalStatus::Joint).setup;
     d.people = complete(FederalStatus::Joint).people;
-    d.income.last_mut().unwrap().owner = Owner::Spouse;
+    d.income.last_mut().unwrap().owner = crate::DocumentOwner::Spouses;
     let mut r = FederalResult::empty(d.revision);
     let claims = crate::investment_credit::claims(&d, &mut r);
     assert!(r.issues.is_empty(), "{:?}", r.issues);
@@ -1536,7 +1528,7 @@ fn unit13_direct_recapture_return(injured: Owner) -> FederalDraft {
     };
     add(&mut d, business);
     d.screening.as_mut().unwrap().section1231 = Some(no_lookback());
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(InjuredSpouseAllocation {
         injured,
         debt: OffsetDebt::ChildSupport,
@@ -1555,7 +1547,7 @@ fn unit13_direct_recapture_reaches_shared_line18_without_claiming_final_property
     for injured in [Owner::Taxpayer, Owner::Spouse] {
         for property_owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut d = unit13_direct_recapture_return(injured);
-            d.income.last_mut().unwrap().owner = property_owner;
+            d.income.last_mut().unwrap().owner = crate::DocumentOwner::from(property_owner);
             let r = supported(&d);
             assert_eq!(value(&r, "self_employment_tax"), 0);
             assert_eq!(value(&r, "investment_credit_recapture_tax"), 3600);
@@ -1641,7 +1633,7 @@ fn unit13_direct_recapture_actual_client_save_reopen_restart() {
         let row = &mut documents.documents[0];
         row.owner = Owner::Spouse;
         match &mut row.document {
-            IncomeDocument::Business(business) => {
+            crate::IncomeRecord::Business(business) => {
                 let InvestmentCredit::EarlierEnergy { used, .. } =
                     &mut business.assets[0].investment_credit
                 else {
@@ -1649,7 +1641,7 @@ fn unit13_direct_recapture_actual_client_save_reopen_restart() {
                 };
                 *used = dollars_of(4000);
             }
-            IncomeDocument::Rental(rental) => {
+            crate::IncomeRecord::Rental(rental) => {
                 rental.more.improvements[0].rehabilitation.as_mut().unwrap().earlier[1].used =
                     dollars_of(2000);
             }

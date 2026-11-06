@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 446000, "rule": {"select": "^<CccDisposition>", "flatten": true}}
+  ]
+}

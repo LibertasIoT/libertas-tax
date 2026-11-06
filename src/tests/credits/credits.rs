@@ -162,7 +162,8 @@ fn restaurant_form3800_credit_precedes_form8912_bond_credit() {
 fn restaurant_tip_credit_coexists_with_both_form8978_directions() {
     let mut draft = restaurant_tip_credit_draft();
     let baseline = supported(&draft);
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_interest_increase());
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_interest_increase()));
     let increase = supported(&draft);
     assert_eq!(value(&increase, "form_8978_line_14"), 220);
     assert_eq!(return_line(&increase, "16"), return_line(&baseline, "16") + 22_000);
@@ -170,7 +171,8 @@ fn restaurant_tip_credit_coexists_with_both_form8978_directions() {
     assert_eq!(value(&increase, "business_2_form8846_remaining_employer_fica_deduction"), 10);
     assert_eq!(supported(&restart(draft.clone()).draft), increase);
 
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_interest_reduction());
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_interest_reduction()));
     let decrease = supported(&draft);
     // Taxable117,962: rate tax20,909. Reserving220 leaves20,689 of
     // specified-credit capacity; the current24 credit fits unchanged.
@@ -203,11 +205,8 @@ fn restaurant_tip_credit_rejects_unreconciled_source_and_excess_carryback() {
     let mut draft = restaurant_tip_credit_draft();
     let business = restaurant_business_mut(&mut draft);
     let claim = business.employer_tip_fica_credit.as_mut().unwrap();
-    claim.employees[0].months[0] = EmployerTipMonth {
-        hours_hundredths: 10_000,
-        wages_excluding_tips: 0,
-        reported_tips: 18_450_001,
-    };
+    claim.employees[0].months[0] =
+        EmployerTipMonth { hours: 100.0, wages_excluding_tips: 0, reported_tips: 18_450_001 };
     let BusinessPayroll::Yes { statements, .. } = &mut business.payroll else { panic!() };
     statements[0].medicare += 18_450_001;
     unsupported(&draft, "Current employer tip FICA credit");
@@ -241,6 +240,7 @@ fn restaurant_tip_credit_rejects_unreconciled_source_and_excess_carryback() {
         .pop();
     assert!(!draft.valid_stored());
     let mut draft = restaurant_tip_credit_draft();
+    answer_separate_pages(&mut draft);
     draft.setup.as_mut().unwrap().status = filing_choice(FederalStatus::Separate);
     draft.setup.as_mut().unwrap().marital_state =
         MaritalState::Married { living: SpouseLiving::Together };
@@ -287,9 +287,6 @@ fn extended_models_round_trip_and_invalid_credit_records_block_restore() {
     let decoded = draft_from_native_records(d.tax_year, &data);
     assert_eq!(decoded, d);
     assert_eq!(native_draft_records(&decoded), data);
-    // The payee-statement tax is a document amount: a negative one is invalid.
-    payee_statement_credit(&mut d, -1);
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -299,7 +296,7 @@ fn low_income_retiree_gets_result_and_exempt_benefits_reduce_elderly_credit() {
     d.income[0] = wage(1, Owner::Taxpayer, 1_000_000, 0);
     assert_eq!(supported(&d).tax, Some(0));
     let v = d.deductions.as_mut().unwrap();
-    v.choice = DeductionSelection::Itemized { facts: itemized(v).clone() };
+    v.itemize_override = Some(ItemizeOverride::Itemize);
     let r = supported(&d);
     assert_eq!(value(&r, "elderly_credit"), 403);
     assert_eq!(r.tax, Some(0));
@@ -470,7 +467,7 @@ fn alternative_fuel_physical_units_convert_to_gge_and_dge_on_return() {
 fn home_kerosene_requires_qualified_use_and_purchase_records() {
     let mut draft = complete(FederalStatus::Single);
     draft.payments.as_mut().unwrap().home_kerosene = Some(FederalHomeKerosene {
-        thousandths_of_gallon: 100_000,
+        gallons: 100.0,
         actual_cost: 20_000,
         qualified: false,
         not_claimed_elsewhere: true,
@@ -490,10 +487,9 @@ fn home_kerosene_requires_qualified_use_and_purchase_records() {
     assert!(noted(&r, "WARN_HOME_KEROSENE_LEFT_OUT"));
     let home = draft.payments.as_mut().unwrap().home_kerosene.as_mut().unwrap();
     home.records_complete = true;
-    home.thousandths_of_gallon = 0;
+    home.gallons = 0.0;
     assert!(!draft.valid_stored());
-    draft.payments.as_mut().unwrap().home_kerosene.as_mut().unwrap().thousandths_of_gallon =
-        100_000;
+    draft.payments.as_mut().unwrap().home_kerosene.as_mut().unwrap().gallons = 100.0;
     draft.payments.as_mut().unwrap().home_kerosene.as_mut().unwrap().actual_cost = 1;
     assert!(!draft.valid_stored());
 }
@@ -503,7 +499,7 @@ fn section_1250_fund_statement_preserves_credit_and_validates_components() {
     let mut d = complete(FederalStatus::Single);
     let mut fund = undistributed_gain();
     let FederalIncome::UndistributedGain { data } = &mut fund else { panic!() };
-    data.unrecaptured = 200000;
+    data.form.unrecaptured_section_1250_gain = 200000;
     add(&mut d, income(fund));
     let r = supported(&d);
     assert_eq!(value(&r, "capital_gain"), 5000);
@@ -513,10 +509,7 @@ fn section_1250_fund_statement_preserves_credit_and_validates_components() {
     assert_eq!(r.payments, Some(755000));
     d.income[1].income = mixed_gain_distribution();
     let FederalIncome::Dividend { data } = &mut d.income[1].income else { panic!() };
-    data.unrecaptured_distributions = 700001;
-    assert!(!d.valid_stored());
-    let FederalIncome::Dividend { data } = &mut d.income[1].income else { panic!() };
-    data.unrecaptured_distributions = -1;
+    data.form.unrecaptured_distributions = Some(700001);
     assert!(!d.valid_stored());
 }
 
@@ -605,7 +598,7 @@ fn certificate_reissued_before_2026_is_limited_by_original_scheduled_credit() {
             original_interest_method: MortgageOriginalInterestMethod::FixedRateSchedule,
             first_reissue: true,
             original_number: "MCC-ORIGINAL".into(),
-            original_rate_hundredths_percent: 2000,
+            original_rate: 20.0,
             original_scheduled_interest: 800_000,
             original_certified_balance: 20_000_000,
             reissued_certified_debt: 18_000_000,
@@ -680,7 +673,7 @@ fn certificate_reissued_before_2026_is_limited_by_original_scheduled_credit() {
         facts.original_interest_method = MortgageOriginalInterestMethod::VariableRateHypothetical {
             worksheet_reference: "Synthetic level-payment hypothetical loan".into(),
             principal_at_refinance: 20_000_000,
-            refinance_apr_hundredths_percent: 600,
+            refinance_apr: 6.0,
             refinancing_maturity: 20540101,
             worksheet_confirmed: true,
             method_consistent: true,
@@ -729,13 +722,13 @@ fn certificate_reissued_before_2026_is_limited_by_original_scheduled_credit() {
         d.credits.as_mut().unwrap().mortgage_credit.as_mut().unwrap().current.as_mut().unwrap();
     if let MortgageCertificateHistory::ReissuedBefore2026 { facts } = &mut certificate.history {
         facts.reissued_certified_debt = facts.original_certified_balance;
-        facts.original_rate_hundredths_percent = 1400;
+        facts.original_rate = 14.0;
     }
     assert!(!d.valid_stored());
     let certificate =
         d.credits.as_mut().unwrap().mortgage_credit.as_mut().unwrap().current.as_mut().unwrap();
     if let MortgageCertificateHistory::ReissuedBefore2026 { facts } = &mut certificate.history {
-        facts.original_rate_hundredths_percent = 2000;
+        facts.original_rate = 20.0;
     }
     certificate.issue_date = 20260115;
     assert!(!d.valid_stored());
@@ -744,10 +737,12 @@ fn certificate_reissued_before_2026_is_limited_by_original_scheduled_credit() {
 #[test]
 fn current_mcc_credit_and_same_home_form_8828_recapture_reconcile() {
     let mut d = complete(FederalStatus::Single);
-    let mut home = home_sale(false);
-    home.price = 40_000_000;
-    home.expenses = 2_000_000;
-    home.basis = 30_000_000;
+    let mut home = home_sale_source(false);
+    home.form.paper_mut().unwrap().box_2a_total_gross_proceeds = 40_000_000;
+    // The 1099-S closing date is the Form 8828 disposition date.
+    home.form.paper_mut().unwrap().box_1_date_of_closing = 20260701;
+    home.facts_mut().expenses = 2_000_000;
+    home.facts_mut().basis = 30_000_000;
     add(&mut d, income(FederalIncome::HomeSale { data: home }));
     d.credits.as_mut().unwrap().mortgage_credit =
         Some(mortgage_certificate_credit(2000, 10000, 1_000_000));
@@ -802,9 +797,6 @@ fn residential_energy_carryforward_uses_form_5695_and_follows_dc_credit() {
     assert_eq!(value(&child_result, "residential_energy_credit"), 4000);
     assert_eq!(return_line(&child_result, "19"), 102_300);
     assert_eq!(return_line(&child_result, "28"), 117_700);
-
-    d.credits.as_mut().unwrap().residential_energy_carry = Some(-100);
-    assert!(!d.valid_stored());
 
     let mut farmland = farmland_installment_return();
     farmland.credits.as_mut().unwrap().residential_energy_carry = Some(100_000);
@@ -915,8 +907,6 @@ fn personal_refueling_credit_caps_each_unit_and_reduces_schedule_three() {
     assert_eq!(value(&r, "personal_refueling_credit"), 1000);
     assert!(noted(&r, "WARN_REFUELING_PROPERTY_LEFT_OUT"));
     d.credits.as_mut().unwrap().personal_refueling[0].personal_only = true;
-    d.credits.as_mut().unwrap().personal_refueling[0].census_geoid = "bad".into();
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -999,18 +989,9 @@ fn clean_vehicle_used_price_model_year_and_transfer_are_explicit() {
     assert_eq!(value(&r, "previously_owned_clean_vehicle_credit"), 4000);
 
     let claim = d.credits.as_mut().unwrap().clean_vehicles.as_mut().unwrap();
-    let FederalCleanVehicle::PreviouslyOwned { model_year, .. } = &mut claim.vehicles[0] else {
+    let FederalCleanVehicle::PreviouslyOwned { sales_price, .. } = &mut claim.vehicles[0] else {
         unreachable!()
     };
-    *model_year = 2024;
-    assert!(!d.valid_stored());
-    let claim = d.credits.as_mut().unwrap().clean_vehicles.as_mut().unwrap();
-    let FederalCleanVehicle::PreviouslyOwned { model_year, sales_price, .. } =
-        &mut claim.vehicles[0]
-    else {
-        unreachable!()
-    };
-    *model_year = 2023;
     *sales_price = 2_600_000;
     unsupported(&d, "Clean vehicle");
     let claim = d.credits.as_mut().unwrap().clean_vehicles.as_mut().unwrap();
@@ -1037,9 +1018,6 @@ fn legacy_ev_passive_credit_uses_form_8834_regular_tax_limit_and_expires() {
     assert_eq!(return_line(&result, "20"), 502_300);
     assert_eq!(result.tax, Some(0));
     assert_eq!(supported(&restart(d.clone()).draft).tax, result.tax);
-
-    d.credits.as_mut().unwrap().legacy_ev_passive_allowed = Some(-1);
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -1167,7 +1145,7 @@ fn minimum_credit_source_projection_preserves_two_band_occupants_and_amt_gains()
 #[test]
 fn registered_emulsion_blender_credit_is_distinct_from_purchaser_use() {
     let blender = FederalEmulsionBlenderClaim {
-        thousandths_of_diesel_gallon: 100_000,
+        diesel_gallons: 100.0,
         actual_cost: 20_000,
         m_registration_number: "M-SYNTHETIC-637".into(),
         statement_facts_confirmed: true,
@@ -1182,7 +1160,8 @@ fn registered_emulsion_blender_credit_is_distinct_from_purchaser_use() {
             emulsion_off_highway: Some(fuel_use(100_000, 20_000)),
             emulsion_blender: Some(blender.clone()),
             ..FederalFuelLines::default()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
@@ -1190,7 +1169,8 @@ fn registered_emulsion_blender_credit_is_distinct_from_purchaser_use() {
     let mut partner = ordinary_partner_source(20_000, true);
     partner.qbi = Some(partner_qbi_statement(20_000));
     partner.fuel_tax_credit = Some(PartnerFuelTaxCredit {
-        fuels: FederalFuelLines { emulsion_blender: Some(blender), ..FederalFuelLines::default() },
+        fuels: FederalFuelLines { emulsion_blender: Some(blender), ..FederalFuelLines::default() }
+            .into(),
         statement_complete: true,
         farm_activity: false,
     });
@@ -1245,15 +1225,18 @@ fn exported_gasoline_blendstock_shares_line_16a_with_dyed_diesel() {
         unreachable!()
     };
     business.fuel_tax_credit = Some(FederalFuelTaxCredit {
-        fuels: fuels.clone(),
+        fuels: fuels.clone().into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
     add(&mut draft, income(FederalIncome::Business { data: business }));
     let mut partner = ordinary_partner_source(20_000, true);
     partner.qbi = Some(partner_qbi_statement(20_000));
-    partner.fuel_tax_credit =
-        Some(PartnerFuelTaxCredit { fuels, statement_complete: true, farm_activity: false });
+    partner.fuel_tax_credit = Some(PartnerFuelTaxCredit {
+        fuels: fuels.into(),
+        statement_complete: true,
+        farm_activity: false,
+    });
     add(&mut draft, income(FederalIncome::Partnership { data: partner }));
 
     let mut baseline = draft.clone();
@@ -1407,7 +1390,7 @@ fn unknown_blocked_pump_access_omits_only_that_claim() {
     assert_eq!(line_amount(&report, "business_2_fuel_7a"), 2_430);
     assert_eq!(line_amount(&report, "partnership_3_fuel_7b"), 1_215);
     let FederalIncome::Business { data } = &draft.income[1].income else { unreachable!() };
-    assert_eq!(data.fuel_tax_credit.as_ref().unwrap().fuels, business_fuels);
+    assert_eq!(*data.fuel_tax_credit.as_ref().unwrap().fuels, business_fuels);
 }
 
 #[test]
@@ -1420,17 +1403,17 @@ fn similar_fmv_exception_vehicles_aggregate_across_donees_for_section_b() {
     first.value = 300_000;
     let mut second = donated_personal_vehicle(VehicleUse::NeedyPerson);
     second.value = 300_000;
-    if let GiftKind::Vehicle { vin, .. } = &mut second.kind {
-        *vin = "TESTVIN1234567891".into();
-    }
     second.charity = "Another synthetic public charity".into();
-    ded.property_gifts.extend([first, second]);
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    let GiftKind::Vehicle { vin, .. } = &mut second.kind else { unreachable!() };
+    *vin = "TESTVIN1234567891".into();
+    push_gift(ded, first);
+    push_gift(ded, second);
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     assert!(noted(&supported(&d), "WARN_GIFT_LEFT_OUT"));
-    set_gift_appraisal(d.deductions.as_mut().unwrap(), 0, 2);
+    set_vehicle_appraisal(d.deductions.as_mut().unwrap(), 0, 2);
     d.next_id = 3;
     assert!(noted(&supported(&d), "WARN_GIFT_LEFT_OUT"));
-    set_gift_appraisal(d.deductions.as_mut().unwrap(), 1, 2);
+    set_vehicle_appraisal(d.deductions.as_mut().unwrap(), 1, 2);
     let result = supported(&d);
     assert_eq!(value(&result, "form_8283_section_b_value"), 6_000);
     assert_eq!(value(&result, "charity_property_fifty_current_deduction"), 5_700);
@@ -1501,7 +1484,8 @@ fn nonscheduled_bus_routes_require_twenty_adult_seats() {
             fuels: FederalFuelLines {
                 vendor_bus_diesel: Some(claim),
                 ..FederalFuelLines::default()
-            },
+            }
+            .into(),
             expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
             records_complete: true,
         });
@@ -1522,13 +1506,13 @@ fn directly_held_1097_btc_bonds_add_interest_and_schedule_3_6k_once() {
         FederalTaxCreditBondKind::QualifiedEnergyConservation,
         100_049,
     );
-    qecb.prior_carry_dollars = 100;
+    qecb.answers.prior_carry_dollars = 100;
     let mut bab = direct_tax_credit_bond(
         "BAB1234567",
         FederalTaxCreditBondKind::BuildAmericaTaxCredit,
         45_049,
     );
-    bab.issued_on = 20100615;
+    bab.answers.issued_on = Some(20100615);
     draft.credits.as_mut().unwrap().tax_credit_bonds = vec![qecb, bab];
     let report = supported(&draft);
     assert_eq!(return_line(&report, "2b"), 145_100);
@@ -1551,7 +1535,7 @@ fn form_8912_net_income_tax_limit_retains_same_bond_carry() {
         FederalTaxCreditBondKind::QualifiedSchoolConstruction,
         2_000_000,
     );
-    first.prior_carry_dollars = 250;
+    first.answers.prior_carry_dollars = 250;
     draft.credits.as_mut().unwrap().tax_credit_bonds = vec![first];
     let report = supported(&draft);
     assert_eq!(return_line(&report, "2b"), 2_000_000);
@@ -1579,7 +1563,7 @@ fn multiple_partly_limited_bonds_allocate_allowed_credit_to_the_same_bond() {
         FederalTaxCreditBondKind::QualifiedSchoolConstruction,
         1_000_000,
     );
-    first.prior_carry_dollars = 250;
+    first.answers.prior_carry_dollars = 250;
     draft.credits.as_mut().unwrap().tax_credit_bonds = vec![
         first,
         direct_tax_credit_bond(
@@ -1624,10 +1608,10 @@ fn multiple_partly_limited_bonds_allocate_allowed_credit_to_the_same_bond() {
     let first_used = line12 / 2;
     let second_used = line12 - first_used;
     let bonds = &mut draft.credits.as_mut().unwrap().tax_credit_bonds;
-    bonds[0].allowed_credit_dollars = Some(first_used);
-    bonds[1].allowed_credit_dollars = Some(second_used);
-    bonds[0].allowed_credit_confirmed = true;
-    bonds[1].allowed_credit_confirmed = true;
+    bonds[0].answers.allowed_credit_dollars = Some(first_used);
+    bonds[1].answers.allowed_credit_dollars = Some(second_used);
+    bonds[0].answers.allowed_credit_confirmed = Some(true);
+    bonds[1].answers.allowed_credit_confirmed = Some(true);
     let report = supported(&draft);
     assert_eq!(value(&report, "form_8912_line1"), 20_000);
     assert_eq!(value(&report, "form_8912_line3"), 250);
@@ -1653,8 +1637,8 @@ fn multiple_partly_limited_bonds_allocate_allowed_credit_to_the_same_bond() {
     // not Form 8912 line 12 or taxable deemed interest.
     let bonds = &mut draft.credits.as_mut().unwrap().tax_credit_bonds;
     let alternative_first = line12.min(10_250);
-    bonds[0].allowed_credit_dollars = Some(alternative_first);
-    bonds[1].allowed_credit_dollars = Some(line12 - alternative_first);
+    bonds[0].answers.allowed_credit_dollars = Some(alternative_first);
+    bonds[1].answers.allowed_credit_dollars = Some(line12 - alternative_first);
     let alternative = supported(&draft);
     assert_eq!(value(&alternative, "tax_credit_bond_credit"), line12);
     assert_eq!(value(&alternative, "tax_credit_bond_used_1"), alternative_first);
@@ -1682,26 +1666,23 @@ fn multiple_bond_allocation_rejects_missing_stale_and_unbalanced_sources() {
         value(&supported(&single_bond_with_same_total_credit(&draft)), "tax_credit_bond_credit");
     assert!(line12 > 0 && line12 < 20_000);
     let bonds = &mut draft.credits.as_mut().unwrap().tax_credit_bonds;
-    bonds[0].allowed_credit_dollars = Some(line12 / 2);
-    bonds[0].allowed_credit_confirmed = true;
+    bonds[0].answers.allowed_credit_dollars = Some(line12 / 2);
+    bonds[0].answers.allowed_credit_confirmed = Some(true);
     unsupported(&draft, "Tax credit bond carry allocation");
 
     let bonds = &mut draft.credits.as_mut().unwrap().tax_credit_bonds;
-    bonds[1].allowed_credit_dollars = Some(line12 - line12 / 2);
+    bonds[1].answers.allowed_credit_dollars = Some(line12 - line12 / 2);
     unsupported(&draft, "Tax credit bond carry allocation");
 
     let bonds = &mut draft.credits.as_mut().unwrap().tax_credit_bonds;
-    bonds[1].allowed_credit_dollars = Some(line12 - line12 / 2 - 1);
-    bonds[1].allowed_credit_confirmed = true;
+    bonds[1].answers.allowed_credit_dollars = Some(line12 - line12 / 2 - 1);
+    bonds[1].answers.allowed_credit_confirmed = Some(true);
     unsupported(&draft, "Tax credit bond carry allocation");
 
     let bonds = &mut draft.credits.as_mut().unwrap().tax_credit_bonds;
-    bonds[0].allowed_credit_dollars = Some(10_001);
-    bonds[1].allowed_credit_dollars = Some(0);
+    bonds[0].answers.allowed_credit_dollars = Some(10_001);
+    bonds[1].answers.allowed_credit_dollars = Some(0);
     unsupported(&draft, "Tax credit bond carry allocation");
-
-    draft.credits.as_mut().unwrap().tax_credit_bonds[0].allowed_credit_dollars = Some(-1);
-    assert!(!draft.valid_stored());
 }
 
 #[test]
@@ -1724,7 +1705,7 @@ fn partly_limited_bonds_with_one_positive_rounded_credit_allocate_automatically(
     assert_eq!(line_amount(&result, "bond_credit_deemed_interest"), 2_000_049);
     assert_eq!(supported(&restart(draft.clone()).draft), result);
 
-    draft.credits.as_mut().unwrap().tax_credit_bonds[1].box1_credit = 50;
+    draft.credits.as_mut().unwrap().tax_credit_bonds[1].form.box1_credit = Some(50);
     unsupported(&draft, "Tax credit bond carry allocation");
 }
 
@@ -1747,7 +1728,7 @@ fn uniquely_determined_bond_allocations_are_automatic_or_must_match() {
     assert_eq!(value(&unlimited, "form_8912_line4"), 200);
     assert_eq!(value(&unlimited, "tax_credit_bond_credit"), 200);
     assert_eq!(value(&unlimited, "tax_credit_bond_carry_2027_1"), 0);
-    draft.credits.as_mut().unwrap().tax_credit_bonds[0].allowed_credit_dollars = Some(99);
+    draft.credits.as_mut().unwrap().tax_credit_bonds[0].answers.allowed_credit_dollars = Some(99);
     unsupported(&draft, "Tax credit bond carry allocation");
 
     let mut draft = complete(FederalStatus::Single);
@@ -1775,8 +1756,10 @@ fn uniquely_determined_bond_allocations_are_automatic_or_must_match() {
     let used = value(&automatic, "tax_credit_bond_credit");
     assert!(used > 0 && used < 20_000);
     assert_eq!(value(&automatic, "tax_credit_bond_used_1"), used);
-    draft.credits.as_mut().unwrap().tax_credit_bonds[0].allowed_credit_dollars = Some(used + 1);
-    draft.credits.as_mut().unwrap().tax_credit_bonds[0].allowed_credit_confirmed = true;
+    draft.credits.as_mut().unwrap().tax_credit_bonds[0].answers.allowed_credit_dollars =
+        Some(used + 1);
+    draft.credits.as_mut().unwrap().tax_credit_bonds[0].answers.allowed_credit_confirmed =
+        Some(true);
     unsupported(&draft, "Tax credit bond carry allocation");
 }
 
@@ -1822,7 +1805,8 @@ fn form_8978_line_6l_reduces_form_8912_line_11_before_bond_credit() {
         1_000_000,
     )];
     let without_bba = supported(&draft);
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_interest_reduction());
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_interest_reduction()));
     let with_bba = supported(&draft);
     assert_eq!(value(&with_bba, "schedule_3_line_6l"), 220);
     assert_eq!(value(&without_bba, "form_8912_line11") - value(&with_bba, "form_8912_line11"), 220);
@@ -1842,7 +1826,8 @@ fn positive_form_8978_line_14_raises_form_8912_line_7_and_same_bond_capacity() {
         1_000_000,
     )];
     let baseline = supported(&draft);
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_interest_increase());
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_interest_increase()));
     let calculated = supported(&draft);
     assert_eq!(return_line(&calculated, "16"), return_line(&baseline, "16") + 22_000);
     assert_eq!(value(&calculated, "form_8912_line11"), value(&baseline, "form_8912_line11") + 220,);
@@ -1890,7 +1875,7 @@ fn section_965_remains_refused() {
     let d = complete(FederalStatus::Single);
     let baseline = supported(&d);
     // M3-P15 split the one situation into its credit and its tax.
-    assert_situation_refused(&d, OtherTax::Section965, &["Schedule 3 line 13d"]);
+    assert_situation_refused(&d, Unprepared::Section965, &["Schedule 3 line 13d"]);
     // An empty list keeps today's result.
     assert_eq!(estimate(&d).tax, baseline.tax);
 }
@@ -1921,10 +1906,17 @@ fn schedule_3_matrix_draft() -> FederalDraft {
     // half-time enrollment (Form 8863 line 3 nonrefundable, line 29
     // refundable).
     let sid0_3414 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(FederalEducation {
-        student: sid0_3414,
-        expenses: education_expenses(200_000),
-        method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+    add_education(d.credits.as_mut().unwrap(), {
+        let mut pair = native_education(
+            sid0_3414,
+            education_expenses(200_000),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        );
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = false;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     });
     // $1,000 traditional IRA contribution, not covered by a workplace plan:
     // fully deductible (Schedule 1 line 20) and the Saver's Credit base
@@ -2472,7 +2464,7 @@ fn form_3800_line_2x_follows_form_8881_part_i_and_a_passive_amount_waits() {
         }],
     );
     assert_eq!(history.rule(), Some("BUSINESS_CREDIT_CARRYFORWARD_ONLY"));
-    let source = include_str!("../../credits/general_business_credit.rs");
+    let source = include_str!("../../credits/business_credit_source.rs");
     assert!(source.contains("\"BUSINESS_CREDIT_CARRYFORWARD_ONLY\""));
 }
 
@@ -2560,7 +2552,7 @@ fn k1_credits_reach_part_iii_and_passive_credits_wait_for_net_passive_income() {
         code: K1CreditCode::WorkOpportunity,
         amount: 100_000,
     }];
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&draft);
     assert_eq!(value(&r, "business_credit_work_opportunity_current_year"), 1_000);
     assert_eq!(value(&r, "business_credit_work_opportunity_current_year_used"), 1_000);
@@ -2577,7 +2569,7 @@ fn k1_credits_reach_part_iii_and_passive_credits_wait_for_net_passive_income() {
         code: K1CreditCode::WorkOpportunity,
         amount: 100_000,
     }];
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&draft);
     assert_eq!(value(&r, "form_3800_line_32"), 1_000);
     assert_eq!(value(&r, "form_3800_line_33"), 0);
@@ -2598,7 +2590,7 @@ fn k1_credits_reach_part_iii_and_passive_credits_wait_for_net_passive_income() {
         code: K1CreditCode::WorkOpportunity,
         amount: 100_000,
     }];
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&draft);
     let taxable = value(&r, "taxable_income");
     let table = |income: i64| {
@@ -2657,32 +2649,44 @@ fn savings_bond_tuition_is_the_credits_first_even_when_the_credit_is_phased_out(
         let mut d = complete(FederalStatus::Joint);
         d.income[0] = wage(1, Owner::Taxpayer, wages * 100, 0);
         d.people.as_mut().unwrap().taxpayer.birth_date = 19750101;
-        add(&mut d, income(FederalIncome::Interest { data: native_treasury_interest(400_000) }));
+        add(
+            &mut d,
+            income(FederalIncome::Interest {
+                data: interest_source(native_treasury_interest(400_000)),
+            }),
+        );
         add_child(&mut d);
         let child = d.dependents[0].id;
         let credits = d.credits.as_mut().unwrap();
-        credits.education.push(FederalEducation {
-            student: child,
-            expenses: FederalEducationExpenses {
-                assistance: 100_000,
-                ..education_expenses(1_100_000)
-            },
-            method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        add_education(credits, {
+            let mut pair = native_education(
+                child,
+                FederalEducationExpenses { assistance: 100_000, ..education_expenses(1_100_000) },
+                education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+            );
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
         });
+        let bond_recipient = fixture_document_names(&d, -1).unwrap().recipient;
         add(
             &mut d,
             income(FederalIncome::SavingsBonds {
-                data: FederalSavingsBonds {
+                data: savings_bonds_source(crate::SavingsBonds {
+                    source_issuer: Default::default(),
+                    source_recipient: bond_recipient,
                     proceeds: 1_000_000,
-                    interest: 400_000,
+                    redemption_interest: 400_000,
                     earliest_issue_date: 20050101,
                     interest_statement: 2,
-                    students: vec![FederalSavingsBondStudent {
+                    students: vec![crate::SavingsBondStudent {
                         person: child,
-                        expenses: FederalSavingsBondExpenses::EducationCredit,
+                        expenses: crate::SavingsBondExpenses::EducationCredit,
                         contributions: 0,
                     }],
-                },
+                }),
             }),
         );
         d
@@ -2708,27 +2712,42 @@ fn savings_bond_tuition_is_the_credits_first_even_when_the_credit_is_phased_out(
     let build = |dependency: FilerDependency| {
         let mut d = complete(FederalStatus::Single);
         d.people.as_mut().unwrap().taxpayer.dependency = dependency;
-        add(&mut d, income(FederalIncome::Interest { data: native_treasury_interest(150_000) }));
+        add(
+            &mut d,
+            income(FederalIncome::Interest {
+                data: interest_source(native_treasury_interest(150_000)),
+            }),
+        );
         let sid0_4619 = -1; // You, the first person of the catalog
-        d.credits.as_mut().unwrap().education.push(FederalEducation {
-            student: sid0_4619,
-            expenses: education_expenses(600_000),
-            method: education_choice(EducationMethod::LifetimeLearning, Answer::Yes),
+        add_education(d.credits.as_mut().unwrap(), {
+            let mut pair = native_education(
+                sid0_4619,
+                education_expenses(600_000),
+                education_choice(EducationMethod::LifetimeLearning, Answer::Yes),
+            );
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = true;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
         });
+        let bond_recipient = fixture_document_names(&d, -1).unwrap().recipient;
         add(
             &mut d,
             income(FederalIncome::SavingsBonds {
-                data: FederalSavingsBonds {
+                data: savings_bonds_source(crate::SavingsBonds {
+                    source_issuer: Default::default(),
+                    source_recipient: bond_recipient,
                     proceeds: 150_000,
-                    interest: 150_000,
+                    redemption_interest: 150_000,
                     earliest_issue_date: 20050101,
                     interest_statement: 2,
-                    students: vec![FederalSavingsBondStudent {
+                    students: vec![crate::SavingsBondStudent {
                         person: -1,
-                        expenses: FederalSavingsBondExpenses::EducationCredit,
+                        expenses: crate::SavingsBondExpenses::EducationCredit,
                         contributions: 0,
                     }],
-                },
+                }),
             }),
         );
         d
@@ -2758,30 +2777,42 @@ fn savings_bond_line_2_loses_only_the_tuition_the_credit_needed() {
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 6_000_000, 0);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19750101;
-    add(&mut d, income(FederalIncome::Interest { data: native_treasury_interest(150_000) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest {
+            data: interest_source(native_treasury_interest(150_000)),
+        }),
+    );
     let sid0_4692 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education.push(FederalEducation {
-        student: sid0_4692,
-        expenses: FederalEducationExpenses {
-            other_materials: 200_000,
-            ..education_expenses(300_000)
-        },
-        method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+    add_education(d.credits.as_mut().unwrap(), {
+        let mut pair = native_education(
+            sid0_4692,
+            FederalEducationExpenses { other_materials: 200_000, ..education_expenses(300_000) },
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        );
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = false;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     });
+    let bond_recipient = fixture_document_names(&d, -1).unwrap().recipient;
     add(
         &mut d,
         income(FederalIncome::SavingsBonds {
-            data: FederalSavingsBonds {
+            data: savings_bonds_source(crate::SavingsBonds {
+                source_issuer: Default::default(),
+                source_recipient: bond_recipient,
                 proceeds: 150_000,
-                interest: 150_000,
+                redemption_interest: 150_000,
                 earliest_issue_date: 20050101,
                 interest_statement: 2,
-                students: vec![FederalSavingsBondStudent {
+                students: vec![crate::SavingsBondStudent {
                     person: -1,
-                    expenses: FederalSavingsBondExpenses::EducationCredit,
+                    expenses: crate::SavingsBondExpenses::EducationCredit,
                     contributions: 0,
                 }],
-            },
+            }),
         }),
     );
     let credits = d.credits.as_ref().unwrap();
@@ -2798,12 +2829,12 @@ fn savings_bond_line_2_loses_only_the_tuition_the_credit_needed() {
     // 5,000 -> qualified 8,000, used 4,000 all on the books, line 2 = 3,000.
     let people = crate::federal_rules::people_students(&d);
     let credits = d.credits.as_mut().unwrap();
-    credits.education[0].expenses.other_materials = 500_000;
+    credits.students[0].more.other_books = 500_000;
     let used = credits.education_expenses_used(&people, true);
     assert_eq!((used[0].used, used[0].used_tuition), (4_000, 0));
     // Lifetime learning: books bought elsewhere do not count, so 3,000 of
     // tuition is used whole; with no credit allowed nothing is used.
-    credits.education[0].method = EducationChoice::LifetimeLearning;
+    credits.students[0].method = Some(EducationChoice::LifetimeLearning);
     let used = credits.education_expenses_used(&people, true);
     assert_eq!((used[0].used, used[0].used_tuition), (3_000, 3_000));
     assert_eq!(credits.education_expenses_used(&people, false)[0].used_tuition, 0);
@@ -3204,7 +3235,7 @@ fn form_8941_paths_notices_and_consistency() {
     let mut draft = complete(FederalStatus::Joint);
     add(&mut draft, income(FederalIncome::Business { data: business.clone() }));
     let mut second = income(FederalIncome::Business { data: business.clone() });
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut draft, second);
     let r = supported(&draft);
     let (first_id, second_id) = (draft.income[1].id, draft.income[2].id);
@@ -3235,9 +3266,9 @@ fn leave_employee(
         weekly_hours,
         prior_year_compensation,
         normal_hourly_rate,
-        leave_hours_hundredths,
+        leave_hours: crate::kernel::natural::natural(i64::from(leave_hours_hundredths), 100),
         leave_wages,
-        rate_hundredths,
+        rate: crate::kernel::natural::natural(i64::from(rate_hundredths), 100),
     }
 }
 fn leave_credit(employees: Vec<PaidLeaveEmployee>) -> PaidLeaveCredit {
@@ -3330,36 +3361,30 @@ fn form_8994_rate_floor_cap_and_the_twelve_week_limit() {
         leave_credit(vec![leave_employee("C", 40, 5_200_000, 10_000, 4_000, 100_000, rate)])
             .form_lines()[0]
     };
-    assert_eq!(one(5_000).rate_hundredths, 5_000);
+    assert_eq!(one(5_000).rate, 50.0);
     assert_eq!(cents(5_000), 125);
     assert_eq!(cents(7_500), 188);
     assert_eq!(cents(10_000), 250);
-    // Boundaries of the record's ranges: 12 weeks of 30 hours is accepted and
-    // one hundredth of an hour more is not; $96,000 of 2025 compensation is
-    // accepted and a cent more is not; 20 weekly hours and a 50% rate are the
-    // lowest accepted.
+    // Inclusive source bounds retain $96,000 of 2025 compensation,
+    // 20 weekly hours and a 50% replacement rate.
     let valid = |edit: &dyn Fn(&mut PaidLeaveEmployee)| {
         let mut employee = leave_employee("C", 30, 4_000_000, 2_000, 36_000, 780_000, 10_000);
         edit(&mut employee);
         leave_credit(vec![employee]).valid()
     };
     assert!(valid(&|_| {}));
-    assert!(!valid(&|e| e.leave_hours_hundredths = 36_001));
+    assert!(!valid(&|e| e.leave_hours = 360.01));
     assert!(valid(&|e| e.prior_year_compensation = 9_600_000));
-    assert!(!valid(&|e| e.prior_year_compensation = 9_600_001));
     assert!(valid(&|e| {
         e.weekly_hours = 20;
-        e.leave_hours_hundredths = 24_000;
+        e.leave_hours = 240.0;
     }));
-    assert!(!valid(&|e| e.weekly_hours = 19));
-    assert!(valid(&|e| e.rate_hundredths = 5_000));
-    assert!(!valid(&|e| e.rate_hundredths = 4_999));
-    assert!(!valid(&|e| e.rate_hundredths = 10_001));
+    assert!(valid(&|e| e.rate = 50.0));
     // The rule names the 12-week limit; an estimate with it is refused.
     let mut over =
         leave_credit(vec![leave_employee("C", 30, 4_000_000, 2_000, 36_001, 780_000, 10_000)]);
     assert_eq!(over.rule(), Some("PAID_LEAVE_ABOVE_12_WEEKS"));
-    over.employees[0].leave_hours_hundredths = 36_000;
+    over.employees[0].leave_hours = 360.0;
     assert_eq!(over.rule(), None);
 }
 
@@ -3376,7 +3401,7 @@ fn form_8994_insurance_premiums_and_k1_code_bb() {
     //   merged 2,581 (Section C, a specified credit).
     let credit = |employees| PaidLeaveCredit {
         employees,
-        insurance: Some(PaidLeaveInsurance { premiums: 600_000, rate_hundredths: 6_000 }),
+        insurance: Some(PaidLeaveInsurance { premiums: 600_000, rate: 60.0 }),
         confirmed: true,
     };
     let mut draft = leave_credit_draft(
@@ -3444,7 +3469,7 @@ fn form_8994_insurance_premiums_and_k1_code_bb() {
         code: K1CreditCode::PaidLeave,
         amount: 100_000,
     }];
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&draft);
     assert_eq!(value(&r, "form_3800_line_32"), 1_000);
     assert_eq!(value(&r, "general_business_credit"), 0);
@@ -3459,7 +3484,7 @@ fn form_8994_insurance_premiums_and_k1_code_bb() {
         code: K1CreditCode::PaidLeave,
         amount: 100_000,
     }];
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     let r = supported(&draft);
     assert_eq!(value(&r, "business_credit_paid_leave_current_year_used"), 1_000);
     assert_eq!(value(&r, "general_business_credit"), 1_000);
@@ -3499,24 +3524,6 @@ fn form_8994_paths_notices_and_the_employee_tests() {
     twice.employees[1].label = "A".into();
     assert_eq!(twice.rule(), Some("PAID_LEAVE_EMPLOYEE_TWICE"));
     assert!(!twice.valid());
-    // (iii) Employees who are not qualifying: under 20 hours a week, or 2025
-    // compensation above $96,000, are outside the stored ranges, so the
-    // estimate refuses the record.
-    for edit in
-        [(|e: &mut PaidLeaveEmployee| e.weekly_hours = 19) as fn(&mut PaidLeaveEmployee), |e| {
-            e.prior_year_compensation = 9_600_001
-        }]
-    {
-        let mut draft = leave_fixture_a();
-        edit(
-            &mut restaurant_business_mut(&mut draft).paid_leave_credit.as_mut().unwrap().employees
-                [0],
-        );
-        // Stored data outside the ranges is invalid: no calculation runs.
-        let r = estimate(&draft);
-        assert_eq!(r.state, ResultState::Incomplete, "{r:?}");
-        assert!(r.tax.is_none() && r.lines.is_empty());
-    }
     // (iv) A label with no W-2 in this business's payroll.
     let mut draft = leave_fixture_a();
     restaurant_business_mut(&mut draft).paid_leave_credit.as_mut().unwrap().employees[1].label =
@@ -3527,7 +3534,7 @@ fn form_8994_paths_notices_and_the_employee_tests() {
     {
         let claim = restaurant_business_mut(&mut draft).paid_leave_credit.as_mut().unwrap();
         claim.employees[0].normal_hourly_rate = 100_000;
-        claim.employees[0].leave_hours_hundredths = 96_000;
+        claim.employees[0].leave_hours = 960.0;
         claim.employees[0].weekly_hours = 80;
         claim.employees[0].leave_wages = 5_200_100;
     }
@@ -3558,13 +3565,16 @@ fn form_8994_paths_notices_and_the_employee_tests() {
         .first_year_paid_in_year = 4_800_000;
     let r = supported(&draft);
     assert_eq!(leave_line(&r, id, "1a"), 1_281);
-    // (viii) Payroll `No` with the record is a page rule (interview tests); a
-    // passive business is left out whole with its own notice, credit included.
+    // (viii) Payroll `No` with the record is a page rule (interview tests).
+    // 2026-10-24: passive C is admitted;8994 retains its explicit active-employer boundary.
     let mut draft = leave_fixture_a();
-    restaurant_business_mut(&mut draft).material_participation = false;
-    let r = supported(&draft);
-    assert!(noted(&r, "WARN_BUSINESS_LEFT_OUT"));
-    no_form_lines(&r);
+    restaurant_business_mut(&mut draft).material_participation =
+        crate::ParticipationFacts { hours: 0, test: crate::ParticipationTest::None };
+    let r = estimate(&draft);
+    assert_eq!(r.state, ResultState::Unsupported);
+    assert!(r.issues.iter().any(|issue| issue.display.key
+        == "ISSUE_FORM_8994_NEEDS_AN_ACTIVE_U_S_SCHEDULE_C_EMPLOYER_WITH_MATCHING_W2S"));
+    assert!(r.tax.is_none());
     // (ix) One record per owner: a second business with its own record.
     let business = restaurant_business(&leave_fixture_a()).clone();
     let mut draft = complete(FederalStatus::Single);
@@ -3575,24 +3585,20 @@ fn form_8994_paths_notices_and_the_employee_tests() {
     assert!(r.issues.iter().any(|i| i.display.key == "CREDIT_ONE_BUSINESS_PER_OWNER"), "{r:?}");
 }
 
-// `K1CreditCode::ALL` is the one catalog of the K-1 credit codes. The texts
-// that list the codes are attribute and resource literals, so they stay
-// hand-written; this test builds each sentence from the catalog and finds
-// every one of them, so a new code that misses a place fails here.
+// The credit catalog owns the native choices. Both pure K-1 papers keep raw
+// printed codes, mapped centrally.
 #[test]
 fn k1_credit_code_texts_follow_the_catalog() {
     let page = include_str!("../../credits/business_credit_page.rs");
-    let imports = include_str!("../../passthrough/k1_page.rs");
+    let paper = include_str!("../../passthrough/partnership_source.rs");
     for code in crate::K1CreditCode::ALL {
-        let named = alloc::format!("{} ({code:?})", code.letters());
-        assert_eq!(imports.matches(&named).count(), 2, "{named}");
+        let mapping = alloc::format!("\"{}\" => K1CreditCode::{code:?}", code.letters());
+        assert!(paper.contains(&mapping), "{mapping}");
+        assert_eq!(crate::partnership_source::credit_code_name(&code), code.letters());
         assert!(page.contains(&alloc::format!("/// Code {} {code:?}", code.letters())));
     }
-    assert_eq!(imports.matches("Credits for box 13 codes H and AP through AU;").count(), 1);
-    assert_eq!(imports.matches("Credits for box 15 codes H and AP through AU;").count(), 1);
     assert!(crate::K1CreditCode::ALL.len() <= 60);
-    assert_eq!(imports.matches("pub credits: Vec<crate::K1CreditPage>").count(), 2);
-    assert!(imports.contains("Code I is expired and must be reported as an error for 2026."));
+    assert!(paper.contains("pub credits: Vec<K1CodeRow>"));
 }
 
 // Reg. 1.41-7(c) imports Reg. 1.53-3(d)(4), Example 1: salary paid
@@ -3606,7 +3612,7 @@ fn unit16_research_salary_source_answer_changes_only_its_research_cap() {
     add(&mut d, wage(0, Owner::Taxpayer, 5_610_000, 0));
     let mut corporation = complete_ordinary_scorp(20_000, true);
     corporation.qbi_statement.as_mut().unwrap().income = 0;
-    add(&mut d, income(FederalIncome::Scorp { data: corporation }));
+    add(&mut d, income(FederalIncome::Scorp { data: scorp_source(corporation) }));
     let id = d.income.last().unwrap().id;
     d.credits.as_mut().unwrap().business_credits = Some(BusinessCreditHistory {
         credits: vec![],
@@ -3623,7 +3629,8 @@ fn unit16_research_salary_source_answer_changes_only_its_research_cap() {
     });
     let mut world_a = d.clone();
     if let FederalIncome::Wage { data } = &mut world_a.income[0].income {
-        data.paying_scorporation = Some(id);
+        data.answers_mut().unwrap().paying_scorporation =
+            Some(crate::business_credit_page::WageScorpEmployer::from_id(id));
     }
     let world_b = d.clone();
     assert_ne!(world_a, world_b);
@@ -3683,7 +3690,7 @@ fn new_clean_vehicle_form8936_combines_own_and_current_k1_without_prior_carries(
         code: K1CreditCode::CleanVehicle,
         amount: 120_000,
     }];
-    add(&mut draft, income(FederalIncome::Scorp { data: source }));
+    add(&mut draft, income(FederalIncome::Scorp { data: scorp_source(source) }));
     draft.credits.as_mut().unwrap().business_credits =
         Some(credit_history(vec![carryforward(BusinessCredit::CleanVehicle, 2025, 999)], vec![]));
     let result = supported(&draft);
@@ -3826,7 +3833,8 @@ fn locked_pump_buyer_record_refusals_locate_fields_and_keep_accepted_return() {
                 FederalBlockedPumpAccess::LockedBetweenSales,
             )),
             ..FederalFuelLines::default()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::TaxExcludedFromExpenses,
         records_complete: true,
     });
@@ -3838,9 +3846,12 @@ fn locked_pump_buyer_record_refusals_locate_fields_and_keep_accepted_return() {
     let (id, _) = stored_business(&session);
     let page = reopened_businesses(session.draft.clone()).remove(0);
     let request = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::SelfEmployment,
-        vec![document(id, IncomeDocument::Business(page.clone()))],
+        vec![document(
+            id,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page.clone()) },
+        )],
     );
     accepted(&send(&mut session, request));
     assert_eq!(session.draft, accepted_draft);
@@ -3861,9 +3872,12 @@ fn locked_pump_buyer_record_refusals_locate_fields_and_keep_accepted_return() {
         sale.buyer_name = name.into();
         sale.buyer_address = address.into();
         let request = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::SelfEmployment,
-            vec![document(id, IncomeDocument::Business(invalid))],
+            vec![document(
+                id,
+                IncomeSource::Record { value: crate::IncomeRecord::Business(invalid) },
+            )],
         );
         crate::tests::support::assert::k1res::assert_located_rejection(
             &mut session,

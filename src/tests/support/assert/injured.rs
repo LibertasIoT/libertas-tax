@@ -150,14 +150,20 @@ pub(in crate::tests) fn assert_settled_care_sources(case: SettledCareCase) {
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         for reversed in [false, true] {
             let mut draft = injured_return((60_000, 6000), (40_000, 4000), 0, allocation());
-            let wage = draft.income.iter_mut().find(|entry| entry.owner == owner).unwrap();
+            let wage = draft
+                .income
+                .iter_mut()
+                .find(|entry| entry.owner == crate::DocumentOwner::from(owner))
+                .unwrap();
             let FederalIncome::Wage { data } = &mut wage.income else { panic!() };
+            let mut data = edit_wage(data);
             let w2_benefits = match case {
                 SettledCareCase::W2 | SettledCareCase::Forfeited => 600_050,
                 SettledCareCase::Mixed => 400_050,
                 SettledCareCase::Grace => 0,
             };
             data.care_benefits = w2_benefits;
+            drop(data);
             let care = &mut draft.credits.as_mut().unwrap().care;
             care.plan_maximum = CarePlanMaximum::Plans { maximum: 750_000 };
             if w2_benefits > 0 {
@@ -199,7 +205,7 @@ pub(in crate::tests) fn assert_settled_care_sources(case: SettledCareCase) {
             assert_eq!(ordinary.refund, Some((10_000 - tax) * 100));
             let saved = save_reopen_native_sources(
                 draft.clone(),
-                &[TaxSection::Wages, TaxSection::Care],
+                &[TaxSection::Documents, TaxSection::Care],
                 &[TaxSection::Care],
             );
             let again = restart(saved);
@@ -253,7 +259,10 @@ pub(in crate::tests) fn assert_settled_care_sources(case: SettledCareCase) {
                 }
                 let totals = actual_liability_totals(&ordinary);
                 let projection = crate::injured_spouse::owners::project_sources(
-                    &again.draft,
+                    crate::related_forms::RelatedFormContext::original(
+                        &again.draft,
+                        &crate::related_forms::effective_claimants(&again.draft),
+                    ),
                     &ordinary,
                     Some(&claim),
                     &facts,
@@ -278,6 +287,7 @@ pub(in crate::tests) fn assert_settled_care_sources(case: SettledCareCase) {
                 );
 
                 let mut classified = again.draft.clone();
+                classified.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
                 classified.injured_spouse = Some(claim);
                 let printed = supported(&classified);
                 assert_eq!(printed.return_lines, ordinary.return_lines);
@@ -382,7 +392,7 @@ pub(in crate::tests) fn assert_ebl_money(d: &FederalDraft, expected_ebl: i64) ->
     assert_eq!(result.refund, Some(550_000));
     let mut plain = d.clone();
     plain.injured_spouse = None;
-    plain.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    plain.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let ordinary = supported(&plain);
     assert_eq!(result.return_lines, ordinary.return_lines);
     assert_eq!((result.tax, result.refund), (ordinary.tax, ordinary.refund));

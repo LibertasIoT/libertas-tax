@@ -1,7 +1,281 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::*;
 use crate::tests::family::family::{community_item_agi, community_pair, plain_item_agi};
 use alloc::format;
+
+#[test]
+fn joint_financial_mfs_share_reaches_native_portfolio_lines_and_valid_endpoints() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::information_return_answers_and_owners;
+    use crate::tests::support::builders::native_income::native_int1099;
+    use crate::tests::support::builders::{
+        document_owners_mut, joint_financial_session, set_joint_financial_share,
+    };
+    let (mut session, papers) = joint_financial_session(
+        FederalStatus::Separate,
+        vec![
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                    "Synthetic joint bank".into(),
+                    1_001,
+                ))),
+            },
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(
+                    dividend_source(native_dividend(2_001, 1_001, 3_001)),
+                )),
+            },
+        ],
+    );
+    let ids = session.draft.income.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    let assert_no_community_report = |result: &FederalResult| {
+        assert!(!result.lines.iter().any(|line| line.id.starts_with("form8958_")));
+        assert!(!noted(result, "NOTE_FORM_8958_ALLOCATION"));
+    };
+    // Pub. 550, "Joint accounts": ownership determines each spouse's income.
+    // The source's odd cents survive until each native reported line rounds.
+    for (share, interest, ordinary, qualified, capital) in
+        [(40, 4, 8, 4, 12), (0, 0, 0, 0, 0), (100, 10, 20, 10, 30)]
+    {
+        let mut request = information_return_answers_and_owners(
+            &mut session,
+            &papers,
+            TaxSection::InterestDividends,
+        )
+        .unwrap();
+        set_joint_financial_share(&mut session, &mut request, &ids, share);
+        accepted(&send(&mut session, request));
+        let result = supported(&session.draft);
+        assert_no_community_report(&result);
+        for (line, dollars) in
+            [("2b", interest), ("3b", ordinary), ("3a", qualified), ("7a", capital)]
+        {
+            assert_eq!(return_line(&result, line), dollars * 100, "share {share}, line {line}");
+        }
+        assert_eq!(value(&result, "agi"), interest + ordinary + capital);
+        assert_eq!(value(&result, "eic_investment_income"), interest + ordinary + capital);
+        assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
+    }
+    // An exclusive spouse account is the same zero contribution on this
+    // separate return; accept the ordinary owner answer instead of refusing it.
+    let mut request =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    for person in document_owners_mut(&mut request).unwrap() {
+        if person.person == -1 {
+            person.documents.clear();
+        } else if person.person == -2 {
+            for row in &mut person.documents {
+                row.ownership = crate::AddedOwnership::Yours;
+            }
+        }
+    }
+    accepted(&send(&mut session, request));
+    assert!(session.draft.income.iter().all(|entry| entry.owner == crate::DocumentOwner::Spouses));
+    let result = supported(&session.draft);
+    assert_no_community_report(&result);
+    assert_eq!(value(&result, "agi"), 0);
+}
+
+#[test]
+fn joint_financial_community_treatment_composes_ownership_and_conserves_source_cents() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::information_return_answers_and_owners;
+    use crate::tests::support::builders::native_income::native_int1099;
+    use crate::tests::support::builders::{joint_financial_session, set_joint_financial_share};
+    let (mut session, mut papers) = joint_financial_session(
+        FederalStatus::Separate,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "Synthetic joint bank".into(),
+                1_001,
+            ))),
+        }],
+    );
+    session.draft.setup.as_mut().unwrap().community_property = community_arizona();
+    let ids = session.draft.income.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    // Pub. 555: Arizona separate-property interest follows ownership; only
+    // the community portion is halved. 40% * 90% + 60% * 10% = 42%.
+    for (treatment, cents, dollars) in [
+        (CommunityShare::Separate, 400, 4),
+        (CommunityShare::Partly { percent: 20 }, 420, 4),
+        (CommunityShare::Community, 501, 5),
+    ] {
+        papers[0].community = treatment;
+        let mut request = information_return_answers_and_owners(
+            &mut session,
+            &papers,
+            TaxSection::InterestDividends,
+        )
+        .unwrap();
+        set_joint_financial_share(&mut session, &mut request, &ids, 40);
+        accepted(&send(&mut session, request));
+        let source = crate::community::SourceAmount::income(&session.draft, ids[0], 1_001);
+        assert_eq!(source.filer, cents);
+        assert_eq!(source.filer + source.counterpart, source.whole);
+        assert_eq!(return_line(&supported(&session.draft), "2b"), dollars * 100);
+    }
+}
+
+#[test]
+fn joint_financial_fund_exclusion_applies_the_mfs_cap_after_ownership() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::information_return_answers_and_owners;
+    use crate::tests::support::builders::{
+        document_owners_mut, joint_financial_session, set_joint_financial_share,
+    };
+    let mut dividend = native_dividend(0, 0, 600_000_000);
+    dividend.section_1202_gain = 600_000_000;
+    dividend.section_1202_exclusion = Some(crate::FundQsbsExclusion::Hundred);
+    let (mut session, papers) = joint_financial_session(
+        FederalStatus::Separate,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(dividend_source(
+                dividend,
+            ))),
+        }],
+    );
+    let ids = session.draft.income.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    let mut request =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    set_joint_financial_share(&mut session, &mut request, &ids, 50);
+    accepted(&send(&mut session, request));
+    // Each spouse owns $3 million, below the $5 million separate-return cap.
+    // Capping the original $6 million before ownership would leave $500,000 taxable.
+    let result = supported(&session.draft);
+    assert_eq!(return_line(&result, "7a"), 0);
+    assert_eq!(value(&result, "agi"), 0);
+    for id in &ids {
+        assert!(!result.lines.iter().any(|line| {
+            line.id == format!("form8958_{id}_total")
+                || line.id == format!("form8958_{id}_this_return")
+        }));
+    }
+    let mut reopened =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    for person in document_owners_mut(&mut reopened).unwrap() {
+        assert_eq!(person.income_share, Some(0), "person {}", person.person);
+    }
+}
+
+#[test]
+fn joint_financial_texas_separate_dividends_keep_distinct_income_and_gain_shares() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::information_return_answers_and_owners;
+    use crate::tests::support::builders::{
+        document_owners_mut, joint_financial_session, set_joint_financial_share,
+    };
+    let (mut session, mut papers) = joint_financial_session(
+        FederalStatus::Separate,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(dividend_source(
+                native_dividend(1_001, 501, 3_001),
+            ))),
+        }],
+    );
+    session.draft.setup.as_mut().unwrap().community_property =
+        CommunityProperty::Yes { state: CommunityState::Texas, rule: CommunityRule::Halves };
+    papers[0].community = CommunityShare::Separate;
+    let ids = session.draft.income.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    let mut request =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    set_joint_financial_share(&mut session, &mut request, &ids, 40);
+    accepted(&send(&mut session, request));
+    // Pub. 555: separate-property income is community in Texas, while the
+    // property's gain retains actual ownership. Qualified dividends are included.
+    let result = supported(&session.draft);
+    for (line, cents) in [("3b", 500), ("3a", 300), ("7a", 1_200)] {
+        assert_eq!(return_line(&result, line), cents, "line {line}");
+    }
+    assert_eq!(value(&result, "agi"), 17);
+    let mut reopened =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    for person in document_owners_mut(&mut reopened).unwrap() {
+        assert_eq!(
+            person.income_share,
+            Some(if person.person == -1 { 1_701 } else { 2_301 }),
+            "person {}",
+            person.person,
+        );
+    }
+}
+
+#[test]
+fn joint_financial_separate_niit_uses_resident_gains_and_savings_penalty() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::information_return_answers_and_owners;
+    use crate::tests::support::builders::{joint_financial_session, set_joint_financial_share};
+    let crate::InterestSource::Int1099(interest) =
+        interest_source(native_interest(100_000, 10_000))
+    else {
+        unreachable!("printed interest fixture")
+    };
+    let (mut session, papers) = joint_financial_session(
+        FederalStatus::Joint,
+        vec![
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(interest)),
+            },
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(
+                    dividend_source(native_dividend(200_000, 100_000, 50_000_000)),
+                )),
+            },
+        ],
+    );
+    session.draft.set_situations(SpouseSituations::NONRESIDENT_SPOUSE.0, true);
+    let ids = session.draft.income.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    let mut request =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    set_joint_financial_share(&mut session, &mut request, &ids, 40);
+    accepted(&send(&mut session, request));
+    // Form 8960's default separate method: the resident owns $400 interest,
+    // $800 ordinary dividends (qualified included), $200,000 gains and a $40
+    // savings penalty. $201,160 minus $125,000, times 3.8%, rounds to $2,894.
+    let result = supported(&session.draft);
+    assert_eq!(value(&result, "net_investment_modified_agi"), 201_160);
+    assert_eq!(value(&result, "form_8960_net_investment_income"), 201_160);
+    assert_eq!(value(&result, "net_investment_income_tax"), 2_894);
+}
+
+#[test]
+fn joint_financial_separate_niit_applies_the_residents_fund_exclusion_cap() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::information_return_answers_and_owners;
+    use crate::tests::support::builders::{joint_financial_session, set_joint_financial_share};
+    let mut dividend = native_dividend(0, 0, 1_200_000_000);
+    dividend.section_1202_gain = 1_200_000_000;
+    dividend.section_1202_exclusion = Some(crate::FundQsbsExclusion::Hundred);
+    let (mut session, papers) = joint_financial_session(
+        FederalStatus::Joint,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(dividend_source(
+                dividend,
+            ))),
+        }],
+    );
+    session.draft.set_situations(SpouseSituations::NONRESIDENT_SPOUSE.0, true);
+    let ids = session.draft.income.iter().map(|entry| entry.id).collect::<Vec<_>>();
+    let mut request =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    set_joint_financial_share(&mut session, &mut request, &ids, 40);
+    accepted(&send(&mut session, request));
+    // The resident's $4.8 million gain is below the MFS $5 million cap;
+    // the joint return's $10 million cap does not determine separate NIIT.
+    let result = supported(&session.draft);
+    assert_eq!(return_line(&result, "7a"), 200_000_000);
+    assert_eq!(value(&result, "net_investment_modified_agi"), 0);
+    // 2026-10-27: Form 8960's Who Must File rule omits the form below the
+    // resident's MAGI threshold: https://www.irs.gov/instructions/i8960
+    assert!(!result.lines.iter().any(|line| line.id == "form_8960_net_investment_income"));
+    assert_eq!(value(&result, "net_investment_income_tax"), 0);
+}
 
 #[test]
 fn community_f4_arizona_halves_wages_and_interest_by_hand() {
@@ -138,7 +412,7 @@ fn community_multiple_w2s_allocate_each_employer_then_aggregate_return() {
     assert!(noted(&r, "NOTE_FORM_8958_ALLOCATION"));
 
     let mut control = complete(FederalStatus::Separate);
-    control.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    control.deductions.as_mut().unwrap().itemize_override = None;
     control.income[0] = wage(1, Owner::Taxpayer, 8_000_000, 800_000);
     let expected = supported(&control);
     assert_eq!(r.tax, expected.tax);
@@ -166,11 +440,11 @@ fn community_multiple_w2s_keep_worker_payroll_and_earned_compensation() {
     ira.adjustments.as_mut().unwrap().iras = contribution;
     assert_eq!(value(&supported(&ira), "ira_deduction"), 4_000);
     if let FederalIncome::Wage { data } = &mut ira.income[2].income {
-        data.wages = 0;
-        data.social_wages = 0;
-        data.social_tax = 0;
-        data.medicare_wages = 0;
-        data.medicare_tax = 0;
+        edit_wage(data).wages = 0;
+        edit_wage(data).social_wages = 0;
+        edit_wage(data).social_tax = 0;
+        edit_wage(data).medicare_wages = 0;
+        edit_wage(data).medicare_tax = 0;
     }
     unsupported(&ira, "IRA");
 
@@ -225,16 +499,19 @@ fn community_multiple_portfolio_payers_split_each_form_8958_row_and_full_return_
     );
 
     let mut control = complete(FederalStatus::Separate);
-    control.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    control.deductions.as_mut().unwrap().itemize_override = None;
     control.income[0] = wage(1, Owner::Taxpayer, 11_000_000, 1_100_000);
-    add(&mut control, income(FederalIncome::Interest { data: native_interest(250_000, 0) }));
+    add(
+        &mut control,
+        income(FederalIncome::Interest { data: interest_source(native_interest(250_000, 0)) }),
+    );
     add(
         &mut control,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 section199a: ReitDividends::None,
                 ..native_dividend(500_000, 150_000, 0)
-            },
+            }),
         }),
     );
     let expected = supported(&control);
@@ -243,7 +520,7 @@ fn community_multiple_portfolio_payers_split_each_form_8958_row_and_full_return_
     let mut no_preference = d.clone();
     for entry in &mut no_preference.income {
         if let FederalIncome::Dividend { data } = &mut entry.income {
-            data.qualified = 0;
+            edit_dividend(data).qualified = 0;
         }
     }
     assert!(
@@ -320,7 +597,7 @@ fn community_qualified_dividends_use_preferential_worksheet_without_extra_income
         community_dividend_draft(8_000_000, 8_000_000, 4_000_000, 4_000_000, Owner::Taxpayer);
     let mut ordinary = qualified.clone();
     let FederalIncome::Dividend { data } = &mut ordinary.income[2].income else { unreachable!() };
-    data.qualified = 0;
+    edit_dividend(data).qualified = 0;
     let qualified_result = supported(&qualified);
     let ordinary_result = supported(&ordinary);
     assert_eq!(value(&qualified_result, "agi"), 100_000);
@@ -423,7 +700,7 @@ fn community_w2_mfs_allocates_form_8958_wages_and_income_tax_withholding() {
     assert_eq!(value(&r, "form8958_withholding_1_total"), 6_500);
     assert_eq!(value(&r, "form8958_withholding_2_total"), 12_000);
     let mut one_w2 = complete(FederalStatus::Separate);
-    one_w2.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    one_w2.deductions.as_mut().unwrap().itemize_override = None;
     one_w2.income[0] = wage(1, Owner::Taxpayer, 8_000_000, 925_000);
     let control = supported(&one_w2);
     assert_eq!(r.tax, control.tax);
@@ -435,10 +712,10 @@ fn community_w2_mfs_allocates_form_8958_wages_and_income_tax_withholding() {
 fn community_dividends_split_form_8958_and_full_return_with_qualified_subset() {
     let mut d = community_dividend_draft(6_000_000, 10_000_000, 400_000, 200_000, Owner::Spouse);
     if let FederalIncome::Wage { data } = &mut d.income[0].income {
-        data.withholding = 650_000;
+        edit_wage(data).withholding = 650_000;
     }
     if let FederalIncome::Wage { data } = &mut d.income[1].income {
-        data.withholding = 1_200_000;
+        edit_wage(data).withholding = 1_200_000;
     }
     let result = supported(&d);
     assert_eq!(return_line(&result, "1a"), 8_000_000);
@@ -451,15 +728,15 @@ fn community_dividends_split_form_8958_and_full_return_with_qualified_subset() {
     assert!(noted(&result, "NOTE_FORM_8958_ALLOCATION"));
 
     let mut control = complete(FederalStatus::Separate);
-    control.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    control.deductions.as_mut().unwrap().itemize_override = None;
     control.income[0] = wage(1, Owner::Taxpayer, 8_000_000, 925_000);
     add(
         &mut control,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 section199a: ReitDividends::None,
                 ..native_dividend(200_000, 100_000, 0)
-            },
+            }),
         }),
     );
     let expected = supported(&control);
@@ -473,10 +750,10 @@ fn community_dividends_split_form_8958_and_full_return_with_qualified_subset() {
 fn community_interest_mfs_allocates_form_8958_and_full_return_once() {
     let mut d = community_interest_draft(6_000_000, 10_000_000, 400_000, Owner::Spouse);
     if let FederalIncome::Wage { data } = &mut d.income[0].income {
-        data.withholding = 650_000;
+        edit_wage(data).withholding = 650_000;
     }
     if let FederalIncome::Wage { data } = &mut d.income[1].income {
-        data.withholding = 1_200_000;
+        edit_wage(data).withholding = 1_200_000;
     }
     let result = supported(&d);
     assert_eq!(return_line(&result, "1a"), 8_000_000);
@@ -490,9 +767,12 @@ fn community_interest_mfs_allocates_form_8958_and_full_return_once() {
     assert!(noted(&result, "NOTE_FORM_8958_ALLOCATION"));
 
     let mut control = complete(FederalStatus::Separate);
-    control.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    control.deductions.as_mut().unwrap().itemize_override = None;
     control.income[0] = wage(1, Owner::Taxpayer, 8_000_000, 925_000);
-    add(&mut control, income(FederalIncome::Interest { data: native_interest(200_000, 0) }));
+    add(
+        &mut control,
+        income(FederalIncome::Interest { data: interest_source(native_interest(200_000, 0)) }),
+    );
     let expected = supported(&control);
     assert_eq!(result.tax, expected.tax);
     assert_eq!(result.refund, expected.refund);
@@ -585,7 +865,7 @@ fn unit21_base(
 ) -> FederalDraft {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = CommunityProperty::Yes { state, rule };
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, wages * 100, withholding * 100)];
     d.income[0].community = CommunityShare::Community;
     d.next_id = 2;
@@ -598,7 +878,7 @@ fn unit21_add(
     source: FederalIncome,
 ) -> i64 {
     let mut entry = income(source);
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry.community = share;
     let id = d.next_id;
     add(d, entry);
@@ -650,9 +930,9 @@ fn unit21_f1_rental_loss_and_passive_history_are_halved_before_the_allowance() {
 fn unit21_f2_partner_basis_loss_has_this_returns_share_and_no_spouse_se() {
     let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
     let mut data = ordinary_partner_source(-30_000, true);
-    data.limited_for_se = false;
+    data.limited_for_se = Some(false);
     data.reported_se = Some(-3_000_000);
-    data.regular.basis.opening = 2_000_000;
+    data.regular.basis.opening = Some(2_000_000);
     data.regular.risk.start = ScorpRiskStart::Detailed { capacity: 2_000_000, profit: 0, loss: 0 };
     data.alternative = Some(data.regular.clone());
     data.qbi = Some(partner_qbi_statement(-30_000));
@@ -662,9 +942,8 @@ fn unit21_f2_partner_basis_loss_has_this_returns_share_and_no_spouse_se() {
         CommunityShare::Community,
         FederalIncome::Partnership { data },
     );
-    // The approved R11 scope reconciliation explicitly refuses this original
-    // F2 when the actual partner's negative box14 is unresolved, including
-    // on the nonpartner's return. Retain the original scenario as that oracle.
+    // An unresolved negative box14 source is refused, including on the
+    // nonpartner's return.
     let refused = estimate(&d);
     assert_eq!(refused.state, ResultState::Unsupported);
     assert!(
@@ -676,7 +955,7 @@ fn unit21_f2_partner_basis_loss_has_this_returns_share_and_no_spouse_se() {
     assert!(refused.tax.is_none() && refused.return_lines.is_empty());
     // Independent financial allocation control: an actual zero box14 source
     // has no counterpart SE uncertainty; all original income/basis/QBI facts
-    // and the approved withholding correction remain unchanged.
+    // and withholding remain unchanged.
     let FederalIncome::Partnership { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
@@ -693,11 +972,16 @@ fn unit21_f3_scorp_spouses_participation_and_7203_basis_are_allocated() {
     let mut d = unit21_base(CommunityState::Washington, CommunityRule::Halves, 50_000, 5_000);
     let mut data = complete_ordinary_scorp(40_000, true);
     data.loans.clear(); // The original F3 states that there are no loans.
-    data.opening = 500_000;
+    data.opening = Some(500_000);
     data.distributions = 3_000_000;
     data.qbi_statement.as_mut().unwrap().wages = 2_000_000;
     data.amt = Some(amt_records(&data));
-    unit21_add(&mut d, Owner::Spouse, CommunityShare::Community, FederalIncome::Scorp { data });
+    unit21_add(
+        &mut d,
+        Owner::Spouse,
+        CommunityShare::Community,
+        FederalIncome::Scorp { data: scorp_source(data) },
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 45_000);
     assert_eq!(value(&r, "qbi_deduction"), 4_000);
@@ -731,11 +1015,11 @@ fn unit21_special_rule_keeps_distributive_shares_whole_but_divides_external_sale
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut d = unit21_base(CommunityState::Arizona, rule, 60_000, 6_000);
             let mut source = ordinary_partner_source(40_000, true);
-            source.regular.basis.opening = 6_000_000;
+            source.regular.basis.opening = Some(6_000_000);
             source.regular.risk.start =
                 ScorpRiskStart::Detailed { capacity: 6_000_000, profit: 0, loss: 0 };
             source.alternative = Some(source.regular.clone());
-            source.disposition = K1Disposition::Sold { proceeds: 15_000_000 };
+            source.disposition = Some(K1Disposition::Sold { proceeds: 15_000_000 });
             source.interest_term = Some(GainTerm::Long);
             let id = unit21_add(
                 &mut d,
@@ -755,7 +1039,7 @@ fn unit21_positive_partner_se_is_whole_and_the_nonpartner_has_none() {
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
         let mut source = ordinary_partner_source(30_000, true);
-        source.limited_for_se = false;
+        source.limited_for_se = Some(false);
         source.reported_se = Some(3_000_000);
         source.se_gross = Some(PartnerSeGross::Nonfarm { gross: 3_000_000 });
         source.qbi = Some(partner_qbi_statement(30_000));
@@ -783,9 +1067,9 @@ fn unit21_positive_partner_se_is_whole_and_the_nonpartner_has_none() {
 fn unit21_divided_limited_negative_se_keeps_the_named_refusal() {
     let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
     let mut source = ordinary_partner_source(-30_000, true);
-    source.limited_for_se = false;
+    source.limited_for_se = Some(false);
     source.reported_se = Some(-3_000_000);
-    source.regular.basis.opening = 2_000_000;
+    source.regular.basis.opening = Some(2_000_000);
     source.regular.risk.start =
         ScorpRiskStart::Detailed { capacity: 2_000_000, profit: 0, loss: 0 };
     source.alternative = Some(source.regular.clone());
@@ -817,7 +1101,12 @@ fn unit21_one_cent_source_credit_does_not_invalidate_a_zero_allocated_share() {
     });
     data.amt = Some(amt_records(&data));
     assert!(data.valid());
-    unit21_add(&mut d, Owner::Spouse, CommunityShare::Community, FederalIncome::Scorp { data });
+    unit21_add(
+        &mut d,
+        Owner::Spouse,
+        CommunityShare::Community,
+        FederalIncome::Scorp { data: scorp_source(data) },
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 50_000);
 }
@@ -827,10 +1116,10 @@ fn unit21_counterpart_se_form8958_requires_the_partners_resolved_schedule_se() {
     let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
     for (ordinary, opening) in [(40_000, 0), (-30_000, 20_000)] {
         let mut source = ordinary_partner_source(ordinary, true);
-        source.limited_for_se = false;
+        source.limited_for_se = Some(false);
         source.reported_se = Some(ordinary * 100);
         source.se_gross = Some(PartnerSeGross::Nonfarm { gross: ordinary.max(0) * 100 });
-        source.regular.basis.opening = opening * 100;
+        source.regular.basis.opening = Some(opening * 100);
         source.regular.risk.start =
             ScorpRiskStart::Detailed { capacity: opening * 100, profit: 0, loss: 0 };
         source.alternative = Some(source.regular.clone());
@@ -852,7 +1141,7 @@ fn unit21_counterpart_se_form8958_requires_the_partners_resolved_schedule_se() {
     // The partner's own ScheduleSE remains intentionally unresolved. Its
     // unknown tax cannot be manufactured for the other return's Form8958.
     for entry in d.income.iter_mut().skip(1) {
-        entry.owner = Owner::Taxpayer;
+        entry.owner = crate::DocumentOwner::Yours;
     }
     let partner = estimate(&d);
     assert_eq!(partner.state, ResultState::Unsupported);
@@ -867,12 +1156,16 @@ fn unit21_counterpart_se_form8958_requires_the_partners_resolved_schedule_se() {
 fn unit21_form8958_partner_se_combines_sources_and_the_actual_partners_wage_base() {
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
-        d.income[0].owner = if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+        d.income[0].owner = if owner == Owner::Taxpayer {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
         unit21_add(&mut d, owner, CommunityShare::Community, wage(0, owner, 18_000_000, 0).income);
         let mut ids = Vec::new();
         for ordinary in [30_000, 20_000] {
             let mut source = ordinary_partner_source(ordinary, true);
-            source.limited_for_se = false;
+            source.limited_for_se = Some(false);
             source.reported_se = Some(ordinary * 100);
             source.se_gross = Some(PartnerSeGross::Nonfarm { gross: ordinary * 100 });
             ids.push(unit21_add(
@@ -940,14 +1233,14 @@ fn unit21_form8958_partner_se_with_church_income_agrees_on_both_returns() {
             }
             let mut church = wage(0, owner, 2_000_000, 0).income;
             let FederalIncome::Wage { data } = &mut church else { unreachable!() };
-            data.coverage = W2Coverage::ChurchEmployee;
-            data.social_wages = 0;
-            data.social_tax = 0;
-            data.medicare_wages = 0;
-            data.medicare_tax = 0;
+            edit_wage(data).coverage = W2Coverage::ChurchEmployee;
+            edit_wage(data).social_wages = 0;
+            edit_wage(data).social_tax = 0;
+            edit_wage(data).medicare_wages = 0;
+            edit_wage(data).medicare_tax = 0;
             unit21_add(&mut d, owner, CommunityShare::Community, church);
             let mut source = ordinary_partner_source(30_000, true);
-            source.limited_for_se = false;
+            source.limited_for_se = Some(false);
             source.reported_se = Some(3_000_000);
             source.se_gross = Some(PartnerSeGross::Nonfarm { gross: 3_000_000 });
             let id = unit21_add(
@@ -998,8 +1291,12 @@ fn unit21_k1_portfolio_credits_and_source_columns_conserve_both_returns() {
         amount: 200_000,
     });
     data.amt = Some(amt_records(&data));
-    let id =
-        unit21_add(&mut d, Owner::Spouse, CommunityShare::Community, FederalIncome::Scorp { data });
+    let id = unit21_add(
+        &mut d,
+        Owner::Spouse,
+        CommunityShare::Community,
+        FederalIncome::Scorp { data: scorp_source(data) },
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 42_000);
     for (kind, full, own) in [
@@ -1024,13 +1321,13 @@ fn unit21_partner_and_shareholder_basis_risk_ledgers_are_linear_in_the_share() {
         let whole = if scorp {
             let mut data = complete_ordinary_scorp(-30_000, true);
             data.loans.clear();
-            data.opening = 2_000_000;
+            data.opening = Some(2_000_000);
             data.risk.start = ScorpRiskStart::Detailed { capacity: 1_500_000, profit: 0, loss: 0 };
             data.amt = Some(amt_records(&data));
-            FederalIncome::Scorp { data }
+            FederalIncome::Scorp { data: scorp_source(data) }
         } else {
             let mut data = ordinary_partner_source(-30_000, true);
-            data.regular.basis.opening = 2_000_000;
+            data.regular.basis.opening = Some(2_000_000);
             data.regular.risk.start =
                 ScorpRiskStart::Detailed { capacity: 1_500_000, profit: 0, loss: 0 };
             data.alternative = Some(data.regular.clone());
@@ -1038,7 +1335,9 @@ fn unit21_partner_and_shareholder_basis_risk_ledgers_are_linear_in_the_share() {
         };
         let id = unit21_add(&mut d, Owner::Spouse, CommunityShare::Community, whole.clone());
         let ledger = |income: &FederalIncome| match income {
-            FederalIncome::Scorp { data } => data.pool_activity_result().unwrap().ledger,
+            FederalIncome::Scorp { data } => {
+                ScorpK1::from(data).pool_activity_result().unwrap().ledger
+            }
             FederalIncome::Partnership { data } => {
                 data.pool(&data.regular).unwrap().activity.ledger
             }
@@ -1069,9 +1368,9 @@ fn unit21_counterpart_negative_se_refusal_requires_an_actual_binding_limit() {
     for basis in [30_000, 29_998] {
         let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
         let mut data = ordinary_partner_source(-30_000, true);
-        data.limited_for_se = false;
+        data.limited_for_se = Some(false);
         data.reported_se = Some(-3_000_000);
-        data.regular.basis.opening = basis * 100;
+        data.regular.basis.opening = Some(basis * 100);
         data.regular.risk.start =
             ScorpRiskStart::Detailed { capacity: 3_000_000, profit: 0, loss: 0 };
         data.alternative = Some(data.regular.clone());
@@ -1103,14 +1402,16 @@ fn unit21_section1256_k1_rows_reach_the_shared_form_at_the_allocated_amount() {
         let mut d = unit21_base(CommunityState::California, CommunityRule::Halves, 60_000, 6_000);
         let source = if partnership {
             let mut data = ordinary_partner_source(0, true);
-            data.income
-                .push(PartnerIncome { code: PartnerIncomeCode::Section1256, amount: 2_000_000 });
+            data.income.push(PartnerIncomeTotal {
+                code: PartnerIncomeCode::Section1256,
+                amount: 2_000_000,
+            });
             FederalIncome::Partnership { data }
         } else {
             let mut data = complete_ordinary_scorp(0, true);
             data.income.push(ScorpIncome { code: ScorpIncomeCode::Section1256, amount: 2_000_000 });
             data.amt = Some(amt_records(&data));
-            FederalIncome::Scorp { data }
+            FederalIncome::Scorp { data: scorp_source(data) }
         };
         let id = unit21_add(&mut d, Owner::Spouse, CommunityShare::Community, source);
         let r = supported(&d);
@@ -1127,12 +1428,13 @@ fn unit21_section1256_k1_rows_reach_the_shared_form_at_the_allocated_amount() {
 fn unit21_estate_final_capital_history_is_allocated_before_the_mfs_loss_limit() {
     let seed = estate_trust_code_c_draft(0, 0);
     let mut data = match seed.income[1].income.clone() {
-        FederalIncome::EstateTrustPortfolio { data } => data,
+        FederalIncome::EstateTrustPortfolio { data } => FederalEstateTrustPortfolioK1::from(&data),
         _ => unreachable!(),
     };
     data.final_short_carry = 1_000_000;
     data.final_long_carry = 1_000_000;
-    data.final_year_successor = true;
+    data.final_k1 = true;
+    data.final_year_successor = Some(true);
     data.final_carry_same_tax_character = true;
     // Community property gives each return $5,000 short + $5,000 long
     // before its own $1,500 cap. Texas separate-property income shares do
@@ -1147,7 +1449,7 @@ fn unit21_estate_final_capital_history_is_allocated_before_the_mfs_loss_limit() 
             &mut d,
             owner,
             community,
-            FederalIncome::EstateTrustPortfolio { data: data.clone() },
+            FederalIncome::EstateTrustPortfolio { data: estate_source(data.clone()) },
         );
         let before = d.clone();
         let r = supported(&d);
@@ -1172,14 +1474,14 @@ fn unit21_qualified_loss_carry_note_uses_the_final_qbi_owner() {
             &mut d,
             Owner::Spouse,
             CommunityShare::Community,
-            FederalIncome::Scorp { data: loss },
+            FederalIncome::Scorp { data: scorp_source(loss) },
         );
         if offset {
             unit21_add(
                 &mut d,
                 Owner::Spouse,
                 CommunityShare::Community,
-                FederalIncome::Scorp { data: complete_ordinary_scorp(2_000, true) },
+                FederalIncome::Scorp { data: scorp_source(complete_ordinary_scorp(2_000, true)) },
             );
         }
         let r = supported(&d);
@@ -1192,7 +1494,7 @@ fn unit21_qualified_loss_carry_note_uses_the_final_qbi_owner() {
 fn unit21_estate_source_credit_columns_precede_the_returns_credit_cap() {
     let seed = estate_trust_code_c_draft(0, 0);
     let mut data = match seed.income[1].income.clone() {
-        FederalIncome::EstateTrustPortfolio { data } => data,
+        FederalIncome::EstateTrustPortfolio { data } => FederalEstateTrustPortfolioK1::from(&data),
         _ => unreachable!(),
     };
     data.activities.activities.push(EstateActivity {
@@ -1233,7 +1535,7 @@ fn unit21_estate_source_credit_columns_precede_the_returns_credit_cap() {
         &mut d,
         Owner::Spouse,
         CommunityShare::Separate,
-        FederalIncome::EstateTrustPortfolio { data },
+        FederalIncome::EstateTrustPortfolio { data: estate_source(data) },
     );
     d.next_id = d.next_id.max(4);
     let r = supported(&d);
@@ -1246,12 +1548,15 @@ fn unit21_estate_source_credit_columns_precede_the_returns_credit_cap() {
     else {
         unreachable!()
     };
-    data.reported_credits[0].amount = 1;
-    let K1InvestmentProperty::Energy { basis, .. } = &mut data.investment_property[0].property
-    else {
-        unreachable!()
-    };
-    *basis = 1;
+    {
+        let mut data = edit_estate(data);
+        data.reported_credits[0].amount = 1;
+        let K1InvestmentProperty::Energy { basis, .. } = &mut data.investment_property[0].property
+        else {
+            unreachable!()
+        };
+        *basis = 1;
+    }
     let zero = supported(&d);
     assert_eq!(value(&zero, "agi"), 30_000);
     assert_eq!(value_cents(&zero, &format!("form8958_credit_{id}_total")), 1);
@@ -1259,14 +1564,14 @@ fn unit21_estate_source_credit_columns_precede_the_returns_credit_cap() {
     let FederalIncome::EstateTrustPortfolio { data } = &d.income.last().unwrap().income else {
         unreachable!()
     };
-    assert_eq!(data.reported_credits[0].amount, 1);
+    assert_eq!(FederalEstateTrustPortfolioK1::from(data).reported_credits[0].amount, 1);
 }
 
 #[test]
 fn unit21_f3_scorp_loss_contrast_has_only_the_stated_stock_basis() {
     let mut d = unit21_base(CommunityState::Washington, CommunityRule::Halves, 50_000, 5_000);
     let mut source = complete_ordinary_scorp(-10_000, true);
-    source.opening = 500_000;
+    source.opening = Some(500_000);
     source.loans.clear();
     source.distributions = 0;
     source.loss_qbi.current = 1_000_000;
@@ -1275,14 +1580,14 @@ fn unit21_f3_scorp_loss_contrast_has_only_the_stated_stock_basis() {
         &mut d,
         Owner::Spouse,
         CommunityShare::Community,
-        FederalIncome::Scorp { data: source },
+        FederalIncome::Scorp { data: scorp_source(source) },
     );
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 22_500);
     let allocated =
         crate::community::record(&d, d.income.iter().find(|entry| entry.id == id).unwrap());
     let FederalIncome::Scorp { data } = allocated.as_ref() else { unreachable!() };
-    let ledger = data.ledger().unwrap();
+    let ledger = ScorpK1::from(data).ledger().unwrap();
     assert_eq!(
         crate::kernel::ratio::dollars(
             ledger.basis_allowed[crate::k1_loss::K1LossClass::Ordinary].get()
@@ -1357,7 +1662,7 @@ fn partial_partner_fuel_recovery_keeps_a_whole_source_and_its_worksheet_unchange
 
 #[test]
 fn community_business_owner_boundary_preserves_native_cent_projection() {
-    // D-2026-10-19-01: the community owner projects99c×1/2=49.5c once
+    // The community owner projects99c×1/2=49.5c once
     // half-up to50c at its owner boundary. The reported category is then$1.
     let mut draft = community_w2_draft(3_000_000, 0, 0, 0);
     let mut business = cash_business(0);
@@ -1367,4 +1672,232 @@ fn community_business_owner_boundary_preserves_native_cent_projection() {
     add(&mut draft, income(business));
     let result = estimate(&draft);
     assert_eq!(value(&result, "schedule_1_business_income"), 1);
+}
+
+#[test]
+fn community_business_parcel_keeps_the_existing_five_thousand_dollar_control() {
+    // Reg1.175-5 and Pub555: an Arizona separate return reports its half
+    // of the original farm property's independently established $5,000 gain.
+    let mut draft = conservation_return();
+    draft.setup = complete(FederalStatus::Separate).setup;
+    answer_separate_pages(&mut draft);
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[1].community = CommunityShare::Community;
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    let BusinessActivity::Farming { data: farm } = &mut data.activity else { unreachable!() };
+    farm.conservation = None;
+    let mut sale = farm_land_sale(20220101, 20261201);
+    sale.proceeds = 11_500_000;
+    assert_eq!((sale.calculate().gain, sale.calculate().ordinary), (5_000, 5_000));
+    set_land_sales(farm, vec![sale], &mut draft.next_id);
+    let result = supported(&draft);
+    assert_eq!(value_cents(&result, "farm_2_land_0_ordinary"), 250_000);
+    assert_eq!(value_cents(&result, "form8958_gain_2_total"), 500_000);
+    assert_eq!(value_cents(&result, "form8958_gain_2_this_return"), 250_000);
+    crate::tests::federal::schedules_1_3::assert_form_8958_divided_sources_conserve(
+        &draft, &result,
+    );
+}
+
+#[test]
+fn community_original_property_parts_conserve_a_partly_shared_cent() {
+    let mut draft = farmer_gross_return(0, 30_000);
+    draft.setup = complete(FederalStatus::Separate).setup;
+    answer_separate_pages(&mut draft);
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[1].community = CommunityShare::Partly { percent: 1 };
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets = vec![farmer_gross_asset(1, Livestock::No), farmer_gross_asset(1, Livestock::No)];
+    data.assets[0].id = 1001;
+    data.assets[1].id = 1002;
+    draft.next_id = 1003;
+    let claims = crate::related_forms::effective_claimants(&draft);
+    for (owner, total, parts) in
+        [(Owner::Taxpayer, 199, vec![100, 99]), (Owner::Spouse, 1, vec![0, 1])]
+    {
+        draft.income[1].owner = crate::DocumentOwner::from(owner);
+        let pool =
+            crate::extended_rules::RentalResult { inputs_complete: true, ..Default::default() };
+        let projection =
+            crate::community::source_projection(&draft, &pool, false, &claims).unwrap();
+        assert_eq!(
+            projection.direct.iter().find(|source| source.income == 2).unwrap().filer.gain,
+            total
+        );
+        let components = projection.components[&2].as_ref().unwrap();
+        assert_eq!(components.iter().map(|row| row.filer.gain).collect::<Vec<_>>(), parts);
+        assert!(
+            components.iter().all(
+                |row| row.whole.unwrap().gain == row.filer.gain + row.counterpart.unwrap().gain
+            )
+        );
+        let report = supported(&draft);
+        assert_eq!(
+            line_amount(&report, "business_2_asset_0_disposal_gain")
+                + line_amount(&report, "business_2_asset_1_disposal_gain"),
+            total
+        );
+    }
+}
+
+#[test]
+fn community_source_income_keeps_signed_odd_cent_counterparts() {
+    let mut draft = community_w2_draft(3_000_000, 0, 0, 0);
+    let mut source = income(cash_business(0));
+    source.community = CommunityShare::Community;
+    add(&mut draft, source);
+    for whole in [99, -99] {
+        draft.income[1].owner = crate::DocumentOwner::Yours;
+        let owner = crate::community::SourceAmount::income(&draft, 2, whole);
+        draft.income[1].owner = crate::DocumentOwner::Spouses;
+        let other = crate::community::SourceAmount::income(&draft, 2, whole);
+        assert_eq!(owner.filer, if whole > 0 { 50 } else { -50 });
+        assert_eq!(other.filer, if whole > 0 { 49 } else { -49 });
+        assert_eq!(owner.filer + other.filer, whole);
+    }
+}
+
+#[test]
+fn community_mixed_property_characters_partition_the_recognized_cent() {
+    let mut draft = farmer_gross_return(0, 30_000);
+    draft.setup = complete(FederalStatus::Separate).setup;
+    answer_separate_pages(&mut draft);
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[1].community = CommunityShare::Partly { percent: 1 };
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    // $1,000 of recovered depreciation, $1 of section1231 gain, plus
+    // another $1 ordinary gain. At99.5%, the aggregate keeps the residual cent.
+    data.assets =
+        vec![farmer_gross_asset(1, Livestock::No), farmer_gross_asset(1_001, Livestock::No)];
+    data.assets[0].id = 1001;
+    data.assets[1].id = 1002;
+    draft.next_id = 1003;
+    let result = supported(&draft);
+    assert_eq!(line_amount(&result, "form8958_gain_2_this_return"), 99_699);
+    assert_eq!(line_amount(&result, "form8958_gain_2_ordinary_this_return"), 99_600);
+    assert_eq!(line_amount(&result, "form8958_gain_2_section1231_this_return"), 99);
+    crate::tests::federal::schedules_1_3::assert_form_8958_divided_sources_conserve(
+        &draft, &result,
+    );
+}
+
+#[test]
+fn community_conservation_current_cap_keeps_the_entered_tax_carry() {
+    let mut draft = conservation_return();
+    draft.setup = complete(FederalStatus::Separate).setup;
+    answer_separate_pages(&mut draft);
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[1].community = CommunityShare::Community;
+    let claims = crate::related_forms::effective_claimants(&draft);
+    // $120,000 physical gross establishes the operator's $30,000 current cap.
+    // The filer has $60,000 gross and a $15,000 current cap. Current $40,000
+    // costs alone fill both; the original $5,000 tax carry stays undivided.
+    assert_eq!(
+        crate::farm_conservation::operator_deduction_with_claims(&draft, 2, false, &claims),
+        Some(3_000_000)
+    );
+    assert_eq!(
+        crate::farm_conservation::income_deduction_with_claims(&draft, 2, false, &claims),
+        Some(1_500_000)
+    );
+    let result = supported(&draft);
+    assert_eq!(line_amount(&result, "farm_2_conservation_carryforward"), 1_000_000);
+    // The other return's current amount is established, but its historical
+    // tax balance and closing carry are not supplied by this return.
+    draft.income[1].owner = crate::DocumentOwner::Spouses;
+    let result = supported(&draft);
+    assert_eq!(line_amount(&result, "farm_2_conservation_deduction"), 1_500_000);
+    assert!(result.lines.iter().all(|row| row.id != "farm_2_conservation_carryforward"));
+    assert!(noted(&result, "WARN_FARM_CONSERVATION_CARRY_SOURCE"));
+}
+
+#[test]
+fn community_current_only_conservation_uses_the_same_operator_pool_across_farms() {
+    let mut draft = conservation_return();
+    draft.setup = complete(FederalStatus::Separate).setup;
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[1].community = CommunityShare::Community;
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    let BusinessActivity::Farming { data: farm } = &mut data.activity else { unreachable!() };
+    let Some(FarmConservation::Deduct { carry, .. }) = &mut farm.conservation else {
+        unreachable!()
+    };
+    carry.clear();
+    let mut second = draft.income[1].clone();
+    second.id = 1001;
+    draft.income.push(second);
+    let claims = crate::related_forms::effective_claimants(&draft);
+    for id in [2, 1001] {
+        assert_eq!(
+            crate::farm_conservation::operator_deduction_with_claims(&draft, id, false, &claims),
+            Some(3_000_000)
+        );
+        assert_eq!(
+            crate::farm_conservation::income_deduction_with_claims(&draft, id, false, &claims),
+            Some(1_500_000)
+        );
+    }
+}
+
+#[test]
+fn community_unrecaptured_building_gain_stays_within_each_spouses_1231_interval() {
+    let mut draft = farmer_gross_return(0, 30_000);
+    draft.setup = complete(FederalStatus::Separate).setup;
+    answer_separate_pages(&mut draft);
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    draft.income[0].community = CommunityShare::Community;
+    draft.income[1].community = CommunityShare::Partly { percent: 1 };
+    let building = crate::tests::business::business::shop_building(
+        crate::tests::business::business::sold(20260620, 28_582_400, 0),
+    );
+    let native = building.sale_in_context(false, false, Default::default()).unwrap();
+    // Original $390,000 building less $104,177 native depreciation gives
+    // $285,823 adjusted basis; $285,824 proceeds produces $1 high-rate gain.
+    assert_eq!(
+        (native.basis, native.depreciation, native.gain, native.section1231, native.unrecaptured),
+        (390_000, 104_177, 1, 1, 1)
+    );
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets = vec![farmer_gross_asset(1, Livestock::No), building];
+    data.assets[0].id = 1001;
+    data.assets[1].id = 1002;
+    draft.next_id = 1003;
+    let claims = crate::related_forms::effective_claimants(&draft);
+    for (owner, expected) in [(Owner::Taxpayer, [199, 100, 99, 99]), (Owner::Spouse, [1, 0, 1, 1])]
+    {
+        draft.income[1].owner = crate::DocumentOwner::from(owner);
+        let pool = crate::extended_rules::RentalResult::default();
+        let projection =
+            crate::community::source_projection(&draft, &pool, false, &claims).unwrap();
+        let source = projection.direct.iter().find(|row| row.income == 2).unwrap();
+        assert_eq!(
+            [
+                source.filer.gain,
+                source.filer.ordinary,
+                source.filer.section1231,
+                source.filer.unrecaptured
+            ],
+            expected
+        );
+        let parts = projection.components[&2].as_ref().unwrap();
+        assert_eq!(
+            parts.iter().map(|row| row.filer.unrecaptured).sum::<i64>(),
+            source.filer.unrecaptured
+        );
+        for part in parts {
+            let other = part.counterpart.unwrap();
+            assert!(part.filer.unrecaptured <= part.filer.section1231.max(0));
+            assert!(other.unrecaptured <= other.section1231.max(0));
+            assert_eq!(
+                part.filer.unrecaptured + other.unrecaptured,
+                part.whole.unwrap().unrecaptured
+            );
+        }
+        supported(&draft);
+    }
 }

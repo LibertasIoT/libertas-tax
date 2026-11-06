@@ -110,7 +110,8 @@ fn public_safety_premiums_are_added_to_itemization_only_after_exclusion() {
     else {
         unreachable!()
     };
-    data.taxable = RetirementTaxable::Payer { amount: 700000 };
+    edit_retirement(data).box_2a = 700000;
+    edit_retirement(data).taxable = Some(RetirementTaxable::Payer);
     itemized(reference.deductions.as_mut().unwrap()).medical = 2700000;
     let other = supported(&reference);
     assert_eq!(value(&r, "taxable_income"), value(&other, "taxable_income"));
@@ -134,7 +135,8 @@ fn public_safety_limits_exclusion_to_taxable_portion_and_checks_source_values() 
     let FederalIncome::Retirement { data } = &mut d.income.last_mut().unwrap().income else {
         unreachable!()
     };
-    data.taxable = RetirementTaxable::Payer { amount: 100000 };
+    edit_retirement(data).box_2a = 100000;
+    edit_retirement(data).taxable = Some(RetirementTaxable::Payer);
     public_safety(&mut d, id, 4000, 4000, PublicSafetyCoverage::Other);
     let r = supported(&d);
     assert_eq!(value(&r, "public_safety_1_excluded"), 1000);
@@ -164,7 +166,8 @@ fn care_distribution_applies_2026_dollar_premium_and_balance_limits() {
 fn care_distribution_uses_taxable_amount_not_gross_proportion() {
     let mut d = care_return(care_claim(3000, 100000, false), 20000);
     let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.taxable = RetirementTaxable::Payer { amount: 100000 };
+    edit_retirement(data).box_2a = 100000;
+    edit_retirement(data).taxable = Some(RetirementTaxable::Payer);
     let r = supported(&d);
     assert_eq!(return_line(&r, "5a"), 2000000);
     assert_eq!(return_line(&r, "5b"), 100000);

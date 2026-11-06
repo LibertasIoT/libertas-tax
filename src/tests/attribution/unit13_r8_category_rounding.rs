@@ -1,5 +1,5 @@
 use super::*;
-use crate::tests::cross::interview::{accepted, from_review, open_topic};
+use crate::tests::cross::interview::{accepted, from_review, open_document_center};
 use crate::tests::support::client::injured_credit::r8_category_rounding::run;
 
 #[test]
@@ -30,27 +30,29 @@ fn r8_mixed_native_category_uses_exact_coalesced_legal_weights() {
             }
             d.income[0].community = CommunityShare::Separate;
             let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-            data.withholding = 100;
+            edit_wage(data).withholding = 100;
             // The prior1aad fixture had withholding on a zero-wage row and
             // native Save correctly refused it. Move one existing wage Dollar
             // to that row: joint wages and every funding oracle stay unchanged.
-            data.wages -= 100;
+            edit_wage(data).wages -= 100;
             let mut community = d.income[0].clone();
             community.community = CommunityShare::Community;
             let FederalIncome::Wage { data } = &mut community.income else { panic!() };
-            data.wages = 100;
-            data.withholding = 49;
+            edit_wage(data).wages = 100;
+            edit_wage(data).withholding = 49;
             add(&mut d, community);
             let pay = d.payments.as_mut().unwrap();
-            pay.estimated = Some(10000);
-            pay.estimated_payments = vec![crate::DatedPayment {
-                date: 20260415,
-                amount: 10000,
-                payer: PaymentPayer::Taxpayer,
-                refund_property: Some(RefundSourcePropertyFacts::Community {
-                    management: RefundManagement::NotApplicable,
-                }),
-            }];
+
+            pay.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+                payments: vec![crate::DatedPayment {
+                    date: 20260415,
+                    amount: 10000,
+                    payer: PaymentPayer::Taxpayer,
+                    refund_property: Some(RefundSourcePropertyFacts::Community {
+                        management: RefundManagement::NotApplicable,
+                    }),
+                }],
+            };
             if reversed {
                 d.income.reverse();
             }
@@ -70,7 +72,8 @@ fn r8_mixed_native_category_uses_exact_coalesced_legal_weights() {
             money(&d);
             let old = d.income.clone();
             let mut s = restart(d);
-            let p = open_topic(&mut s, TaxSection::Wages);
+            crate::tests::support::client::admit_native_fixture_facts(&mut s);
+            let p = open_document_center(&mut s);
             accepted(&send(&mut s, p));
             let Reply::Edit(p) = from_review(&mut s, TaxSection::Payments) else { panic!() };
             accepted(&send(&mut s, p));
@@ -81,7 +84,7 @@ fn r8_mixed_native_category_uses_exact_coalesced_legal_weights() {
             accepted(&send(&mut s, p));
             let draft = roundtrip_native_draft(s.draft.clone());
             let mut s = restart(draft);
-            let p = open_topic(&mut s, TaxSection::Wages);
+            let p = open_document_center(&mut s);
             accepted(&send(&mut s, p));
             for entry in &old {
                 assert_eq!(s.draft.income.iter().find(|e| e.id == entry.id), Some(entry));

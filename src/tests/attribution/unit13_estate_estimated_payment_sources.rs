@@ -15,7 +15,7 @@ fn unit13_estate_estimated_payments_preserve_native_money_and_public_save() {
                     financial(&d, dated != 0);
                     let mut plain = d.clone();
                     plain.injured_spouse = None;
-                    plain.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+                    plain.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
                     let ordinary = financial(&plain, dated != 0);
                     assert_eq!(estimate(&d).tax, ordinary.tax);
                     persist(d, dated != 0);

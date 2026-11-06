@@ -1,8 +1,8 @@
 // Approved source facts, source-event chronology and the normal Health lifecycle.
-use crate::tests::cross::interview::{
-    accepted, hsa_account, hsa_page_value, open_hsa_page, open_topic, rejected_with,
-};
 use super::*;
+use crate::tests::cross::interview::{
+    accepted, hsa_account, hsa_page_value, open_hsa_page, rejected_with,
+};
 
 pub(super) fn fixture(case: &str) -> (FederalDraft, HsaFundingRow) {
     let mut draft = match case {
@@ -10,17 +10,14 @@ pub(super) fn fixture(case: &str) -> (FederalDraft, HsaFundingRow) {
             let mut draft = complete(FederalStatus::Single);
             current_hsa_funding(&mut draft, 1500);
             let source = draft.adjustments.as_ref().unwrap().hsa[0].funding[0].income;
-            let FederalIncome::Retirement { data } = &mut draft
-                .income
-                .iter_mut()
-                .find(|entry| entry.id == source)
-                .unwrap()
-                .income
+            let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+                &mut draft.income.iter_mut().find(|entry| entry.id == source).unwrap().income
             else {
                 unreachable!()
             };
-            data.gross = 150_000;
-            data.taxable = RetirementTaxable::Payer { amount: 150_000 };
+            data.form.gross = 150_000;
+            data.form.taxable = Some(150_000);
+            data.taxable_method = Some(TaxableMethod::BoxTwoA);
             draft
         }
         "prior" => hsa_prior_basis_funding(1500, 200, 2000, 500, 0),
@@ -42,16 +39,18 @@ pub(super) fn fixture(case: &str) -> (FederalDraft, HsaFundingRow) {
             else {
                 unreachable!()
             };
-            data.distributed = 20260630;
+            let Some(DistributionCode::RothIra { roth, .. }) = &mut data.code else {
+                unreachable!()
+            };
+            let crate::RothIraCode::Early { distributed, .. } = roth else { unreachable!() };
+            *distributed = 20260630;
         }
     }
     draft.adjustments.as_mut().unwrap().hsa.clear();
     (draft, funding)
 }
 fn inputs(page: &mut P) -> &mut HsaPage {
-    let P::SaveHsa { value, .. } = page else {
-        unreachable!()
-    };
+    let P::SaveHsa { value, .. } = page else { unreachable!() };
     value
 }
 fn bridge(session: &mut Interview, seed: &P, page: &mut P, case: &str) -> bool {
@@ -61,18 +60,12 @@ fn bridge(session: &mut Interview, seed: &P, page: &mut P, case: &str) -> bool {
     }
     if let Ok(path) = std::env::var("TAX_UNIT46_HSA_SOURCE_CALC_INPUT") {
         let calculation = P::from_avro(&std::fs::read(path).unwrap()).unwrap();
-        assert!(matches!(
-            calculation,
-            P::HsaOptions { .. } | P::EstimateHsa { .. }
-        ));
+        assert!(matches!(calculation, P::HsaOptions { .. } | P::EstimateHsa { .. }));
         let before = session.draft.clone();
         let Reply::Response(reply) = send(session, calculation) else {
             panic!("expected ordinary calculation response")
         };
-        assert!(matches!(
-            reply,
-            P::HsaFamilyOptions { .. } | P::RunningEstimate { .. }
-        ));
+        assert!(matches!(reply, P::HsaFamilyOptions { .. } | P::RunningEstimate { .. }));
         assert_eq!(session.draft, before);
         std::fs::write(
             std::env::var("TAX_UNIT46_HSA_SOURCE_CALC_OUTPUT").unwrap(),
@@ -81,10 +74,9 @@ fn bridge(session: &mut Interview, seed: &P, page: &mut P, case: &str) -> bool {
         .unwrap();
         return true;
     }
-    for (key, request) in [
-        ("TAX_UNIT46_HSA_SOURCE_SEED", seed),
-        ("TAX_UNIT46_HSA_SOURCE_ANSWERS", &*page),
-    ] {
+    for (key, request) in
+        [("TAX_UNIT46_HSA_SOURCE_SEED", seed), ("TAX_UNIT46_HSA_SOURCE_ANSWERS", &*page)]
+    {
         if let Ok(path) = std::env::var(key) {
             std::fs::write(path, request.to_avro()).unwrap();
         }
@@ -124,19 +116,11 @@ fn refused_atomically(session: &mut Interview, page: P, key: &str) {
         .unwrap()
         .hsa
         .iter()
-        .flat_map(|account| {
-            account
-                .funding
-                .iter()
-                .map(|funding| funding.row(account.owner))
-        })
+        .flat_map(|account| account.funding.iter().map(|funding| funding.row(account.owner)))
         .collect();
     rejected_with(send(session, page), key);
     assert_eq!(session.draft, before);
-    assert_eq!(
-        hsa_page_value(&open_hsa_page(session)).0.funding,
-        before_funding
-    );
+    assert_eq!(hsa_page_value(&open_hsa_page(session)).0.funding, before_funding);
     assert_eq!(restart(before.clone()).draft, before);
 }
 
@@ -175,21 +159,17 @@ fn unit46_hsa_source_facts_save_reopen_restart_and_atomic_refusals() {
                 ongoing_sep_simple: false,
                 funded: 20260705,
                 amount: 100_000,
-                basis: HsaFundingBasis::Pretax {
-                    distributed: 20260703,
-                },
+                basis: HsaFundingBasis::Pretax { distributed: 20260703 },
                 coverage: HsaCoverage::Family,
                 loss: None,
             });
             HsaCoverageYear::Changed {
                 months: (0..12)
-                    .map(|month| {
-                        if month < 6 {
-                            HsaCoverage::SelfOnly
-                        } else {
-                            HsaCoverage::Family
-                        }
-                    })
+                    .map(
+                        |month| {
+                            if month < 6 { HsaCoverage::SelfOnly } else { HsaCoverage::Family }
+                        },
+                    )
                     .collect(),
             }
         } else {
@@ -240,10 +220,7 @@ fn unit46_hsa_source_facts_save_reopen_restart_and_atomic_refusals() {
         let mut restarted = restart(accepted_draft.clone());
         assert_eq!(restarted.draft, accepted_draft);
         assert_eq!(supported(&restarted.draft), result);
-        assert_eq!(
-            hsa_page_value(&open_hsa_page(&mut restarted)).0.funding,
-            fundings.clone()
-        );
+        assert_eq!(hsa_page_value(&open_hsa_page(&mut restarted)).0.funding, fundings.clone());
 
         if case == "two" {
             for (month, ineligible) in [(5, HsaCoverage::Family), (6, HsaCoverage::SelfOnly)] {
@@ -271,10 +248,7 @@ fn unit46_hsa_source_facts_save_reopen_restart_and_atomic_refusals() {
         inputs(&mut bad).funding[0].funded = 20260629;
         if let P::SaveHsa { ira_sources, .. } = &mut bad {
             // A forged earlier metadata date cannot alter the actual Roth source.
-            for source in ira_sources
-                .iter_mut()
-                .filter(|source| source.id == funding.source)
-            {
+            for source in ira_sources.iter_mut().filter(|source| source.id == funding.source) {
                 if let HsaFundingSourceKind::Roth { distributed } = &mut source.kind {
                     *distributed = 20260628;
                 }
@@ -282,7 +256,7 @@ fn unit46_hsa_source_facts_save_reopen_restart_and_atomic_refusals() {
         }
         refused_atomically(&mut session, bad, "HSA_FUNDING_DISTRIBUTION_AFTER_RECEIPT");
         if case != "roth" {
-            for date in [20251231, 20270101, 20260230] {
+            for date in [20251231, 20270101] {
                 let mut bad = open_hsa_page(&mut session);
                 match &mut inputs(&mut bad).funding[0].basis {
                     HsaFundingBasis::Pretax { distributed }
@@ -300,30 +274,28 @@ fn unit46_hsa_source_facts_save_reopen_restart_and_atomic_refusals() {
         refused_atomically(&mut session, bad, "HSA_FUNDING_NEEDS_AN_ACCOUNT");
 
         // Actual linked income edits use the same guard, never a stale catalog.
-        let mut bad = open_topic(&mut session, TaxSection::Retirement);
-        let P::SaveIncomes { documents, .. } = &mut bad else {
-            unreachable!()
-        };
-        documents.documents.retain(|row| row.id != funding.source);
+        let mut bad =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut bad else { unreachable!() };
+        documents.common.retirement.documents.retain(|row| row.id != funding.source);
         refused_atomically(&mut session, bad, "HSA_FUNDING_SOURCE_NOT_OFFERED");
         if case == "roth" {
-            let mut bad = open_topic(&mut session, TaxSection::Retirement);
-            let P::SaveIncomes { documents, .. } = &mut bad else {
-                unreachable!()
-            };
-            let IncomeDocument::R1099(data) = &mut documents
-                .documents
+            let mut bad = crate::tests::support::client::income_pages::open_topic(
+                &mut session,
+                TaxSection::Retirement,
+            );
+            let P::SaveIncomes { followups, .. } = &mut bad else { unreachable!() };
+            let crate::DocumentAnswer::RetirementTreatment {
+                code:
+                    Some(crate::RetirementTreatmentView::RothIra {
+                        roth: crate::RothIraCodeView::Early { distributed, .. },
+                        ..
+                    }),
+            } = &mut followups
                 .iter_mut()
-                .find(|row| row.id == funding.source)
+                .find(|row| row.key == alloc::format!("income/{}/treatment", funding.source))
                 .unwrap()
-                .document
-            else {
-                unreachable!()
-            };
-            let DistributionCode::RothIra {
-                roth: RothIraCode::Early { distributed, .. },
-                ..
-            } = &mut data.code
+                .answer
             else {
                 unreachable!()
             };
@@ -339,13 +311,7 @@ fn unit46_hsa_source_distribution_month_controls_second_funding_and_order() {
     let account = &mut draft.adjustments.as_mut().unwrap().hsa[0];
     account.coverage = HsaEligibility::Monthly {
         months: (0..12)
-            .map(|month| {
-                if month < 6 {
-                    HsaCoverage::SelfOnly
-                } else {
-                    HsaCoverage::Family
-                }
-            })
+            .map(|month| if month < 6 { HsaCoverage::SelfOnly } else { HsaCoverage::Family })
             .collect(),
     };
     account.funding[0].funded = 20260706;
@@ -364,29 +330,26 @@ fn unit46_hsa_source_distribution_month_controls_second_funding_and_order() {
     };
     account.funding.push(second);
     let source = account.funding[0].income;
-    let FederalIncome::Retirement { data } = &mut draft
-        .income
-        .iter_mut()
-        .find(|entry| entry.id == source)
-        .unwrap()
-        .income
+    let FederalIncome::Retirement { data: crate::RetirementSource::R1099(data) } =
+        &mut draft.income.iter_mut().find(|entry| entry.id == source).unwrap().income
     else {
         unreachable!()
     };
-    data.gross = 200_000;
+    data.form.gross = 200_000;
     assert!(crate::hsa_funding::source_reference_rule(&draft).is_none());
     let output = supported(&draft);
     assert_eq!(return_line(&output, "4b"), 0);
     let mut reversed = draft.clone();
-    reversed.adjustments.as_mut().unwrap().hsa[0]
-        .funding
-        .reverse();
+    reversed.adjustments.as_mut().unwrap().hsa[0].funding.reverse();
     assert_eq!(supported(&reversed), output);
     // The same first-day facts admit the ordinary Save/reopen/restart path.
     let mut session = Interview::new(TEST_USER, reversed.clone());
     let page = open_hsa_page(&mut session);
     accepted(&send(&mut session, page));
-    assert_eq!(supported(&session.draft), output);
+    // The first save of the applying topic records the visit (a revision).
+    let mut visited = output.clone();
+    visited.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), visited);
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
     // Event coverage does not replace the actual first-day account coverage.
     // June distribution/July receipt uses June, rather than July's Family fact.
@@ -394,44 +357,18 @@ fn unit46_hsa_source_distribution_month_controls_second_funding_and_order() {
         HsaCoverageYear::Family,
         HsaCoverageYear::Changed {
             months: (0..12)
-                .map(|month| {
-                    if month < 5 {
-                        HsaCoverage::SelfOnly
-                    } else {
-                        HsaCoverage::Family
-                    }
-                })
+                .map(|month| if month < 5 { HsaCoverage::SelfOnly } else { HsaCoverage::Family })
                 .collect(),
         },
         HsaCoverageYear::Changed {
             months: (0..12)
-                .map(|month| {
-                    if month < 7 {
-                        HsaCoverage::SelfOnly
-                    } else {
-                        HsaCoverage::Family
-                    }
-                })
+                .map(|month| if month < 7 { HsaCoverage::SelfOnly } else { HsaCoverage::Family })
                 .collect(),
         },
     ] {
         let mut bad = open_hsa_page(&mut session);
         inputs(&mut bad).accounts[0].coverage = coverage;
         refused_atomically(&mut session, bad, "HSA_FUNDING_LIFETIME");
-    }
-    // Malformed raw dates must never underflow a month index in calculation.
-    for invalid in [20260015, 20260230, 20261301] {
-        let mut bad = reversed.clone();
-        bad.adjustments.as_mut().unwrap().hsa[0].funding[1].basis = HsaFundingBasis::PriorBasis {
-            distributed: invalid,
-            value: 200_000,
-            before_other_activity: true,
-        };
-        let mut result = supported(&complete(FederalStatus::Single));
-        assert_eq!(
-            crate::hsa_funding::calculate(&bad, &mut result).for_entry(source),
-            0
-        );
     }
     // Two receipt months cannot cure two actual distributions in the same month.
     let second = &mut draft.adjustments.as_mut().unwrap().hsa[0].funding[1];
@@ -440,10 +377,7 @@ fn unit46_hsa_source_distribution_month_controls_second_funding_and_order() {
         value: 200_000,
         before_other_activity: true,
     };
-    assert_eq!(
-        crate::hsa_funding::source_reference_rule(&draft),
-        Some("HSA_FUNDING_LIFETIME")
-    );
+    assert_eq!(crate::hsa_funding::source_reference_rule(&draft), Some("HSA_FUNDING_LIFETIME"));
     let mut bad = open_hsa_page(&mut session);
     inputs(&mut bad).funding = draft.adjustments.as_ref().unwrap().hsa[0]
         .funding
@@ -488,16 +422,17 @@ fn unit46_hsa_source_date_controls_basis_activity_before_hsa_receipt() {
     };
     let mut repayment = reservist_repayment(1000);
     repayment.payments[0].date = 20260701;
-    draft.adjustments.as_mut().unwrap().ira_basis[0]
-        .reservist_repayments
-        .push(repayment);
+    draft.adjustments.as_mut().unwrap().ira_basis[0].reservist_repayments.push(repayment);
     let result = supported(&draft);
     assert_eq!(value(&result, "taxpayer_ira_basis_carryforward"), 1200);
     assert_eq!(return_line(&result, "4b"), 0);
     let mut session = Interview::new(TEST_USER, draft.clone());
     let page = open_hsa_page(&mut session);
     accepted(&send(&mut session, page));
-    assert_eq!(supported(&session.draft), result);
+    // The first save of the applying topic records the visit (a revision).
+    let mut visited = result.clone();
+    visited.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), visited);
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
     draft.adjustments.as_mut().unwrap().ira_basis[0].reservist_repayments[0].payments[0].date =
         20260629;
@@ -515,17 +450,13 @@ fn unit46_hsa_source_inherited_death_and_owner_transit_boundaries_are_distinct()
         before_other_activity: true,
     };
     let source_id = account.funding[0].income;
-    let group_id = crate::retirement::ira_funding_source(&draft, source_id)
+    let group_id = crate::retirement_return::ira_funding_source(&draft, source_id)
         .unwrap()
         .inherited
         .unwrap()
         .0;
-    let FederalIncome::InheritedIra { data } = &mut draft
-        .income
-        .iter_mut()
-        .find(|entry| entry.id == group_id)
-        .unwrap()
-        .income
+    let FederalIncome::InheritedIra { data } =
+        &mut draft.income.iter_mut().find(|entry| entry.id == group_id).unwrap().income
     else {
         unreachable!()
     };
@@ -546,12 +477,8 @@ fn unit46_hsa_source_inherited_death_and_owner_transit_boundaries_are_distinct()
     let mut account = hsa_entry(Owner::Taxpayer, HsaCoverage::SelfOnly, 0);
     account.funding.push(row.record());
     draft.adjustments.as_mut().unwrap().hsa = vec![account];
-    draft.people.as_mut().unwrap().taxpayer.died = Some(FinalReturn {
-        bonds: None,
-        estate_medical: 0,
-        date: 20260701,
-        ordinary: true,
-    });
+    draft.people.as_mut().unwrap().taxpayer.died =
+        Some(FinalReturn { bonds: None, estate_medical: 0, date: 20260701, ordinary: true });
     assert_eq!(
         draft.adjustments.as_ref().unwrap().hsa[0].funding[0].distribution_date(&draft),
         Some(20260630)

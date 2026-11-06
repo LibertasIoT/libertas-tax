@@ -26,11 +26,19 @@ fn care_yes(d: &mut FederalDraft) {
     d.credits.as_mut().unwrap().care = FederalCare::default();
     document_care(d);
 }
-fn aotc_entry(student: i64, tuition: i64) -> FederalEducation {
-    FederalEducation {
-        student,
-        expenses: education_expenses(tuition * 100),
-        method: education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+fn aotc_entry(student: i64, tuition: i64) -> (FederalEducation, EducationStudent) {
+    {
+        let mut pair = native_education(
+            student,
+            education_expenses(tuition * 100),
+            education_choice(EducationMethod::AmericanOpportunity, Answer::Yes),
+        );
+
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = false;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     }
 }
 
@@ -120,12 +128,13 @@ fn d1_a_child_born_on_january_2_2013_is_a_qualifying_person_for_part_of_the_year
 // per Schedule EIC line 2 ("Died"), the earned income credit.
 #[test]
 fn d2_a_child_born_and_died_in_the_year_without_an_ssn_still_qualifies() {
-    let born_and_died = |wages: i64, fact: bool| {
+    // The birth in 2026, the date of death and no SSN decide it.
+    let born_and_died = |wages: i64, died: bool| {
         let mut d = single_with_child(wages, 20260301);
         d.dependents[0].residency = DependentResidency::WholeYearException;
         d.dependents[0].valid_ssn = false;
         d.dependents[0].valid_tin = false;
-        set_fact(&mut d.dependents[0], PersonFacts::BORN_AND_DIED, fact);
+        d.dependents[0].death_date = died.then_some(20260310);
         d
     };
     let r = supported(&born_and_died(60_000, true));
@@ -136,12 +145,12 @@ fn d2_a_child_born_and_died_in_the_year_without_an_ssn_still_qualifies() {
     // Schedule EIC line 2 reads "Died".
     assert!(has(&r, "schedule_eic_child_1_died"));
     assert!(!has(&r, "schedule_eic_child_1_ssn"));
-    // Without the fact a child with no number earns neither credit.
+    // A living child with no number earns neither credit.
     let r = supported(&born_and_died(60_000, false));
     assert_eq!(value(&r, "child_credit"), 0);
     let r = supported(&born_and_died(20_000, false));
     assert_eq!(value(&r, "earned_income_credit"), 0);
-    // The fact is for a child born in 2026: a child born earlier ignores it.
+    // The rule is for a child born in 2026: a child born earlier is not.
     let mut d = born_and_died(60_000, true);
     d.dependents[0].birth_date = 20250301;
     d.dependents[0].residency = DependentResidency::Days { days: 365 };
@@ -253,8 +262,8 @@ fn d6_a_negative_special_needs_line_1f_reduces_earned_income() {
     set_joint_adoption_w2(&mut d, 1, 200_000, 200_000);
     set_joint_adoption_w2(&mut d, 2, 200_000, 400_000);
     for e in d.income.iter_mut() {
-        if let FederalIncome::Wage { data } = &mut e.income {
-            data.withholding = 0;
+        if let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut e.income {
+            data.form.withholding = Some(0);
         }
     }
     add_child(&mut d);
@@ -363,7 +372,7 @@ fn d9_a_care_qualifying_person_without_a_taxpayer_identification_number_earns_no
     let mut d = fixture(false, false);
     d.dependents[0].birth_date = 20260301;
     d.dependents[0].residency = DependentResidency::WholeYearException;
-    set_fact(&mut d.dependents[0], PersonFacts::BORN_AND_DIED, true);
+    d.dependents[0].death_date = Some(20260320);
     assert_eq!(value(&supported(&d), "care_credit"), 1050);
 }
 
@@ -383,7 +392,7 @@ fn spouse_student_return() -> FederalDraft {
 fn d10_a_spouse_student_without_an_ssn_keeps_the_credit_when_the_other_spouse_has_one() {
     let mut d = spouse_student_return();
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().valid_ssn = false;
-    d.credits.as_mut().unwrap().education = vec![aotc_entry(-2, 4000)];
+    set_education(d.credits.as_mut().unwrap(), vec![aotc_entry(-2, 4000)]);
     let r = supported(&d);
     assert_eq!(value(&r, "refundable_education_credit"), 1000);
     assert_eq!(value(&r, "education_credit"), 1500);
@@ -403,7 +412,7 @@ fn d11_the_filers_own_ssn_requirement_applies_to_the_education_credit() {
         d.dependents[0].situation = DependentSituation::Student;
         d.dependents[0].valid_ssn = student_ssn;
         let id = d.dependents[0].id;
-        d.credits.as_mut().unwrap().education = vec![aotc_entry(id, 4000)];
+        set_education(d.credits.as_mut().unwrap(), vec![aotc_entry(id, 4000)]);
         d
     };
     // (a) Single with an ITIN, dependent student with an SSN: nothing.
@@ -494,7 +503,10 @@ fn d12_schedule_8812_shows_every_nonzero_line() {
 fn d12_schedule_8812_part_ii_b_lines_appear_when_the_payroll_alternative_applies() {
     let mut d = complete(FederalStatus::Head);
     d.income[0] = wage(1, Owner::Taxpayer, 400_000, 0);
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(1_500_000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(1_500_000, 0)) }),
+    );
     for _ in 0..3 {
         add_child(&mut d);
     }

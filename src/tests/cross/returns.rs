@@ -163,7 +163,7 @@ fn build_dependent(id: i64, person: &DependentFixture) -> FederalDependent {
             _ => DependentSituation::ChildUnder19,
         },
         facts: PersonFacts::NONE.0,
-        care,
+        care: Some(care),
         competing: CompetingClaim::NoOne,
     }
 }
@@ -511,7 +511,8 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
     d.next_id = 1;
     for w2 in &fixture.w2 {
         let mut entry = income(FederalIncome::Wage {
-            data: FederalWage {
+            data: wage_source(FederalWage {
+                tips_without_w2: false,
                 abroad: cents(w2.abroad),
                 deferred_pension: 0,
                 inmate_pay: 0,
@@ -539,14 +540,17 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
                 statutory_employee: false,
                 retirement_plan: false,
                 other_box12: Vec::new(),
-            },
+            }),
         });
-        entry.owner = w2_owner(&w2.owner);
+        entry.owner = crate::DocumentOwner::from(w2_owner(&w2.owner));
         entry.label = w2.employer.clone();
-        if let FederalIncome::Wage { data } = &mut entry.income
+        if let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut entry.income
             && w2.box12_l > 0.0
         {
-            data.other_box12.push(W2CodeAmount { code: W2Code::L, amount: cents(w2.box12_l) });
+            data.form.box12.push(crate::PrintedBox12Entry {
+                code: W2Code::L,
+                amount: Some(cents(w2.box12_l)),
+            });
         }
         let id = d.next_id;
         add(&mut d, entry);
@@ -566,7 +570,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
         add(
             &mut d,
             income(FederalIncome::Interest {
-                data: FederalInterest {
+                data: interest_source(FederalInterest {
                     taxable: cents(int.box1_interest),
                     early_penalty: cents(int.box2_penalty),
                     exempt: cents(int.box8_exempt),
@@ -576,7 +580,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
                     tax_exempt_bond_premium: cents(int.box13_tax_exempt_bond_premium),
                     accrued_interest: cents(int.accrued_interest),
                     ..Default::default()
-                },
+                }),
             }),
         );
     }
@@ -584,11 +588,14 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
         add(
             &mut d,
             income(FederalIncome::Dividend {
-                data: FederalDividend {
+                data: dividend_source(FederalDividend {
                     ordinary: cents(div.ordinary),
                     qualified: cents(div.qualified),
                     section199a: if div.section199a > 0.0 {
-                        ReitDividends::Reported { amount: cents(div.section199a), eligible: true }
+                        ReitDividends::Reported {
+                            amount: cents(div.section199a),
+                            eligible: Some(true),
+                        }
                     } else {
                         ReitDividends::None
                     },
@@ -599,7 +606,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
                     exempt_dividends: cents(div.exempt_dividends),
                     private_activity_dividends: cents(div.private_activity_dividends),
                     ..Default::default()
-                },
+                }),
             }),
         );
     }
@@ -607,7 +614,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
         add(
             &mut d,
             income(FederalIncome::Oid {
-                data: FederalOid {
+                data: oid_source(FederalOid {
                     oid: cents(oid.box1_oid),
                     other_periodic_interest: cents(oid.box2_other_periodic_interest),
                     early_penalty: cents(oid.box3_early_penalty),
@@ -619,7 +626,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
                     private_activity: cents(oid.private_activity),
                     treasury_oid: cents(oid.box8_treasury_oid),
                     ..Default::default()
-                },
+                }),
             }),
         );
     }
@@ -627,7 +634,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
         let mut entry = income(FederalIncome::ForeignEmployment {
             data: ForeignWages { wages: cents(pay.wages) },
         });
-        entry.owner = w2_owner(&pay.owner);
+        entry.owner = crate::DocumentOwner::from(w2_owner(&pay.owner));
         entry.label = pay.employer.clone();
         add(&mut d, entry);
     }
@@ -736,7 +743,7 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
             .map(|name| {
                 d.income
                     .iter()
-                    .find(|e| e.label == *name && e.owner == owner)
+                    .find(|e| e.label == *name && e.owner == crate::DocumentOwner::from(owner))
                     .unwrap_or_else(|| panic!("no W-2 for {name}"))
                     .id
             })
@@ -768,6 +775,8 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
             &[],
         );
         d.adjustments.as_mut().unwrap().employee_expenses.push(EmployeeExpenseClaim {
+            improvement_buildings: Vec::new(),
+            equipment_assets: vec![],
             dot_hours_of_service: false,
             leased_vehicles: vec![],
             owner,
@@ -794,20 +803,28 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
             "Spouse" => -2,
             other => d.dependents()[other.parse::<usize>().expect("student position")].id,
         };
-        d.credits.as_mut().unwrap().education.push(FederalEducation {
-            student,
-            method: EducationChoice::AmericanOpportunity,
-            expenses: FederalEducationExpenses {
-                tuition: cents(e.box1_tuition),
-                school_materials: 0,
-                other_materials: 0,
-                assistance: cents(e.box5_scholarships),
-                refunds: 0,
-                other_benefits: 0,
-                scholarship_in_income: e.living_costs.map_or(ScholarshipInclusion::None, |c| {
-                    ScholarshipInclusion::Automatic { living_costs: cents(c) }
-                }),
-            },
+        add_education(d.credits.as_mut().unwrap(), {
+            let mut pair = native_education(
+                student,
+                FederalEducationExpenses {
+                    tuition: cents(e.box1_tuition),
+                    school_materials: 0,
+                    other_materials: 0,
+                    assistance: cents(e.box5_scholarships),
+                    refunds: 0,
+                    other_benefits: 0,
+                    scholarship_in_income: e.living_costs.map_or(ScholarshipInclusion::None, |c| {
+                        ScholarshipInclusion::Automatic { living_costs: cents(c) }
+                    }),
+                },
+                EducationChoice::AmericanOpportunity,
+            );
+
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
         });
     }
     // A completed care page includes the provider's records. The historical
@@ -821,7 +838,10 @@ fn build_draft(fixture: &ReturnFixture) -> FederalDraft {
             provider.address = care.provider_address.clone();
         }
     }
-    d.payments.as_mut().unwrap().estimated = Some(cents(fixture.estimated_payments));
+    d.payments.as_mut().unwrap().estimated = crate::tests::support::builders::unknown_estimated(
+        cents(fixture.estimated_payments),
+        PaymentPayer::Taxpayer,
+    );
     d
 }
 
@@ -928,8 +948,10 @@ fn m1_forms_emit_their_typed_lines() {
     // Above the threshold the typed Schedule B lines appear.
     let mut d = m1_single_w2_draft();
     for entry in d.income.iter_mut() {
-        if let FederalIncome::Interest { data } = &mut entry.income {
-            data.taxable = 200_000; // $2,000.00
+        if let FederalIncome::Interest { data: crate::InterestSource::Int1099(data) } =
+            &mut entry.income
+        {
+            data.form.interest_income = 200_000; // $2,000.00
         }
     }
     let over = form_coverage(&estimate(&d));

@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 330000, "rule": {"select": "^<AlimonyPayment>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_ALIMONY_AGREEMENT", "fields": ["agreement", "decree", "new_rules", "eligible"]}, {"title": "DISPLAY_ALIMONY_PAYMENTS", "fields": ["paid", "alimony_due", "child_support_due", "recapture"]}]}},
+    {"order": 331000, "rule": {"select": "^<AlimonyPayment>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_ALIMONY_AGREEMENT", "fields": ["agreement", "decree", "new_rules", "eligible"]}, {"title": "DISPLAY_ALIMONY_PAYMENTS", "fields": ["paid", "alimony_due", "child_support_due", "recapture"]}]}},
+    {"order": 403000, "rule": {"select": "^<AlimonyPayment>", "flatten": {"name_row": false}}},
+    {"order": 667000, "rule": {"select": "^<AlimonyPayment>.new_rules", "promote": {"use_parent_name": false}}}
+  ]
+}

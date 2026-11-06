@@ -1,3 +1,11 @@
 /target/
 **/*.rs.bk
 *.pdb
+__pycache__/
+AGENTS.md
+/doc/working_items
+
+# Studio regenerates its translation prompts on every translation run.
+**/translations/TRANSLATION-CODEBOT.md
+**/translations/TRANSLATION-CHATBOT.md
+**/translations/CODEX_TRANSLATION.md

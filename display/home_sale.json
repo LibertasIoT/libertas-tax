@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {"order": 338000, "rule": {"select": "^<Form1099SPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "filer", "filer_telephone", "transferor", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_1_date_of_closing", "box_2a_total_gross_proceeds", "box_2b_cash_gross_proceeds", "box_2c_digital_asset_gross_proceeds", "box_3_address_or_legal_description", "box_4_buyers_part_of_real_estate_tax", "box_6_property_or_services", "box_7_foreign_person", "box_8a_digital_asset_code", "box_8b_digital_asset_name", "box_8c_digital_asset_units", "box_8d_digital_asset_date"]}]}},
+    {"order": 339000, "rule": {"select": "^<HomeSaleAnswers>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_HOME_1099S", "fields": ["property_value", "firpta_withheld", "form_1099s"]}, {"title": "DISPLAY_HOME_FACTS", "fields": ["acquired", "received", "expenses", "payment", "exchange", "basis", "lived", "earlier_sale", "spouse", "reason", "service", "use_history", "more"]}]}},
+    {"order": 340000, "rule": {"select": "^<Form1099SPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "filer", "filer_telephone", "transferor", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_1_date_of_closing", "box_2a_total_gross_proceeds", "box_2b_cash_gross_proceeds", "box_2c_digital_asset_gross_proceeds", "box_3_address_or_legal_description", "box_4_buyers_part_of_real_estate_tax", "box_6_property_or_services", "box_7_foreign_person", "box_8a_digital_asset_code", "box_8b_digital_asset_name", "box_8c_digital_asset_units", "box_8d_digital_asset_date"]}]}},
+    {"order": 341000, "rule": {"select": "^<HomeSaleAnswers>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_HOME_1099S", "fields": ["property_value", "firpta_withheld", "form_1099s"]}, {"title": "DISPLAY_HOME_FACTS", "fields": ["acquired", "received", "expenses", "payment", "exchange", "basis", "lived", "earlier_sale", "spouse", "reason", "service", "use_history", "more"]}]}},
+    {"order": 613000, "rule": {"select": "^<HomeLived>", "flatten": true}},
+    {"order": 614000, "rule": {"select": "^<HomeReceived>", "flatten": true}},
+    {"order": 615000, "rule": {"select": "^<EarlierHomeSale>", "flatten": true}},
+    {"order": 616000, "rule": {"select": "^<HomeSpouse>", "flatten": true}},
+    {"order": 617000, "rule": {"select": "^<HomeSaleReason>", "flatten": true}},
+    {"order": 618000, "rule": {"select": "^<HomeRentalUse>", "flatten": true}},
+    {"order": 619000, "rule": {"select": "^<SeparateUse>", "flatten": true}},
+    {"order": 620000, "rule": {"select": "^<HomeSaleMore>", "flatten": true}}
+  ]
+}

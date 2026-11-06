@@ -1,0 +1,21 @@
+[package]
+name = "tax-paired-figures"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+zstd = "0.13.3"
+sha2 = "0.10.9"
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "tax-paired-figures"
+path = "main.rs"
+
+[profile.dev]
+opt-level = 1

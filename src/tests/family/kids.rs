@@ -27,15 +27,26 @@ fn note_args(r: &FederalResult, key: &str) -> Vec<MessageArg> {
 // Form 8863: the part of the box 5 grant a student includes in income
 // ---------------------------------------------------------------------------
 
-fn entry(student: i64, assistance: i64, inclusion: ScholarshipInclusion) -> FederalEducation {
-    FederalEducation {
-        student,
-        method: EducationChoice::AmericanOpportunity,
-        expenses: FederalEducationExpenses {
-            assistance,
-            scholarship_in_income: inclusion,
-            ..education_expenses(assistance)
-        },
+fn entry(
+    student: i64,
+    assistance: i64,
+    inclusion: ScholarshipInclusion,
+) -> (FederalEducation, EducationStudent) {
+    {
+        let mut pair = native_education(
+            student,
+            FederalEducationExpenses {
+                assistance,
+                scholarship_in_income: inclusion,
+                ..education_expenses(assistance)
+            },
+            EducationChoice::AmericanOpportunity,
+        );
+        pair.0.id = 0;
+        pair.0.half_time = true;
+        pair.0.graduate = false;
+        pair.1.more.american_opportunity_used_up = Some(false);
+        pair
     }
 }
 
@@ -49,7 +60,7 @@ fn pell_family(inclusion: ScholarshipInclusion) -> FederalDraft {
     d.dependents[0].birth_date = 20070301;
     d.dependents[0].situation = DependentSituation::Student;
     let student = d.dependents[0].id;
-    d.credits.as_mut().unwrap().education = vec![entry(student, 500_000, inclusion)];
+    set_education(d.credits.as_mut().unwrap(), vec![entry(student, 500_000, inclusion)]);
     d
 }
 
@@ -120,16 +131,26 @@ fn bill(inclusion: ScholarshipInclusion) -> FederalDraft {
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.birth_date = 19980301;
     d.income[0] = wage(1, Owner::Taxpayer, 3_925_000, 300_000);
-    d.credits.as_mut().unwrap().education = vec![FederalEducation {
-        student: -1,
-        method: EducationChoice::AmericanOpportunity,
-        expenses: FederalEducationExpenses {
-            tuition: 560_000,
-            assistance: 560_000,
-            scholarship_in_income: inclusion,
-            ..education_expenses(560_000)
-        },
-    }];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![{
+            let mut pair = native_education(
+                -1,
+                FederalEducationExpenses {
+                    tuition: 560_000,
+                    assistance: 560_000,
+                    scholarship_in_income: inclusion,
+                    ..education_expenses(560_000)
+                },
+                EducationChoice::AmericanOpportunity,
+            );
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
+        }],
+    );
     d
 }
 
@@ -183,16 +204,26 @@ fn f2c_an_included_part_that_lowers_the_earned_income_credit_is_weighed() {
         d.people.as_mut().unwrap().taxpayer.birth_date = 19980301;
         d.income[0] = wage(1, Owner::Taxpayer, 2_200_000, 100_000);
         add_child(&mut d);
-        d.credits.as_mut().unwrap().education = vec![FederalEducation {
-            student: -1,
-            method: EducationChoice::AmericanOpportunity,
-            expenses: FederalEducationExpenses {
-                tuition: 560_000,
-                assistance: 560_000,
-                scholarship_in_income: inclusion,
-                ..education_expenses(560_000)
-            },
-        }];
+        set_education(
+            d.credits.as_mut().unwrap(),
+            vec![{
+                let mut pair = native_education(
+                    -1,
+                    FederalEducationExpenses {
+                        tuition: 560_000,
+                        assistance: 560_000,
+                        scholarship_in_income: inclusion,
+                        ..education_expenses(560_000)
+                    },
+                    EducationChoice::AmericanOpportunity,
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = false;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            }],
+        );
         d
     };
     let automatic = supported(&build(ScholarshipInclusion::Automatic { living_costs: 440_000 }));
@@ -224,33 +255,44 @@ fn the_inclusion_choice_is_stored_and_checked_on_the_education_page() {
     let mut s = Interview::new(TEST_USER, pell_family(ScholarshipInclusion::None));
     let people = crate::federal_rules::people_students(&s.draft);
     let student = s.draft.dependents[0].id;
-    let page = |inclusion: ScholarshipInclusion| EducationCredits {
-        students: vec![StudentCredit {
-            student,
-            tuition: 500_000,
-            scholarships: 500_000,
-            half_time: true,
-            graduate: false,
-            more: StudentMore { scholarship_in_income: inclusion, ..StudentMore::default() },
-        }],
+    let page = |inclusion: ScholarshipInclusion| crate::EducationDocumentView {
+        documents: vec![],
+        students: vec![
+            EducationStudent {
+                student,
+                method: Some(EducationChoice::AmericanOpportunity),
+                more: StudentMore {
+                    scholarship_in_income: inclusion,
+                    american_opportunity_used_up: Some(false),
+                    ..StudentMore::default()
+                },
+            }
+            .into(),
+        ],
         people: people.clone(),
     };
     // More than the box 5 grant is refused with the rule's key.
-    let request = crate::tests::cross::interview::save_education(
-        &s.draft,
-        page(ScholarshipInclusion::Amount { included: 500_001 }),
+    let reply = crate::tests::cross::interview::save_education_answers(
+        &mut s,
+        page(ScholarshipInclusion::Amount { included: 500_001 })
+            .students
+            .iter()
+            .map(EducationStudent::from)
+            .collect(),
     );
-    let reply = send(&mut s, request);
     rejected_with(reply, "SCHOLARSHIP_INCLUDED_ABOVE_BOX_5");
     // Up to the grant is accepted and stored as chosen, and reopens the same.
-    let request = crate::tests::cross::interview::save_education(
-        &s.draft,
-        page(ScholarshipInclusion::Automatic { living_costs: 400_000 }),
+    let reply = crate::tests::cross::interview::save_education_answers(
+        &mut s,
+        page(ScholarshipInclusion::Automatic { living_costs: 400_000 })
+            .students
+            .iter()
+            .map(EducationStudent::from)
+            .collect(),
     );
-    let reply = send(&mut s, request);
     accepted(&reply);
     assert_eq!(
-        s.draft.credits.as_ref().unwrap().education[0].expenses.scholarship_in_income,
+        s.draft.credits.as_ref().unwrap().students[0].more.scholarship_in_income,
         ScholarshipInclusion::Automatic { living_costs: 400_000 }
     );
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
@@ -449,11 +491,21 @@ fn f4c_a_banned_american_opportunity_student_is_figured_with_the_lifetime_learni
     let build = |claim| {
         let mut d = complete(FederalStatus::Single);
         d.income[0] = wage(1, Owner::Taxpayer, 4_000_000, 400_000);
-        d.credits.as_mut().unwrap().education = vec![FederalEducation {
-            student: -1,
-            method: EducationChoice::AmericanOpportunity,
-            expenses: education_expenses(400_000),
-        }];
+        set_education(
+            d.credits.as_mut().unwrap(),
+            vec![{
+                let mut pair = native_education(
+                    -1,
+                    education_expenses(400_000),
+                    EducationChoice::AmericanOpportunity,
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = false;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            }],
+        );
         d.credits.as_mut().unwrap().after_disallowance = Some(claim);
         d
     };
@@ -558,7 +610,6 @@ fn f6b_a_child_born_and_died_prints_both_dates_and_needs_the_date_of_death() {
     c.residency = DependentResidency::WholeYearException;
     c.valid_ssn = false;
     c.valid_tin = false;
-    c.facts = PersonFacts::BORN_AND_DIED.0;
     d.credits.as_mut().unwrap().after_disallowance = Some(CreditsAfterDisallowance {
         earned_income: EicDisallowance::Disallowed {
             facts: DisallowanceFacts {
@@ -577,22 +628,33 @@ fn f6b_a_child_born_and_died_prints_both_dates_and_needs_the_date_of_death() {
     assert_eq!(value(&r, "form_8862_line_8_child_1_birth"), 210);
     assert_eq!(value(&r, "form_8862_line_8_child_1_death"), 401);
     assert_eq!(return_line(&r, "27a"), 3_447 * 100);
-    // The page: the fact needs the date, and the date is not before the birth.
+    // The page asks no separate fact: the 2026 birth, the date of death and
+    // no Social Security number decide it; the date is not before the birth.
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let loaded = s.draft.clone();
-    let born_and_died =
-        Dependent { facts: PersonFacts::BORN_AND_DIED.0, ..row("Eli", "Sample", 20260210) };
-    for (person, key) in [
-        (born_and_died.clone(), "BORN_AND_DIED_NEEDS_DEATH_DATE"),
-        (Dependent { death_date: Some(20260101), ..born_and_died.clone() }, "DEATH_BEFORE_BIRTH"),
-    ] {
-        rejected_with(send(&mut s, save_children(&loaded, vec![person])), key);
-    }
+    let born_and_died = Dependent {
+        identification: Identification::NoneByDueDate,
+        ..row("Eli", "Sample", 20260210)
+    };
+    rejected_with(
+        send(
+            &mut s,
+            save_children(
+                &loaded,
+                vec![Dependent { death_date: Some(20260101), ..born_and_died.clone() }],
+            ),
+        ),
+        "DEATH_BEFORE_BIRTH",
+    );
+    accepted(&send(&mut s, save_children(&loaded, vec![born_and_died.clone()])));
+    assert!(!s.draft.dependents()[0].born_and_died());
+    let living = s.draft.clone();
     accepted(&send(
         &mut s,
-        save_children(&loaded, vec![Dependent { death_date: Some(20260401), ..born_and_died }]),
+        save_children(&living, vec![Dependent { death_date: Some(20260401), ..born_and_died }]),
     ));
     let stored = &s.draft.dependents()[0];
+    assert!(stored.born_and_died());
     assert_eq!(stored.death_date, Some(20260401));
     assert_eq!(stored.residency, DependentResidency::WholeYearException);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
@@ -605,6 +667,7 @@ fn f6b_a_child_born_and_died_prints_both_dates_and_needs_the_date_of_death() {
 fn code_t_wage(d: &mut FederalDraft, entry: usize, wages: i64, code_t: i64) {
     set_joint_adoption_w2(d, entry, wages, code_t);
     let FederalIncome::Wage { data } = &mut d.income[entry].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.other_box12.push(W2CodeAmount { code: W2Code::T, amount: code_t });
 }
 
@@ -758,9 +821,11 @@ fn f7c_a_special_needs_child_excludes_the_whole_limit_whatever_the_code_t() {
     payments[1].received = 400_000;
     for (entry, code_t) in [(0, 500_000), (1, 400_000)] {
         let FederalIncome::Wage { data } = &mut small.income[entry].income else { unreachable!() };
+        let mut data = edit_wage(data);
         data.other_box12.clear();
         data.other_box12.push(W2CodeAmount { code: W2Code::T, amount: code_t });
         let wages = data.wages;
+        drop(data);
         set_joint_adoption_w2(&mut small, entry, wages, code_t);
     }
     let r = supported(&small);
@@ -825,8 +890,10 @@ fn w2_code_t_matches_an_employee_program_and_a_larger_record_is_refused() {
     assert!(noted(&r, "WARN_W2_CODE_T_TAXABLE_NO_ADOPTION_RECORD"));
     // A record above the W-2's code T is refused.
     let FederalIncome::Wage { data } = &mut d.income[0].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.other_box12.clear();
     data.other_box12.push(W2CodeAmount { code: W2Code::T, amount: 300_000 });
+    drop(data);
     let r = estimate(&d);
     assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
     assert!(r.issues.iter().any(|i| i.display.key == "ISSUE_ADOPTION_CODE_T_ABOVE_W_2"), "{r:?}");

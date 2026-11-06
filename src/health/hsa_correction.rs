@@ -1,144 +1,12 @@
+pub use crate::hsa_source::{HsaCorrection, HsaCorrectionPayer};
 use crate::validation::ValidationIssue;
 // Form 8889 lines 2, 9, 14a/14b and the timely excess-contribution rules.
-use crate::federal_rules::valid_date;
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{Exact, whole};
 use crate::kernel::ratio::positive;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// Timely HSA excess-contribution return
-/// Use the custodian's completed corrective distribution (Form 1099-SA code 2), not an ordinary withdrawal, and enter it once. Split by contribution year and payer. Current-year contribution totals above include this original principal; the App subtracts it once. Exclude the corrective payment from ordinary medical/nonmedical withdrawals.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct HsaCorrection {
-    /// Actual returned-excess statement, if entered on Other income
-    /// The existing accepted source identity; never a list position or account number. Unlinked manual corrections retain their actual custodian facts.
-    #[libertas_default($null)]
-    #[libertas_number(min = 1)]
-    pub document: Option<i64>,
-    /// Original failed indirect-rollover deposit, if this return corrects one
-    /// Choose the original Other-income statement, separately from the returned-excess statement above. The contribution date and year must match its actual failed cash deposit. Leave empty only for other manually reported contributions.
-    #[libertas_default($null)]
-    #[libertas_number(min = 1)]
-    pub failed_deposit: Option<i64>,
-    /// Year for which the contribution was designated
-    // Tax structure: these corrections concern the prior or current return year (2025 or 2026).
-    #[libertas_number(min = 2025, max = 2026)]
-    pub year: u32,
-    /// Date the employer or individual actually deposited the principal
-    /// A deposit designated for a prior tax year may have been made the following year. Its Form 8889 limit uses the designated year, while employer wage and other-income timing follows the actual deposit year.
-    #[libertas_date_only]
-    // Tax structure: a 2025 or 2026 designated contribution may be deposited in the following calendar year.
-    #[libertas_number(min = 20250101, max = 20271231)]
-    pub contributed_on: u32,
-    /// Principal contribution returned
-    /// Original excess principal, before the custodian's gain or loss adjustment.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub principal: i64,
-    /// Attributable net income returned
-    /// Use the custodian's allocation, including a negative amount for loss. A loss reduces the cash returned, not the principal removed from contributions. Positive earnings enter income in the withdrawal year.
-    #[libertas_money("USD", 2)]
-    pub earnings: i64,
-    /// Date principal and all attributable net income were returned
-    #[libertas_date_only]
-    #[libertas_number(min = 20250101)]
-    pub returned: u32,
-    /// Applicable correction deadline
-    /// Use the actual return due date including a valid extension, or the documented deadline under applicable IRS relief. Confirm entitlement to any later deadline, including timely filing and amendment requirements for six-month relief.
-    #[libertas_date_only]
-    #[libertas_number(min = 20250101)]
-    pub deadline: u32,
-    /// Original contribution source
-    pub payer: HsaCorrectionPayer,
-}
-
-/// Source of corrected HSA contribution
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum HsaCorrectionPayer {
-    /// Personal or other after-tax contribution
-    Personal,
-    /// Employer or payroll-excluded contribution
-    Employer {
-        /// Corrected principal already included in the contribution-year Form W-2 wages
-        /// For 2025, No requires the principal on the corrected return for the actual deposit year as other income. For 2026, Yes requires those wages in that year's Income; No adds the principal to other income in the actual deposit year, not wages or earned-income/IRA compensation. A 2027 deposit designated for 2026 does not add 2026 income. Compare W-2 box 1 with box 12 code W, or a Form W-2c.
-        in_wages: bool,
-    },
-}
 impl HsaCorrection {
-    // The principal returned for 2026 by one payer: the sum the page rules
-    // HSA_CORRECTED_*_ABOVE_CONTRIBUTED and HSA_LATER_*_ABOVE_NET take.
-    pub(crate) fn returned_for_return_year(corrections: &[HsaCorrection], employer: bool) -> Exact {
-        corrections
-            .iter()
-            .filter(|v| {
-                v.year == 2026 && matches!(v.payer, HsaCorrectionPayer::Employer { .. }) == employer
-            })
-            .map(|v| whole(v.principal))
-            .sum()
-    }
-    pub(crate) fn manual_returned_for_return_year(
-        corrections: &[HsaCorrection],
-        employer: bool,
-    ) -> Exact {
-        corrections
-            .iter()
-            .filter(|c| {
-                c.failed_deposit.is_none()
-                    && c.year == 2026
-                    && matches!(c.payer, HsaCorrectionPayer::Employer { .. }) == employer
-            })
-            .map(|c| whole(c.principal))
-            .sum()
-    }
-    // The rules the page checks, checked again on save with the same keys.
-
-    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
-        if self.failed_deposit.is_some() && !matches!(self.payer, HsaCorrectionPayer::Personal) {
-            Some(
-                crate::validation::ValidationIssue::new("HEALTH_FAILED_DEPOSIT_PERSONAL_REQUIRED")
-                    .at_field("payer"),
-            )
-        } else if self.returned < self.contributed_on {
-            Some(
-                crate::validation::ValidationIssue::new("HSA_CORRECTION_RETURNED_BEFORE_DEPOSIT")
-                    .at_field("returned"),
-            )
-        } else if self.deadline < self.contributed_on {
-            Some(
-                crate::validation::ValidationIssue::new("HSA_CORRECTION_DEADLINE_BEFORE_DEPOSIT")
-                    .at_field("deadline"),
-            )
-        } else if whole(self.earnings) + whole(self.principal) < whole(0) {
-            Some(
-                crate::validation::ValidationIssue::new("HSA_CORRECTION_LOSS_ABOVE_PRINCIPAL")
-                    .at_field("earnings"),
-            )
-        } else {
-            None
-        }
-    }
-    pub(crate) fn valid(&self) -> bool {
-        self.document.is_none_or(|id| id > 0)
-            && self
-                .failed_deposit
-                .is_none_or(|id| id > 0 && matches!(self.payer, HsaCorrectionPayer::Personal))
-            && (2025..=2026).contains(&self.year)
-            && valid_date(self.contributed_on)
-            && (self.year..=self.year + 1).contains(&(self.contributed_on / 10000))
-            && self.contributed_on <= self.returned
-            && self.contributed_on <= self.deadline
-            && self.principal >= 0
-            && self.earnings >= -self.principal
-            && valid_date(self.returned)
-            && valid_date(self.deadline)
-            && self.returned / 10000 >= self.year
-            && self.returned / 10000 <= 2027
-            && self.deadline / 10000 >= self.year
-    }
-    pub(crate) fn eligible(&self) -> bool {
-        self.returned <= self.deadline
-    }
     pub(crate) fn current_employer_principal_income(&self) -> i64 {
         if self.contributed_on / 10000 == 2026
             && matches!(self.payer, HsaCorrectionPayer::Employer { in_wages: false })
@@ -188,11 +56,14 @@ pub struct HsaCorrectionPage {
     /// Principal contribution returned
     /// Original excess principal, before the custodian's gain or loss adjustment.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub principal: i64,
     /// Attributable net income returned
     /// Use the custodian's allocation, including a negative amount for loss. A loss reduces the cash returned, not the principal removed from contributions. Positive earnings enter income in the withdrawal year.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub earnings: i64,
     /// Date principal and all attributable net income were returned
     #[libertas_date_only]
@@ -277,11 +148,12 @@ struct CorrectionLink {
     earnings: i64,
     returned: u32,
 }
-fn source_is(data: &crate::FederalMedicalDistribution, hsa: bool) -> bool {
+fn source_is(data: &crate::SaSource, hsa: bool) -> bool {
+    let data = &crate::FederalMedicalDistribution::from(data);
     matches!(
         (&data.account, hsa),
         (crate::MedicalSaAccount::Hsa, true) | (crate::MedicalSaAccount::Archer, false)
-    ) && matches!(data.payment, crate::MedicalSaPayment::ExcessReturned { .. })
+    ) && matches!(data.effective_payment(), Some(crate::MedicalSaPayment::ExcessReturned))
 }
 fn hsa_links(entries: &[crate::FederalHsa]) -> alloc::vec::Vec<CorrectionLink> {
     entries
@@ -323,7 +195,7 @@ fn references_issue(
 ) -> Option<CorrectionReferenceIssue> {
     links.iter().find_map(|c| {
         let id=c.document?;
-        (!income.iter().any(|e| e.id==id && e.owner==c.owner && matches!(&e.income,crate::FederalIncome::MedicalDistribution {data} if source_is(data,hsa))))
+        (!income.iter().any(|e| e.id==id && e.owner==crate::DocumentOwner::from(c.owner) && matches!(&e.income,crate::FederalIncome::MedicalDistribution {data} if source_is(data,hsa))))
             .then(|| (c.location.clone(),ValidationIssue::new("HEALTH_CORRECTION_DOCUMENT_UNAVAILABLE").at_field("document")))
     })
 }
@@ -342,15 +214,16 @@ fn sources_issue(
         if !source_is(data, hsa) {
             continue;
         }
-        let crate::MedicalSaPayment::ExcessReturned { earnings } = &data.payment else {
-            continue;
-        };
-        let corrections: alloc::vec::Vec<_> =
-            links.iter().filter(|c| c.owner == e.owner && c.document == Some(e.id)).collect();
+        let form = data.internal();
+        let earnings = &form.box2_earnings;
+        let corrections: alloc::vec::Vec<_> = links
+            .iter()
+            .filter(|c| c.owner == e.owner.owned() && c.document == Some(e.id))
+            .collect();
         if corrections.is_empty() {
             if hsa || earnings.is_none() {
                 return Some((
-                    CorrectionSource::Document { owner: e.owner, id: e.id },
+                    CorrectionSource::Document { owner: e.owner.owned(), id: e.id },
                     ValidationIssue::new("HEALTH_CORRECTION_DOCUMENT_DETAILS_REQUIRED").at_record(),
                 ));
             }
@@ -363,10 +236,10 @@ fn sources_issue(
             ));
         }
         if corrections.iter().map(|c| whole(c.principal) + whole(c.earnings)).sum::<Exact>()
-            != whole(data.gross)
+            != whole(form.gross)
         {
             return Some((
-                CorrectionSource::Document { owner: e.owner, id: e.id },
+                CorrectionSource::Document { owner: e.owner.owned(), id: e.id },
                 ValidationIssue::new("HEALTH_CORRECTION_DOCUMENT_GROSS").at_field("gross"),
             ));
         }
@@ -375,7 +248,7 @@ fn sources_issue(
                 != whole(printed)
         }) {
             return Some((
-                CorrectionSource::Document { owner: e.owner, id: e.id },
+                CorrectionSource::Document { owner: e.owner.owned(), id: e.id },
                 ValidationIssue::new("HEALTH_CORRECTION_DOCUMENT_EARNINGS")
                     .at_field("earnings")
                     .in_field("payment"),

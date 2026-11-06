@@ -1,3 +1,4 @@
+use crate::tests::support::client::income_pages::{open_documents, qsbs_bool_fact};
 use crate::tests::support::client::{draft_from_native_records, native_draft_records};
 // Form 8379 (T3-8379): Part III allocation and the estimate of the injured
 // spouse's share, every expected amount worked by hand from the Form 8379
@@ -88,7 +89,7 @@ fn unavailable(d: &FederalDraft, key: &str) {
 fn injured_spouse_fixture_matches_hand_computation() {
     let d = injured_return((60_000, 5_000), (20_000, 500), 1_000, allocation());
     let mut spouse_interest = income(savings_income(1_000, 0));
-    spouse_interest.owner = Owner::Spouse;
+    spouse_interest.owner = crate::DocumentOwner::Spouses;
     let mut d = d;
     add(&mut d, spouse_interest);
     let r = supported(&d);
@@ -153,7 +154,7 @@ fn injured_spouse_fixture_matches_hand_computation() {
     assert_eq!(message.args, vec![MessageArg::usd_cents(102_745)]);
     // Form 8379 never changes the joint return.
     let mut plain = d.clone();
-    plain.situations.clear();
+    plain.often_missed.unprepared.clear();
     plain.injured_spouse = None;
     assert_eq!(supported(&plain).refund, r.refund);
 }
@@ -206,7 +207,7 @@ fn injured_spouse_agreed_estimated_payments_follow_the_agreement() {
     a.estimated = EstimatedSplit::Agreed { injured: 100_000 };
     let mut d = injured_return((60_000, 5_000), (20_000, 500), 1_000, a);
     let mut spouse_interest = income(savings_income(1_000, 0));
-    spouse_interest.owner = Owner::Spouse;
+    spouse_interest.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse_interest);
     let r = supported(&d);
     assert_eq!((column(&r, "20", "b"), column(&r, "20", "c")), (1_000, 0));
@@ -223,12 +224,13 @@ fn injured_spouse_community_property_takes_half_the_refund() {
         InjuredCommunityFacts::Yes { states: vec![5], debt_facts: InjuredDebtFacts::NotApplicable };
     let mut d = injured_return((60_000, 5_000), (20_000, 500), 1_000, a);
     let mut spouse_interest = income(savings_income(1_000, 0));
-    spouse_interest.owner = Owner::Spouse;
+    spouse_interest.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse_interest);
     for entry in &mut d.income {
         entry.community = CommunityShare::Community;
     }
-    for payment in &mut d.payments.as_mut().unwrap().estimated_payments {
+    for payment in crate::tests::support::builders::dated_payments_mut(d.payments.as_mut().unwrap())
+    {
         payment.refund_property = Some(RefundSourcePropertyFacts::Community {
             management: RefundManagement::NotApplicable,
         });
@@ -367,6 +369,8 @@ fn injured_spouse_line_14_follows_moving_educator_and_employee_expenses() {
         },
     });
     a.employee_expenses.push(EmployeeExpenseClaim {
+        improvement_buildings: Vec::new(),
+        equipment_assets: vec![],
         dot_hours_of_service: false,
         leased_vehicles: vec![],
         owner: Owner::Spouse,
@@ -436,15 +440,16 @@ fn injured_spouse_joint_zero_tax_ratio_needs_agreement_but_separate_payment_does
     let mut d = injured_return((20_000, 0), (10_000, 0), 1_000, allocation());
     // Separate taxes: taxpayer on3,900 is393, so first lower wages to15k each.
     if let FederalIncome::Wage { data } = &mut d.income[0].income {
-        data.wages = 1_500_000;
+        edit_wage(data).wages = 1_500_000;
     }
     if let FederalIncome::Wage { data } = &mut d.income[1].income {
-        data.wages = 1_500_000;
+        edit_wage(data).wages = 1_500_000;
     }
     unavailable(&d, "WARN_8379_JOINT_PAYMENT_SPLIT_NEEDED");
     d.injured_spouse.as_mut().unwrap().estimated = EstimatedSplit::Agreed { injured: 30_000 };
     assert_eq!(column(&supported(&d), "20", "b"), 300);
-    d.payments.as_mut().unwrap().estimated_payments[0].payer = PaymentPayer::Spouse;
+    crate::tests::support::builders::dated_payments_mut(d.payments.as_mut().unwrap())[0].payer =
+        PaymentPayer::Spouse;
     d.injured_spouse.as_mut().unwrap().estimated = EstimatedSplit::IrsFormula;
     let r = supported(&d);
     assert_eq!((column(&r, "20", "b"), column(&r, "20", "c")), (0, 1_000));
@@ -472,14 +477,14 @@ fn injured_spouse_loan_exclusive_borrower_owns_actual_joint_deduction() {
 fn injured_spouse_withholding_categories_round_independently() {
     let mut d = injured_return((60_000, 0), (20_000, 0), 0, allocation());
     if let FederalIncome::Wage { data } = &mut d.income[0].income {
-        data.withholding = 500_049;
+        edit_wage(data).withholding = 500_049;
     }
     if let FederalIncome::Wage { data } = &mut d.income[1].income {
-        data.withholding = 50_049;
+        edit_wage(data).withholding = 50_049;
     }
     let mut entry = income(savings_income(1_000, 0));
     if let FederalIncome::Interest { data } = &mut entry.income {
-        data.withholding = 149;
+        edit_interest(data).withholding = 149;
     }
     add(&mut d, entry);
     let r = supported(&d);
@@ -536,7 +541,7 @@ fn injured_spouse_qcd_uses_final_partial_exclusion_by_owner() {
         (13_000, 5_000, 8_000)
     );
     let mut probe = r.clone();
-    let q = crate::retirement::qualified_charity(
+    let q = crate::retirement_return::qualified_charity(
         &d,
         &mut probe,
         None,
@@ -551,9 +556,6 @@ fn injured_spouse_qcd_uses_final_partial_exclusion_by_owner() {
 // The $51,500 deduction includes no current payer deduction. The collector's
 // same-invocation recipient result now owns this deduction independently of
 // any current payer source. Keep the original ordinary deduction and tax.
-// 2026-10-15: restore the existing approved source-feed correction from e7ea6c02,
-// under the app contract's Person attribution rule. The old refusal assertion
-// remains in Git history; retain this case and its historical name pending P0.
 #[test]
 fn injured_spouse_unrepresented_recapture_deduction_is_not_guessed() {
     let mut d = injured_return((120_000, 25_000), (40_000, 5_000), 0, allocation());
@@ -561,7 +563,7 @@ fn injured_spouse_unrepresented_recapture_deduction_is_not_guessed() {
     received.paid = 0;
     received.alimony_due = 0;
     let mut entry = income(FederalIncome::Alimony { data: received });
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut d, entry);
     let r = supported(&d);
     assert_eq!(return_line(&r, "10"), 5_150_000);
@@ -620,13 +622,15 @@ fn injured_spouse_line18_includes_aptc_and_excludes_it_from_base_once() {
 fn injured_spouse_estimated_and_extension_categories_round_separately() {
     let mut d = injured_return((60_000, 10_000), (20_000, 1_000), 0, allocation());
     let p = d.payments.as_mut().unwrap();
-    p.estimated = Some(49);
-    p.estimated_payments = vec![crate::DatedPayment {
-        date: 20260415,
-        amount: 49,
-        payer: PaymentPayer::Taxpayer,
-        refund_property: None,
-    }];
+
+    p.estimated = crate::EstimatedPaymentEntryRecord::Sources {
+        payments: vec![crate::DatedPayment {
+            date: 20260415,
+            amount: 49,
+            payer: PaymentPayer::Taxpayer,
+            refund_property: None,
+        }],
+    };
     p.extension = 49;
     p.extension_payer = Some(PaymentPayer::Spouse);
     let r = supported(&d);
@@ -703,11 +707,8 @@ fn injured_spouse_supporting_rows_reopen_unchanged_without_property_questions() 
     }
     let mut s = Interview::new(TEST_USER, d);
     // Real income retains the three applicable property choices.
-    let Reply::Edit(P::SaveIncomes { documents, .. }) = from_review(&mut s, TaxSection::Wages)
-    else {
-        panic!()
-    };
-    assert!(documents.documents.iter().all(|r| r.allowed_community
+    let P::SaveDocuments { documents, .. } = open_documents(&mut s) else { panic!() };
+    assert!(documents.common.wages.documents.iter().all(|r| r.allowed_community
         == vec![
             crate::community::index(CommunityShare::Community),
             crate::community::index(CommunityShare::Separate),
@@ -717,29 +718,33 @@ fn injured_spouse_supporting_rows_reopen_unchanged_without_property_questions() 
         (
             "income-source-1027",
             TaxSection::Retirement,
-            IncomeDocument::Form8606(Form8606 {
-                adjustment: 0,
-                reservist_repayments: vec![],
-                basis: 100_000,
-                year_end: 1_000_000,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Form8606(Form8606 {
+                    adjustment: 0,
+                    reservist_repayments: vec![],
+                    basis: 100_000,
+                    year_end: 1_000_000,
+                }),
+            },
         ),
         (
             "income-source-1070",
             TaxSection::SelfEmployment,
-            IncomeDocument::QbiLossCarryforward(QbiLossCarryforward {
-                business: 100_000,
-                reit_ptp: 0,
-                injured_owners: None,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::QbiLossCarryforward(QbiLossCarryforward {
+                    business: 100_000,
+                    reit_ptp: 0,
+                    injured_owners: None,
+                }),
+            },
         ),
     ] {
         let Reply::Edit(mut page) = from_review(&mut s, topic) else { panic!() };
         let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-        documents.documents.push(document(0, fact));
+        documents.documents.push(crate::IncomeRecordItem::from_income(document(0, fact)).unwrap());
         accepted(&send(&mut s, page));
         assert!(s.draft.income.iter().all(|e| e.community == CommunityShare::Community));
-        let Reply::Edit(wages) = from_review(&mut s, TaxSection::Wages) else { panic!() };
+        let wages = open_documents(&mut s);
         accepted(&send(&mut s, wages));
         let Reply::Edit(page) = from_review(&mut s, topic) else { panic!() };
         let P::SaveIncomes { documents, .. } = &page else { panic!() };
@@ -800,8 +805,8 @@ fn injured_spouse_supporting_rows_reopen_unchanged_without_property_questions() 
     assert_eq!(s.draft.income.len(), 2);
     assert_eq!(s.draft.adjustments.as_ref().unwrap().ira_basis[0].prior, 100_000);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
-    // Turning off the overlay removes the choices and resets those facts
-    // through the same accepted-save lifecycle.
+    // Turning off the overlay changes the allowed property choices. Correct
+    // the retained source answers through their owning editor.
     let Reply::Edit(mut page) = crate::tests::support::client::native_editor(
         from_review(&mut s, TaxSection::InjuredSpouse),
         &[],
@@ -822,6 +827,13 @@ fn injured_spouse_supporting_rows_reopen_unchanged_without_property_questions() 
         s.draft.injured_spouse.as_ref().unwrap().community,
         InjuredCommunityFacts::No
     ));
+    let mut sources = crate::tests::cross::interview::open_topic(&mut s, TaxSection::Wages);
+    let P::SaveWagesAnswers { followups, .. } = &mut sources else { unreachable!() };
+    for row in followups {
+        let crate::WagesDocumentAnswer::Community { value } = &mut row.answer;
+        *value = CommunityShare::NotNeeded;
+    }
+    accepted(&send(&mut s, sources));
     assert!(s.draft.income.iter().all(|e| e.community == CommunityShare::NotNeeded));
 }
 
@@ -835,16 +847,22 @@ fn injured_spouse_property_choices_are_row_bound_and_do_not_mutate_the_draft() {
     let dirty = s.dirty;
     for (document, allowed) in [
         (
-            IncomeDocument::Form8606(Form8606 {
-                adjustment: 0,
-                reservist_repayments: vec![],
-                basis: 100_000,
-                year_end: 1_000_000,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Form8606(Form8606 {
+                    adjustment: 0,
+                    reservist_repayments: vec![],
+                    basis: 100_000,
+                    year_end: 1_000_000,
+                }),
+            },
             vec![crate::community::index(CommunityShare::NotNeeded)],
         ),
         (
-            IncomeDocument::W2(crate::tests::cross::interview::w2(1_000_000)),
+            IncomeSource::Wage {
+                value: crate::WageDocument::W2(wage_document(crate::tests::cross::interview::w2(
+                    1_000_000,
+                ))),
+            },
             vec![
                 crate::community::index(CommunityShare::Community),
                 crate::community::index(CommunityShare::Separate),
@@ -852,57 +870,82 @@ fn injured_spouse_property_choices_are_row_bound_and_do_not_mutate_the_draft() {
             ],
         ),
     ] {
+        if matches!(document, IncomeSource::Wage { .. }) {
+            let page =
+                crate::tests::support::client::income_pages::open_topic(&mut s, TaxSection::Wages);
+            let P::SaveWagesAnswers { followups, .. } = page else { unreachable!() };
+            let row = followups
+                .iter()
+                .find(|row| row.key == "income/1/community")
+                .expect("community answer belongs to the W-2 topic row");
+            assert_eq!(row.allowed_values, allowed);
+            assert_eq!(s.draft, before);
+            assert_eq!(s.dirty, dirty);
+            continue;
+        }
         let Reply::Response(P::DocumentPropertyChoices { allowed_community }) = send(
             &mut s,
-            P::DocumentPropertyOptions {
-                initial_rental_recovery_choices: Vec::new(),
-                rental_energy_buildings: Vec::new(),
-                allowed_continuing_risk: ScorpRiskStart::continuing_choices(),
-                allowed_injured_source_facts: vec![],
-                allowed_injured_retained_owners: vec![],
-                ltc_payee_sources: vec![],
+            match document {
+                IncomeSource::Record { value: document } => P::DocumentPropertyOptions {
+                    source_choices: crate::IncomeSourceChoices::from_kinds(
+                        &crate::tests::support::client::income_pages::topic_kinds(
+                            TaxSection::Retirement,
+                        ),
+                    ),
+                    initial_asset_amt_carry_choices: Vec::new(),
+                    initial_interest_limit_choices: Vec::new(),
+                    initial_rental_recovery_choices: Vec::new(),
+                    rental_energy_buildings: Vec::new(),
+                    casualty_properties: Vec::new(),
+                    allowed_continuing_risk: ScorpRiskStart::continuing_choices(),
+                    allowed_injured_source_facts: vec![],
+                    allowed_injured_retained_owners: vec![],
+                    ltc_payee_sources: vec![],
 
-                wage_scorporations: Vec::new(),
-                allowed_wage_scorporations: Vec::new(),
-                initial_k1_investment_choices: alloc::vec![0, 1],
-                research_businesses: Vec::new(),
-                retained_research_choices: Vec::new(),
-                k1_credit_lines: Vec::new(),
-                research_credit_lines: Vec::new(),
-                renewable_credit_lines: Vec::new(),
-                transferable_credit_lines: Vec::new(),
-                user: TEST_USER,
-                people: vec![],
-                farms: vec![],
-                businesses: vec![],
-                rentals: vec![],
-                mortgage_loans: vec![],
-                basis_assets: vec![],
-                farm_sources: vec![],
-                farm_codes: vec![],
-                farm_limitations: vec![],
-                farm_method_changes: vec![],
-                annuity_sources: vec![],
-                recovery_sources: vec![],
-                cooperative_activities: vec![],
-                cooperative_properties: vec![],
-                foreign_countries: vec![],
-                interest_statements: vec![],
-                royalty_properties: vec![],
-                equipment_rentals: vec![],
-                hobbies: vec![],
-                ccc_lots: vec![],
-                inherited_iras: vec![],
-                inherited_roth_iras: vec![],
-                ltc_insured: vec![],
-                allowed_business_source: vec![],
-                allowed_farm_source: vec![],
-                allowed_partner_source: vec![],
-                allowed_home_spouse: vec![],
-                allowed_other_parent: vec![],
-                children: vec![],
-                document,
-                qbi_businesses: vec![],
+                    wage_scorporations: Vec::new(),
+                    allowed_wage_scorporations: Vec::new(),
+                    initial_k1_investment_choices: alloc::vec![0, 1],
+                    research_businesses: Vec::new(),
+                    retained_research_choices: Vec::new(),
+                    k1_credit_lines: Vec::new(),
+                    research_credit_lines: Vec::new(),
+                    renewable_credit_lines: Vec::new(),
+                    transferable_credit_lines: Vec::new(),
+                    user: TEST_USER,
+                    people: vec![],
+                    farms: vec![],
+                    businesses: vec![],
+                    rentals: vec![],
+                    mortgage_loans: vec![],
+                    basis_assets: vec![],
+                    farm_sources: vec![],
+                    farm_codes: vec![],
+                    farm_limitations: vec![],
+                    farm_method_changes: vec![],
+                    annuity_sources: vec![],
+                    recovery_sources: vec![],
+                    cooperative_activities: vec![],
+
+                    cooperative_properties: vec![],
+                    foreign_countries: vec![],
+                    interest_statements: vec![],
+                    royalty_properties: vec![],
+                    equipment_rentals: vec![],
+                    hobbies: vec![],
+                    ccc_lots: vec![],
+                    inherited_iras: vec![],
+                    inherited_roth_iras: vec![],
+                    ltc_insured: vec![],
+                    allowed_business_source: vec![],
+                    allowed_farm_source: vec![],
+                    allowed_partner_source: vec![],
+                    allowed_home_spouse: vec![],
+                    allowed_other_parent: vec![],
+                    children: vec![],
+                    document,
+                    qbi_businesses: vec![],
+                },
+                _ => unreachable!(),
             },
         ) else {
             panic!()
@@ -926,23 +969,25 @@ fn unit13_joint_nol_unestablished_owner_is_not_inferred_from_page_owner() {
         let mut s = Interview::new(TEST_USER, d.clone());
         let mut row = document(
             0,
-            IncomeDocument::NetOperatingLoss(LossCarryforward {
-                regular: vec![
-                    NolYear {
-                        ptp_ebl: crate::PtpEblNol::NoPtpEbl,
-                        research_parts: None,
-                        year: 2017,
-                        balance: 100_000,
-                        injured_owners: None,
-                    }
-                    .into(),
-                ],
-                amt: vec![],
-                source: LossSource::Business,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::NetOperatingLoss(LossCarryforward {
+                    regular: vec![
+                        NolYear {
+                            ptp_ebl: crate::PtpEblNol::NoPtpEbl,
+                            research_parts: None,
+                            year: 2017,
+                            balance: 100_000,
+                            injured_owners: None,
+                        }
+                        .into(),
+                    ],
+                    amt: vec![],
+                    source: LossSource::Business,
+                }),
+            },
         );
-        row.owner = owner;
-        let request = save_topic(&s.draft, TaxSection::SelfEmployment, vec![row]);
+        row.owner = crate::DocumentOwner::from(owner);
+        let request = save_topic(&mut s, TaxSection::SelfEmployment, vec![row]);
         accepted(&send(&mut s, request));
         let result = supported(&s.draft);
         assert_eq!(value(&result, "prior_nol_deduction"), 1000);
@@ -987,9 +1032,14 @@ fn unit13_approved_capital_and_qbi_owner_facts_save_reopen_and_keep_joint_totals
     assert_eq!(crate::extended_rules::regular_capital_carry(&prior), [7000, 0]);
     let mut s = Interview::new(TEST_USER, d);
     let request = save_topic(
-        &s.draft,
+        &mut s,
         TaxSection::InvestmentSales,
-        vec![document(0, IncomeDocument::CapitalLossCarryover(prior.clone().into()))],
+        vec![document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::CapitalLossCarryover(prior.clone().into()),
+            },
+        )],
     );
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.screening.as_ref().unwrap().capital_history[0], prior);
@@ -999,7 +1049,7 @@ fn unit13_approved_capital_and_qbi_owner_facts_save_reopen_and_keep_joint_totals
     assert!(
         page_documents(&page)
             .iter()
-            .any(|v| matches!(&v.document, IncomeDocument::CapitalLossCarryover(v) if crate::PriorCapitalReturn::from(v.clone()) == prior))
+            .any(|v| matches!(&v.document, IncomeSource::Record { value: crate::IncomeRecord::CapitalLossCarryover(v) } if crate::PriorCapitalReturn::from(v.clone()) == prior))
     );
     let mut invalid = prior.clone();
     invalid.injured_owners = Some(InjuredCapitalLossOwners::Shares {
@@ -1009,9 +1059,14 @@ fn unit13_approved_capital_and_qbi_owner_facts_save_reopen_and_keep_joint_totals
         spouse_long: 0,
     });
     let request = save_topic(
-        &reopened.draft,
+        &mut reopened,
         TaxSection::InvestmentSales,
-        vec![document(0, IncomeDocument::CapitalLossCarryover(invalid.into()))],
+        vec![document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::CapitalLossCarryover(invalid.into()),
+            },
+        )],
     );
     rejected_with(send(&mut reopened, request), "INJURED_CAPITAL_OWNER_TOTAL");
     assert_eq!(reopened.draft, s.draft);
@@ -1026,9 +1081,12 @@ fn unit13_approved_capital_and_qbi_owner_facts_save_reopen_and_keep_joint_totals
         }),
     };
     let request = save_topic(
-        &s.draft,
+        &mut s,
         TaxSection::SelfEmployment,
-        vec![document(0, IncomeDocument::QbiLossCarryforward(qbi.clone()))],
+        vec![document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::QbiLossCarryforward(qbi.clone()) },
+        )],
     );
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.screening.as_ref().unwrap().qbi_history.injured_owners, qbi.injured_owners);
@@ -1039,11 +1097,10 @@ fn unit13_approved_capital_and_qbi_owner_facts_save_reopen_and_keep_joint_totals
     assert!(
         page_documents(&page)
             .iter()
-            .any(|v| matches!(&v.document, IncomeDocument::QbiLossCarryforward(v) if v == &qbi))
+            .any(|v| matches!(&v.document, IncomeSource::Record { value: crate::IncomeRecord::QbiLossCarryforward(v) } if v == &qbi))
     );
 }
 
-// The approved source fact distinguishes the historical decision witness.
 // Actual ownership changes only Form 8379 columns, never the joint deduction.
 #[test]
 fn unit13_regular_nol_actual_owners_save_reopen_restart_and_prune() {
@@ -1056,22 +1113,27 @@ fn unit13_regular_nol_actual_owners_save_reopen_restart_and_prune() {
         let mut s = Interview::new(TEST_USER, d.clone());
         let row = document(
             0,
-            IncomeDocument::NetOperatingLoss(LossCarryforward {
-                regular: vec![
-                    NolYear {
-                        ptp_ebl: crate::PtpEblNol::NoPtpEbl,
-                        research_parts: None,
-                        year: 2017,
-                        balance: 100_000,
-                        injured_owners: Some(InjuredNolOwners::Shares { taxpayer, spouse }),
-                    }
-                    .into(),
-                ],
-                amt: vec![],
-                source: LossSource::Business,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::NetOperatingLoss(LossCarryforward {
+                    regular: vec![
+                        NolYear {
+                            ptp_ebl: crate::PtpEblNol::NoPtpEbl,
+                            research_parts: None,
+                            year: 2017,
+                            balance: 100_000,
+                            injured_owners: Some(InjuredNolOwners::Shares { taxpayer, spouse }),
+                        }
+                        .into(),
+                    ],
+                    amt: vec![],
+                    source: LossSource::Business,
+                }),
+            },
         );
-        accepted(&send(&mut s, save_topic(&d, TaxSection::SelfEmployment, vec![row])));
+        accepted(&{
+            let request = save_topic(&mut s, TaxSection::SelfEmployment, vec![row]);
+            send(&mut s, request)
+        });
         let r = supported(&s.draft);
         assert_eq!(value(&r, "prior_nol_deduction"), 1000);
         assert_eq!(value(&r, "agi"), 79_000);
@@ -1084,7 +1146,11 @@ fn unit13_regular_nol_actual_owners_save_reopen_restart_and_prune() {
         let mut reopened = restart(s.draft.clone());
         let page = open_topic(&mut reopened, TaxSection::SelfEmployment);
         let mut rows = page_documents(&page).to_vec();
-        let IncomeDocument::NetOperatingLoss(losses) = &mut rows[0].document else { panic!() };
+        let IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(losses) } =
+            &mut rows[0].document
+        else {
+            panic!()
+        };
         assert_eq!(
             losses.regular[0].injured_owners.as_ref().unwrap().amounts(),
             [taxpayer, spouse]
@@ -1092,13 +1158,16 @@ fn unit13_regular_nol_actual_owners_save_reopen_restart_and_prune() {
         losses.regular[0].injured_owners =
             Some(InjuredNolOwners::Shares { taxpayer: 1, spouse: 1 });
         rejected_with(
-            send(&mut reopened, save_topic(&s.draft, TaxSection::SelfEmployment, rows)),
+            {
+                let request = save_topic(&mut reopened, TaxSection::SelfEmployment, rows);
+                send(&mut reopened, request)
+            },
             "INJURED_NOL_OWNER_TOTAL",
         );
         assert_eq!(reopened.draft, s.draft);
         let mut no_claim = s.draft.clone();
         no_claim.injured_spouse = None;
-        no_claim.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+        no_claim.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
         crate::injured_spouse_sources::clear_unused(&mut no_claim);
         let NolHistory::Records { years, .. } = &no_claim.screening.as_ref().unwrap().nol else {
             panic!()
@@ -1204,7 +1273,7 @@ fn unit13_adoption_refund_uses_the_approved_direct_credit_allocation() {
 fn unit13_fund_refundable_credit_follows_actual_statement_owner() {
     let mut d = injured_return((60_000, 5_000), (20_000, 500), 0, allocation());
     let mut fund = income(undistributed_gain());
-    fund.owner = Owner::Spouse;
+    fund.owner = crate::DocumentOwner::Spouses;
     add(&mut d, fund);
     let r = supported(&d);
     assert_eq!(column(&r, "17", "a"), 1050);
@@ -1217,10 +1286,10 @@ fn unit13_fund_refundable_credit_follows_actual_statement_owner() {
 fn unit13_taxable_social_security_uses_approved_source_default_and_direct_override() {
     let mut d = injured_return((60_000, 8_000), (20_000, 2_000), 0, allocation());
     let mut first = income(social_security_net(2_000_000, 0));
-    first.owner = Owner::Taxpayer;
+    first.owner = crate::DocumentOwner::Yours;
     add(&mut d, first);
     let mut second = income(social_security_net(1_000_000, 0));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     // Provisional income is well above the upper joint threshold: taxable
     // benefits are85% of$30,000=$25,500. The approved default follows the
@@ -1258,10 +1327,10 @@ fn unit13_social_default_uses_injured_identity_and_joint_dollar_rounding() {
     a.injured = Owner::Spouse;
     let mut d = injured_return((60_000, 8_000), (20_000, 2_000), 0, a);
     let mut first = income(social_security_net(2_000_000, 0));
-    first.owner = Owner::Taxpayer;
+    first.owner = crate::DocumentOwner::Yours;
     add(&mut d, first);
     let mut second = income(social_security_net(1_000_100, 0));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     let r = supported(&d);
     assert_eq!(value(&r, "taxable_social_security"), 25_501);
@@ -1278,15 +1347,25 @@ fn unit13_social_default_uses_injured_identity_and_joint_dollar_rounding() {
 }
 
 fn injured_two_students(d: &mut FederalDraft, method: EducationMethod, expenses: [i64; 2]) {
-    d.credits.as_mut().unwrap().education = [-1, -2]
-        .into_iter()
-        .zip(expenses)
-        .map(|(student, expense)| FederalEducation {
-            student,
-            expenses: education_expenses(expense * 100),
-            method: education_choice(method, Answer::Yes),
-        })
-        .collect();
+    set_education(
+        d.credits.as_mut().unwrap(),
+        [-1, -2]
+            .into_iter()
+            .zip(expenses)
+            .map(|(student, expense)| {
+                let mut pair = native_education(
+                    student,
+                    education_expenses(expense * 100),
+                    education_choice(method, Answer::Yes),
+                );
+                pair.0.id = 0;
+                pair.0.half_time = true;
+                pair.0.graduate = method == EducationMethod::LifetimeLearning;
+                pair.1.more.american_opportunity_used_up = Some(false);
+                pair
+            })
+            .collect(),
+    );
 }
 
 #[test]
@@ -1307,7 +1386,7 @@ fn unit13_education_credits_follow_each_actual_student_after_the_joint_phaseout(
         );
         let mut ordinary = d.clone();
         ordinary.injured_spouse = None;
-        ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+        ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
         let joint = supported(&ordinary);
         assert_eq!(r.tax, joint.tax);
         assert_eq!(r.refund, joint.refund);
@@ -1366,7 +1445,7 @@ fn unit13_reit_qbi_uses_actual_retained_loss_owners_and_keeps_printed_line15() {
     let mut d = injured_return((60_000, 20_000), (20_000, 8_000), 0, allocation());
     for (owner, amount) in [(Owner::Taxpayer, 30_000), (Owner::Spouse, 20_000)] {
         let mut entry = income(reit_income(amount, amount, true));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let history = &mut d.screening.as_mut().unwrap().qbi_history;
@@ -1426,7 +1505,7 @@ fn unit13_business_qbi_follows_final_source_after_owner_half_se() {
     let mut d = injured_return((60_000, 15_000), (20_000, 8_000), 0, allocation());
     for (owner, amount) in [(Owner::Taxpayer, 10_000), (Owner::Spouse, 20_000)] {
         let mut entry = income(cash_business(amount));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let r = supported(&d);
@@ -1440,7 +1519,7 @@ fn unit13_business_qbi_follows_final_source_after_owner_half_se() {
     assert!(!r.review_notes.iter().any(|n| n.display.key == "WARN_8379_QBI_OWNER_UNAVAILABLE"));
     let mut ordinary = d.clone();
     ordinary.injured_spouse = None;
-    ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let joint = supported(&ordinary);
     assert_eq!(r.tax, joint.tax);
     assert_eq!(r.refund, joint.refund);
@@ -1508,7 +1587,7 @@ fn unit13_current_and_prior_care_follow_actual_people_and_different_year_rates()
     );
     let mut ordinary = d.clone();
     ordinary.injured_spouse = None;
-    ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let joint = supported(&ordinary);
     assert_eq!(r.tax, joint.tax);
     assert_eq!(r.refund, joint.refund);
@@ -1588,13 +1667,18 @@ fn unit13_retained_niit_difference_owner_is_not_encoded_by_joint_capital_shares(
     for page_owner in [Owner::Taxpayer, Owner::Spouse] {
         let d = injured_return((300_000, 60_000), (100_000, 20_000), 0, allocation());
         let mut session = Interview::new(TEST_USER, d);
-        let mut row = document(0, IncomeDocument::CapitalLossCarryover(prior.clone().into()));
-        row.owner = page_owner;
-        let page = save_topic(&session.draft, TaxSection::InvestmentSales, vec![row]);
+        let mut row = document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::CapitalLossCarryover(prior.clone().into()),
+            },
+        );
+        row.owner = crate::DocumentOwner::from(page_owner);
+        let page = save_topic(&mut session, TaxSection::InvestmentSales, vec![row]);
         accepted(&send(&mut session, page));
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut entry = income(ordinary_investment_sale(30_000, 0, GainTerm::Short));
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut session.draft, entry);
         }
         let r = supported(&session.draft);
@@ -1653,27 +1737,34 @@ fn unit13_contract_carryback_ownership_is_not_encoded_by_surviving_prior_shares(
     for page_owner in [Owner::Taxpayer, Owner::Spouse] {
         let d = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
         let mut session = Interview::new(TEST_USER, d);
-        let history = document(0, IncomeDocument::CapitalLossCarryover(prior.clone().into()));
+        let history = document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::CapitalLossCarryover(prior.clone().into()),
+            },
+        );
         let mut election = document(
             0,
-            IncomeDocument::Section1256Carryback(Section1256Carryback {
-                amount: 800_000,
-                injured_owners: None,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::Section1256Carryback(Section1256Carryback {
+                    amount: 800_000,
+                    injured_owners: None,
+                }),
+            },
         );
-        election.owner = page_owner;
-        let page = save_topic(&session.draft, TaxSection::InvestmentSales, vec![history, election]);
+        election.owner = crate::DocumentOwner::from(page_owner);
+        let page = save_topic(&mut session, TaxSection::InvestmentSales, vec![history, election]);
         accepted(&send(&mut session, page));
         let gain = income(ordinary_investment_sale(2_000, 0, GainTerm::Long));
         add(&mut session.draft, gain);
         let mut loss = income(FederalIncome::Section1256 {
-            data: FederalSection1256 {
+            data: contracts_source(FederalSection1256 {
                 aggregate: -100_000,
                 withholding: 0,
                 special_treatment: false,
-            },
+            }),
         });
-        loss.owner = Owner::Spouse;
+        loss.owner = crate::DocumentOwner::Spouses;
         add(&mut session.draft, loss);
         let r = supported(&session.draft);
         assert_eq!(value(&r, "form_6781_net"), -1_000);
@@ -1719,9 +1810,14 @@ fn unit13_approved_retained_niit_owners_save_without_changing_joint_tax() {
         let mut prior = retained_owner_source();
         prior.injured_niit_owners = Some(source.clone());
         let request = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::InvestmentSales,
-            vec![document(0, IncomeDocument::CapitalLossCarryover(prior.clone().into()))],
+            vec![document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::CapitalLossCarryover(prior.clone().into()),
+                },
+            )],
         );
         accepted(&send(&mut session, request));
         let record = &session.draft.screening.as_ref().unwrap().capital_history[0];
@@ -1743,9 +1839,14 @@ fn unit13_approved_retained_niit_owners_save_without_changing_joint_tax() {
         prior.injured_niit_owners =
             Some(InjuredRetainedOwners::Both { taxpayer: 500_000, spouse: 600_000 });
         let bad = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::InvestmentSales,
-            vec![document(0, IncomeDocument::CapitalLossCarryover(prior.into()))],
+            vec![document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::CapitalLossCarryover(prior.into()),
+                },
+            )],
         );
         rejected_with(send(&mut session, bad), "INJURED_NIIT_OWNER_TOTAL");
         assert_eq!(session.draft, before);
@@ -1776,11 +1877,21 @@ fn unit13_approved_absorbed_carryback_owners_save_restart_and_reject_forged_tota
         let election =
             Section1256Carryback { amount: 800_000, injured_owners: Some(owner.clone()) };
         let request = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::InvestmentSales,
             vec![
-                document(0, IncomeDocument::CapitalLossCarryover(prior.clone().into())),
-                document(0, IncomeDocument::Section1256Carryback(election.clone())),
+                document(
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::CapitalLossCarryover(prior.clone().into()),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::Section1256Carryback(election.clone()),
+                    },
+                ),
             ],
         );
         accepted(&send(&mut session, request));
@@ -1788,13 +1899,13 @@ fn unit13_approved_absorbed_carryback_owners_save_restart_and_reject_forged_tota
         assert_eq!(record.section_1256_carryback, Some(800_000));
         assert_eq!(record.section_1256_carryback_owners, Some(owner));
         let mut contracts = income(FederalIncome::Section1256 {
-            data: FederalSection1256 {
+            data: contracts_source(FederalSection1256 {
                 aggregate: -100_000,
                 withholding: 0,
                 special_treatment: false,
-            },
+            }),
         });
-        contracts.owner = Owner::Spouse;
+        contracts.owner = crate::DocumentOwner::Spouses;
         add(&mut session.draft, contracts);
         let r = supported(&session.draft);
         let tax = (r.tax, r.refund, value(&r, "capital_gain"));
@@ -1809,17 +1920,25 @@ fn unit13_approved_absorbed_carryback_owners_save_restart_and_reject_forged_tota
             Some(InjuredRetainedOwners::Both { taxpayer: 400_000, spouse: 500_000 });
         let before = session.draft.clone();
         let request = save_topic(
-            &session.draft,
+            &mut session,
             TaxSection::InvestmentSales,
             vec![
-                document(0, IncomeDocument::CapitalLossCarryover(prior.into())),
-                document(0, IncomeDocument::Section1256Carryback(bad)),
+                document(
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::CapitalLossCarryover(prior.into()),
+                    },
+                ),
+                document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::Section1256Carryback(bad) },
+                ),
             ],
         );
         rejected_with(send(&mut session, request), "INJURED_CARRYBACK_OWNER_TOTAL");
         assert_eq!(session.draft, before);
         session.draft.injured_spouse = None;
-        session.draft.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+        session.draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
         crate::injured_spouse_sources::clear_unused(&mut session.draft);
         assert!(session.draft.screening.as_ref().unwrap().section_1256_carryback_owners.is_none());
         assert_eq!(session.draft.screening.as_ref().unwrap().section_1256_carryback, Some(800_000));
@@ -1831,7 +1950,7 @@ fn unit13_final_capital_sources_keep_signed_owner_nets_and_prior_loss_character(
     let mut d = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
     for (owner, gain) in [(Owner::Taxpayer, 6_000), (Owner::Spouse, 4_000)] {
         let mut sale = income(ordinary_investment_sale(gain, 0, GainTerm::Short));
-        sale.owner = owner;
+        sale.owner = crate::DocumentOwner::from(owner);
         add(&mut d, sale);
     }
     let mut prior = retained_owner_source();
@@ -1864,7 +1983,7 @@ fn unit13_joint_capital_loss_floor_requires_only_a_bounded_actual_loss_choice() 
         [(Owner::Taxpayer, 10_000, GainTerm::Short), (Owner::Spouse, 5_000, GainTerm::Long)]
     {
         let mut sale = income(ordinary_investment_sale(0, basis, term));
-        sale.owner = owner;
+        sale.owner = crate::DocumentOwner::from(owner);
         add(&mut d, sale);
     }
     let unresolved = supported(&d);
@@ -1906,7 +2025,7 @@ fn unit13_capital_loss_floor_preserves_the_other_spouses_actual_positive_gain() 
     let mut d = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
     for (owner, proceeds, basis) in [(Owner::Taxpayer, 2_000, 0), (Owner::Spouse, 0, 15_000)] {
         let mut sale = income(ordinary_investment_sale(proceeds, basis, GainTerm::Short));
-        sale.owner = owner;
+        sale.owner = crate::DocumentOwner::from(owner);
         add(&mut d, sale);
     }
     let r = supported(&d);
@@ -1935,7 +2054,7 @@ fn unit13_independent_retained_niit_owners_reach_actual_line18_without_joint_cha
     let mut d = injured_return((300_000, 60_000), (100_000, 20_000), 0, a);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut sale = income(ordinary_investment_sale(30_000, 0, GainTerm::Short));
-        sale.owner = owner;
+        sale.owner = crate::DocumentOwner::from(owner);
         add(&mut d, sale);
     }
     let mut totals = None;
@@ -1993,9 +2112,13 @@ fn unit13_absorbed_carryback_owners_reach_actual_capital_loss_bounds() {
     let mut d = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
     add(&mut d, income(ordinary_investment_sale(2_000, 0, GainTerm::Long)));
     let mut loss = income(FederalIncome::Section1256 {
-        data: FederalSection1256 { aggregate: -100_000, withholding: 0, special_treatment: false },
+        data: contracts_source(FederalSection1256 {
+            aggregate: -100_000,
+            withholding: 0,
+            special_treatment: false,
+        }),
     });
-    loss.owner = Owner::Spouse;
+    loss.owner = crate::DocumentOwner::Spouses;
     add(&mut d, loss);
     let screening = d.screening.as_mut().unwrap();
     screening.capital_history = vec![prior];
@@ -2045,6 +2168,7 @@ fn unit13_retained_installment_and_exchange_gains_keep_their_filers() {
             kind: PropertyCharacter::LongTermCapital,
             special: false,
             qbi: InstallmentQbi::NotQualified,
+            livestock: None,
         },
     }];
     screening.related_exchanges = vec![EarlierRelatedExchange {
@@ -2109,7 +2233,7 @@ fn unit13_retained_owners_actual_client_save_reopen_restart() {
                 prior.section_1256 = 0;
                 for owner in [Owner::Taxpayer, Owner::Spouse] {
                     let mut e = income(ordinary_investment_sale(30_000, 0, GainTerm::Short));
-                    e.owner = owner;
+                    e.owner = crate::DocumentOwner::from(owner);
                     add(&mut d, e);
                 }
             } else {
@@ -2124,13 +2248,13 @@ fn unit13_retained_owners_actual_client_save_reopen_restart() {
                 });
                 add(&mut d, income(ordinary_investment_sale(2_000, 0, GainTerm::Long)));
                 let mut loss = income(FederalIncome::Section1256 {
-                    data: FederalSection1256 {
+                    data: contracts_source(FederalSection1256 {
                         aggregate: -100_000,
                         withholding: 0,
                         special_treatment: false,
-                    },
+                    }),
                 });
-                loss.owner = Owner::Spouse;
+                loss.owner = crate::DocumentOwner::Spouses;
                 add(&mut d, loss);
             }
             let source = match state {
@@ -2149,28 +2273,45 @@ fn unit13_retained_owners_actual_client_save_reopen_restart() {
             if native.required_calculation(&mut session) {
                 return;
             }
-            if let Ok(dir) = std::env::var("TAX_UNIT13_RETAINED_SEED_DIR") {
-                let dir = std::path::Path::new(&dir);
+            let seed_directory = std::env::var("TAX_UNIT13_RETAINED_SEED_DIR").ok();
+            if let Some(dir) = &seed_directory {
+                let dir = std::path::Path::new(dir);
                 std::fs::create_dir_all(dir).unwrap();
                 std::fs::write(dir.join("seed.avro"), page.to_avro()).unwrap();
-                let mut answers = page;
-                let P::SaveIncomes { documents, .. } = &mut answers else {
-                    panic!();
-                };
-                prior.injured_niit_owners = if kind == "niit" { source.clone() } else { None };
-                documents
-                    .documents
-                    .push(document(0, IncomeDocument::CapitalLossCarryover(prior.into())));
-                if kind == "carryback" {
-                    documents.documents.push(document(
+            }
+            let mut answers = page;
+            let P::SaveIncomes { documents, .. } = &mut answers else {
+                panic!();
+            };
+            prior.injured_niit_owners = if kind == "niit" { source.clone() } else { None };
+            documents.documents.push(
+                crate::IncomeRecordItem::from_income(document(
+                    0,
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::CapitalLossCarryover(prior.into()),
+                    },
+                ))
+                .expect("record fixture"),
+            );
+            if kind == "carryback" {
+                documents.documents.push(
+                    crate::IncomeRecordItem::from_income(document(
                         0,
-                        IncomeDocument::Section1256Carryback(Section1256Carryback {
-                            amount: 800_000,
-                            injured_owners: source.clone(),
-                        }),
-                    ));
-                }
-                std::fs::write(dir.join("answers.avro"), answers.to_avro()).unwrap();
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::Section1256Carryback(
+                                Section1256Carryback {
+                                    amount: 800_000,
+                                    injured_owners: source.clone(),
+                                },
+                            ),
+                        },
+                    ))
+                    .expect("record fixture"),
+                );
+            }
+            if let Some(dir) = seed_directory {
+                std::fs::write(std::path::Path::new(&dir).join("answers.avro"), answers.to_avro())
+                    .unwrap();
                 continue;
             }
             let request = if let Ok(input) = std::env::var("TAX_UNIT13_RETAINED_PAYLOAD") {
@@ -2179,12 +2320,7 @@ fn unit13_retained_owners_actual_client_save_reopen_restart() {
                 )
                 .unwrap()
             } else {
-                let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(alloc::format!(
-                    "tests/fixtures/unit13-retained-{kind}-{state}-client.avro"
-                ));
-                crate::tests::support::client::captured_request_before_k1_activity_context(
-                    &std::fs::read(input).expect("original Studio source-row payload"),
-                )
+                answers
             };
             accepted(&send(&mut session, request));
             let source = if let Ok(input) = std::env::var("TAX_UNIT13_RETAINED_CORRECTION") {
@@ -2252,10 +2388,12 @@ fn unit13_retained_owners_actual_client_save_reopen_restart() {
             let shown = open_topic(&mut reopened, TaxSection::InvestmentSales);
             assert_eq!(
                 page_documents(&shown).iter().find_map(|r| match &r.document {
-                    IncomeDocument::CapitalLossCarryover(p) if kind == "niit" =>
-                        Some(p.injured_niit_owners.clone()),
-                    IncomeDocument::Section1256Carryback(p) if kind == "carryback" =>
-                        Some(p.injured_owners.clone()),
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::CapitalLossCarryover(p),
+                    } if kind == "niit" => Some(p.injured_niit_owners.clone()),
+                    IncomeSource::Record {
+                        value: crate::IncomeRecord::Section1256Carryback(p),
+                    } if kind == "carryback" => Some(p.injured_owners.clone()),
                     _ => None,
                 }),
                 Some(source.clone())
@@ -2272,11 +2410,11 @@ fn unit13_retained_owners_actual_client_save_reopen_restart() {
             };
             for row in &mut documents.documents {
                 match &mut row.document {
-                    IncomeDocument::CapitalLossCarryover(p) if kind == "niit" => {
+                    crate::IncomeRecord::CapitalLossCarryover(p) if kind == "niit" => {
                         p.injured_niit_owners =
                             Some(InjuredRetainedOwners::Both { taxpayer: 500_000, spouse: 600_000 })
                     }
-                    IncomeDocument::Section1256Carryback(p) if kind == "carryback" => {
+                    crate::IncomeRecord::Section1256Carryback(p) if kind == "carryback" => {
                         p.injured_owners =
                             Some(InjuredRetainedOwners::Both { taxpayer: 400_000, spouse: 500_000 })
                     }
@@ -2303,7 +2441,7 @@ fn unit13_niit_magi_ceiling_preserves_the_actual_net_investment_income_allocatio
     let mut d = injured_return((200_000, 60_000), (30_000, 10_000), 0, allocation());
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(ordinary_investment_sale(30_000, 0, GainTerm::Short));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let mut ordinary = None;
@@ -2362,17 +2500,25 @@ fn unit13_niit_magi_ceiling_preserves_the_actual_net_investment_income_allocatio
 fn unit13_liability_owner_api_uses_actual_sources_without_a_claim_or_debt_gate() {
     let mut d = injured_return((60_000, 5_000), (20_000, 500), 0, allocation());
     let mut interest = income(savings_income(1_000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut d, interest);
     d.injured_spouse = None;
-    d.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let result = supported(&d);
     let original_result = result.clone();
     let facts = liability_portfolio_native_facts(&d, Some([0; 2]), Some(&result));
     let totals = actual_liability_totals(&result);
-    let projection =
-        crate::injured_spouse::owners::project_sources(&d, &result, None, &facts, Some(&totals))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &result,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     // Existing hand computation: MFS taxable43900/4900, tax5023/493.
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), Some([5_023, 493]));
     assert_eq!(result, original_result); // Pure: no source/form/notice emission.
@@ -2380,7 +2526,10 @@ fn unit13_liability_owner_api_uses_actual_sources_without_a_claim_or_debt_gate()
     claim.debt = OffsetDebt::NoneOfThese;
     claim.obligated = true;
     let projection = crate::injured_spouse::owners::project_sources(
-        &d,
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
         &result,
         Some(&claim),
         &facts,
@@ -2394,10 +2543,10 @@ fn unit13_liability_owner_api_uses_actual_sources_without_a_claim_or_debt_gate()
 fn unit13_liability_owner_api_does_not_feed_current_business_credit_back_into_itself() {
     let mut d = injured_return((60_000, 5_000), (20_000, 500), 0, allocation());
     let mut interest = income(savings_income(1_000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut d, interest);
     d.injured_spouse = None;
-    d.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let mut joint_tax = None;
     for amount in [0, 100_000] {
         d.credits.as_mut().unwrap().business_credits = Some(BusinessCreditHistory {
@@ -2430,7 +2579,10 @@ fn unit13_liability_owner_api_does_not_feed_current_business_credit_back_into_it
         assert_eq!(totals.other_nonrefundable, 0);
         let facts = liability_portfolio_native_facts(&d, Some([0; 2]), Some(&result));
         let projection = crate::injured_spouse::owners::project_sources(
-            &d,
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
             &result,
             None,
             &facts,
@@ -2450,42 +2602,82 @@ fn unit13_liability_owner_api_does_not_feed_current_business_credit_back_into_it
 fn unit13_liability_owner_api_refuses_incomplete_sources_or_inconsistent_joint_footing() {
     let mut d = injured_return((60_000, 5_000), (20_000, 500), 0, allocation());
     d.injured_spouse = None;
-    d.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let result = supported(&d);
     let facts = liability_portfolio_native_facts(&d, None, Some(&result));
     let totals = actual_liability_totals(&result);
-    let projection =
-        crate::injured_spouse::owners::project_sources(&d, &result, None, &facts, Some(&totals))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &result,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), None);
     let facts = liability_portfolio_native_facts(&d, Some([0; 2]), Some(&result));
     let mut forged = actual_liability_totals(&result);
     forged.taxable += 1;
-    let projection =
-        crate::injured_spouse::owners::project_sources(&d, &result, None, &facts, Some(&forged))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &result,
+        None,
+        &facts,
+        Some(&forged),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), None);
     forged = actual_liability_totals(&result);
     forged.qualified_dividends = 1;
-    let projection =
-        crate::injured_spouse::owners::project_sources(&d, &result, None, &facts, Some(&forged))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &result,
+        None,
+        &facts,
+        Some(&forged),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), None);
     // An absent native component is not a computed zero, even when its
     // omission leaves the same aggregate taxable-income footing.
     forged = actual_liability_totals(&result);
     forged.calculation_amounts.remove("schedule_1_ira_deduction");
-    let projection =
-        crate::injured_spouse::owners::project_sources(&d, &result, None, &facts, Some(&forged))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &result,
+        None,
+        &facts,
+        Some(&forged),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &projection), None);
     let zero = injured_return((0, 0), (0, 0), 0, allocation());
     let result = supported(&zero);
     let facts = liability_portfolio_native_facts(&zero, Some([0; 2]), Some(&result));
     let totals = actual_liability_totals(&result);
-    let projection =
-        crate::injured_spouse::owners::project_sources(&zero, &result, None, &facts, Some(&totals))
-            .unwrap();
+    let projection = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &zero,
+            &crate::related_forms::effective_claimants(&zero),
+        ),
+        &result,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&zero, &projection), None);
 }
 
@@ -2506,10 +2698,11 @@ fn unit13_niit_annuity_uses_its_actual_taxable_owner_and_excludes_qualified_pens
             RetirementTreatment::Ordinary,
         );
         let FederalIncome::Retirement { data } = &mut entry.income else { unreachable!() };
-        data.taxable = RetirementTaxable::Payer { amount: 2_500_000 };
+        edit_retirement(data).box_2a = 2_500_000;
+        edit_retirement(data).taxable = Some(RetirementTaxable::Payer);
         // Printed D identifies the nonqualified source when the ordinary
         // source page saves; code7 alone is a qualified pension statement.
-        data.box7 = DistributionCodes::CODE_7.0 | DistributionCodes::CODE_D.0;
+        edit_retirement(data).box7 = DistributionCodes::CODE_7.0 | DistributionCodes::CODE_D.0;
         add(&mut d, entry);
         add(
             &mut d,
@@ -2535,25 +2728,27 @@ fn unit13_niit_annuity_uses_its_actual_taxable_owner_and_excludes_qualified_pens
         );
         // Complete public Save/reopen/restart/correction on the existing
         // source page, rather than changing an aggregate Form8960 answer.
-        use crate::tests::cross::interview::{accepted, open_topic, page_documents};
+        use crate::tests::cross::interview::{accepted, page_documents};
         let mut session = Interview::new(TEST_USER, d.clone());
-        let page = open_topic(&mut session, TaxSection::Retirement);
+        let page = open_documents(&mut session);
         accepted(&send(&mut session, page));
         assert_eq!(supported(&session.draft).tax, result.tax);
         let mut session = restart(session.draft);
-        let mut page = open_topic(&mut session, TaxSection::Retirement);
-        let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
+        let mut page = open_documents(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
         let item = documents
+            .common
+            .retirement
             .documents
             .iter_mut()
             .find(|item| match &item.document {
-                IncomeDocument::R1099(record) => record.gross == 3_000_000,
+                crate::RetirementDocument::R1099(record) => record.gross == 3_000_000,
                 _ => false,
             })
             .unwrap();
-        let IncomeDocument::R1099(record) = &mut item.document else { unreachable!() };
-        assert_eq!(record.taxable, 2_500_000);
-        record.taxable = 2_000_000;
+        let crate::RetirementDocument::R1099(record) = &mut item.document else { unreachable!() };
+        assert_eq!(record.taxable, Some(2_500_000));
+        record.taxable = Some(2_000_000);
         accepted(&send(&mut session, page));
         let corrected = supported(&session.draft);
         assert_eq!(value(&corrected, "form_8960_net_investment_income"), 20_000);
@@ -2565,9 +2760,9 @@ fn unit13_niit_annuity_uses_its_actual_taxable_owner_and_excludes_qualified_pens
             expected_corrected
         );
         let mut session = restart(session.draft);
-        let reopened = open_topic(&mut session, TaxSection::Retirement);
+        let reopened = open_documents(&mut session);
         assert!(page_documents(&reopened).iter().any(|item| matches!(&item.document,
-            IncomeDocument::R1099(record) if record.gross == 3_000_000 && record.taxable == 2_000_000)));
+            IncomeSource::Retirement { value: crate::RetirementDocument::R1099(record) } if record.gross == 3_000_000 && record.taxable == Some(2_000_000))));
         d.injured_spouse.as_mut().unwrap().injured = Owner::Spouse;
         d.injured_spouse.as_mut().unwrap().allocations[0].injured = 4_200;
         let reversed = supported(&d);
@@ -2590,7 +2785,7 @@ fn unit13_niit_savings_penalty_follows_its_source_and_preserves_joint_floor() {
     let first = income(savings_income(2_000, 1_500));
     add(&mut d, first);
     let mut second = income(savings_income(1_000, 0));
-    second.owner = Owner::Spouse;
+    second.owner = crate::DocumentOwner::Spouses;
     add(&mut d, second);
     let result = supported(&d);
     assert_eq!(value(&result, "form_8960_deductions_and_modifications"), 1_500);
@@ -2607,14 +2802,20 @@ fn unit13_niit_savings_penalty_follows_its_source_and_preserves_joint_floor() {
             .any(|note| note.display.key == "WARN_8379_OTHER_TAX_OWNER_UNAVAILABLE")
     );
     assert_eq!(restart(d.clone()).draft, d);
-    use crate::tests::cross::interview::{accepted, open_topic, page_documents};
+    use crate::tests::cross::interview::{accepted, page_documents};
     let mut session = Interview::new(TEST_USER, d.clone());
-    let page = open_topic(&mut session, TaxSection::InterestDividends);
+    let page = open_documents(&mut session);
     accepted(&send(&mut session, page));
     assert_eq!(supported(&session.draft).tax, result.tax);
     let mut session = restart(session.draft);
-    let reopened = open_topic(&mut session, TaxSection::InterestDividends);
-    assert_eq!(page_documents(&reopened).len(), 2);
+    let reopened = open_documents(&mut session);
+    assert_eq!(
+        page_documents(&reopened)
+            .iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .count(),
+        2
+    );
     assert_eq!(
         [
             column(&supported(&session.draft), "18", "b"),
@@ -2625,7 +2826,7 @@ fn unit13_niit_savings_penalty_follows_its_source_and_preserves_joint_floor() {
     // A penalty exceeding its owner's income leaves a signed source. Keep
     // that allocation unavailable; do not invent zero or shift the expense.
     let FederalIncome::Interest { data } = &mut d.income[2].income else { unreachable!() };
-    data.early_penalty = 250_000;
+    edit_interest(data).early_penalty = 250_000;
     let signed = supported(&d);
     assert_eq!(value(&signed, "form_8960_net_investment_income"), 500);
     assert_eq!(value(&signed, "net_investment_income_tax"), 19);
@@ -2671,7 +2872,7 @@ fn unit13_native_other_income_sources_keep_taxable_parts_and_exclusions() {
         let mut entry = income(FederalIncome::OtherIncome {
             data: OtherIncomeItem { kind, amount: amount * 100, withholding: 0 },
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let result = supported(&d);
@@ -2710,28 +2911,33 @@ fn unit13_native_routed_1099_sources_count_destination_income_only_once() {
     let mut d = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
     add(&mut d, income(cash_business(10_000)));
     let business_id = d.income[2].id;
-    for (compensation, belongs, business) in
-        [(4_000, IncomeUse::NotForProfit, None), (2_000, IncomeUse::Business, Some(business_id))]
-    {
+    for (compensation, belongs) in [(4_000, Some(IncomeUse::NotForProfit)), (2_000, None)] {
         add(
             &mut d,
             income(FederalIncome::Nec1099 {
-                data: FederalForm1099Nec {
+                data: nec_source(FederalForm1099Nec {
+                    cash_tips: 0,
+                    tip_occupation_codes: Default::default(),
+                    overtime: 0,
                     compensation: compensation * 100,
                     withholding: 0,
                     golden_parachute: 0,
                     belongs,
-                    business,
-                },
+                }),
             }),
         );
     }
     let mut misc = income(FederalIncome::Misc1099 {
-        data: FederalForm1099Misc {
+        data: misc_source(FederalForm1099Misc {
+            cash_tips: 0,
+            tip_occupation_codes: Default::default(),
+            overtime: 0,
+            crop_insurance: 0,
+            component_ids: Default::default(),
             rents: 0,
-            rents_use: None,
+
             royalties: 0,
-            royalties_use: None,
+
             other: 600_000,
             other_use: Some(IncomeUse::Income {
                 kind: OtherIncomeKind::CardInsurance { premiums: 250_000 },
@@ -2744,32 +2950,34 @@ fn unit13_native_routed_1099_sources_count_destination_income_only_once() {
             client_funds: 0,
             fish_sales: 0,
             deferred: 0,
-            business: None,
-        },
+        }),
     });
-    misc.owner = Owner::Spouse;
+    misc.owner = crate::DocumentOwner::Spouses;
     add(&mut d, misc);
     add(
         &mut d,
         income(FederalIncome::K1099 {
-            data: FederalForm1099K {
+            data: k_source(FederalForm1099K {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
                 gross: 1_100_000,
                 withholding: 0,
                 parts: vec![
                     FederalKPart {
+                        id: 0,
                         amount: 1_000_000,
-                        belongs: FederalKUse::NotIncome,
+                        belongs: Some(FederalKUse::NotIncome),
                         refunded: 0,
                     },
-                    FederalKPart {
-                        amount: 100_000,
-                        belongs: FederalKUse::Business { business: Some(business_id) },
-                        refunded: 20_000,
-                    },
+                    FederalKPart { id: 0, amount: 100_000, belongs: None, refunded: 20_000 },
                 ],
-            },
+            }),
         }),
     );
+    let keys =
+        crate::related_forms::catalog_for(&d, business_id).iter().map(|source| source.id).collect();
+    let FederalIncome::Business { data } = &mut d.income[2].income else { panic!() };
+    data.related = keys;
     let result = supported(&d);
     // Business10000 +NEC2000 +K(1000-200)=12800 is counted by the
     // destination owner. NEC hobby4000 and MISC(6000-2500+500)=4000
@@ -2824,23 +3032,25 @@ fn unit13_native_other_projection_uses_final_recovery_and_preserves_missing_sale
     assert_eq!(value(&supported(&recovery), "agi"), 83_000);
     let result = supported(&recovery);
     assert_eq!([column(&result, "13b", "b"), column(&result, "13b", "c")], [3_000, 0]);
-    let mut refund = income(FederalIncome::TaxRefund {
-        amount: 300_000,
-        withholding: 0,
-        history: TaxRefundHistory::IncomeTax {
-            deduction_year: 2025,
-            income_paid: 1_000_000,
-            sales_available: 0,
-            salt_paid: 1_000_000,
-            salt_deducted: 1_000_000,
-            itemized: 3_500_000,
-            standard: 3_000_000,
-            overall_limit: None,
-            property_refunded: 0,
-            ordinary: true,
-        },
+    let mut refund = income(FederalIncome::GovernmentPayment {
+        data: tax_refund_source(crate::FederalTaxRefund {
+            amount: 300_000,
+            withholding: 0,
+            history: TaxRefundHistory::IncomeTax {
+                deduction_year: 2025,
+                income_paid: 1_000_000,
+                sales_available: 0,
+                salt_paid: 1_000_000,
+                salt_deducted: 1_000_000,
+                itemized: 3_500_000,
+                standard: 3_000_000,
+                overall_limit: None,
+                property_refunded: 0,
+                ordinary: true,
+            },
+        }),
     });
-    refund.owner = Owner::Spouse;
+    refund.owner = crate::DocumentOwner::Spouses;
     add(&mut recovery, refund);
     // The actual combined Worksheet2 ceiling is5000, not two independent
     // stand-alone3000 recoveries. Its native A/B/C split gives2500 each.
@@ -2853,29 +3063,30 @@ fn unit13_native_other_projection_uses_final_recovery_and_preserves_missing_sale
             .iter()
             .all(|note| note.display.key != "ISSUE_8379_OTHER_INCOME_UNATTRIBUTABLE")
     );
-    use crate::tests::cross::interview::{accepted, open_topic};
-    let mut session = Interview::new(TEST_USER, recovery);
-    for topic in [TaxSection::OtherIncome, TaxSection::GovernmentBenefits] {
-        let page = open_topic(&mut session, topic);
-        accepted(&send(&mut session, page));
-        session = restart(session.draft);
-    }
-    let restored = supported(&session.draft);
+    let restored_draft = crate::tests::support::client::save_reopen_native_sources(
+        recovery,
+        &[TaxSection::OtherIncome, TaxSection::Documents],
+        &[TaxSection::OtherIncome, TaxSection::Documents],
+    );
+    let restored = supported(&restored_draft);
     assert_eq!([column(&restored, "13b", "b"), column(&restored, "13b", "c")], [2_500, 2_500]);
     assert_eq!((restored.tax, restored.refund), (combined.tax, combined.refund));
     let mut missing = injured_return((60_000, 10_000), (20_000, 5_000), 0, allocation());
     add(
         &mut missing,
         income(FederalIncome::K1099 {
-            data: FederalForm1099K {
+            data: k_source(FederalForm1099K {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
                 gross: 100_000,
                 withholding: 0,
                 parts: vec![FederalKPart {
+                    id: 0,
                     amount: 100_000,
-                    belongs: FederalKUse::PersonalGain,
+                    belongs: Some(FederalKUse::PersonalGain),
                     refunded: 0,
                 }],
-            },
+            }),
         }),
     );
     let result = supported(&missing);
@@ -2898,7 +3109,7 @@ fn unit13_native_olympic_exclusion_follows_the_actual_recipient_after_joint_agi_
                 withholding: 0,
             },
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let result = supported(&d);
@@ -2930,11 +3141,16 @@ fn unit13_native_substitute_payments_keep_niit_source_separate_from_other_income
     let mut d = injured_return((140_000, 30_000), (120_000, 25_000), 0, claim);
     add(&mut d, income(savings_income(2_000, 0)));
     let mut entry = income(FederalIncome::Misc1099 {
-        data: FederalForm1099Misc {
+        data: misc_source(FederalForm1099Misc {
+            cash_tips: 0,
+            tip_occupation_codes: Default::default(),
+            overtime: 0,
+            crop_insurance: 0,
+            component_ids: Default::default(),
             rents: 0,
-            rents_use: None,
+
             royalties: 0,
-            royalties_use: None,
+
             other: 600_000,
             other_use: Some(IncomeUse::Income {
                 kind: OtherIncomeKind::CardInsurance { premiums: 250_000 },
@@ -2947,10 +3163,9 @@ fn unit13_native_substitute_payments_keep_niit_source_separate_from_other_income
             client_funds: 0,
             fish_sales: 0,
             deferred: 0,
-            business: None,
-        },
+        }),
     });
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut d, entry);
     let result = supported(&d);
     assert_eq!(value(&result, "agi"), 266_000);
@@ -2976,11 +3191,11 @@ fn unit13_native_schedule_e_sources_follow_the_joint_passive_limit() {
     for (wages, allowed, agi) in [(80_000, 26_000, 64_000), (160_000, 10_000, 160_000)] {
         let mut d = injured_return((wages - 20_000, 20_000), (20_000, 10_000), 0, allocation());
         let mut profit = income(FederalIncome::Rental { data: rental(20_000, 0) });
-        profit.owner = Owner::Taxpayer;
+        profit.owner = crate::DocumentOwner::Yours;
         add(&mut d, profit);
         let profit_id = d.income.last().unwrap().id;
         let mut loss = income(FederalIncome::Rental { data: rental(0, 16_000) });
-        loss.owner = Owner::Spouse;
+        loss.owner = crate::DocumentOwner::Spouses;
         add(&mut d, loss);
         let loss_id = d.income.last().unwrap().id;
         let result = supported(&d);
@@ -3010,7 +3225,7 @@ fn unit13_native_k1_schedule_e_and_portfolio_parts_keep_distinct_source_owners()
     let mut d = injured_return((60_000, 20_000), (20_000, 10_000), 0, allocation());
     let mut partner =
         income(FederalIncome::Partnership { data: ordinary_partner_source(6_000, false) });
-    partner.owner = Owner::Taxpayer;
+    partner.owner = crate::DocumentOwner::Yours;
     add(&mut d, partner);
     let partner_id = d.income.last().unwrap().id;
     let mut source = complete_ordinary_scorp(-10_000, false);
@@ -3018,8 +3233,8 @@ fn unit13_native_k1_schedule_e_and_portfolio_parts_keep_distinct_source_owners()
     source.dividends = 400_000;
     source.qualified_dividends = 200_000;
     source.amt = Some(amt_records(&source));
-    let mut scorp = income(FederalIncome::Scorp { data: source });
-    scorp.owner = Owner::Spouse;
+    let mut scorp = income(FederalIncome::Scorp { data: scorp_source(source) });
+    scorp.owner = crate::DocumentOwner::Spouses;
     add(&mut d, scorp);
     let scorp_id = d.income.last().unwrap().id;
     let result = supported(&d);
@@ -3053,9 +3268,10 @@ fn unit13_native_k1_schedule_e_and_portfolio_parts_keep_distinct_source_owners()
         value(&result, "qbi_deduction")
     );
     let _ = share_cents(&result);
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::accepted;
     let mut session = Interview::new(TEST_USER, d);
-    let page = open_topic(&mut session, TaxSection::PassThrough);
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let page = open_documents(&mut session);
     accepted(&send(&mut session, page));
     session = restart(session.draft);
     let restored = supported(&session.draft);
@@ -3072,7 +3288,7 @@ fn unit13_native_former_rental_source_does_not_count_nonpassive_income_twice() {
     source.property_type = RentalPropertyType::SelfRental;
     source.history = RentalHistory { regular: 600_000, amt: 600_000, active_in_loss_year: true };
     let mut entry = income(FederalIncome::Rental { data: source });
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut d, entry);
     let id = d.income.last().unwrap().id;
     let result = supported(&d);
@@ -3118,7 +3334,7 @@ fn unit13_capital_character_keeps_short_gains_at_ordinary_rates() {
         let _ = share_cents(&result);
         let mut ordinary = d.clone();
         ordinary.injured_spouse = None;
-        ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+        ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
         let joint = supported(&ordinary);
         assert_eq!((result.tax, result.refund), (joint.tax, joint.refund));
         let mut capital = crate::injured_spouse::CapitalSources::default();
@@ -3128,7 +3344,10 @@ fn unit13_capital_character_keeps_short_gains_at_ordinary_rates() {
         facts.capital = capital.owners(&ordinary, [short, long], [0; 2]);
         let totals = actual_liability_totals(&joint);
         let projection = crate::injured_spouse::owners::project_sources(
-            &ordinary,
+            crate::related_forms::RelatedFormContext::original(
+                &ordinary,
+                &crate::related_forms::effective_claimants(&ordinary),
+            ),
             &joint,
             None,
             &facts,
@@ -3165,15 +3384,15 @@ fn unit13_capital_special_rates_follow_the_actual_source_owner() {
         let mut d = injured_return((0, 0), (60_000, 20_000), 0, allocation());
         let mut interest = savings_income(250_000, 0);
         let FederalIncome::Interest { data } = &mut interest else { unreachable!() };
-        data.withholding = 7_000_000;
+        edit_interest(data).withholding = 7_000_000;
         add(&mut d, income(interest));
         let item = income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 capital_distributions: 1_000_000,
                 collectible_distributions: collectible * 100,
                 unrecaptured_distributions: unrecaptured * 100,
                 ..Default::default()
-            },
+            }),
         });
         add(&mut d, item);
         let result = supported(&d);
@@ -3194,7 +3413,7 @@ fn unit13_capital_special_rates_follow_the_actual_source_owner() {
         assert_eq!(explanation.args[2], MessageArg::usd_dollars(5_023));
         let mut ordinary = d.clone();
         ordinary.injured_spouse = None;
-        ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+        ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
         let joint = supported(&ordinary);
         assert_eq!((result.tax, result.refund), (joint.tax, joint.refund));
         let mut sources = crate::injured_spouse::CapitalSources::default();
@@ -3205,7 +3424,10 @@ fn unit13_capital_special_rates_follow_the_actual_source_owner() {
         facts.capital = sources.owners(&ordinary, [0, 10_000], [collectible, unrecaptured]);
         let totals = actual_liability_totals(&joint);
         let projection = crate::injured_spouse::owners::project_sources(
-            &ordinary,
+            crate::related_forms::RelatedFormContext::original(
+                &ordinary,
+                &crate::related_forms::effective_claimants(&ordinary),
+            ),
             &joint,
             None,
             &facts,
@@ -3238,10 +3460,10 @@ fn unit13_special_source_class_survives_an_opposite_owner_loss() {
     let mut d = injured_return((60_000, 20_000), (20_000, 10_000), 0, allocation());
     let mut gain = ordinary_investment_sale(10_000, 0, GainTerm::Long);
     let FederalIncome::Sale { data } = &mut gain else { unreachable!() };
-    data.collectible = true;
+    data.form.collectible = true;
     add(&mut d, income(gain));
     let mut loss = income(ordinary_investment_sale(0, 10_000, GainTerm::Long));
-    loss.owner = Owner::Spouse;
+    loss.owner = crate::DocumentOwner::Spouses;
     add(&mut d, loss);
     let r = supported(&d);
     assert_eq!(return_line(&r, "7a"), 0);
@@ -3258,20 +3480,20 @@ fn unit13_two_positive_capital_sources_keep_their_distinct_classes() {
     let mut d = injured_return((0, 0), (60_000, 20_000), 0, allocation());
     let mut interest = savings_income(250_000, 0);
     let FederalIncome::Interest { data } = &mut interest else { unreachable!() };
-    data.withholding = 7_000_000;
+    edit_interest(data).withholding = 7_000_000;
     add(&mut d, income(interest));
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 capital_distributions: 1_000_000,
                 collectible_distributions: 1_000_000,
                 ..Default::default()
-            },
+            }),
         }),
     );
     let mut spouse_gain = income(ordinary_investment_sale(10_000, 0, GainTerm::Long));
-    spouse_gain.owner = Owner::Spouse;
+    spouse_gain.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse_gain);
     let r = supported(&d);
     assert_eq!([column(&r, "13b", "b"), column(&r, "13b", "c")], [260_000, 10_000]);
@@ -3323,7 +3545,7 @@ fn unit13_single_owner_elections_change_rates_without_changing_income() {
         );
         let mut ordinary = d.clone();
         ordinary.injured_spouse = None;
-        ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+        ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
         let joint = supported(&ordinary);
         assert_eq!((result.tax, result.refund), (joint.tax, joint.refund));
         let mut facts =
@@ -3342,7 +3564,10 @@ fn unit13_single_owner_elections_change_rates_without_changing_income() {
         };
         let totals = actual_liability_totals(&joint);
         let projection = crate::injured_spouse::owners::project_sources(
-            &ordinary,
+            crate::related_forms::RelatedFormContext::original(
+                &ordinary,
+                &crate::related_forms::effective_claimants(&ordinary),
+            ),
             &joint,
             None,
             &facts,
@@ -3396,18 +3621,18 @@ fn unit13_shared_election_fixture(own: i64, total: i64) -> FederalDraft {
     let mut d = injured_return((250_000, 80_000), (60_000, 20_000), 0, claim);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut row = income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 ordinary: 1_000_000,
                 qualified: 1_000_000,
                 ..Default::default()
-            },
+            }),
         });
-        row.owner = owner;
+        row.owner = crate::DocumentOwner::from(owner);
         add(&mut d, row);
     }
     investment_borrowing(&mut d, 1, 0, 0);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Standard;
+    ded.itemize_override = None;
     ded.investment_interest.as_mut().unwrap().election =
         InvestmentElection::Allocated { capital: 0, dividends: total * 100 };
     d
@@ -3544,9 +3769,9 @@ fn unit13_shared_capital_election_uses_the_same_direct_source_route() {
         let mut d = unit13_shared_election_fixture(own, 10_000);
         for entry in &mut d.income {
             if let FederalIncome::Dividend { data } = &mut entry.income {
-                data.ordinary = 0;
-                data.qualified = 0;
-                data.capital_distributions = 1_000_000;
+                edit_dividend(data).ordinary = 0;
+                edit_dividend(data).qualified = 0;
+                edit_dividend(data).capital_distributions = 1_000_000;
             }
         }
         d.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().election =
@@ -3601,7 +3826,7 @@ fn unit13_investment_capacities_keep_joint_cross_source_netting_once() {
     );
     // A real native stock-loss input bounds the one joint pool15000; both
     //long source capacities stay10000, so E15000 has bounds5000..10000.
-    let mut limited = sources;
+    let mut limited = sources.clone();
     limited.add(Some(Owner::Taxpayer), [0, 0, 0, 0, 1_000_000]);
     let pool = crate::investment_interest::gain_pool(5_000, 20_000, 0, 10_000, 0);
     assert_eq!(pool, [15_000, 15_000]);
@@ -3632,9 +3857,9 @@ fn unit13_election_actual_client_save_reopen_restart() {
         let key = if case == "capital" {
             for entry in &mut d.income {
                 if let FederalIncome::Dividend { data } = &mut entry.income {
-                    data.ordinary = 0;
-                    data.qualified = 0;
-                    data.capital_distributions = 1_000_000;
+                    edit_dividend(data).ordinary = 0;
+                    edit_dividend(data).qualified = 0;
+                    edit_dividend(data).capital_distributions = 1_000_000;
                 }
             }
             d.deductions.as_mut().unwrap().investment_interest.as_mut().unwrap().election =
@@ -3649,11 +3874,33 @@ fn unit13_election_actual_client_save_reopen_restart() {
         let chosen = if bounded { 750_000 } else { 1_000_000 };
         let initial = supported(&d);
         let mut session = Interview::new(TEST_USER, d);
-        let Reply::Edit(page) = crate::tests::support::client::native_editor(
-            from_review(&mut session, TaxSection::InjuredSpouse),
-            &[],
-        ) else {
-            panic!()
+        crate::tests::support::client::admit_native_fixture_facts(&mut session);
+        let source_page = open_documents(&mut session);
+        accepted(&send(&mut session, source_page));
+        // Confirm the retained borrowing answers in their actual editor after
+        // the source inventory changes, before saving the allocation.
+        let Reply::Edit(other @ P::SaveOtherItemized { .. }) =
+            from_review(&mut session, TaxSection::OtherItemized)
+        else {
+            panic!("expected the investment-interest editor")
+        };
+        let mut reply = send(&mut session, other);
+        // Continue the completed sections until the actual allocation editor
+        // opens; that question is the next answer, before Review.
+        while let Reply::Response(hub @ P::Hub { .. }) = &reply {
+            let request = crate::tests::cross::interview::hub_action(hub);
+            reply = send(&mut session, request);
+        }
+        // The walk has nothing left (the empty itemized hub is passed), so the
+        // answered allocation reopens from the review.
+        let reply = if matches!(reply, Reply::Response(P::Review { .. })) {
+            from_review(&mut session, TaxSection::InjuredSpouse)
+        } else {
+            reply
+        };
+        let reply = crate::tests::support::client::native_editor(reply, &[]);
+        let Reply::Edit(page @ P::SaveInjuredSpouse { .. }) = reply else {
+            panic!("expected the injured-spouse allocation editor: {reply:?}")
         };
         let native = NativeInterviewCase("TAX_UNIT13_ELECTION");
         if native.required_checked_calculation(&mut session) {
@@ -3672,7 +3919,8 @@ fn unit13_election_actual_client_save_reopen_restart() {
         };
         let P::SaveInjuredSpouse { value, .. } = &request else { panic!() };
         assert_eq!(value.allocations.iter().find(|r| r.component == key).unwrap().injured, chosen);
-        assert!(matches!(send(&mut session, request.clone()), Reply::Response(P::Review { .. })));
+        let reply = send(&mut session, request.clone());
+        assert!(matches!(reply, Reply::Response(P::Review { .. })), "{reply:?}");
         let result = supported(&session.draft);
         assert_eq!((result.tax, result.refund), (initial.tax, initial.refund));
         let explanation = &result
@@ -3735,20 +3983,24 @@ fn unit13_rounding_fixture(injured: Owner) -> FederalDraft {
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut interest = savings_income(500, 0);
         let FederalIncome::Interest { data } = &mut interest else { unreachable!() };
-        data.taxable += 40;
+        edit_interest(data).taxable += 40;
         let mut entry = income(interest);
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
         let mut entry = income(FederalIncome::Dividend {
-            data: FederalDividend { ordinary: 100_040, qualified: 100_040, ..Default::default() },
+            data: dividend_source(FederalDividend {
+                ordinary: 100_040,
+                qualified: 100_040,
+                ..Default::default()
+            }),
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
         let mut sale = personal_sale(1_000, 0, GainTerm::Long);
         let FederalIncome::Sale { data } = &mut sale else { unreachable!() };
-        data.proceeds += 40;
+        data.form.proceeds += 40;
         let mut entry = income(sale);
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     d
@@ -3792,10 +4044,10 @@ fn unit13_selected_injured_rounding_preserves_signed_joint_capital_loss() {
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut sale = personal_sale(0, 1_000, GainTerm::Long);
             let FederalIncome::Sale { data } = &mut sale else { unreachable!() };
-            data.basis = Some(100_040);
-            data.use_kind = SaleUse::Investment { wash_sale: 0 };
+            data.form.basis = Some(100_040);
+            data.form.use_kind = SaleUse::Investment { wash_sale: 0 };
             let mut entry = income(sale);
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut d, entry);
         }
         let result = supported(&d);
@@ -3813,9 +4065,13 @@ fn unit13_selected_injured_rounding_preserves_signed_joint_capital_loss() {
 fn unit13_rounding_actual_client_save_reopen_restart() {
     extern crate std;
     use crate::tests::cross::interview::from_review;
-    let d = unit13_rounding_fixture(Owner::Taxpayer);
+    let mut d = unit13_rounding_fixture(Owner::Taxpayer);
     let initial = supported(&d);
+    name_accepted_income_documents(&mut d);
     let mut session = Interview::new(TEST_USER, d);
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let source_page = open_documents(&mut session);
+    accepted(&send(&mut session, source_page));
     let Reply::Edit(page) = crate::tests::support::client::native_editor(
         from_review(&mut session, TaxSection::InjuredSpouse),
         &[],
@@ -3871,7 +4127,7 @@ fn unit13_qsbs_source_fixture(
     let mut d = injured_return((0, 0), (60_000, 20_000), 0, allocation());
     let mut interest = savings_income(250_000, 0);
     let FederalIncome::Interest { data } = &mut interest else { unreachable!() };
-    data.withholding = 7_000_000;
+    edit_interest(data).withholding = 7_000_000;
     add(&mut d, income(interest));
     let mut lots = vec![
         (Owner::Taxpayer, first_date, if cents { 98 } else { 1_000_000 }),
@@ -3884,7 +4140,7 @@ fn unit13_qsbs_source_fixture(
         let data =
             qsb_source_sale("Synthetic shared issuer", issued, gain, BasisReporting::ReportedToIrs);
         let mut entry = income(FederalIncome::QualifiedSmallBusinessSale { data });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     d
@@ -3929,7 +4185,7 @@ fn unit13_qsbs_native_cohorts_feed_actual_owner_liabilities_once() {
         let mut ordinary = d;
         ordinary.injured_spouse = None;
         let native =
-            crate::qsbs::calculate(&ordinary, &mut FederalResult::empty(ordinary.revision));
+            crate::qsbs_return::calculate(&ordinary, &mut FederalResult::empty(ordinary.revision));
         let mut sources = crate::injured_spouse::CapitalSources::default();
         for source in &native.sources {
             sources.add(Some(source.owner), [0, source.taxable_gain]);
@@ -3943,7 +4199,10 @@ fn unit13_qsbs_native_cohorts_feed_actual_owner_liabilities_once() {
         );
         let totals = actual_liability_totals(&joint);
         let projection = crate::injured_spouse::owners::project_sources(
-            &ordinary,
+            crate::related_forms::RelatedFormContext::original(
+                &ordinary,
+                &crate::related_forms::effective_claimants(&ordinary),
+            ),
             &joint,
             None,
             &facts,
@@ -3977,28 +4236,40 @@ fn unit13_qsbs_source_cents_use_the_selected_injured_rounding_view() {
 }
 #[test]
 fn unit13_qsbs_owner_source_survives_save_reopen_and_date_correction() {
-    use crate::tests::cross::interview::{accepted, open_topic, page_documents, save_topic};
+    use crate::tests::cross::interview::accepted;
     let mut session =
         Interview::new(TEST_USER, unit13_qsbs_source_fixture(20080602, 20150302, true, false));
-    let page = open_topic(&mut session, TaxSection::InvestmentSales);
+    let page = open_documents(&mut session);
     accepted(&send(&mut session, page));
     session = restart(session.draft);
     let before = supported(&session.draft);
     assert_eq!((column(&before, "13b", "b"), column(&before, "13b", "c")), (255_000, 2_000));
     let identities: Vec<_> = session.draft.income.iter().map(|v| (v.id, v.owner)).collect();
-    let page = open_topic(&mut session, TaxSection::InvestmentSales);
-    let mut rows = page_documents(&page).to_vec();
-    let row = rows
+    let mut page = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+    let row = documents.common.investment_sales.documents
         .iter_mut()
         .find(|v| {
-            v.owner == Owner::Spouse
-                && matches!(&v.document,IncomeDocument::QsbsSale(d) if d.lots[0].issued == 20150302)
+            v.owner == crate::DocumentOwner::Spouses
+                && matches!(&v.document,crate::InvestmentSaleDocument::QsbsSale(d) if d.lots[0].issued == 20150302)
         })
         .unwrap();
-    let IncomeDocument::QsbsSale(data) = &mut row.document else { panic!() };
+    let corrected_id = row.id;
+    let crate::InvestmentSaleDocument::QsbsSale(data) = &mut row.document else { panic!() };
     data.lots[0].issued = 20100927;
-    let request = save_topic(&session.draft, TaxSection::InvestmentSales, rows);
-    accepted(&send(&mut session, request));
+    accepted(&send(&mut session, page));
+    let FederalIncome::QualifiedSmallBusinessSale { data } =
+        &session.draft.income.iter().find(|entry| entry.id == corrected_id).unwrap().income
+    else {
+        panic!()
+    };
+    assert_eq!(
+        (data.issuer_qualified, data.active_business, data.no_disqualification),
+        (None, None, None)
+    );
+    for field in ["qsbs_issuer_qualified", "qsbs_active_business", "qsbs_no_disqualification"] {
+        qsbs_bool_fact(&mut session, &alloc::format!("income/{corrected_id}/{field}"), true);
+    }
     session = restart(session.draft);
     let after = supported(&session.draft);
     assert_eq!((column(&after, "13b", "b"), column(&after, "13b", "c")), (255_000, 4_500));
@@ -4014,7 +4285,7 @@ fn unit13_qsbs_owner_source_survives_save_reopen_and_date_correction() {
     ordinary.injured_spouse = None;
     let plain = supported(&ordinary);
     assert_eq!((after.tax, after.refund), (plain.tax, plain.refund));
-    let page = open_topic(&mut session, TaxSection::InvestmentSales);
+    let page = open_documents(&mut session);
     accepted(&send(&mut session, page));
     let reopened = supported(&restart(session.draft).draft);
     assert_eq!((after.tax, after.refund), (reopened.tax, reopened.refund));
@@ -4023,10 +4294,20 @@ fn unit13_qsbs_owner_source_survives_save_reopen_and_date_correction() {
 #[test]
 fn unit13_qsbs_actual_client_source_save_reopen_restart() {
     extern crate std;
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::accepted;
     let d = unit13_qsbs_source_fixture(20080602, 20150302, true, false);
     let mut session = Interview::new(TEST_USER, d);
-    let page = open_topic(&mut session, TaxSection::InvestmentSales);
+    let corrected_id = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| {
+            matches!(&entry.income,
+        FederalIncome::QualifiedSmallBusinessSale { data } if data.lots[0].issued == 20150302)
+        })
+        .unwrap()
+        .id;
+    let page = open_documents(&mut session);
     let native = NativeInterviewCase("TAX_UNIT13_QSBS");
     if native.required_checked_calculation(&mut session) {
         return;
@@ -4038,20 +4319,32 @@ fn unit13_qsbs_actual_client_source_save_reopen_restart() {
         request
     } else {
         let mut page = page;
-        let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-        let row=documents.documents.iter_mut().find(|v|v.owner==Owner::Spouse &&
-            matches!(&v.document,IncomeDocument::QsbsSale(d) if d.lots[0].issued==20150302)).unwrap();
-        let IncomeDocument::QsbsSale(d) = &mut row.document else { panic!() };
+        let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+        let row=documents.common.investment_sales.documents.iter_mut().find(|v|v.owner==crate::DocumentOwner::Spouses &&
+            matches!(&v.document,crate::InvestmentSaleDocument::QsbsSale(d) if d.lots[0].issued==20150302)).unwrap();
+        let crate::InvestmentSaleDocument::QsbsSale(d) = &mut row.document else { panic!() };
         d.lots[0].issued = 20100927;
         page
     };
-    let P::SaveIncomes { documents, .. } = &request else { panic!() };
+    let P::SaveDocuments { documents, .. } = &request else { panic!() };
     assert!(
-        !documents.documents.iter().any(
-            |v| matches!(&v.document,IncomeDocument::QsbsSale(d) if d.lots[0].issued==20150302)
+        !documents.common.investment_sales.documents.iter().any(
+            |v| matches!(&v.document,crate::InvestmentSaleDocument::QsbsSale(d) if d.lots[0].issued==20150302)
         )
     );
     accepted(&send(&mut session, request));
+    let FederalIncome::QualifiedSmallBusinessSale { data } =
+        &session.draft.income.iter().find(|entry| entry.id == corrected_id).unwrap().income
+    else {
+        panic!()
+    };
+    assert_eq!(
+        (data.issuer_qualified, data.active_business, data.no_disqualification),
+        (None, None, None)
+    );
+    for field in ["qsbs_issuer_qualified", "qsbs_active_business", "qsbs_no_disqualification"] {
+        qsbs_bool_fact(&mut session, &alloc::format!("income/{corrected_id}/{field}"), true);
+    }
     let result = supported(&session.draft);
     assert_eq!((column(&result, "13b", "b"), column(&result, "13b", "c")), (255_000, 4_500));
     let explanation = &result
@@ -4072,7 +4365,7 @@ fn unit13_qsbs_actual_client_source_save_reopen_restart() {
     assert_eq!(native_draft_records(&decoded), stored);
     assert_eq!(decoded, session.draft);
     let mut reopened = restart(session.draft);
-    let shown = open_topic(&mut reopened, TaxSection::InvestmentSales);
+    let shown = open_documents(&mut reopened);
     native.output(&shown, &stored);
     accepted(&send(&mut reopened, shown));
     let after = supported(&reopened.draft);
@@ -4187,6 +4480,7 @@ fn unit13_trump_tax_fixture() -> FederalDraft {
             contributions,
             exempt: 100000,
             returns: vec![TrumpExcessReturn {
+                document_id: None,
                 principal: returned,
                 earnings,
                 received: 20261201,
@@ -4344,22 +4638,38 @@ fn unit13_household_before_business_projection_requires_actual_applicable_source
     let mut d = unit13_household_tax_fixture();
     d.screening.as_mut().unwrap().household_employment.push(household_employer(5000));
     d.injured_spouse = None;
-    d.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let r = supported(&d);
     let facts = liability_portfolio_native_facts(&d, Some([0; 2]), Some(&r));
     let mut totals = actual_liability_totals(&r);
     // An applicable component absent from the supplied source map remains
     // unknown. It must not silently become zero or an invented claim.
-    let incomplete =
-        crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-            .unwrap();
+    let incomplete = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &r,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &incomplete), None);
     for id in ["household_0_tax", "household_1_tax"] {
         totals.calculation_amounts.insert(id, value(&r, id));
     }
-    let complete =
-        crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-            .unwrap();
+    let complete = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &r,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     // Native MFS income taxes5023/393 plus actual employer taxes795/557.
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &complete), Some([5818, 950]));
 }
@@ -4420,19 +4730,35 @@ fn unit13_medical_source(
     cents: i64,
 ) -> FederalIncomeEntry {
     let mut entry = income(FederalIncome::MedicalDistribution {
-        data: FederalMedicalDistribution {
-            origin: HealthDocumentOrigin::Form1099Sa,
-            gross: cents,
-            account,
-            payment: MedicalSaPayment::Own {
+        data: crate::SaSource {
+            medicare_prior: if matches!(&account, MedicalSaAccount::MedicareAdvantage) {
+                Some(MedicareMsaPrior::None)
+            } else {
+                None
+            },
+            medicare_from_spouse: if matches!(&account, MedicalSaAccount::MedicareAdvantage) {
+                Some(false)
+            } else {
+                None
+            },
+            payment: Some(MedicalSaPayment::Own {
                 nonmedical: vec![MedicalAccountWithdrawal { date: 20260601, amount: cents }],
                 medical: 0,
                 rollover: None,
                 disabled_since: None,
-            },
+            }),
+            ..sa_source(Sa1099 {
+                origin: HealthDocumentOrigin::Form1099Sa,
+                gross: cents,
+                box2_earnings: None,
+                box3_code: Some(1),
+                box4_value: None,
+                account: account.clone(),
+                ..Default::default()
+            })
         },
     });
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     entry
 }
 
@@ -4452,8 +4778,8 @@ fn unit13_medical_sources_preserve_each_native_income_and_tax_rounding_boundary(
         (MedicalSaAccount::Archer, MedicalSaAccount::Archer, [249, 249], 5, 1, [2, 2], [0, 0]),
         (MedicalSaAccount::Archer, MedicalSaAccount::Archer, [250, 250], 5, 1, [3, 3], [1, 1]),
         (
-            MedicalSaAccount::MedicareAdvantage { prior: MedicareMsaPrior::None },
-            MedicalSaAccount::MedicareAdvantage { prior: MedicareMsaPrior::None },
+            MedicalSaAccount::MedicareAdvantage,
+            MedicalSaAccount::MedicareAdvantage,
             [249, 249],
             4,
             2,
@@ -4577,9 +4903,10 @@ fn unit13_able_native_distribution_and_contribution_tax_have_their_actual_owner(
     let mut d = injured_return((60000, 10000), (20000, 5000), 0, allocation());
     let mut distribution = able_distribution(1000, 300, 500);
     let FederalIncome::Able { data } = &mut distribution else { unreachable!() };
-    data.earnings = 30049;
+    data.form.earnings = 30049;
+    data.form.basis = data.form.gross - data.form.earnings;
     let mut source = income(distribution);
-    source.owner = Owner::Spouse;
+    source.owner = crate::DocumentOwner::Spouses;
     add(&mut d, source);
     let mut contributions = able_contributions(
         crate::year_constants::ABLE_ANNUAL_CONTRIBUTION_LIMIT_DOLLARS + 1000,
@@ -4623,9 +4950,9 @@ fn unit13_account_income_raises_native_niit_magi_without_becoming_investment_inc
     d.income.retain(|e| e.id != 1);
     let mut interest_data = savings_income(250000, 0);
     let FederalIncome::Interest { data } = &mut interest_data else { unreachable!() };
-    data.withholding = 7000000;
+    edit_interest(data).withholding = 7000000;
     let mut interest = income(interest_data);
-    interest.owner = Owner::Taxpayer;
+    interest.owner = crate::DocumentOwner::Yours;
     add(&mut d, interest);
     *d.income.iter_mut().find(|e| e.id == 2).unwrap() = wage(2, Owner::Spouse, 6000000, 2000000);
     for injured in [Owner::Taxpayer, Owner::Spouse] {
@@ -4652,9 +4979,9 @@ fn unit13_account_income_raises_native_niit_magi_without_becoming_investment_inc
 #[test]
 fn unit13_account_actual_client_recipient_save_reopen_restart() {
     extern crate std;
-    use crate::tests::cross::interview::{accepted, open_topic};
+    use crate::tests::cross::interview::accepted;
     let mut session = Interview::new(TEST_USER, unit13_education_source_fixture());
-    let page = open_topic(&mut session, TaxSection::OtherIncome);
+    let page = open_documents(&mut session);
     let native = NativeInterviewCase("TAX_UNIT13_ACCOUNT");
     if native.required_checked_calculation(&mut session) {
         return;
@@ -4666,22 +4993,26 @@ fn unit13_account_actual_client_recipient_save_reopen_restart() {
         request
     } else {
         let mut page = page;
-        let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
+        let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
         documents
+            .other
+            .other_income
             .documents
             .iter_mut()
-            .find(|v| matches!(v.document, IncomeDocument::Q1099(_)))
+            .find(|v| matches!(v.document, crate::OtherIncomeDocument::Q1099(_)))
             .unwrap()
-            .owner = Owner::Taxpayer;
-        page
+            .owner = crate::DocumentOwner::Yours;
+        fixture_owner_inputs(&session.draft, page)
     };
-    let P::SaveIncomes { documents, .. } = &request else { panic!() };
+    let P::SaveDocuments { documents, .. } = &request else { panic!() };
     let changed = documents
+        .other
+        .other_income
         .documents
         .iter()
-        .find(|v| matches!(v.document, IncomeDocument::Q1099(_)))
+        .find(|v| matches!(v.document, crate::OtherIncomeDocument::Q1099(_)))
         .unwrap();
-    assert_eq!(changed.owner, Owner::Taxpayer);
+    assert_eq!(changed.owner, crate::DocumentOwner::Yours);
     let id = changed.id;
     accepted(&send(&mut session, request));
     let result = supported(&session.draft);
@@ -4701,10 +5032,10 @@ fn unit13_account_actual_client_recipient_save_reopen_restart() {
     assert_eq!(native_draft_records(&decoded), stored);
     assert_eq!(decoded, session.draft);
     let mut reopened = restart(session.draft);
-    let shown = open_topic(&mut reopened, TaxSection::OtherIncome);
+    let shown = open_documents(&mut reopened);
     native.output(&shown, &stored);
     assert!(reopened.draft.income.iter().any(|v| v.id == id
-        && v.owner == Owner::Taxpayer
+        && v.owner == crate::DocumentOwner::Yours
         && matches!(v.income, FederalIncome::EducationDistribution { .. })));
     accepted(&send(&mut reopened, shown));
     let after = supported(&reopened.draft);
@@ -4723,10 +5054,10 @@ mod unit13_royalty_sources;
 fn unit13_operating_niit_fixture(business_owner: Owner, portfolio_owner: Owner) -> FederalDraft {
     let mut draft = injured_return((60_000, 30_000), (0, 0), 0, allocation());
     let mut business = income(cash_business(20_000));
-    business.owner = business_owner;
+    business.owner = crate::DocumentOwner::from(business_owner);
     add(&mut draft, business);
     let mut portfolio = income(savings_income(220_000, 0));
-    portfolio.owner = portfolio_owner;
+    portfolio.owner = crate::DocumentOwner::from(portfolio_owner);
     add(&mut draft, portfolio);
     draft
 }
@@ -4777,19 +5108,92 @@ fn unit13_operating_niit_uses_investment_owner_not_active_business_or_magi_owner
 }
 
 #[test]
-fn unit13_operating_niit_preserves_existing_passive_business_omission() {
+fn unit13_operating_niit_preserves_passive_business_se_and_investment_ownership() {
     let mut draft = unit13_operating_niit_fixture(Owner::Taxpayer, Owner::Spouse);
+    let native = supported(&draft);
     let FederalIncome::Business { data } = &mut draft.income[2].income else { panic!() };
-    data.material_participation = false;
+    data.material_participation =
+        crate::ParticipationFacts { hours: 0, test: crate::ParticipationTest::None };
     let result = supported(&draft);
-    // Native unknowns.rs omits this unimplemented passive C source; the
-    // ordinary estimate contains only60k wages +220k portfolio income.
-    // This owner fix must not silently admit or label that activity covered.
+    // 2026-10-24: current passive C enters469 and retains1401 character.
+    // Reg1.1411-9(a) excludes the SE items, not the spouse's portfolio.
+    assert_eq!(value(&result, "agi"), 298_587);
+    assert_eq!(value(&result, "form_8960_net_investment_income"), 220_000);
+    assert_eq!(value(&result, "net_investment_income_tax"), 1846);
+    assert_eq!([column(&result, "18", "b"), column(&result, "18", "c")], [2826, 1846]);
+    assert_eq!(result.tax, native.tax);
+    assert!(!result.review_notes.iter().any(|note| note.display.key == "WARN_BUSINESS_LEFT_OUT"));
+    let mut plain = draft.clone();
+    plain.injured_spouse = None;
+    let ordinary = supported(&plain);
+    assert_eq!(
+        (result.tax, result.refund, result.balance),
+        (ordinary.tax, ordinary.refund, ordinary.balance)
+    );
+}
+
+#[test]
+fn unit13_passive_notary_niit_preserves_native_source_ownership() {
+    let mut draft = unit13_operating_niit_fixture(Owner::Taxpayer, Owner::Taxpayer);
+    draft.income[2].income = passive_business(20_000);
+    let FederalIncome::Business { data } = &mut draft.income[2].income else { panic!() };
+    data.notary_profit = 2_000_000;
+    let result = supported(&draft);
+    assert_eq!(value(&result, "agi"), 300_000);
+    assert_eq!(value(&result, "self_employment_tax"), 0);
+    assert_eq!(value(&result, "form_8960_net_investment_income"), 240_000);
+    assert_eq!(value(&result, "net_investment_income_tax"), 1900);
+    assert_eq!(column(&result, "18", "a"), 1900);
+    assert_eq!([column(&result, "18", "b"), column(&result, "18", "c")], [1900, 0]);
+    assert!(
+        !result
+            .review_notes
+            .iter()
+            .any(|note| { note.display.key == "WARN_8379_OTHER_TAX_OWNER_UNAVAILABLE" })
+    );
+    let mut plain = draft.clone();
+    plain.injured_spouse = None;
+    let ordinary = supported(&plain);
+    assert_eq!(
+        (result.tax, result.refund, result.balance),
+        (ordinary.tax, ordinary.refund, ordinary.balance)
+    );
+}
+
+#[test]
+fn unit13_passive_statutory_wages_preserve_native_niit_ownership() {
+    let mut draft = unit13_operating_niit_fixture(Owner::Taxpayer, Owner::Taxpayer);
+    draft.income[2].income = cash_business(0);
+    let id = draft.income[2].id;
+    source_statutory_wage(&mut draft, Owner::Taxpayer, Some(id));
+    let native = supported(&draft);
+    let FederalIncome::Business { data } = &mut draft.income[2].income else { panic!() };
+    data.material_participation =
+        crate::ParticipationFacts { hours: 0, test: crate::ParticipationTest::None };
+    add(&mut draft, income(passive_business(-1000)));
+    let loss = draft.income.last().unwrap().id;
+    let result = supported(&draft);
     assert_eq!(value(&result, "agi"), 280_000);
+    assert_eq!(value(&result, "self_employment_tax"), 0);
     assert_eq!(value(&result, "form_8960_net_investment_income"), 220_000);
     assert_eq!(value(&result, "net_investment_income_tax"), 1140);
-    assert_eq!([column(&result, "18", "b"), column(&result, "18", "c")], [0, 1140]);
-    assert!(result.review_notes.iter().any(|note| note.display.key == "WARN_BUSINESS_LEFT_OUT"));
+    assert_eq!(column(&result, "13a", "a"), 60_000);
+    assert_eq!([column(&result, "13a", "b"), column(&result, "13a", "c")], [60_000, 0]);
+    assert_eq!(column(&result, "18", "a"), 1140);
+    assert_eq!([column(&result, "18", "b"), column(&result, "18", "c")], [1140, 0]);
+    assert_eq!(value(&result, &alloc::format!("business_{loss}_passive_current")), -1000);
+    assert_eq!(value(&result, &alloc::format!("business_{loss}_passive_suspended")), 1000);
+    assert_eq!(value(&result, &alloc::format!("business_{loss}_passive_allowed")), 0);
+    assert!(
+        !result.lines.iter().any(|line| line.id == alloc::format!("business_{id}_passive_allowed"))
+    );
+    assert_eq!(result.tax, native.tax);
+    assert!(
+        !result
+            .review_notes
+            .iter()
+            .any(|note| { note.display.key == "WARN_8379_OTHER_TAX_OWNER_UNAVAILABLE" })
+    );
     let mut plain = draft.clone();
     plain.injured_spouse = None;
     let ordinary = supported(&plain);
@@ -4812,7 +5216,11 @@ fn unit13_operating_niit_actual_client_save_reopen_restart() {
         TaxSection::InterestDividends
     };
     let mut session = Interview::new(TEST_USER, draft);
-    let mut page = open_topic(&mut session, topic);
+    let mut page = if profile == "business" {
+        open_topic(&mut session, topic)
+    } else {
+        open_documents(&mut session)
+    };
     let native = NativeInterviewCase("TAX_UNIT13_OPERATING_NIIT");
     if native.required_checked_calculation(&mut session) {
         return;
@@ -4823,14 +5231,15 @@ fn unit13_operating_niit_actual_client_save_reopen_restart() {
     let request = if let Some(request) = native.checked_input("PAYLOAD") {
         request
     } else {
-        let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
-        let row = &mut documents.documents[0];
         if profile == "business" {
+            let P::SaveIncomes { documents, .. } = &mut page else { panic!() };
+            let row = &mut documents.documents[0];
             row.owner = Owner::Spouse;
-            let IncomeDocument::Business(data) = &mut row.document else { panic!() };
+            let crate::IncomeRecord::Business(data) = &mut row.document else { panic!() };
             data.receipts = 3_000_000;
         } else {
-            row.owner = Owner::Taxpayer;
+            let P::SaveDocuments { documents, .. } = &mut page else { panic!() };
+            documents.common.interest_dividends.documents[0].owner = crate::DocumentOwner::Yours;
         }
         page
     };
@@ -4863,7 +5272,11 @@ fn unit13_operating_niit_actual_client_save_reopen_restart() {
     let draft = draft_from_native_records(tax_year, &stored);
     assert_eq!(draft, session.draft);
     let mut reopened = restart(draft);
-    let shown = open_topic(&mut reopened, topic);
+    let shown = if profile == "business" {
+        open_topic(&mut reopened, topic)
+    } else {
+        open_documents(&mut reopened)
+    };
     native.output(&shown, &stored);
     let accepted_draft = reopened.draft.clone();
     accepted(&send(&mut reopened, shown));
@@ -4909,7 +5322,7 @@ fn unit13_mortgage_gift_source_owner_retains_native_recapture_tax() {
             assert!(result.lines.iter().any(|line| line.id == "form_8379_injured_refund_estimate"));
             let mut plain = draft.clone();
             plain.injured_spouse = None;
-            plain.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+            plain.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
             let ordinary = supported(&plain);
             assert_eq!(
                 (ordinary.tax, ordinary.refund, ordinary.balance),
@@ -4994,8 +5407,8 @@ fn unit13_mortgage_actual_client_save_reopen_restart() {
     } else {
         let P::SaveOtherTaxes { value, .. } = &mut page else { panic!() };
         let OtherTax::MortgageSubsidyRecapture { homes } = &mut value.taxes[0] else { panic!() };
-        let MortgageSubsidyDisposition::Ordinary {
-            transfer: MortgageSubsidyTransfer::GiftToOther { owners, fair_market_value, .. },
+        let MortgageSubsidyDispositionView::Ordinary {
+            transfer: MortgageSubsidyTransferView::GiftToOther { owners, fair_market_value, .. },
             ..
         } = &mut homes[0].disposition
         else {
@@ -5034,7 +5447,7 @@ fn unit13_mortgage_actual_client_save_reopen_restart() {
             assert_eq!([column(&result, "18", "b"), column(&result, "18", "c")], [0, 7_500]);
             let mut ordinary = draft.clone();
             ordinary.injured_spouse = None;
-            ordinary.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+            ordinary.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
             let plain = supported(&ordinary);
             assert_eq!(
                 (result.tax, result.refund, result.balance),
@@ -5177,7 +5590,7 @@ fn injured_community_yes_resave_keeps_child_credit_answers() {
     ];
     draft.dependents = vec![child(3), child(4)];
     draft.next_id = 5;
-    draft.checklist.whole_return = WholeReturnTopics::INJURED_SPOUSE.0;
+    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     let mut session = restart(draft);
     let Reply::Edit(mut page) =
         native_editor(from_review(&mut session, TaxSection::InjuredSpouse), &[])
@@ -5223,7 +5636,7 @@ fn injured_community_federal_tax_debt_receives_its_choices_on_save() {
     use crate::tests::cross::interview::from_review;
     use crate::tests::support::client::native_editor;
     let mut draft = complete(FederalStatus::Joint);
-    draft.checklist.whole_return = WholeReturnTopics::INJURED_SPOUSE.0;
+    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     let mut session = restart(draft);
     let Reply::Edit(mut page) =
         native_editor(from_review(&mut session, TaxSection::InjuredSpouse), &[])
@@ -5261,12 +5674,12 @@ fn injured_community_federal_tax_debt_receives_its_choices_on_save() {
 // 2026-10-19 acceptance defect 7: a row never shows a community choice outside its own set.
 #[test]
 fn injured_community_yes_wage_rows_show_a_value_inside_their_allowed_set() {
-    use crate::tests::cross::interview::{from_review, open_topic, page_documents};
+    use crate::tests::cross::interview::{from_review, page_documents};
     use crate::tests::support::client::native_editor;
     let mut draft = complete(FederalStatus::Joint);
     draft.income = vec![wage(1, Owner::Taxpayer, 5_000_000, 800_000)];
     draft.next_id = 2;
-    draft.checklist.whole_return = WholeReturnTopics::INJURED_SPOUSE.0;
+    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     let mut session = restart(draft);
     let Reply::Edit(mut page) =
         native_editor(from_review(&mut session, TaxSection::InjuredSpouse), &[])
@@ -5277,9 +5690,71 @@ fn injured_community_yes_wage_rows_show_a_value_inside_their_allowed_set() {
     value.community =
         InjuredCommunity::Yes { states: vec![5], debt_facts: InjuredDebtFacts::NotApplicable };
     send(&mut session, page);
-    let wages = open_topic(&mut session, TaxSection::Wages);
+    let wages = open_documents(&mut session);
     let rows = page_documents(&wages);
     assert_eq!(rows.len(), 1);
     assert!(rows[0].allowed_community.contains(&crate::community::index(rows[0].community)));
     assert!(rows[0].allowed_community.contains(&crate::community::index(CommunityShare::Separate)));
+}
+
+#[test]
+fn estimated_annual_funding_keeps_actual_payers_and_community_parts_when_timing_is_unknown() {
+    let mut claim = allocation();
+    claim.community =
+        InjuredCommunityFacts::Yes { states: vec![5], debt_facts: InjuredDebtFacts::NotApplicable };
+    let mut draft = injured_return((60_000, 10_000), (20_000, 1_000), 0, claim);
+    for source in &mut draft.income {
+        source.community = CommunityShare::Separate;
+    }
+    let parts = vec![
+        DatedPayment {
+            date: 20260415,
+            amount: 70_000,
+            payer: PaymentPayer::Taxpayer,
+            refund_property: Some(RefundSourcePropertyFacts::Partly {
+                community: 20_000,
+                separate_owner: Owner::Taxpayer,
+                management: RefundManagement::NotApplicable,
+            }),
+        },
+        DatedPayment {
+            date: 20260615,
+            amount: 30_000,
+            payer: PaymentPayer::Spouse,
+            refund_property: Some(RefundSourcePropertyFacts::Separate { owner: Owner::Spouse }),
+        },
+    ];
+    draft.payments.as_mut().unwrap().estimated =
+        EstimatedPaymentEntryRecord::Sources { payments: parts.clone() };
+    let dated = supported(&draft);
+    let annual = parts
+        .into_iter()
+        .map(|source| AnnualEstimatedAmountRecord {
+            amount: source.amount,
+            payer: source.payer,
+            refund_property: source.refund_property,
+        })
+        .collect::<Vec<_>>();
+    for equal in [false, true] {
+        draft.payments.as_mut().unwrap().estimated = if equal {
+            EstimatedPaymentEntryRecord::EqualTimely { payments: annual.clone() }
+        } else {
+            EstimatedPaymentEntryRecord::TimingUnknown { payments: annual.clone() }
+        };
+        let result = supported(&draft);
+        assert_eq!(result, dated);
+        assert_eq!(return_line(&result, "26"), 100_000);
+        assert_eq!(share_cents(&result), share_cents(&dated));
+        assert_eq!(
+            crate::injured_spouse::joint_estimated(&draft),
+            crate::kernel::ratio::exact::whole(0)
+        );
+    }
+    let EstimatedPaymentEntryRecord::EqualTimely { payments } =
+        &mut draft.payments.as_mut().unwrap().estimated
+    else {
+        unreachable!()
+    };
+    payments[0].refund_property = None;
+    unavailable(&draft, "WARN_8379_COMMUNITY_ESTIMATE_UNAVAILABLE");
 }

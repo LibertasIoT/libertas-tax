@@ -18,7 +18,7 @@
 //   American Samoa income, not modeled) and the reserved line 15 is a return row (lines 1–14,
 //   16a–27; Part II-B lines 21–26 only when the payroll alternative applies; a zero amount is
 //   dropped by the review), a child attains 17 on the birthday (Rev. Rul. 2003-72), a child
-//   born and died in 2026 without an SSN counts on line 4 (PersonFacts::BORN_AND_DIED), a
+//   born and died in 2026 without an SSN counts on line 4 (FederalDependent::born_and_died), a
 //   U.S.-citizen child who lived abroad is not excluded, and line 18a deducts the joint
 //   special-needs deemed excess (the negative Form 1040 line 1f). Tests:
 //   line_audit_family_credits.rs d1_*, d2_*, d3_*, d6_*, d12_*.
@@ -39,8 +39,8 @@
 
 // Schedule 8812 credits for qualifying children and other dependents.
 // Amounts are whole dollars.
-use crate::kernel::lines::{form_count, form_line};
 use crate::kernel::phase;
+use crate::line_emission::{form_count, form_line};
 use crate::{
     FederalResult, FormLine, TaxForm,
     kernel::ratio::{fraction, positive},

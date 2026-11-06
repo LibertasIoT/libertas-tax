@@ -47,12 +47,13 @@ fn unit13_child_debt_sources_child_niit_keeps_native_parent_character() {
     let mut d = child_election_owner_fixture(Owner::Spouse, true);
     for entry in &mut d.income {
         if let FederalIncome::Wage { data } = &mut entry.income {
-            data.wages = if entry.owner == Owner::Taxpayer { 20_000_000 } else { 5_000_000 };
+            edit_wage(data).wages =
+                if entry.owner == crate::DocumentOwner::Yours { 20_000_000 } else { 5_000_000 };
         }
     }
     for (owner, amount) in [(Owner::Taxpayer, 5000), (Owner::Spouse, 15_000)] {
         let mut entry = income(savings_income(amount, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     let r = supported(&d);
@@ -79,23 +80,21 @@ fn unit13_child_debt_sources_cod_is_noninvestment_but_transfer_gain_is_investmen
         let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
         for (owner, amount) in [(Owner::Taxpayer, 5000), (Owner::Spouse, 15_000)] {
             let mut entry = income(savings_income(amount, 0));
-            entry.owner = owner;
+            entry.owner = crate::DocumentOwner::from(owner);
             add(&mut d, entry);
         }
         let mut entry = canceled_personal_debt(
             if transfer { 2000 } else { 5000 },
             PersonalDebtTreatment::Taxable,
         );
-        entry.owner = Owner::Spouse;
+        entry.owner = crate::DocumentOwner::Spouses;
         if transfer {
             let FederalIncome::PersonalDebt { data } = &mut entry.income else { unreachable!() };
-            data.transfer = Some(PropertyTransfer {
-                value: 1_200_000,
-                property: TransferredProperty::Investment {
-                    basis: 1_000_000,
-                    term: GainTerm::Long,
-                    collectible: false,
-                },
+            data.form.property_value = Some(1_200_000);
+            data.property = Some(TransferredProperty::Investment {
+                basis: 1_000_000,
+                term: GainTerm::Long,
+                collectible: false,
             });
         }
         add(&mut d, entry);

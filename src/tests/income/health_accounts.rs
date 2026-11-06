@@ -5,9 +5,11 @@ fn employee_tips_and_overtime_change_taxable_income_not_payroll_or_agi() {
     let mut d = complete(FederalStatus::Single);
     let baseline = supported(&d);
     let FederalIncome::Wage { data: w } = &mut d.income[0].income else { panic!() };
+    let mut w = edit_wage(w);
     w.social_wages = 4_000_000;
     w.social_tips = 2_000_000;
     w.work_deductions = work_deductions(2_000_000, 500_000);
+    drop(w);
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 60000);
     assert_eq!(value(&r, "tips_deduction"), 20000);
@@ -16,7 +18,9 @@ fn employee_tips_and_overtime_change_taxable_income_not_payroll_or_agi() {
     assert_eq!(r.tax, Some(202_300));
     assert_eq!(r.payments, baseline.payments);
     let FederalIncome::Wage { data: w } = &mut d.income[0].income else { panic!() };
+    let mut w = edit_wage(w);
     w.work_deductions.set_tips_eligible(false);
+    drop(w);
     // Tips that do not qualify take no deduction.
     let r = supported(&d);
     assert_eq!(value(&r, "tips_deduction"), 0);
@@ -83,6 +87,7 @@ fn employee_tip_additional_medicare_does_not_invent_withholding() {
     tips.coverage = TipCoverage::MedicareOnlyGovernment;
     let mut government = wage_with_employee_tips(60000, tips);
     if let FederalIncome::Wage { data } = &mut government.income[0].income {
+        let mut data = edit_wage(data);
         data.social_wages = 0;
         data.social_tax = 0;
     }
@@ -104,6 +109,7 @@ fn employee_tips_enter_linked_archer_msa_compensation_limit() {
     assert_eq!(value(&r, "agi"), 500);
     assert_eq!(return_line(&r, "1z"), 200000);
     if let FederalIncome::Wage { data } = &mut draft.income[0].income {
+        let mut data = edit_wage(data);
         data.employee_tips = None;
     }
     unsupported(&draft, "Archer MSA");

@@ -23,19 +23,22 @@ fn compound(mut source: FederalIncome) -> (FederalDraft, i64) {
     };
     match &mut source {
         FederalIncome::Partnership { data } => {
-            data.limited_for_se = true;
+            data.limited_for_se = Some(true);
             data.reported_se = Some(0);
             data.regular.section1231 = Some(property(12_000, 3_000));
             data.regular.rentals = rental;
-            data.rental_facts.participation = K1RentalParticipation::NotActive;
+            data.rental_facts.participation = Some(K1RentalParticipation::NotActive);
             data.rental_facts.disposed = vec![K1RentalActivity::RealEstate];
             data.qbi.as_mut().unwrap().section1231_qbi = 1_200_000;
             data.alternative = Some(data.regular.clone());
         }
         FederalIncome::Scorp { data } => {
+            let mut source_edit = edit_scorp(data);
+            let data = &mut *source_edit;
+
             data.section1231 = Some(property(12_000, 3_000));
             data.rentals = rental;
-            data.rental_facts.participation = K1RentalParticipation::NotActive;
+            data.rental_facts.participation = Some(K1RentalParticipation::NotActive);
             data.rental_facts.disposed = vec![K1RentalActivity::RealEstate];
             data.property_qbi = ScorpPropertyQbi {
                 gain: 1_200_000,
@@ -116,6 +119,9 @@ fn k1_compound_independent_amt_dispositions_and_rental_release_are_not_added_twi
                 amt.rentals.real_estate = -100_000;
             }
             FederalIncome::Scorp { data } => {
+                let mut source_edit = edit_scorp(data);
+                let data = &mut *source_edit;
+
                 let amt = data.amt.as_mut().unwrap();
                 amt.section1231.as_mut().unwrap().net = 1_000_000;
                 data.section179_sales[0].alternative.reported_amounts_mut().unwrap().depreciation =
@@ -150,6 +156,9 @@ fn k1_compound_niit_keeps_rental_release_separate_from_active_and_trading_busine
                     }
                 }
                 FederalIncome::Scorp { data } => {
+                    let mut source_edit = edit_scorp(data);
+                    let data = &mut *source_edit;
+
                     data.trade_kind = if trading {
                         ScorpTradeKind::FinancialTrading
                     } else {

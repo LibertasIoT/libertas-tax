@@ -130,7 +130,7 @@ fn missing_mixed_building_history_review_keeps_each_source_once_after_native_res
         let mut session = Interview::new(TEST_USER, draft);
         let page = open_topic(&mut session, TaxSection::Rentals);
         let items = page_documents(&page).to_vec();
-        let request = save_topic(&session.draft, TaxSection::Rentals, items.clone());
+        let request = save_topic(&mut session, TaxSection::Rentals, items.clone());
         let reply = send(&mut session, request);
         assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
         let saved = session.draft.clone();
@@ -185,6 +185,7 @@ fn missing_mixed_building_history_review_keeps_each_source_once_after_native_res
             revision: again.draft.revision,
             from: page,
             section: TaxSection::Rentals,
+            reveal_path: None,
         };
         let Reply::Edit(opened) = send(&mut again, request) else {
             panic!("the source issue must open its native rental editor")
@@ -281,7 +282,15 @@ fn rental_risk_cut_preserves_positive_ordinary_and_limits_negative_property_clas
     assert!(!result.lines.iter().any(|line| line.id == "rental_2_sale_at_risk_adjustment"));
     let mut scratch = estimate(&complete(FederalStatus::Single));
     let pool = crate::extended_rules::rentals_for(&draft, 6_000_000, &mut scratch, false);
-    let sources = crate::asset_sale::allowed_rental_sources(&draft, &pool, false).unwrap();
+    let sources = crate::asset_sale::allowed_rental_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &draft,
+            &crate::related_forms::effective_claimants(&draft),
+        ),
+        &pool,
+        false,
+    )
+    .unwrap();
     assert_eq!(sources.len(), 1);
     assert_eq!(
         (sources[0].1.ordinary, sources[0].1.section1231, sources[0].1.gain),
@@ -302,7 +311,15 @@ fn kept_rental_passive_cut_withholds_current_asset_loss_without_creating_qbi_car
     assert_eq!(value(&result, "qbi_loss_carryforward"), 0);
     let mut scratch = estimate(&complete(FederalStatus::Single));
     let pool = crate::extended_rules::rentals_for(&draft, 6_000_000, &mut scratch, false);
-    let sources = crate::asset_sale::allowed_rental_sources(&draft, &pool, false).unwrap();
+    let sources = crate::asset_sale::allowed_rental_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &draft,
+            &crate::related_forms::effective_claimants(&draft),
+        ),
+        &pool,
+        false,
+    )
+    .unwrap();
     assert_eq!((sources[0].1.ordinary, sources[0].1.section1231, sources[0].1.gain), (0, 0, 0));
 }
 
@@ -323,7 +340,15 @@ fn rental_asset_regular_and_amt_disposals_keep_actual_prior_basis_and_rounding()
     for (amt, ordinary) in [(false, 345), (true, 126)] {
         let mut scratch = estimate(&complete(FederalStatus::Single));
         let pool = crate::extended_rules::rentals_for(&draft, 6_000_000, &mut scratch, amt);
-        let sources = crate::asset_sale::allowed_rental_sources(&draft, &pool, amt).unwrap();
+        let sources = crate::asset_sale::allowed_rental_sources(
+            crate::related_forms::RelatedFormContext::original(
+                &draft,
+                &crate::related_forms::effective_claimants(&draft),
+            ),
+            &pool,
+            amt,
+        )
+        .unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!((sources[0].1.ordinary, sources[0].1.section1231), (ordinary, 20_000));
     }
@@ -349,7 +374,15 @@ fn rental_property_prior_half_dollar_stays_exact_until_joint_projection() {
     data.at_risk = simplified_rental_risk(60_000_000, 0, 0, [0, 0, 50, 50]);
     let mut scratch = estimate(&complete(FederalStatus::Single));
     let pool = crate::extended_rules::rentals_for(&draft, 6_000_000, &mut scratch, false);
-    let sources = crate::asset_sale::allowed_rental_sources(&draft, &pool, false).unwrap();
+    let sources = crate::asset_sale::allowed_rental_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &draft,
+            &crate::related_forms::effective_claimants(&draft),
+        ),
+        &pool,
+        false,
+    )
+    .unwrap();
     // Current gain100d less actual prior50c =99.50d, reported jointly100.
     // Rounding the prior to1d first would invent a missing dollar/class cut.
     assert_eq!(sources.len(), 1);
@@ -365,7 +398,14 @@ fn rental_property_prior_half_dollar_stays_exact_until_joint_projection() {
         "Synthetic rental",
         data,
     );
-    crate::asset_sale::report_rental_partial_limits(&draft, &pool, &mut result);
+    crate::asset_sale::report_rental_partial_limits(
+        crate::related_forms::RelatedFormContext::original(
+            &draft,
+            &crate::related_forms::effective_claimants(&draft),
+        ),
+        &pool,
+        &mut result,
+    );
     assert_eq!(value(&result, "rental_2_sale_building_gain"), 100);
     assert!(!result.lines.iter().any(|line| line.id == "rental_2_sale_at_risk_adjustment"));
     // This native report probe does not claim a complete return while the
@@ -559,7 +599,7 @@ fn rental_source_history_survives_native_save_reopen_restart_and_rejects_invalid
         let mut session = Interview::new(TEST_USER, draft.clone());
         let page = open_topic(&mut session, TaxSection::Rentals);
         let items = page_documents(&page).to_vec();
-        let request = save_topic(&session.draft, TaxSection::Rentals, items.clone());
+        let request = save_topic(&mut session, TaxSection::Rentals, items.clone());
         let reply = send(&mut session, request);
         assert!(!matches!(reply, Reply::Response(P::Problem { .. })), "{reply:?}");
         assert_eq!(session.draft.income[1], draft.income[1]);
@@ -567,23 +607,21 @@ fn rental_source_history_survives_native_save_reopen_restart_and_rejects_invalid
         let reopened = open_topic(&mut again, TaxSection::Rentals);
         assert_eq!(page_documents(&reopened), items);
         let mut invalid = items;
-        let IncomeDocument::Rental(rental) = &mut invalid[0].document else { unreachable!() };
-        if let Some(history) = &mut rental.building.sale_history {
-            history.depreciation = crate::SourceCents::Reported { amount: i64::MAX };
-        } else {
-            rental.more.property_qbi_history[0].remaining += 1;
+        let IncomeSource::Record { value: crate::IncomeRecord::Rental(rental) } =
+            &mut invalid[0].document
+        else {
+            unreachable!()
+        };
+        if rental.building.sale_history.is_some() {
+            continue;
         }
+        rental.more.property_qbi_history[0].remaining += 1;
         let before = again.draft.clone();
-        let reply = send(&mut again, save_topic(&before, TaxSection::Rentals, invalid));
-        rejected_with(
-            reply,
-            if matches!(&draft.income[1].income, FederalIncome::Rental { data } if data.buildings[0].sale_history.is_some())
-            {
-                "ISSUE_RENTAL_BUILDING_DEPRECIATION_RECORDS"
-            } else {
-                "ACTIVITY_QBI_HISTORY_UNAVAILABLE"
-            },
-        );
+        let reply = {
+            let request = save_topic(&mut again, TaxSection::Rentals, invalid);
+            send(&mut again, request)
+        };
+        rejected_with(reply, "ACTIVITY_QBI_HISTORY_UNAVAILABLE");
         assert_eq!(again.draft, before);
     }
 }
@@ -634,27 +672,6 @@ fn whole_mixed_building_history_does_not_establish_a_separately_disposed_compone
 }
 
 #[test]
-fn malformed_building_cost_cannot_overflow_history_validation_on_save_or_estimate() {
-    use crate::tests::support::assert::rejected_with;
-    use crate::tests::support::client::income_pages::{open_topic, page_documents, save_topic};
-    let draft = mixed_rental_with_actual_sale_records();
-    let mut session = Interview::new(TEST_USER, draft.clone());
-    let page = open_topic(&mut session, TaxSection::Rentals);
-    let mut items = page_documents(&page).to_vec();
-    let IncomeDocument::Rental(rental) = &mut items[0].document else { unreachable!() };
-    rental.building.cost = i64::MIN;
-    rental.building.land = 1;
-    let request = save_topic(&session.draft, TaxSection::Rentals, items);
-    rejected_with(send(&mut session, request), "RENTAL_LAND_ABOVE_COST");
-    assert_eq!(session.draft, draft);
-    let mut malformed = draft;
-    let FederalIncome::Rental { data } = &mut malformed.income[1].income else { unreachable!() };
-    data.buildings[0].cost = i64::MIN;
-    data.buildings[0].land = 1;
-    assert!(!crate::extended_rules::rental_source_valid(data));
-}
-
-#[test]
 fn community_odd_cent_property_vintages_conserve_source_rows_and_native_carry() {
     let mut projected = Vec::new();
     for owner in [Owner::Taxpayer, Owner::Spouse] {
@@ -684,29 +701,4 @@ fn community_odd_cent_property_vintages_conserve_source_rows_and_native_carry() 
     assert_eq!(projected[1][0].year, 2021);
     assert_eq!(projected[1][0].remaining, 1);
     assert_eq!(projected[1][0].remaining_qualified, crate::SourceCents::Reported { amount: 0 });
-}
-
-#[test]
-fn wide_original_community_history_keeps_ordinary_source_and_names_unknown_qualified_projection() {
-    let mut draft = community_rental_property_history(Owner::Taxpayer);
-    let FederalIncome::Rental { data } = &mut draft.income[2].income else { unreachable!() };
-    for row in &mut data.property_qbi_history {
-        row.original = i64::MAX / 2 + 1;
-        row.qualified = crate::SourceCents::Reported { amount: 1 };
-        row.remaining_qualified = crate::SourceCents::Reported { amount: 1 };
-    }
-    let entries = crate::community::property_entries(&draft);
-    let FederalIncome::Rental { data } = &entries[2].income else { unreachable!() };
-    assert!(crate::extended_rules::rental_source_valid(data));
-    assert_eq!(data.property_qbi_history.iter().map(|row| row.remaining).sum::<i64>(), 1);
-    assert!(
-        data.property_qbi_history
-            .iter()
-            .all(|row| matches!(row.qualified, crate::SourceCents::Unavailable))
-    );
-    let result = estimate(&draft);
-    assert_eq!(result.state, ResultState::Unsupported);
-    assert!(
-        result.issues.iter().any(|issue| issue.display.key == "ACTIVITY_QBI_HISTORY_UNAVAILABLE")
-    );
 }

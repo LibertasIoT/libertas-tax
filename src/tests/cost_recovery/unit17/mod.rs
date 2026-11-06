@@ -1,10 +1,14 @@
 use super::*;
+mod auto_179;
 mod direct_amt;
 mod direct_source_inputs;
+mod foreign_employee;
 mod identity_history;
 mod native_risk;
 mod partner_services;
 mod prepared_ptp;
 mod prepared_view;
 mod ptp_report_context;
+mod rental_business;
 mod scorp_amt_carrier;
+mod wagering_income;

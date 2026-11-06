@@ -156,22 +156,14 @@ fn alimony_page_rules_refuse_on_the_server() {
 }
 
 #[test]
-fn more_adjustments_keeps_its_refusal_kinds_beside_alimony() {
+fn more_adjustments_saved_with_nothing_clears_its_alimony() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    accepted(&save_alimony(
-        &mut s,
-        vec![alimony(Owner::Taxpayer, alimony_record(20181231)), MoreAdjustment::OtherAdjustments],
-    ));
-    assert_eq!(s.draft.adjustment_refusals, vec![MoreAdjustment::OtherAdjustments]);
+    accepted(&save_alimony(&mut s, vec![alimony(Owner::Taxpayer, alimony_record(20181231))]));
     assert_eq!(s.draft.adjustments.as_ref().unwrap().alimony_paid.len(), 1);
     let P::SaveMoreAdjustments { value, .. } = more_adjustments(&mut s) else { unreachable!() };
-    assert_eq!(
-        value.adjustments,
-        vec![alimony(Owner::Taxpayer, alimony_record(20181231)), MoreAdjustment::OtherAdjustments,]
-    );
+    assert_eq!(value.adjustments, vec![alimony(Owner::Taxpayer, alimony_record(20181231))]);
     // Saved with nothing on it, the page's answers are absent again.
     accepted(&save_alimony(&mut s, vec![]));
-    assert!(s.draft.situations.is_empty());
     assert!(s.draft.adjustments.as_ref().unwrap().alimony_paid.is_empty());
 }
 
@@ -188,25 +180,30 @@ pub(in crate::tests) fn save_retirement(
     s: &mut Interview,
     documents: Vec<IncomeDocumentItem>,
 ) -> Reply {
-    let mut request = retirement_page(s);
-    let P::SaveIncomes { documents: page, .. } = &mut request else { unreachable!() };
-    page.documents = documents;
-    send(s, request)
+    if documents.is_empty() {
+        let mut request = crate::tests::support::client::income_pages::open_document_center(s);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        documents.common.retirement.documents.clear();
+        return send(s, request);
+    }
+    crate::tests::support::client::save_retirement_fixture(s, documents)
 }
-pub(in crate::tests) fn item(owner: Owner, document: IncomeDocument) -> IncomeDocumentItem {
+pub(in crate::tests) fn item(owner: Owner, document: IncomeSource) -> IncomeDocumentItem {
     unanswered_document(owner, 0, document)
 }
 
 // A governmental pension 1099-R, code 7: box 1 = box 2a.
-pub(in crate::tests) fn pension(gross: i64, public_safety: Vec<PublicSafetyPaid>) -> R1099 {
-    R1099 {
-        public_safety,
-        ..crate::tests::cross::interview::r1099(
-            gross,
-            DistributionCode::Normal { what_happened: Disposition::Kept },
-            false,
-        )
-    }
+pub(in crate::tests) fn pension(
+    gross: i64,
+    public_safety: Vec<PublicSafetyPaid>,
+) -> crate::Form1099RPaper {
+    let mut form = crate::tests::cross::interview::r1099(
+        gross,
+        DistributionCode::Normal { what_happened: Disposition::Kept },
+        false,
+    );
+    form.set_public_safety(public_safety);
+    retirement_document(form)
 }
 pub(in crate::tests) fn officer(premiums: i64, funded: i64) -> Vec<PublicSafetyPaid> {
     vec![PublicSafetyPaid { coverage: PublicSafetyPaidCoverage::Medical, premiums, funded }]
@@ -219,7 +216,12 @@ fn removing_the_1099_r_removes_its_premiums() {
         &mut s,
         vec![item(
             Owner::Taxpayer,
-            IncomeDocument::R1099(pension(3_000_000, officer(500_000, 400_000))),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(pension(
+                    3_000_000,
+                    officer(500_000, 400_000),
+                )),
+            },
         )],
     ));
     accepted(&save_retirement(&mut s, vec![]));
@@ -232,6 +234,7 @@ pub(in crate::tests) fn lump_sum_return(earlier_agi: i64) -> (Interview, Vec<Inc
     let mut d = complete(FederalStatus::Single);
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.next_id = 2;
+    name_accepted_income_documents(&mut d);
     let s = Interview::new(TEST_USER, d);
     let year = SocialBenefitYear {
         year: 2024,
@@ -249,15 +252,19 @@ pub(in crate::tests) fn lump_sum_return(earlier_agi: i64) -> (Interview, Vec<Inc
     let documents = vec![
         item(
             Owner::Taxpayer,
-            IncomeDocument::Ssa1099(Ssa1099 {
-                statement: Default::default(),
-                benefits: 2_000_000,
-                withholding: 0,
-            }),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::Ssa1099(ssa_document(ssa_1099_net(2_000_000, 0))),
+            },
         ),
         item(
             Owner::Taxpayer,
-            IncomeDocument::SocialLumpSums(LumpSumElection { years: vec![year], complete: true }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::SocialLumpSums(LumpSumElection {
+                    printed_years: Vec::new(),
+                    years: vec![year],
+                    complete: true,
+                }),
+            },
         ),
     ];
     (s, documents)
@@ -306,8 +313,8 @@ fn social_security_lump_sum_election_by_hand() {
 fn leaving_joint_erases_the_spouses_rows_on_the_new_pages() {
     // A joint return with the spouse's alimony agreement, missed required
     // distribution and pension with public safety officer premiums; on a
-    // single return the spouse's rows are outside allowed_owners, and the
-    // premiums go with the spouse's 1099-R.
+    // single return the topic-owned rows are outside allowed_owners. The
+    // reported pension and its source premiums remain for source correction.
     let mut d = complete(FederalStatus::Joint);
     let id = d.next_id;
     let mut entry = retirement_entry(
@@ -327,17 +334,22 @@ fn leaving_joint_erases_the_spouses_rows_on_the_new_pages() {
     let mut stored = d.clone();
     assert!(crate::interview::prune(&mut stored).removed.is_empty());
     d.setup.as_mut().unwrap().status = filing_choice(FederalStatus::Single);
+    let pension = d.income.last().unwrap().clone();
+    let premiums = d.screening.as_ref().unwrap().public_safety.clone();
     let result = crate::interview::prune(&mut d);
+    assert!(d.income.contains(&pension));
+    assert_eq!(d.screening.as_ref().unwrap().public_safety, premiums);
     let a = d.adjustments.as_ref().unwrap();
     assert!(a.alimony_paid.is_empty() && a.required_distributions.is_empty());
-    assert!(d.screening.as_ref().unwrap().public_safety.is_empty());
-    for key in [
-        "SAVING_KIND_ALIMONY_RECORD",
-        "SAVING_KIND_REQUIRED_DISTRIBUTION",
-        "SAVING_REMOVES_YOUR_PUBLIC_SAFETY_OFFICER_PREMIUMS",
-    ] {
+    for key in ["SAVING_KIND_ALIMONY_RECORD", "SAVING_KIND_REQUIRED_DISTRIBUTION"] {
         assert!(result.removed.iter().any(|item| item.key() == key), "{key}: {result:?}");
     }
+    assert!(
+        result
+            .removed
+            .iter()
+            .all(|item| item.key() != "SAVING_REMOVES_YOUR_PUBLIC_SAFETY_OFFICER_PREMIUMS")
+    );
 }
 
 #[test]

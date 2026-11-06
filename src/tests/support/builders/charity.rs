@@ -12,9 +12,51 @@ pub(in crate::tests) fn gift_appraisal(id: i64, report_date: u32) -> Appraisal {
     }
 }
 pub(in crate::tests) fn set_gift_appraisal(ded: &mut FederalDeductions, index: usize, id: i64) {
-    let date = ded.property_gifts[index].given;
-    ded.property_gifts[index].appraisal = Some(id);
-    ded.property_gifts[index].donee_acknowledged = true;
+    // The index runs over the stored gifts, then the Form 1098-C vehicle gifts.
+    let stored = ded.property_gifts.len();
+    let date = if index < stored {
+        let gift = &mut ded.property_gifts[index];
+        gift.appraisal = Some(id);
+        gift.donee_acknowledged = true;
+        gift.given
+    } else {
+        let gift = &mut ded.vehicle_gifts[index - stored];
+        gift.appraisal = Some(id);
+        gift.donee_acknowledged = true;
+        let id = gift.id;
+        ded.vehicle_gift_documents.iter().find(|row| row.id == id).unwrap().form.box_1
+    };
+    if !ded.appraisals.iter().any(|a| a.id == id) {
+        ded.appraisals.push(gift_appraisal(id, date));
+    }
+}
+// Stores each gift where it belongs: vehicle gifts on the Form 1098-C list.
+pub(in crate::tests) fn push_gift(ded: &mut FederalDeductions, gift: PropertyGift) {
+    if matches!(gift.kind, GiftKind::Vehicle { .. }) {
+        let (mut document, mut source) = vehicle_gift_source(gift);
+        let id = ded.vehicle_gift_documents.iter().map(|row| row.id).max().unwrap_or(0) + 1;
+        document.id = id;
+        source.id = id;
+        ded.vehicle_gift_documents.push(document);
+        ded.vehicle_gifts.push(source);
+    } else {
+        ded.property_gifts.push(gift);
+    }
+}
+pub(in crate::tests) fn set_gifts(ded: &mut FederalDeductions, gifts: Vec<PropertyGift>) {
+    ded.property_gifts.clear();
+    ded.vehicle_gifts.clear();
+    ded.vehicle_gift_documents.clear();
+    for gift in gifts {
+        push_gift(ded, gift);
+    }
+}
+pub(in crate::tests) fn set_vehicle_appraisal(ded: &mut FederalDeductions, index: usize, id: i64) {
+    let document_id = ded.vehicle_gifts[index].id;
+    let date =
+        ded.vehicle_gift_documents.iter().find(|row| row.id == document_id).unwrap().form.box_1;
+    ded.vehicle_gifts[index].appraisal = Some(id);
+    ded.vehicle_gifts[index].donee_acknowledged = true;
     if !ded.appraisals.iter().any(|a| a.id == id) {
         ded.appraisals.push(gift_appraisal(id, date));
     }
@@ -68,6 +110,74 @@ pub(in crate::tests) fn donated_personal_vehicle(treatment: VehicleUse) -> Prope
     }
 }
 
+pub(in crate::tests) fn vehicle_gift_source(
+    gift: PropertyGift,
+) -> (Form1098CDocument, VehicleGiftSource) {
+    let GiftKind::Vehicle { vin, treatment } = gift.kind else {
+        panic!("a vehicle gift fixture needs its vehicle source");
+    };
+    let filer = person();
+    let mut form = Form1098CPaper {
+        calendar_year: 2026,
+        donee: PrintedParty::from_name(gift.charity),
+        donor: PrintedParty::from_name(alloc::format!("{} {}", filer.first_name, filer.last_name)),
+        box_1: gift.given,
+        box_2b: None,
+        box_2c: alloc::string::String::new(),
+        box_2d: gift.description,
+        box_3: vin,
+        box_6a_yes: gift.benefit_received.is_some(),
+        box_6a_no: gift.benefit_received.is_none(),
+        box_6b: gift.benefit_received.unwrap_or(0),
+        ..Default::default()
+    };
+    form.treatment = Some(match treatment {
+        VehicleUse::Sold { sold, proceeds } => {
+            form.box_4a = true;
+            form.box_4b = Some(sold);
+            form.box_4c = proceeds;
+            Form1098CTreatment::Sold
+        }
+        VehicleUse::NeedyPerson => {
+            form.box_5b = true;
+            Form1098CTreatment::NeedyPerson
+        }
+        VehicleUse::SignificantUse { details } => {
+            form.box_5a = true;
+            form.box_5c = details;
+            Form1098CTreatment::SignificantUse
+        }
+        VehicleUse::MaterialImprovement { details } => {
+            form.box_5a = true;
+            form.box_5c = details;
+            Form1098CTreatment::MaterialImprovement
+        }
+    });
+    let id = 1;
+    (
+        Form1098CDocument {
+            id,
+            form,
+            // A directly built return: the donor is you, as your section added it.
+            assigned: crate::DocumentRecipient::Taxpayer,
+            owner_source: Some(crate::OwnerSource::Added),
+            joint_share: None,
+        },
+        VehicleGiftSource {
+            id,
+            donee: gift.donee,
+            how_acquired: gift.how_acquired,
+            acquired: gift.acquired,
+            basis: gift.basis,
+            value: gift.value,
+            value_method: gift.value_method,
+            appraisal: gift.appraisal,
+            in_scope: gift.in_scope,
+            donee_acknowledged: gift.donee_acknowledged,
+        },
+    )
+}
+
 pub(in crate::tests) fn volunteer_travel(
     car_cost: VolunteerCarCost,
     parking_tolls: i64,
@@ -119,7 +229,7 @@ pub(in crate::tests) fn cash_carry_with_whaling(
         WhalingExpenseKind::CrewAndProvisions,
         whaling_paid,
     )]));
-    deductions.choice = DeductionSelection::Itemized { facts: itemized(deductions).clone() };
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     draft
 }
 
@@ -189,4 +299,13 @@ pub(in crate::tests) fn paired_2025_noncash_carries() -> FederalDraft {
     stock.appreciation = Some(1_500_000);
     deductions.charity_carryovers.push(stock);
     draft
+}
+
+// A vehicle gift as its printed Form 1098-C and the facts the form does not
+// print: the paper carries the donee, date, description, VIN, the box 4a/5a/5b
+// treatment and the box 6 benefit; the gift answers keep everything else.
+pub(in crate::tests) fn vehicle_gift_page(gift: PropertyGift) -> crate::VehicleGiftPage {
+    let (document, mut source) = vehicle_gift_source(gift);
+    let appraisal = source.appraisal.take();
+    crate::VehicleGiftPage { document, gift: Some(source), appraisal }
 }

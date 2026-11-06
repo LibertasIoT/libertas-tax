@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {"order": 138000, "rule": {"select": "^<MortgageSubsidyTransferView>.GiftToOther.owners", "when_single_choice": "hide"}},
+    {"order": 241000, "rule": {"select": "^<MortgageSubsidyFacts>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_8828_LOAN", "fields": ["original_closed_on", "disposed_on", "payoff", "notice_reference"]}, {"title": "DISPLAY_8828_NOTICE", "fields": ["family_size_at_disposition", "adjusted_qualifying_income", "highest_subsidized_principal", "holding_percentage", "confirmed"]}]}},
+    {"order": 242000, "rule": {"select": "^<MortgageSubsidyFacts>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_8828_LOAN", "fields": ["original_closed_on", "disposed_on", "payoff", "notice_reference"]}, {"title": "DISPLAY_8828_NOTICE", "fields": ["family_size_at_disposition", "adjusted_qualifying_income", "highest_subsidized_principal", "holding_percentage", "confirmed"]}]}},
+    {"order": 573000, "rule": {"select": "^<MortgageSubsidyDispositionView>", "flatten": true}},
+    {"order": 574000, "rule": {"select": "^<MortgageSubsidyTransferView>", "flatten": true}},
+    {"order": 575000, "rule": {"select": "^<MortgageSubsidyPayoff>", "flatten": true}},
+    {"order": 576000, "rule": {"select": "^<MortgageCertificateHistory>", "flatten": true}},
+    {"order": 772000, "rule": {"select": "^<MortgageSubsidyEntryView>.label", "promote": true}}
+  ]
+}

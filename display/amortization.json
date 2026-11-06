@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 668000, "rule": {"select": "^<BusinessIntangible>.label", "promote": true}}
+  ]
+}

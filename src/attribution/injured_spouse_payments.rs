@@ -1,6 +1,7 @@
 // Payment source facts for Form 8379. Date and amount remain the sole inputs
 // to the existing underpayment calculation. Personal source facts are not AI imports.
-use crate::Owner;
+use crate::common::Owner;
+use crate::underpayment_model::DatedPayment;
 use alloc::vec::Vec;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
@@ -37,7 +38,8 @@ pub enum RefundSourceProperty {
     Partly {
         /// Community part of this payment
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         community: i64,
         /// Owner of the separate part
         separate_owner: Owner,
@@ -47,29 +49,7 @@ pub enum RefundSourceProperty {
     },
 }
 
-/// Management of community funds
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    LibertasAvroEncode,
-    LibertasAvroDecode,
-    LibertasExport,
-    libertas_macros::VariantIndex,
-)]
-#[libertas_inline_choices]
-pub enum RefundManagement {
-    /// Management classification is not needed in this state
-    NotApplicable,
-    /// Taxpayer's sole-management property
-    Taxpayer,
-    /// Spouse's sole-management property
-    Spouse,
-    /// Joint-management property
-    Joint,
-}
+pub use crate::federal_model::RefundManagement;
 
 /// Accepted payment source property
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -89,7 +69,8 @@ pub enum RefundSourcePropertyFacts {
     Partly {
         /// Community part of this payment
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         community: i64,
         /// Owner of the separate part
         separate_owner: Owner,
@@ -109,7 +90,8 @@ pub struct InjuredDatedPayment {
     pub date: u32,
     /// Amount paid
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     /// Who made this payment
     pub payer: PaymentPayer,
@@ -120,6 +102,196 @@ pub struct InjuredDatedPayment {
     /// The community-property source allocation is
     #[libertas_default($null)]
     pub refund_property: Option<RefundSourceProperty>,
+}
+
+/// Estimated tax payment method
+/// Changing methods replaces the source details; enter the actual sources for the selected method.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub enum EstimatedPaymentEntry {
+    /// No estimated payments or prior-year credit applied
+    None,
+    /// Actual payments by date
+    /// Use the postmark date for mailed payments. A 2025 overpayment applied to 2026 counts as paid April 15, 2026 when your 2025 return was fully paid by then.
+    Sources {
+        /// Payment
+        #[libertas_unordered]
+        payments: Vec<InjuredDatedPayment>,
+    },
+    /// Annual amount paid in equal installments by every required due date
+    /// Use dated sources if installments differed or a required payment was late.
+    EqualTimely {
+        /// Annual payment source
+        #[libertas_unordered]
+        payments: Vec<AnnualEstimatedAmount>,
+    },
+    /// Annual amount known; payment timing not established
+    /// The annual credit remains known; exact penalty timing remains unavailable.
+    TimingUnknown {
+        /// Annual payment source
+        #[libertas_unordered]
+        payments: Vec<AnnualEstimatedAmount>,
+    },
+}
+
+/// Annual estimated payment source
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct AnnualEstimatedAmount {
+    /// Actual annual amount from this source
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub amount: i64,
+    /// Who made these payments
+    pub payer: PaymentPayer,
+    /// Source property for community refund allocation
+    /// [NullText]
+    /// No community-property source allocation supplied
+    /// [SetText]
+    /// The community-property source allocation is
+    pub refund_property: Option<RefundSourceProperty>,
+}
+
+/// Accepted estimated tax payment method
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub enum EstimatedPaymentEntryRecord {
+    None,
+    Sources { payments: Vec<crate::DatedPayment> },
+    EqualTimely { payments: Vec<AnnualEstimatedAmountRecord> },
+    TimingUnknown { payments: Vec<AnnualEstimatedAmountRecord> },
+}
+
+/// Accepted annual estimated payment source
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct AnnualEstimatedAmountRecord {
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub amount: i64,
+    pub payer: PaymentPayer,
+    /// Source property for community refund allocation
+    /// [NullText]
+    /// No community-property source allocation supplied
+    /// [SetText]
+    /// The community-property source allocation is
+    pub refund_property: Option<RefundSourcePropertyFacts>,
+}
+
+impl EstimatedPaymentEntry {
+    pub(crate) fn accepted(&self) -> EstimatedPaymentEntryRecord {
+        let annual = |payments: &[AnnualEstimatedAmount]| {
+            payments
+                .iter()
+                .map(|p| AnnualEstimatedAmountRecord {
+                    amount: p.amount,
+                    payer: p.payer,
+                    refund_property: p.refund_property.as_ref().map(RefundSourceProperty::accepted),
+                })
+                .collect()
+        };
+        match self {
+            Self::None => EstimatedPaymentEntryRecord::None,
+            Self::Sources { payments } => EstimatedPaymentEntryRecord::Sources {
+                payments: payments.iter().map(InjuredDatedPayment::accepted).collect(),
+            },
+            Self::EqualTimely { payments } => {
+                EstimatedPaymentEntryRecord::EqualTimely { payments: annual(payments) }
+            }
+            Self::TimingUnknown { payments } => {
+                EstimatedPaymentEntryRecord::TimingUnknown { payments: annual(payments) }
+            }
+        }
+    }
+}
+impl EstimatedPaymentEntryRecord {
+    pub(crate) fn page(&self) -> EstimatedPaymentEntry {
+        let annual = |payments: &[AnnualEstimatedAmountRecord]| {
+            payments
+                .iter()
+                .map(|p| AnnualEstimatedAmount {
+                    amount: p.amount,
+                    payer: p.payer,
+                    refund_property: p
+                        .refund_property
+                        .as_ref()
+                        .map(RefundSourcePropertyFacts::page),
+                })
+                .collect()
+        };
+        match self {
+            Self::None => EstimatedPaymentEntry::None,
+            Self::Sources { payments } => EstimatedPaymentEntry::Sources {
+                payments: payments.iter().map(InjuredDatedPayment::from_record).collect(),
+            },
+            Self::EqualTimely { payments } => {
+                EstimatedPaymentEntry::EqualTimely { payments: annual(payments) }
+            }
+            Self::TimingUnknown { payments } => {
+                EstimatedPaymentEntry::TimingUnknown { payments: annual(payments) }
+            }
+        }
+    }
+    // Borrow canonical funding independently of whether the payment dates are known.
+    pub(crate) fn funding(
+        &self,
+    ) -> impl Iterator<Item = (i64, PaymentPayer, Option<&RefundSourcePropertyFacts>)> {
+        let (dated, annual): (&[DatedPayment], &[AnnualEstimatedAmountRecord]) = match self {
+            Self::None => (&[], &[]),
+            Self::Sources { payments } => (payments, &[]),
+            Self::EqualTimely { payments } | Self::TimingUnknown { payments } => (&[], payments),
+        };
+        dated
+            .iter()
+            .map(|p| (p.amount, p.payer, p.refund_property.as_ref()))
+            .chain(annual.iter().map(|p| (p.amount, p.payer, p.refund_property.as_ref())))
+    }
+    pub(crate) fn count(&self) -> usize {
+        self.funding().count()
+    }
+    pub(crate) fn issue(&self, allowed: &[i32]) -> Option<crate::validation::ValidationIssue> {
+        use crate::validation::ValidationIssue;
+        let variant = match self {
+            Self::None => return None,
+            Self::Sources { .. } => "Sources",
+            Self::EqualTimely { .. } => "EqualTimely",
+            Self::TimingUnknown { .. } => "TimingUnknown",
+        };
+        let located = |issue: ValidationIssue| issue.in_field(variant);
+        if self.count() == 0 {
+            return Some(located(
+                ValidationIssue::new("PAYMENT_AMOUNT_INVALID").at_field("payments"),
+            ));
+        }
+        for (index, (amount, _, property)) in self.funding().enumerate() {
+            let mut issue = if amount <= 0 {
+                Some(ValidationIssue::new("PAYMENT_AMOUNT_INVALID").at_field("amount"))
+            } else {
+                None
+            };
+            if let Some(property) = property {
+                issue = issue.or_else(|| {
+                    property.issue(amount, allowed).map(|issue| {
+                        issue
+                            .in_field(match property {
+                                RefundSourcePropertyFacts::Separate { .. } => "Separate",
+                                RefundSourcePropertyFacts::Community { .. } => "Community",
+                                RefundSourcePropertyFacts::Partly { .. } => "Partly",
+                            })
+                            .in_field("refund_property")
+                    })
+                });
+            }
+            if let Self::Sources { payments } = self
+                && issue.is_none()
+                && !payments[index].valid()
+            {
+                issue = Some(ValidationIssue::new("PAYMENT_DATE_OUTSIDE_2026").at_field("date"));
+            }
+            if let Some(issue) = issue {
+                return Some(located(issue.in_list("payments", index)));
+            }
+        }
+        None
+    }
 }
 
 impl RefundSourceProperty {
@@ -173,15 +345,15 @@ impl RefundSourcePropertyFacts {
     }
 }
 impl InjuredDatedPayment {
-    pub(crate) fn accepted(&self) -> crate::DatedPayment {
-        crate::DatedPayment {
+    pub(crate) fn accepted(&self) -> DatedPayment {
+        DatedPayment {
             date: self.date,
             amount: self.amount,
             payer: self.payer,
             refund_property: self.refund_property.as_ref().map(RefundSourceProperty::accepted),
         }
     }
-    pub(crate) fn from_record(value: &crate::DatedPayment) -> Self {
+    pub(crate) fn from_record(value: &DatedPayment) -> Self {
         Self {
             date: value.date,
             amount: value.amount,

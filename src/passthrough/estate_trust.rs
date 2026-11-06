@@ -66,12 +66,18 @@ pub(crate) fn ein_valid(value: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateActivities {
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub box6: i64,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub box7: i64,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub box8: i64,
     pub activities: Vec<EstateActivity>,
@@ -99,17 +105,22 @@ pub struct EstateActivity {
     pub name: String,
     pub kind: EstateActivityKind,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depreciation: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depletion: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub amortization: i64,
     /// Your participation in this activity
@@ -119,6 +130,8 @@ pub struct EstateActivity {
     pub carried: EstatePassiveCarry,
     /// Signed difference to activity net from fiduciary's AMT activity statement
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub amt_difference: i64,
 }
@@ -140,11 +153,13 @@ pub enum EstateParticipation {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstatePassiveCarry {
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub regular: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub alternative: i64,
 }
@@ -153,14 +168,11 @@ pub struct EstatePassiveCarry {
 pub struct EstateFinalCharacter {
     /// The estate or trust terminated
     pub entity_terminated: bool,
-    /// This beneficiary's K-1 is marked final
-    pub final_beneficiary_k1: bool,
-    /// You succeed to the estate or trust property and bear the allocated deductions
-    pub successor: bool,
     /// Part of box 11 code A deductible against net investment income
     /// Copy the allocable share from the fiduciary statement. It cannot exceed the box 11 code A deduction.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub section67e_nii: i64,
     /// The fiduciary included this deductible share in its box 14 code H amount
@@ -176,19 +188,14 @@ pub struct EstateFinalCharacter {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum EstateFinalDeduction {
     /// Investment interest
-    /// Copy the fiduciary statement amount. This final-year deduction is not calculated yet and is left out with a notice.
+    /// Copy the fiduciary statement amount. It is figured on Form 4952 with your own investment interest. It is allowed only this year, so your net investment income must absorb all of it.
     InvestmentInterest {
         #[libertas_size(min = 1)]
         description: String,
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         amount: i64,
-    },
-    /// Mortgage interest already entered
-    /// Select its existing mortgage record. Do not enter the interest a second time.
-    Mortgage {
-        #[libertas_number(min = 1)]
-        loan: i64,
     },
     /// Another deduction
     /// Describe the fiduciary statement item. This deduction is not calculated yet and is left out with a notice.
@@ -201,20 +208,28 @@ pub enum EstateFinalDeduction {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateFinalCapital {
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
+    #[libertas_llm_doc_field]
     pub alternative_short: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
+    #[libertas_llm_doc_field]
     pub alternative_long: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
+    #[libertas_llm_doc_field]
     pub rate28: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
+    #[libertas_llm_doc_field]
     pub unrecaptured: i64,
     /// Transferred capital-loss carryover excluded from net investment income
     /// Copy the positive excluded-loss difference from the fiduciary's retained Form 8960 loss worksheet, including confirmed zero. This is part of the regular short- and long-term carryovers, not another loss. Leave absent when unavailable; only the investment-tax loss benefit is then left out. Do not repeat a current box 14 H adjustment here.
@@ -223,8 +238,10 @@ pub struct EstateFinalCapital {
     /// [SetText]
     /// The documented excluded-loss difference is
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default($null)]
+    #[libertas_llm_doc_field]
     pub niit_difference: Option<i64>,
     /// Regular capital losses from property held for investment
     /// Copy the fiduciary's actual short/long portions for Form 4952, including confirmed zero. This classification is independent of net investment tax and business-loss character.
@@ -233,6 +250,7 @@ pub struct EstateFinalCapital {
     /// [SetText]
     /// The documented regular-tax investment loss portions are
     #[libertas_default($null)]
+    #[libertas_llm_doc_field]
     pub regular_investment: Option<EstateCapitalLossParts>,
     /// AMT capital losses from property held for investment
     /// Copy the separate AMT portions; do not assume the regular amounts apply.
@@ -241,6 +259,7 @@ pub struct EstateFinalCapital {
     /// [SetText]
     /// The documented AMT investment loss portions are
     #[libertas_default($null)]
+    #[libertas_llm_doc_field]
     pub alternative_investment: Option<EstateCapitalLossParts>,
     /// Regular business capital-loss portions
     /// Copy the actual business portions for Form 172. The remainder is nonbusiness. Leave absent when the fiduciary records do not establish character.
@@ -249,6 +268,7 @@ pub struct EstateFinalCapital {
     /// [SetText]
     /// The documented regular-tax business loss portions are
     #[libertas_default($null)]
+    #[libertas_llm_doc_field]
     pub regular_business: Option<EstateCapitalLossParts>,
     /// AMT business capital-loss portions
     /// Copy the separate AMT business portions for the alternative NOL worksheet.
@@ -257,6 +277,7 @@ pub struct EstateFinalCapital {
     /// [SetText]
     /// The documented AMT business loss portions are
     #[libertas_default($null)]
+    #[libertas_llm_doc_field]
     pub alternative_business: Option<EstateCapitalLossParts>,
 }
 
@@ -266,11 +287,15 @@ pub struct EstateFinalCapital {
 pub struct EstateCapitalLossParts {
     /// Short-term portion
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_llm_doc_field(allow_empty = false)]
     pub short: i64,
     /// Long-term portion
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_llm_doc_field(allow_empty = false)]
     pub long: i64,
 }
 impl EstateCapitalLossParts {
@@ -328,6 +353,7 @@ pub(crate) fn capital_character(
 ) -> Option<[i64; 2]> {
     crate::community::entries(draft).iter().try_fold([0; 2], |mut sum, entry| {
         if let crate::FederalIncome::EstateTrustPortfolio { data } = &entry.income {
+            let data = &crate::FederalEstateTrustPortfolioK1::from(data);
             let parts = capital_parts(data, alternative, purpose)?;
             sum[0] += parts[0];
             sum[1] += parts[1];
@@ -341,10 +367,17 @@ pub struct EstateInvestmentIncome {
     /// Box 14 code E net investment income for regular tax
     /// Copy the statement amount, including its sign. This is not additional income on top of the income boxes.
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
+    #[libertas_llm_doc_field(allow_empty = false)]
     pub regular: i64,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
+    #[libertas_llm_doc_field(allow_empty = false)]
     pub alternative: i64,
     /// Investment income character
+    #[libertas_llm_doc_field]
     pub character: EstateInvestmentCharacter,
 }
 
@@ -355,16 +388,24 @@ pub enum EstateInvestmentCharacter {
     /// Copy their separate regular-tax and AMT portions.
     Preferential {
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
+        #[libertas_llm_doc_field(allow_empty = false)]
         qualified: i64,
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
+        #[libertas_llm_doc_field(allow_empty = false)]
         gains: i64,
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
+        #[libertas_llm_doc_field(allow_empty = false)]
         amt_qualified: i64,
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
+        #[libertas_llm_doc_field(allow_empty = false)]
         amt_gains: i64,
     },
     Unavailable,
@@ -377,16 +418,26 @@ pub struct EstateQbiStatements {
 
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateQbiStatement {
+    /// Accepted source-statement identity
+    #[libertas_hidden]
+    #[libertas_read_only]
+    #[libertas_default(0)]
+    #[libertas_number(min = 0)]
+    pub id: i64,
     #[libertas_size(min = 1)]
     pub name: String,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub wages: i64,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub property: i64,
     /// The statement identifies a specified service trade or business
@@ -419,9 +470,12 @@ pub struct EstateQbiAllocation {
     pub activity: i64,
     /// Signed current QBI apportioned to this activity
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     /// This statement's qualified share of the activity's prior loss vintages
     /// Retain the activity's full original and remaining tax losses, with only this statement's qualified portion. Other statements may share the tax loss, but cannot repeat its qualified portion.
+    #[libertas_hidden]
     pub passive_history: Vec<crate::ScorpLossYear>,
 }
 
@@ -434,6 +488,8 @@ pub struct EstateQbiAllocationPage {
     pub activity: i64,
     /// Signed current QBI apportioned to this activity
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     /// This statement's qualified share of the activity's prior loss vintages
     /// Retain the activity's full original and remaining tax losses, with only this statement's qualified portion. Other statements may share the tax loss, but cannot repeat its qualified portion.
@@ -443,6 +499,8 @@ pub struct EstateQbiAllocationPage {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateAmtReconciliation {
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub other_in_a: i64,
     pub adjustments: Vec<EstateAmtAdjustment>,
@@ -450,8 +508,16 @@ pub struct EstateAmtReconciliation {
 
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateAmtAdjustment {
+    /// Accepted source-statement identity
+    #[libertas_hidden]
+    #[libertas_read_only]
+    #[libertas_default(0)]
+    #[libertas_number(min = 0)]
+    pub id: i64,
     pub code: EstateAmtCode,
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub amount: i64,
     pub treatment: EstateAmtTreatment,
 }
@@ -497,40 +563,100 @@ pub enum EstateAmtLine {
 pub struct EstateReportedCredit {
     pub code: EstateCreditCode,
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     #[libertas_unordered]
     pub activities: Vec<i64>,
 }
 
+/// Box 13 credit code
+/// The Form 1041 letters, which differ from the partnership and S corporation codes.
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum EstateCreditCode {
+    /// Code C — low-income housing credit
+    #[libertas_form_code("C")]
     C,
+    /// Code D — advanced manufacturing production credit
+    #[libertas_form_code("D")]
     D,
+    /// Code E — clean electricity production credit
+    #[libertas_form_code("E")]
     E,
+    /// Code F — work opportunity credit
+    #[libertas_form_code("F")]
     F,
+    /// Code G — credit for small employer health insurance premiums
+    #[libertas_form_code("G")]
     G,
+    /// Code H — biofuel producer credit
+    #[libertas_form_code("H")]
     H,
-    I,
-    J,
+    /// Code I — credit for increasing research activities
+    #[libertas_form_code("I")]
+    I {
+        /// Form 3800 line
+        /// Choose line 4i only when both you and the estate or trust meet the eligible-small-business test (average annual gross receipts of $50 million or less for the prior three years); otherwise line 1c. This is your own answer, not a printed K-1 fact.
+        #[libertas_constrained_by("$.research_credit_lines")]
+        line: crate::BusinessCredit,
+    },
+    /// Code J — renewable electricity production credit
+    /// The fiduciary's statement splits the credit between production in a facility's first four years and later production. Enter each part in its own row.
+    #[libertas_form_code("J")]
+    J {
+        /// Form 3800 line
+        /// Use line 4e for the part the statement attributes to the facility's first four years of service; otherwise line 1f.
+        #[libertas_llm_doc_field(allow_empty = false)]
+        #[libertas_constrained_by("$.renewable_credit_lines")]
+        line: crate::BusinessCredit,
+    },
+    /// Code K — empowerment zone employment credit
+    #[libertas_form_code("K")]
     K,
+    /// Code L — clean fuel production credit
+    #[libertas_form_code("L")]
     L,
+    /// Code M — orphan drug credit
+    #[libertas_form_code("M")]
     M,
+    /// Code N — credit for employer-provided childcare facilities and services
+    #[libertas_form_code("N")]
     N,
+    /// Code O — biodiesel and renewable diesel fuels credit
+    #[libertas_form_code("O")]
     O,
+    /// Code P — credit to holders of tax credit bonds
+    #[libertas_form_code("P")]
     P,
+    /// Code Q — credit for employer differential wage payments
+    #[libertas_form_code("Q")]
     Q,
+    /// Code S — credit for production from advanced nuclear power facilities
+    #[libertas_form_code("S")]
     S,
+    /// Code T — zero-emission nuclear power production credit
+    #[libertas_form_code("T")]
     T,
-    ZZ,
+    /// Code ZZ — other credits
+    #[libertas_form_code("ZZ")]
+    ZZ {
+        /// Form 3800 line
+        /// Use the Form 3800 line the fiduciary's credit statement names.
+        #[libertas_llm_doc_field(allow_empty = false)]
+        #[libertas_constrained_by("$.k1_credit_lines")]
+        line: crate::BusinessCredit,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateForeignStatement {
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_llm_doc_field(allow_empty = false)]
     pub tax: i64,
     /// Foreign-tax statement treatment
+    #[libertas_llm_doc_field]
     pub treatment: EstateForeignTreatment,
 }
 
@@ -538,6 +664,17 @@ pub struct EstateForeignStatement {
 pub enum EstateForeignTreatment {
     QualifiedPassivePayeeStatement,
     RequiresAllocation,
+    /// Complete fiduciary allocation of passive interest and dividends
+    /// Other income categories, capital gains and activity allocations need their own source worksheets.
+    PassivePortfolio {
+        /// The fiduciary's actual method for these foreign taxes
+        /// Copy paid or accrued from the statement; do not infer it from your own election.
+        #[libertas_llm_doc_field]
+        basis: crate::ForeignTaxBasis,
+        /// Country and payment-class allocations of the entire box 14 code B amount
+        #[libertas_llm_doc_field]
+        allocations: Vec<crate::EstateForeignPortfolioAllocation>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
@@ -555,49 +692,48 @@ pub struct EstateSourceChoice {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateFinalCharacterPage {
     /// The estate or trust terminated
+    #[libertas_llm_doc_field]
     pub entity_terminated: bool,
-    /// This beneficiary's K-1 is marked final
-    pub final_beneficiary_k1: bool,
-    /// You succeed to the estate or trust property and bear the allocated deductions
-    pub successor: bool,
     /// Part of box 11 code A deductible against net investment income
     /// Copy the allocable share from the fiduciary statement. It cannot exceed the box 11 code A deduction.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
+    #[libertas_llm_doc_field]
     pub section67e_nii: i64,
     /// The fiduciary included this deductible share in its box 14 code H amount
+    #[libertas_llm_doc_field]
     pub section67e_in_h: bool,
     /// Other box 11 code B deductions
     /// Identify each deduction from the final fiduciary statement. State and local taxes are entered in the final-year boxes.
+    #[libertas_llm_doc_field]
     pub additional: Vec<EstateFinalDeductionPage>,
     /// Capital loss carryover details
     /// Copy separate AMT balances and special long-term portions from the fiduciary statement.
+    #[libertas_llm_doc_field]
     pub capital: EstateFinalCapital,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub enum EstateFinalDeductionPage {
     /// Investment interest
-    /// Copy the fiduciary statement amount. This final-year deduction is not calculated yet and is left out with a notice.
+    /// Copy the fiduciary statement amount. It is figured on Form 4952 with your own investment interest. It is allowed only this year, so your net investment income must absorb all of it.
     InvestmentInterest {
         #[libertas_size(min = 1)]
+        #[libertas_llm_doc_field]
         description: String,
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
+        #[libertas_llm_doc_field(allow_empty = false)]
         amount: i64,
-    },
-    /// Mortgage interest already entered
-    /// Select its existing mortgage record. Do not enter the interest a second time.
-    Mortgage {
-        #[libertas_number(min = 1)]
-        #[libertas_enum_source("^<K1EstateTrust>.estate_mortgages")]
-        loan: i64,
     },
     /// Another deduction
     /// Describe the fiduciary statement item. This deduction is not calculated yet and is left out with a notice.
     Other {
         #[libertas_size(min = 1)]
+        #[libertas_llm_doc_field]
         description: String,
     },
 }
@@ -611,23 +747,34 @@ pub struct EstateQbiStatementsPage {
 #[libertas_llm_doc_trans(
     instruction = "Read the invoked beneficiary section 199A statement attached to Schedule K-1 (Form 1041), with the fiduciary apportioned signed QBI, W-2 wages, UBIA, SSTB and business/PTP/cooperative character. Use beneficiary allocations, never total trust amounts. Duplicate copies count once. Do not infer source links or prior-loss histories; preserve them on a corrected statement. Missing or illegible source amounts are errors.",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    form_date_order = "MonthDayYear"
 )]
 pub struct EstateQbiStatementPage {
+    /// Accepted source-statement identity
+    #[libertas_hidden]
+    #[libertas_read_only]
+    #[libertas_default(0)]
+    #[libertas_number(min = 0)]
+    pub id: i64,
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_size(min = 1)]
     pub name: String,
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub wages: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub property: i64,
     /// The statement identifies a specified service trade or business
@@ -642,6 +789,7 @@ pub struct EstateQbiStatementPage {
     pub activities: Vec<i64>,
     /// Prior suspended qualified business losses
     /// Copy original-year amounts and eligibility from your retained QBI worksheets, not the current K-1.
+    #[libertas_hidden]
     pub passive_history: Vec<crate::ScorpLossYear>,
     /// Fiduciary statement QBI apportioned to its linked activities
     /// Required when limits or retained losses affect several activities, or several statements share an activity. Copy signed source QBI and your retained activity history; their current amounts must sum to this statement. Do not derive the allocation from distributions.
@@ -651,6 +799,8 @@ pub struct EstateQbiStatementPage {
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EstateAmtReconciliationPage {
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub other_in_a: i64,
     pub adjustments: Vec<EstateAmtAdjustmentPage>,
@@ -660,14 +810,24 @@ pub struct EstateAmtReconciliationPage {
 #[libertas_llm_doc_trans(
     instruction = "Read only this invoked beneficiary AMT source statement attached to Schedule K-1 (Form 1041). Copy its actual box 12 code G, H or I and signed allocated amount. Do not use trust-wide totals or infer a Form 6251 line, activity link, or whether the amount is already in code A. Preserve all unmarked treatment facts. Duplicate copies count once; missing, illegible or conflicting source amounts are errors.",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    form_date_order = "MonthDayYear"
 )]
 pub struct EstateAmtAdjustmentPage {
+    /// Accepted source-statement identity
+    #[libertas_hidden]
+    #[libertas_read_only]
+    #[libertas_default(0)]
+    #[libertas_number(min = 0)]
+    pub id: i64,
     #[libertas_llm_doc_field(allow_empty = false)]
     pub code: EstateAmtCode,
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub amount: i64,
+    #[libertas_hidden]
     pub treatment: EstateAmtTreatmentPage,
 }
 
@@ -696,14 +856,16 @@ pub enum EstateAmtTreatmentPage {
 #[libertas_llm_doc_trans(
     instruction = "Read only this invoked box 13 credit source statement attached to Schedule K-1 (Form 1041). Copy its actual Form 1041 code and allocated amount, not trust-wide totals. Preserve unmarked activity links; do not infer them. Duplicate copies count once. Missing or conflicting source data are errors.",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    form_date_order = "MonthDayYear"
 )]
 pub struct EstateReportedCreditPage {
     #[libertas_llm_doc_field(allow_empty = false)]
     pub code: EstateCreditCode,
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub amount: i64,
     #[libertas_enum_source("^<K1EstateTrust>.estate_activities")]
     #[libertas_unordered]
@@ -714,19 +876,26 @@ pub struct EstateReportedCreditPage {
 #[libertas_llm_doc_trans(
     instruction = "Read printed Schedule K-1 (Form 1041) boxes 6, 7 and 8 exactly with their signs. A clearly blank box is zero; illegible or conflicting source data are errors. Preserve the unmarked separate activity records, identities, participation and historical balances; each activity row has its own current-source import action.",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    form_date_order = "MonthDayYear"
 )]
 pub struct EstateActivitiesPage {
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub box6: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub box7: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub box8: i64,
     pub activities: Vec<EstateActivityPage>,
@@ -736,7 +905,8 @@ pub struct EstateActivitiesPage {
 #[libertas_llm_doc_trans(
     instruction = "Read only the invoked beneficiary activity from the fiduciary attached Schedule K-1 (Form 1041) schedule. Read its source name, business/rental character, signed allocated income, separate codes 9A depreciation, 9B depletion, 9C amortization and signed AMT net difference. Clearly blank amounts are zero; missing required statements or illegible values are errors. Duplicate copies of the same activity count once. Do not supply participation, prior passive balances or identity. A corrected statement replaces current source facts in this row and retains personal records.",
     doc_type = "application/pdf,image/*",
-    accept_multiple_inputs = true
+    accept_multiple_inputs = true,
+    form_date_order = "MonthDayYear"
 )]
 pub struct EstateActivityPage {
     /// Activity reference
@@ -752,30 +922,39 @@ pub struct EstateActivityPage {
     pub kind: EstateActivityKind,
     #[libertas_llm_doc_field(allow_empty = false)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     pub income: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depreciation: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub depletion: i64,
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub amortization: i64,
     /// Your participation in this activity
+    #[libertas_hidden]
     pub participation: EstateParticipation,
     /// Prior suspended passive losses
     /// Copy the regular-tax and AMT balances for this activity from your prior worksheets. Do not include current-year amounts.
+    #[libertas_hidden]
     pub carried: EstatePassiveCarry,
     /// Signed difference to activity net from fiduciary's AMT activity statement
     #[libertas_llm_doc_field(blank = 0)]
     #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = -100000000000, max = 100000000000)]
     #[libertas_default(0)]
     pub amt_difference: i64,
 }
@@ -794,6 +973,9 @@ impl EstateActivities {
         self.issue().map(|issue| issue.key)
     }
     pub(crate) fn issue(&self) -> Option<ValidationIssue> {
+        self.issue_with_mode(true)
+    }
+    pub(crate) fn issue_with_mode(&self, require_answers: bool) -> Option<ValidationIssue> {
         // Arithmetic safety: box reconciliation and community_projection sum
         // signed native activity cents; extended_rules activity/history prefix
         // pools and qbi_projection also retain native i64 receivers.
@@ -805,7 +987,8 @@ impl EstateActivities {
             );
         }
         for (i, a) in self.activities.iter().enumerate() {
-            if let Some(issue) = a.issue() {
+            if let Some(issue) = if require_answers { a.issue() } else { a.issue_with_mode(false) }
+            {
                 return Some(issue.in_list("activities", i));
             }
             if a.id != 0 && self.activities[..i].iter().any(|old| old.id == a.id) {
@@ -854,6 +1037,9 @@ impl EstateActivity {
         }
     }
     pub(crate) fn issue(&self) -> Option<ValidationIssue> {
+        self.issue_with_mode(true)
+    }
+    pub(crate) fn issue_with_mode(&self, require_answers: bool) -> Option<ValidationIssue> {
         if self.id < 0
             || self.name.is_empty()
             || !SIGNED.contains(&self.income)
@@ -872,14 +1058,15 @@ impl EstateActivity {
         }
         match &self.participation {
             EstateParticipation::Material(p)
-                if self.kind != EstateActivityKind::Business || !p.valid() =>
+                if (require_answers && self.kind != EstateActivityKind::Business) || !p.valid() =>
             {
                 Some(
                     ValidationIssue::new("ESTATE_ACTIVITY_PARTICIPATION").at_field("participation"),
                 )
             }
             EstateParticipation::Professional(p)
-                if self.kind != EstateActivityKind::RentalRealEstate || !p.valid() =>
+                if (require_answers && self.kind != EstateActivityKind::RentalRealEstate)
+                    || !p.valid() =>
             {
                 Some(
                     ValidationIssue::new("ESTATE_ACTIVITY_PARTICIPATION").at_field("participation"),
@@ -890,10 +1077,50 @@ impl EstateActivity {
     }
 }
 impl EstateQbiStatements {
+    /// Statements apportioned to one activity agree on their printed service and kind:
+    /// the first disagreeing statement's index and that field.
+    pub(crate) fn kind_conflict(&self, activity: i64) -> Option<(usize, &'static str)> {
+        let owners: Vec<_> = self
+            .statements
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.allocations.iter().any(|a| a.activity == activity))
+            .collect();
+        owners.iter().find_map(|(_, s)| {
+            owners.iter().find(|(_, other)| s.service != other.service || s.kind != other.kind).map(
+                |(index, other)| {
+                    (*index, if s.service != other.service { "service" } else { "kind" })
+                },
+            )
+        })
+    }
+    /// The first statement whose activity apportionment is required and absent:
+    /// it shares a linked activity with another statement, or links several
+    /// activities one of which carries a prior passive loss. Without it the
+    /// statement's QBI is never calculable (qbi_projection leaves it out).
+    pub(crate) fn apportionment_needed(&self, activities: &EstateActivities) -> Option<usize> {
+        self.statements.iter().position(|s| {
+            s.allocations.is_empty()
+                && (s.activities.iter().any(|id| {
+                    self.statements.iter().filter(|other| other.activities.contains(id)).count() > 1
+                }) || (s.activities.len() > 1
+                    && activities
+                        .activities
+                        .iter()
+                        .any(|a| s.activities.contains(&a.id) && a.carried.regular > 0)))
+        })
+    }
     pub(crate) fn rule(&self, activities: &EstateActivities) -> Option<&'static str> {
         self.issue(activities).map(|issue| issue.key)
     }
     pub(crate) fn issue(&self, activities: &EstateActivities) -> Option<ValidationIssue> {
+        self.issue_with_mode(activities, true)
+    }
+    pub(crate) fn issue_with_mode(
+        &self,
+        activities: &EstateActivities,
+        require_answers: bool,
+    ) -> Option<ValidationIssue> {
         // Arithmetic safety: qbi_projection and community_projection retain
         // native current/history accumulation across statements; extended_rules
         // activity/history prefix pools also retain native i64 receivers.
@@ -901,7 +1128,8 @@ impl EstateQbiStatements {
             return Some(ValidationIssue::new("ESTATE_QBI_AMOUNT_INVALID").at_field("statements"));
         }
         for (i, s) in self.statements.iter().enumerate() {
-            if s.name.is_empty()
+            if s.id < 0
+                || s.name.is_empty()
                 || !SIGNED.contains(&s.income)
                 || !MONEY.contains(&s.wages)
                 || !MONEY.contains(&s.property)
@@ -920,7 +1148,8 @@ impl EstateQbiStatements {
                         .in_list("statements", i),
                 );
             }
-            if !s.passive_history.is_empty()
+            if require_answers
+                && !s.passive_history.is_empty()
                 && s.activities.len() == 1
                 && !crate::scorp_qbi::valid_history(
                     &s.passive_history,
@@ -940,7 +1169,7 @@ impl EstateQbiStatements {
             if !s.allocations.is_empty() {
                 let field = if s.allocations.len() != s.activities.len() {
                     Some("allocations")
-                } else if !s.passive_history.is_empty() {
+                } else if require_answers && !s.passive_history.is_empty() {
                     Some("passive_history")
                 } else if s.allocations.iter().map(|a| i128::from(a.income)).sum::<i128>()
                     != i128::from(s.income)
@@ -979,7 +1208,8 @@ impl EstateQbiStatements {
                         );
                     };
                     if !crate::scorp_qbi::valid_history(&part.passive_history, None)
-                        || (!part.passive_history.is_empty()
+                        || (require_answers
+                            && !part.passive_history.is_empty()
                             && !crate::scorp_qbi::valid_history(
                                 &part.passive_history,
                                 Some(activity.carried.regular),
@@ -1012,24 +1242,12 @@ impl EstateQbiStatements {
             }
         }
         for activity in &activities.activities {
-            let owners: Vec<_> = self
-                .statements
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.allocations.iter().any(|a| a.activity == activity.id))
-                .collect();
-            for (_, s) in &owners {
-                if let Some((other_index, other)) = owners
-                    .iter()
-                    .find(|(_, other)| s.service != other.service || s.kind != other.kind)
-                {
-                    let field = if s.service != other.service { "service" } else { "kind" };
-                    return Some(
-                        ValidationIssue::new("ESTATE_QBI_ALLOCATION_RECONCILE")
-                            .at_field(field)
-                            .in_list("statements", *other_index),
-                    );
-                }
+            if let Some((index, field)) = self.kind_conflict(activity.id) {
+                return Some(
+                    ValidationIssue::new("ESTATE_QBI_ALLOCATION_RECONCILE")
+                        .at_field(field)
+                        .in_list("statements", index),
+                );
             }
             let parts: Vec<_> = self
                 .statements
@@ -1054,58 +1272,63 @@ impl EstateQbiStatements {
                         .in_list("statements", *s),
                 );
             }
-            for (_, _, part) in &parts {
-                for year in &part.passive_history {
-                    let histories: Vec<_> = parts
-                        .iter()
-                        .flat_map(|(s, p, a)| {
-                            a.passive_history.iter().enumerate().map(move |(y, v)| (*s, *p, y, v))
-                        })
-                        .filter(|(_, _, _, v)| v.year == year.year)
-                        .collect();
-                    let failure = if let Some((s, p, y, v)) =
-                        histories.iter().find(|(_, _, _, v)| {
-                            v.original != year.original || v.remaining != year.remaining
-                        }) {
-                        Some((
-                            *s,
-                            *p,
-                            *y,
-                            if v.original != year.original { "original" } else { "remaining" },
-                        ))
-                    } else if histories
-                        .iter()
-                        .map(|(_, _, _, v)| i128::from(v.qualified))
-                        .sum::<i128>()
-                        > i128::from(year.original)
-                    {
-                        histories
+            if require_answers {
+                for (_, _, part) in &parts {
+                    for year in &part.passive_history {
+                        let histories: Vec<_> = parts
                             .iter()
-                            .rev()
-                            .find(|(_, _, _, v)| v.qualified > 0)
-                            .map(|(s, p, y, _)| (*s, *p, *y, "qualified"))
-                    } else if histories
-                        .iter()
-                        .map(|(_, _, _, v)| i128::from(v.remaining_qualified))
-                        .sum::<i128>()
-                        > i128::from(year.remaining)
-                    {
-                        histories
+                            .flat_map(|(s, p, a)| {
+                                a.passive_history
+                                    .iter()
+                                    .enumerate()
+                                    .map(move |(y, v)| (*s, *p, y, v))
+                            })
+                            .filter(|(_, _, _, v)| v.year == year.year)
+                            .collect();
+                        let failure = if let Some((s, p, y, v)) =
+                            histories.iter().find(|(_, _, _, v)| {
+                                v.original != year.original || v.remaining != year.remaining
+                            }) {
+                            Some((
+                                *s,
+                                *p,
+                                *y,
+                                if v.original != year.original { "original" } else { "remaining" },
+                            ))
+                        } else if histories
                             .iter()
-                            .rev()
-                            .find(|(_, _, _, v)| v.remaining_qualified > 0)
-                            .map(|(s, p, y, _)| (*s, *p, *y, "remaining_qualified"))
-                    } else {
-                        None
-                    };
-                    if let Some((s, p, y, field)) = failure {
-                        return Some(
-                            ValidationIssue::new("ESTATE_QBI_HISTORY_RECONCILE")
-                                .at_field(field)
-                                .in_list("passive_history", y)
-                                .in_list("allocations", p)
-                                .in_list("statements", s),
-                        );
+                            .map(|(_, _, _, v)| i128::from(v.qualified))
+                            .sum::<i128>()
+                            > i128::from(year.original)
+                        {
+                            histories
+                                .iter()
+                                .rev()
+                                .find(|(_, _, _, v)| v.qualified > 0)
+                                .map(|(s, p, y, _)| (*s, *p, *y, "qualified"))
+                        } else if histories
+                            .iter()
+                            .map(|(_, _, _, v)| i128::from(v.remaining_qualified))
+                            .sum::<i128>()
+                            > i128::from(year.remaining)
+                        {
+                            histories
+                                .iter()
+                                .rev()
+                                .find(|(_, _, _, v)| v.remaining_qualified > 0)
+                                .map(|(s, p, y, _)| (*s, *p, *y, "remaining_qualified"))
+                        } else {
+                            None
+                        };
+                        if let Some((s, p, y, field)) = failure {
+                            return Some(
+                                ValidationIssue::new("ESTATE_QBI_HISTORY_RECONCILE")
+                                    .at_field(field)
+                                    .in_list("passive_history", y)
+                                    .in_list("allocations", p)
+                                    .in_list("statements", s),
+                            );
+                        }
                     }
                 }
             }
@@ -1181,6 +1404,7 @@ impl EstateQbiStatementsPage {
 impl EstateQbiStatementPage {
     pub(crate) fn record(&self) -> EstateQbiStatement {
         EstateQbiStatement {
+            id: self.id,
             name: self.name.clone(),
             income: self.income,
             wages: self.wages,
@@ -1202,6 +1426,7 @@ impl EstateQbiStatementPage {
     }
     pub(crate) fn from_record(r: &EstateQbiStatement) -> Self {
         Self {
+            id: r.id,
             name: r.name.clone(),
             income: r.income,
             wages: r.wages,
@@ -1238,7 +1463,7 @@ pub(crate) struct EstateActivityResult {
 pub(crate) fn activity_ids(income: &crate::FederalIncome) -> impl Iterator<Item = i64> + '_ {
     match income {
         crate::FederalIncome::EstateTrustPortfolio { data } => {
-            Some(data.activities.activities.iter())
+            Some(data.statements.activities.iter())
         }
         _ => None,
     }
@@ -1251,7 +1476,7 @@ pub(crate) fn activity_ids_mut(
 ) -> impl Iterator<Item = &mut i64> {
     match income {
         crate::FederalIncome::EstateTrustPortfolio { data } => {
-            Some(data.activities.activities.iter_mut())
+            Some(data.statements.activities.iter_mut())
         }
         _ => None,
     }
@@ -1267,6 +1492,7 @@ pub(crate) fn activity_identity_issue(
         let crate::FederalIncome::EstateTrustPortfolio { data } = &entry.income else {
             continue;
         };
+        let data = &crate::FederalEstateTrustPortfolioK1::from(data);
         let prior = accepted.iter().find(|old| old.id == entry.id);
         for (index, activity) in data.activities.activities.iter().enumerate() {
             if activity.id != 0
@@ -1276,28 +1502,32 @@ pub(crate) fn activity_identity_issue(
                     entry_index,
                     ValidationIssue::new("ESTATE_ACTIVITY_LINK_INVALID")
                         .at_list_item("activities", index)
-                        .in_field("business"),
+                        .in_field("statements"),
                 ));
             }
         }
     }
     None
 }
-pub(crate) fn graph_rule(d: &crate::FederalDraft) -> Option<&'static str> {
-    graph_issue(d).map(|(_, issue)| issue.key)
-}
 
 // The source ID belongs to FederalIncomeEntry, not a submitted list position.
 // Local accepted paths map activities -> Page business and final_character ->
 // Page final_character; the Save owner performs that explicit projection.
 pub(crate) fn graph_issue(d: &crate::FederalDraft) -> Option<(i64, ValidationIssue)> {
-    if let Some(issue) = mortgage_graph_issue(d) {
+    graph_issue_with_mode(d, true)
+}
+pub(crate) fn graph_issue_with_mode(
+    d: &crate::FederalDraft,
+    require_answers: bool,
+) -> Option<(i64, ValidationIssue)> {
+    if require_answers && let Some(issue) = mortgage_graph_issue(d) {
         return Some(issue);
     }
     for entry in &d.income {
         let crate::FederalIncome::EstateTrustPortfolio { data } = &entry.income else {
             continue;
         };
+        let data = &crate::FederalEstateTrustPortfolioK1::from(data);
         for (index, activity) in data.activities.activities.iter().enumerate() {
             if activity.id <= 0 {
                 return Some((
@@ -1308,10 +1538,11 @@ pub(crate) fn graph_issue(d: &crate::FederalDraft) -> Option<(i64, ValidationIss
                         .in_field("activities"),
                 ));
             }
-            if matches!(activity.participation, EstateParticipation::Professional(_))
+            if require_answers
+                && matches!(activity.participation, EstateParticipation::Professional(_))
                 && d.professional(crate::community::professional_owner(
                     d.setup.as_ref(),
-                    entry.owner,
+                    entry.owner.owned(),
                 ))
                 .is_none()
             {
@@ -1348,8 +1579,6 @@ impl EstateFinalCharacterPage {
     pub(crate) fn record(&self) -> EstateFinalCharacter {
         EstateFinalCharacter {
             entity_terminated: self.entity_terminated,
-            final_beneficiary_k1: self.final_beneficiary_k1,
-            successor: self.successor,
             section67e_nii: self.section67e_nii,
             section67e_in_h: self.section67e_in_h,
             capital: self.capital.clone(),
@@ -1363,9 +1592,6 @@ impl EstateFinalCharacterPage {
                             amount: *amount,
                         }
                     }
-                    EstateFinalDeductionPage::Mortgage { loan } => {
-                        EstateFinalDeduction::Mortgage { loan: *loan }
-                    }
                     EstateFinalDeductionPage::Other { description } => {
                         EstateFinalDeduction::Other { description: description.clone() }
                     }
@@ -1376,8 +1602,6 @@ impl EstateFinalCharacterPage {
     pub(crate) fn from_record(r: &EstateFinalCharacter) -> Self {
         Self {
             entity_terminated: r.entity_terminated,
-            final_beneficiary_k1: r.final_beneficiary_k1,
-            successor: r.successor,
             section67e_nii: r.section67e_nii,
             section67e_in_h: r.section67e_in_h,
             capital: r.capital.clone(),
@@ -1391,14 +1615,25 @@ impl EstateFinalCharacterPage {
                             amount: *amount,
                         }
                     }
-                    EstateFinalDeduction::Mortgage { loan } => {
-                        EstateFinalDeductionPage::Mortgage { loan: *loan }
-                    }
                     EstateFinalDeduction::Other { description } => {
                         EstateFinalDeductionPage::Other { description: description.clone() }
                     }
                 })
                 .collect(),
+        }
+    }
+}
+impl EstateAmtTreatmentPage {
+    pub(crate) fn from_record(value: &EstateAmtTreatment) -> Self {
+        match value {
+            EstateAmtTreatment::IncludedInA => Self::IncludedInA,
+            EstateAmtTreatment::Activity { activity, included_in_a } => {
+                Self::Activity { activity: *activity, included_in_a: *included_in_a }
+            }
+            EstateAmtTreatment::Independent { line, included_in_a } => {
+                Self::Independent { line: line.clone(), included_in_a: *included_in_a }
+            }
+            EstateAmtTreatment::Unavailable => Self::Unavailable,
         }
     }
 }
@@ -1410,6 +1645,7 @@ impl EstateAmtReconciliationPage {
                 .adjustments
                 .iter()
                 .map(|a| EstateAmtAdjustment {
+                    id: a.id,
                     code: a.code.clone(),
                     amount: a.amount,
                     treatment: match &a.treatment {
@@ -1439,24 +1675,10 @@ impl EstateAmtReconciliationPage {
                 .adjustments
                 .iter()
                 .map(|a| EstateAmtAdjustmentPage {
+                    id: a.id,
                     code: a.code.clone(),
                     amount: a.amount,
-                    treatment: match &a.treatment {
-                        EstateAmtTreatment::IncludedInA => EstateAmtTreatmentPage::IncludedInA,
-                        EstateAmtTreatment::Activity { activity, included_in_a } => {
-                            EstateAmtTreatmentPage::Activity {
-                                activity: *activity,
-                                included_in_a: *included_in_a,
-                            }
-                        }
-                        EstateAmtTreatment::Independent { line, included_in_a } => {
-                            EstateAmtTreatmentPage::Independent {
-                                line: line.clone(),
-                                included_in_a: *included_in_a,
-                            }
-                        }
-                        EstateAmtTreatment::Unavailable => EstateAmtTreatmentPage::Unavailable,
-                    },
+                    treatment: EstateAmtTreatmentPage::from_record(&a.treatment),
                 })
                 .collect(),
         }
@@ -1503,6 +1725,12 @@ pub(crate) fn source_rule(r: &crate::FederalEstateTrustPortfolioK1) -> Option<&'
 }
 
 pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<ValidationIssue> {
+    source_issue_with_mode(r, true)
+}
+pub(crate) fn source_issue_with_mode(
+    r: &crate::FederalEstateTrustPortfolioK1,
+    require_answers: bool,
+) -> Option<ValidationIssue> {
     if r.minimum_tax_exclusion.is_some_and(|amount| !SIGNED.contains(&amount)) {
         return Some(
             ValidationIssue::new("ESTATE_MINIMUM_TAX_EXCLUSION_INVALID")
@@ -1510,43 +1738,58 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
         );
     }
     if let Some(p) = &r.entity_period {
-        if let Some(mut issue) = p.issue() {
+        let period_issue = if require_answers {
+            p.issue()
+        } else {
+            p.period.issue().map(|issue| issue.in_field("period"))
+        };
+        if let Some(mut issue) = period_issue {
             issue.key = "ESTATE_SOURCE_PERIOD_INVALID";
             return Some(issue.in_field("entity_period"));
         }
-        let year = match &p.accounting {
-            crate::FinalEstateTrustAccountingYear::CalendarFiscalOrShort
-            | crate::FinalEstateTrustAccountingYear::CalendarFiscalAfterWeeks52Or53 { .. } => {
-                p.period.ended / 10000
-            }
-            crate::FinalEstateTrustAccountingYear::Weeks52Or53 {
-                annual_ended,
-                reference_ended,
-                ..
-            } if reference_ended / 100 % 100 == 12 => {
-                // Reg1.441-2(e) covers the normal same-reference-month
-                // closing. A shortened year with a different actual year
-                // needs its own source attribution; never guess that year.
-                if p.period.ended != *annual_ended
-                    && p.period.ended / 10000 != reference_ended / 10000
-                {
-                    return Some(
-                        ValidationIssue::new("ESTATE_SOURCE_PERIOD_INVALID")
-                            .at_field("ended")
-                            .in_field("period")
-                            .in_field("entity_period"),
-                    );
+        if require_answers {
+            let year = match &p.accounting {
+                crate::FinalEstateTrustAccountingYear::CalendarFiscalOrShort
+                | crate::FinalEstateTrustAccountingYear::CalendarFiscalAfterWeeks52Or53 {
+                    ..
+                } => p.period.ended / 10000,
+                crate::FinalEstateTrustAccountingYear::Weeks52Or53 {
+                    annual_ended,
+                    reference_ended,
+                    ..
+                } if reference_ended / 100 % 100 == 12 => {
+                    // Reg1.441-2(e) covers the normal same-reference-month
+                    // closing. A shortened year with a different actual year
+                    // needs its own source attribution; never guess that year.
+                    if p.period.ended != *annual_ended
+                        && p.period.ended / 10000 != reference_ended / 10000
+                    {
+                        return Some(
+                            ValidationIssue::new("ESTATE_SOURCE_PERIOD_INVALID")
+                                .at_field("ended")
+                                .in_field("period")
+                                .in_field("entity_period"),
+                        );
+                    }
+                    reference_ended / 10000
                 }
-                reference_ended / 10000
+                crate::FinalEstateTrustAccountingYear::Weeks52Or53 { .. } => p.period.ended / 10000,
+            };
+            if year != 2026 {
+                return Some(
+                    ValidationIssue::new("ESTATE_SOURCE_PERIOD_INVALID")
+                        .at_field("ended")
+                        .in_field("period")
+                        .in_field("entity_period"),
+                );
             }
-            crate::FinalEstateTrustAccountingYear::Weeks52Or53 { .. } => p.period.ended / 10000,
-        };
-        if year != 2026 {
+        }
+    }
+    for (index, loan) in r.final_mortgages.iter().enumerate() {
+        if *loan <= 0 || r.final_mortgages[..index].contains(loan) {
             return Some(
-                ValidationIssue::new("ESTATE_SOURCE_PERIOD_INVALID")
-                    .at_field("ended")
-                    .in_field("period")
-                    .in_field("entity_period"),
+                ValidationIssue::new("ESTATE_FINAL_CHARACTER_INVALID")
+                    .at_list_item("final_mortgages", index),
             );
         }
     }
@@ -1641,7 +1884,7 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
                 EstateFinalDeduction::InvestmentInterest { description, amount } => {
                     if description.is_empty() {
                         Some("description")
-                    } else if *amount < 0 {
+                    } else if !MONEY.contains(amount) {
                         Some("amount")
                     } else {
                         None
@@ -1649,14 +1892,6 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
                 }
                 EstateFinalDeduction::Other { description } if description.is_empty() => {
                     Some("description")
-                }
-                EstateFinalDeduction::Mortgage { loan }
-                    if *loan <= 0
-                        || finals.additional[..index].iter().any(|old| {
-                            matches!(old, EstateFinalDeduction::Mortgage { loan: old_id } if old_id == loan)
-                        }) =>
-                {
-                    Some("loan")
                 }
                 _ => None,
             };
@@ -1706,6 +1941,14 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
                     .in_list("reported_credits", index),
             );
         }
+        if !credit_line_allowed(&credit.code) {
+            return Some(
+                ValidationIssue::new("ESTATE_CREDIT_LINE_INVALID")
+                    .at_field("line")
+                    .in_field("code")
+                    .in_list("reported_credits", index),
+            );
+        }
         if r.reported_credits[..index].iter().any(|old| old.code == credit.code) {
             return Some(
                 ValidationIssue::new("ESTATE_CREDIT_CODE_TWICE")
@@ -1736,6 +1979,9 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
         return Some(
             ValidationIssue::new("ESTATE_FOREIGN_AMOUNT_INVALID").at_field("foreign_statement"),
         );
+    }
+    if let Some(issue) = crate::estate_foreign::source_issue(r) {
+        return Some(issue);
     }
     if let Some(investment) = &r.investment_income {
         if !SIGNED.contains(&investment.regular) || !SIGNED.contains(&investment.alternative) {
@@ -1807,50 +2053,53 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
         {
             return Some(ValidationIssue::new("ESTATE_AMT_RECONCILE").at_field("long_gain"));
         }
-        for (adjustment_index, adjustment) in amt.adjustments.iter().enumerate() {
-            if let EstateAmtTreatment::Independent { line, .. } = &adjustment.treatment
-                && !matches!(
-                    (&adjustment.code, line),
-                    (EstateAmtCode::DepletionH, EstateAmtLine::Depletion2d)
-                        | (
-                            EstateAmtCode::DepreciationG,
-                            EstateAmtLine::Depreciation2l | EstateAmtLine::Pre1987Depreciation3
-                        )
-                )
-            {
-                return Some(
-                    ValidationIssue::new("ESTATE_AMT_LINE_INVALID")
-                        .at_field("line")
-                        .in_field("treatment")
-                        .in_list("adjustments", adjustment_index)
-                        .in_field("amt_reconciliation"),
-                );
+        if require_answers {
+            for (adjustment_index, adjustment) in amt.adjustments.iter().enumerate() {
+                if let EstateAmtTreatment::Independent { line, .. } = &adjustment.treatment
+                    && !matches!(
+                        (&adjustment.code, line),
+                        (EstateAmtCode::DepletionH, EstateAmtLine::Depletion2d)
+                            | (
+                                EstateAmtCode::DepreciationG,
+                                EstateAmtLine::Depreciation2l | EstateAmtLine::Pre1987Depreciation3
+                            )
+                    )
+                {
+                    return Some(
+                        ValidationIssue::new("ESTATE_AMT_LINE_INVALID")
+                            .at_field("line")
+                            .in_field("treatment")
+                            .in_list("adjustments", adjustment_index)
+                            .in_field("amt_reconciliation"),
+                    );
+                }
+                if let EstateAmtTreatment::Activity { activity, .. } = adjustment.treatment
+                    && !r.activities.activities.iter().any(|a| a.id == activity)
+                {
+                    return Some(
+                        ValidationIssue::new("ESTATE_ACTIVITY_LINK_INVALID")
+                            .at_field("activity")
+                            .in_field("treatment")
+                            .in_list("adjustments", adjustment_index)
+                            .in_field("amt_reconciliation"),
+                    );
+                }
             }
-            if let EstateAmtTreatment::Activity { activity, .. } = adjustment.treatment
-                && !r.activities.activities.iter().any(|a| a.id == activity)
-            {
-                return Some(
-                    ValidationIssue::new("ESTATE_ACTIVITY_LINK_INVALID")
-                        .at_field("activity")
-                        .in_field("treatment")
-                        .in_list("adjustments", adjustment_index)
-                        .in_field("amt_reconciliation"),
-                );
+            for (activity_index, activity) in r.activities.activities.iter().enumerate() {
+                let allocated: i64 = amt.adjustments.iter().filter(|a| matches!(a.treatment, EstateAmtTreatment::Activity { activity: id, .. } if id == activity.id)).map(|a| a.amount).sum();
+                if allocated != activity.amt_difference {
+                    return Some(
+                        ValidationIssue::new("ESTATE_AMT_ACTIVITY_RECONCILE")
+                            .at_field("amt_difference")
+                            .in_list("activities", activity_index)
+                            .in_field("activities"),
+                    );
+                }
             }
         }
-        for (activity_index, activity) in r.activities.activities.iter().enumerate() {
-            let allocated: i64 = amt.adjustments.iter().filter(|a| matches!(a.treatment, EstateAmtTreatment::Activity { activity: id, .. } if id == activity.id)).map(|a| a.amount).sum();
-            if allocated != activity.amt_difference {
-                return Some(
-                    ValidationIssue::new("ESTATE_AMT_ACTIVITY_RECONCILE")
-                        .at_field("amt_difference")
-                        .in_list("activities", activity_index)
-                        .in_field("activities"),
-                );
-            }
-        }
-    } else if let Some(activity_index) =
-        r.activities.activities.iter().position(|a| a.amt_difference != 0)
+    } else if require_answers
+        && let Some(activity_index) =
+            r.activities.activities.iter().position(|a| a.amt_difference != 0)
     {
         return Some(
             ValidationIssue::new("ESTATE_AMT_ACTIVITY_RECONCILE")
@@ -1862,13 +2111,46 @@ pub(crate) fn source_issue(r: &crate::FederalEstateTrustPortfolioK1) -> Option<V
     None
 }
 
+// The Form 3800 Part III credit each 2026 Schedule K-1 (Form 1041) box 13 code
+// reports (2026 Instructions for Schedule K-1 (Form 1041), box 13; Form 3800
+// instructions, Part III). When the estate or trust is the only source of the
+// credit, the beneficiary reports it directly on Form 3800. Code H goes on
+// line 4z, as those instructions direct, because the section 40 credit ended
+// for fuel sold after 2024. Code P is the Form 8912 bond credit, which is not
+// a general business credit and is not figured for a pass-through holder.
 pub(crate) fn credit_identity(code: &EstateCreditCode) -> Option<crate::BusinessCredit> {
-    // Form 1041 letters deliberately do not use the 1065/1120-S code map.
+    use crate::BusinessCredit as B;
+    Some(match code {
+        EstateCreditCode::C => B::LowIncomeHousing,
+        EstateCreditCode::D => B::AdvancedManufacturingProduction,
+        EstateCreditCode::E => B::CleanElectricityProduction,
+        EstateCreditCode::F => B::WorkOpportunity,
+        EstateCreditCode::G => B::SmallEmployerHealth,
+        EstateCreditCode::H => B::OtherSpecified,
+        EstateCreditCode::I { line }
+        | EstateCreditCode::J { line }
+        | EstateCreditCode::ZZ { line } => *line,
+        EstateCreditCode::K => B::EmpowermentZone,
+        EstateCreditCode::L => B::CleanFuel,
+        EstateCreditCode::M => B::OrphanDrug,
+        EstateCreditCode::N => B::EmployerChildcare,
+        EstateCreditCode::O => B::Biodiesel,
+        EstateCreditCode::P => return None,
+        EstateCreditCode::Q => B::DifferentialWage,
+        EstateCreditCode::S => B::AdvancedNuclear,
+        EstateCreditCode::T => B::ZeroEmissionNuclear,
+    })
+}
+// The Form 3800 lines a statement-supplied line may name, the same lists the
+// partnership codes M (research), AB (renewable electricity) and ZZ allow.
+fn credit_line_allowed(code: &EstateCreditCode) -> bool {
     match code {
-        EstateCreditCode::C => Some(crate::BusinessCredit::LowIncomeHousing),
-        EstateCreditCode::F => Some(crate::BusinessCredit::WorkOpportunity),
-        EstateCreditCode::G => Some(crate::BusinessCredit::SmallEmployerHealth),
-        _ => None,
+        EstateCreditCode::I { line } => crate::K1CreditCode::Research.line_allows(*line),
+        EstateCreditCode::J { line } => {
+            crate::K1CreditCode::RenewableElectricity.line_allows(*line)
+        }
+        EstateCreditCode::ZZ { line } => crate::K1CreditCode::Other.line_allows(*line),
+        _ => true,
     }
 }
 pub(crate) fn credit_letters(code: &EstateCreditCode) -> &'static str {
@@ -1879,8 +2161,8 @@ pub(crate) fn credit_letters(code: &EstateCreditCode) -> &'static str {
         EstateCreditCode::F => "F",
         EstateCreditCode::G => "G",
         EstateCreditCode::H => "H",
-        EstateCreditCode::I => "I",
-        EstateCreditCode::J => "J",
+        EstateCreditCode::I { .. } => "I",
+        EstateCreditCode::J { .. } => "J",
         EstateCreditCode::K => "K",
         EstateCreditCode::L => "L",
         EstateCreditCode::M => "M",
@@ -1890,7 +2172,7 @@ pub(crate) fn credit_letters(code: &EstateCreditCode) -> &'static str {
         EstateCreditCode::Q => "Q",
         EstateCreditCode::S => "S",
         EstateCreditCode::T => "T",
-        EstateCreditCode::ZZ => "ZZ",
+        EstateCreditCode::ZZ { .. } => "ZZ",
     }
 }
 pub(crate) fn credit_passive(activities: &[EstateActivity], ids: &[i64]) -> Option<bool> {
@@ -2172,43 +2454,37 @@ pub(crate) fn mortgage_graph_issue(d: &crate::FederalDraft) -> Option<(i64, Vali
         let crate::FederalIncome::EstateTrustPortfolio { data } = &e.income else {
             continue;
         };
-        let Some(finals) = &data.final_character else {
+        let data = &crate::FederalEstateTrustPortfolioK1::from(data);
+        if data.final_character.is_none() {
             continue;
-        };
-        for (index, item) in finals.additional.iter().enumerate() {
-            if let EstateFinalDeduction::Mortgage { loan } = item {
-                if !d.deductions.as_ref().is_some_and(|v| {
-                    v.mortgage_loans().iter().any(|l| {
-                        l.id == *loan
-                            && matches!(l.details, crate::MortgageLoanDetails::FirstLender(_))
-                    })
-                }) {
-                    return Some((
-                        e.id,
-                        ValidationIssue::new("ESTATE_MORTGAGE_LINK_INVALID")
-                            .at_field("loan")
-                            .in_list("additional", index)
-                            .in_field("final_character"),
-                    ));
-                }
-                if used.contains(loan) {
-                    return Some((
-                        e.id,
-                        ValidationIssue::new("ESTATE_MORTGAGE_LINK_TWICE")
-                            .at_field("loan")
-                            .in_list("additional", index)
-                            .in_field("final_character"),
-                    ));
-                }
-                used.push(*loan);
+        }
+        for (index, loan) in data.final_mortgages.iter().enumerate() {
+            if !d.deductions.as_ref().is_some_and(|v| {
+                v.mortgage_loans().unwrap_or_default().iter().any(|l| {
+                    l.id == *loan && matches!(l.details, crate::MortgageLoanDetails::FirstLender(_))
+                })
+            }) {
+                return Some((
+                    e.id,
+                    ValidationIssue::new("ESTATE_MORTGAGE_LINK_INVALID")
+                        .at_list_item("final_mortgages", index),
+                ));
             }
+            if used.contains(loan) {
+                return Some((
+                    e.id,
+                    ValidationIssue::new("ESTATE_MORTGAGE_LINK_TWICE")
+                        .at_list_item("final_mortgages", index),
+                ));
+            }
+            used.push(*loan);
         }
     }
     None
 }
 
-// Base-main4952 adapter. The complete preferred/election projection is owned
-// by Unit18; do not copy its unmerged implementation or infer source classes.
+// Project actual fiduciary investment-income character into Form 4952;
+// its existing gain and qualified-dividend election retains preferential amounts.
 pub(crate) fn investment_adjustment(
     data: &crate::FederalEstateTrustPortfolioK1,
 ) -> Option<[i64; 2]> {
@@ -2219,7 +2495,7 @@ pub(crate) fn investment_adjustment(
     // validity gate. Check only this adapter's arithmetic; unrelated optional
     // source classification does not decide an investment-interest benefit.
     let regular_gains = data.short_gain.checked_add(data.long_gain)?;
-    let alternative_qualified = data.qualified_dividends.checked_add(data.amt_box12b)?;
+    let alternative_qualified = portfolio_qualified(data)?;
     let alternative_gains =
         regular_gains.checked_add(data.amt_box12c)?.checked_add(data.amt_box12d)?;
     let preferential = match source.character {
@@ -2341,6 +2617,7 @@ pub(crate) fn loss_vintages(d: &crate::FederalDraft, alternative: bool) -> Vec<L
         let crate::FederalIncome::EstateTrustPortfolio { data } = &entry.income else {
             continue;
         };
+        let data = &crate::FederalEstateTrustPortfolioK1::from(data);
         let Some(nol) = &data.final_nol else { continue };
         if !nol.valid() {
             continue;
@@ -2437,18 +2714,26 @@ fn included_in_a(treatment: &EstateAmtTreatment) -> bool {
 fn classified_other_in_a(data: &crate::FederalEstateTrustPortfolioK1) -> Option<i64> {
     let other = data.amt_reconciliation.as_ref().map_or(0, |source| source.other_in_a);
     if data.amt_box12a_standalone && data.amt_box12a != 0
-        || data.amt_box12a != data.amt_box12b + data.amt_box12c + data.amt_box12d + other
+        || data.amt_box12a
+            != data
+                .amt_box12b
+                .checked_add(data.amt_box12c)?
+                .checked_add(data.amt_box12d)?
+                .checked_add(other)?
     {
         return None;
     }
-    let identified = data.amt_reconciliation.as_ref().map_or(0, |source| {
-        source
-            .adjustments
-            .iter()
-            .filter(|item| included_in_a(&item.treatment))
-            .map(|item| item.amount)
-            .sum()
-    });
+    let identified = data
+        .amt_reconciliation
+        .as_ref()
+        .map(|source| {
+            source
+                .adjustments
+                .iter()
+                .filter(|item| included_in_a(&item.treatment))
+                .try_fold(0i64, |sum, item| sum.checked_add(item.amount))
+        })
+        .unwrap_or(Some(0))?;
     (identified == other).then_some(other)
 }
 
@@ -2461,9 +2746,10 @@ pub(crate) fn community_source_rule(
     let crate::FederalIncome::EstateTrustPortfolio { data } = &entry.income else {
         return None;
     };
+    let data = &crate::FederalEstateTrustPortfolioK1::from(data);
     let share = crate::community::share(
         draft.setup.as_ref()?,
-        entry.owner,
+        entry.owner.owned(),
         entry.community,
         &entry.income,
     )?;
@@ -2538,6 +2824,7 @@ pub(crate) fn reconcile_community_source(
         );
     projected.amt_box12b =
         share.filer(source.qualified_dividends + source.amt_box12b) - projected.qualified_dividends;
+    crate::estate_foreign::project(source, projected, share);
 
     if let (Some(original), Some(finals)) =
         (&source.final_character, &mut projected.final_character)
@@ -2725,7 +3012,7 @@ crate::community::divide_record!(EstatePassiveCarry {
 crate::community::divide_record!(EstateFinalCharacter {
     amounts: [section67e_nii, additional, capital],
     gains: [],
-    facts: [entity_terminated, final_beneficiary_k1, successor, section67e_in_h],
+    facts: [entity_terminated, section67e_in_h],
 });
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
@@ -2801,7 +3088,7 @@ crate::community::divide_record!(EstateQbiStatements {
 crate::community::divide_record!(EstateQbiStatement {
     amounts: [income, wages, property, passive_history, allocations],
     gains: [],
-    facts: [name, service, kind, activities],
+    facts: [id, name, service, kind, activities],
 });
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
@@ -2822,7 +3109,7 @@ crate::community::divide_record!(EstateAmtReconciliation {
 crate::community::divide_record!(EstateAmtAdjustment {
     amounts: [amount],
     gains: [],
-    facts: [code, treatment],
+    facts: [id, code, treatment],
 });
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
@@ -2834,9 +3121,9 @@ crate::community::divide_record!(EstateReportedCredit {
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
 crate::community::divide_record!(EstateForeignStatement {
-    amounts: [tax],
+    amounts: [tax, treatment],
     gains: [],
-    facts: [treatment],
+    facts: [],
 });
 
 // Allocate source amounts; retained character, identity and confirmations stay facts.
@@ -2850,9 +3137,52 @@ crate::community::divide_record!(EstateInvestmentProperty {
 crate::community::divide_enum!(EstateFinalDeduction {
     records: [
         InvestmentInterest { amounts: [amount], facts: [description] },
-        Mortgage { amounts: [], facts: [loan] },
         Other { amounts: [], facts: [description] },
     ],
     units: [],
     tuples: [],
 });
+
+// Allocate only source amounts; the source's country, method and payment class remain facts.
+crate::community::divide_enum!(EstateForeignTreatment {
+    records: [PassivePortfolio { amounts: [allocations], facts: [basis] },],
+    units: [QualifiedPassivePayeeStatement, RequiresAllocation],
+    tuples: [],
+});
+crate::community::divide_record!(crate::EstateForeignPortfolioAllocation {
+    amounts: [tax, regular, alternative],
+    gains: [],
+    facts: [country, withholding],
+});
+crate::community::divide_record!(crate::EstateForeignPortfolioAmounts {
+    amounts: [interest, dividends, qualified, direct_expenses, interest_expense],
+    gains: [],
+    facts: [],
+});
+
+// The complete fiduciary reconciliation identifies whether another adjustment
+// could alter the interest/dividend axis. An aggregate code A cannot do so.
+pub(crate) fn foreign_portfolio_capacities(
+    data: &crate::FederalEstateTrustPortfolioK1,
+) -> Option<[[i64; 3]; 2]> {
+    data.amt_reconciliation.as_ref()?;
+    if classified_other_in_a(data)? != 0 {
+        return None;
+    }
+    let regular = regular_foreign_portfolio_capacity(data)?;
+    let amt_qualified = portfolio_qualified(data)?;
+    Some([regular, [data.interest, regular[1].checked_add(data.amt_box12b)?, amt_qualified]])
+}
+fn portfolio_qualified(data: &crate::FederalEstateTrustPortfolioK1) -> Option<i64> {
+    data.qualified_dividends.checked_add(data.amt_box12b)
+}
+
+pub(crate) fn regular_foreign_portfolio_capacity(
+    data: &crate::FederalEstateTrustPortfolioK1,
+) -> Option<[i64; 3]> {
+    Some([
+        data.interest,
+        data.ordinary_dividends.checked_sub(data.section199a_dividends.amount())?,
+        data.qualified_dividends,
+    ])
+}

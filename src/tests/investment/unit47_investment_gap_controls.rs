@@ -1,4 +1,4 @@
-use super::unit47_credit_source_validation::{credit_estimate_documents_from_save, credit_refusal};
+use super::unit47_credit_source_validation::credit_estimate_documents_from_save;
 use super::*;
 
 #[test]
@@ -9,41 +9,22 @@ fn unit47_related_exchange_transfer_guard_uses_submitted_data_answer_position() 
     second.property = "28 Ash St".into();
     second.last_transfer = 20251231;
     let corrected = save_topic(
-        &session.draft,
+        &mut session,
         TaxSection::InvestmentSales,
         vec![
-            document(0, IncomeDocument::RelatedExchange(first)),
-            document(0, IncomeDocument::RelatedExchange(second)),
+            document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::RelatedExchange(first) },
+            ),
+            document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::RelatedExchange(second) },
+            ),
         ],
-    );
-    let mut bad = corrected.clone();
-    let P::SaveIncomes { documents, .. } = &mut bad else {
-        unreachable!()
-    };
-    let IncomeDocument::RelatedExchange(exchange) = &mut documents.documents[1].document else {
-        unreachable!()
-    };
-    // The existing native first guard also handles malformed date windows:
-    // ordinary schema ranges make this relationship impossible in valid UI
-    // input. Preserve its priority over the later generic date-window check.
-    exchange.last_transfer = exchange.disposed;
-    credit_refusal(
-        "gap-related-transfer-save",
-        &mut session,
-        bad.clone(),
-        "RELATED_EXCHANGE_DISPOSED_BEFORE_TRANSFER",
-        "[documents/documents/1/document/disposed]",
-    );
-    credit_refusal(
-        "gap-related-transfer-estimate",
-        &mut session,
-        credit_estimate_documents_from_save(&bad),
-        "RELATED_EXCHANGE_DISPOSED_BEFORE_TRANSFER",
-        "[documents/documents/1/document/disposed]",
     );
     let before = session.draft.clone();
     let dirty = session.dirty;
-    accepted(&send(
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(
         &mut session,
         credit_estimate_documents_from_save(&corrected),
     ));

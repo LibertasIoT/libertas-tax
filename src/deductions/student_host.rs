@@ -15,15 +15,17 @@ pub struct HostedStudentMonth {
     // Tax structure: calendar months are numbered 1 through 12.
     #[libertas_number(min = 1, max = 12)]
     pub month: u32,
-    /// Days in this month when residence, written agreement and full-time school conditions all held
-    /// Fifteen qualifying days make the month eligible for the $50 ceiling.
+    /// Time in this month when residence, written agreement and full-time school conditions all held
+    /// Fifteen make the month eligible for the $50 ceiling.
     // Tax structure: a calendar month has at most 31 qualifying days.
     #[libertas_number(min = 0, max = 31)]
+    #[libertas_physical_unit("day")]
     pub qualifying_days: u32,
     /// Actual unreimbursed expense paid in this month for the student's well-being
     /// Exclude imputed lodging, home depreciation, general taxes, insurance and repairs.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cost: i64,
 }
 impl HostedStudentMonth {
@@ -79,10 +81,10 @@ pub struct HostedStudent {
     #[libertas_date_only]
     pub school_end: u32,
     /// Actual 2026 monthly costs and qualifying days for this student
-    /// ----
-    /// Month
     // Tax structure: section 170(g) records have one unique entry per calendar month.
     #[libertas_size(min = 1, max = 12)]
+    /// ----
+    /// Month
     pub months: Vec<HostedStudentMonth>,
     /// Sponsor, student and reimbursement conditions confirmed with required statement records
     /// Confirm a written educational-placement agreement with a section 170(c)(2), (3) or (4) organization; the student was full time in U.S. grade K–12 and neither a relative nor a dependent under the special section 170(g) definition. No mutual exchange, ordinary compensation or reimbursement applies; any extraordinary one-time reimbursement is excluded from entered costs. Keep the agreement, actual expenses, household-joining date, attendance dates and school location for the required return statement. Amounts are neither reimbursed nor claimed elsewhere. The written placement agreement and your expense records show it. No leaves this student's deduction out of the estimate with a notice; that situation is not supported.

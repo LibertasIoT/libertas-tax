@@ -1,7 +1,8 @@
 use crate::k1_activity::*;
 use crate::tests::cross::interview::{accepted, open_topic};
 use crate::tests::support::builders::k1res::{graph, qbi_aggregation_facts};
-use crate::tests::support::client::income_pages::{catalog_preview_document, page_documents};
+use crate::tests::support::client::income_pages::page_documents;
+use crate::tests::support::client::k1res::send_fixture;
 use crate::tests::support::client::k1res::{
     ordinary_multi_current_qbi_session_with_statements,
     ordinary_multi_current_scorp_qbi_session_with_statements,
@@ -23,22 +24,30 @@ fn native_block_aggregation_uses_actual_wages_and_preserves_native_lifecycle() {
         // B has $2,000 QBI/$100,000 wages -> $400. Combined: $5,000 x20%=$1,000.
         assert_eq!(value(&ungrouped, "agi"), 406_000);
         assert_eq!(value(&ungrouped, "qbi_deduction"), 400);
-        let before = session.draft.clone();
-        let dirty = session.dirty;
-        let entry =
-            before.income.iter().find(|e| crate::k1_activity::source(&e.income).is_some()).unwrap();
+        let entry = session
+            .draft
+            .income
+            .iter()
+            .find(|e| crate::k1_activity::source(&e.income).is_some())
+            .unwrap();
         let parent = entry.id;
         let ids: Vec<_> = crate::k1_activity::source(&entry.income).unwrap().ids().collect();
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
         let mut facts = qbi_aggregation_facts();
-        for row in &mut documents.documents {
+        for row in &mut documents.common.k1.documents {
             for block in &mut graph(&mut row.document).qbi_blocks {
                 block.qbi_group = facts.facts.name.clone();
             }
         }
+        accepted(&send_fixture(&mut session, request));
+        let before = session.draft.clone();
+        let dirty = session.dirty;
+        let mut request = open_topic(&mut session, TaxSection::PassThrough);
+        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
         documents.qbi_aggregations = vec![facts.clone()];
-        let reply = send(
+        let reply = crate::tests::support::client::income_pages::candidate_save_review(
             &mut session,
             crate::tests::support::client::estimate_documents_from_save(&request),
         );
@@ -67,16 +76,9 @@ fn native_block_aggregation_uses_actual_wages_and_preserves_native_lifecycle() {
         let P::SaveIncomes { documents, qbi_sources, .. } = &mut request else { unreachable!() };
         documents.qbi_aggregations = vec![facts];
         *qbi_sources = sources;
-        let mut preview = catalog_preview_document(documents.documents[0].document.clone());
-        let P::PreviewDocument { id, .. } = &mut preview else { unreachable!() };
-        *id = parent;
-        let previewed = send(&mut session, preview);
-        assert!(
-            matches!(previewed, Reply::Response(P::IncomePreview { preview: None, .. })),
-            "unsaved election source preview: {previewed:?}"
-        );
+
         assert!(matches!(
-            send(
+            crate::tests::support::client::income_pages::candidate_save_review(
                 &mut session,
                 crate::tests::support::client::estimate_documents_from_save(&request)
             ),
@@ -84,7 +86,7 @@ fn native_block_aggregation_uses_actual_wages_and_preserves_native_lifecycle() {
         ));
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
-        accepted(&send(&mut session, request));
+        accepted(&send_fixture(&mut session, request));
         assert_eq!(session.draft.revision, before.revision + 1);
         assert_eq!(session.draft.next_id, before.next_id);
         assert_eq!(
@@ -101,25 +103,17 @@ fn native_block_aggregation_uses_actual_wages_and_preserves_native_lifecycle() {
         assert_eq!(value(&grouped, "qbi_deduction"), 1_000);
         let accepted_draft = session.draft.clone();
         let accepted_dirty = session.dirty;
-        let reopened = open_topic(&mut session, TaxSection::PassThrough);
-        let pages = page_documents(&reopened).to_vec();
-        // A document preview uses the accepted return's global election facts.
-        let mut preview = catalog_preview_document(pages[0].document.clone());
-        let P::PreviewDocument { id, .. } = &mut preview else { unreachable!() };
-        *id = parent;
-        let previewed = send(&mut session, preview);
-        assert!(
-            matches!(previewed, Reply::Response(P::IncomePreview { preview: Some(600_000), .. })),
-            "accepted grouped source preview: {previewed:?}"
-        );
+        let reopened =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let pages = page_documents(&reopened);
         assert_eq!(session.draft, accepted_draft);
         assert_eq!(session.dirty, accepted_dirty);
-        accepted(&send(&mut session, reopened));
+        accepted(&send_fixture(&mut session, reopened));
         assert_eq!(session.draft, accepted_draft);
         let mut cold = restart(accepted_draft.clone());
-        let reopened = open_topic(&mut cold, TaxSection::PassThrough);
+        let reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
         assert_eq!(page_documents(&reopened), pages);
-        accepted(&send(&mut cold, reopened));
+        accepted(&send_fixture(&mut cold, reopened));
         assert_eq!(cold.draft, accepted_draft);
         assert_eq!(supported(&cold.draft), grouped);
     }
@@ -183,9 +177,10 @@ fn native_block_new_inner_identity_is_not_selectable_until_normal_save() {
         let mut session =
             build(complete(FederalStatus::Single), [Some((300_000, 0)), Some((200_000, 0))]);
         let before = session.draft.clone();
-        let mut request = open_topic(&mut session, TaxSection::PassThrough);
-        let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-        let source = graph(&mut documents.documents[0].document);
+        let mut request =
+            crate::tests::support::client::income_pages::open_document_center(&mut session);
+        let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+        let source = graph(&mut documents.common.k1.documents[0].document);
         let mut added = source.qbi_blocks[0].clone();
         added.id = 0;
         added.name = "New actual statement".into();
@@ -201,16 +196,22 @@ fn native_block_new_inner_identity_is_not_selectable_until_normal_save() {
             _ => unreachable!(),
         };
         source.qbi_blocks.push(added);
-        let reply = send(
+        let reply = crate::tests::support::client::income_pages::candidate_save_review(
             &mut session,
             crate::tests::support::client::estimate_documents_from_save(&request),
         );
-        let Reply::Response(P::IncomeRunningEstimate { sources, .. }) = reply else {
-            panic!("new inner source calculation: {reply:?}")
+        assert!(
+            matches!(reply, Reply::Response(P::Review { .. })),
+            "new inner source calculation: {reply:?}"
+        );
+        let P::SaveIncomes { qbi_sources: sources, .. } =
+            open_topic(&mut session, TaxSection::PassThrough)
+        else {
+            unreachable!()
         };
         assert_eq!(sources.len(), 2, "tentative positive identity must stay out of choices");
         assert_eq!(session.draft, before);
-        accepted(&send(&mut session, request));
+        accepted(&send_fixture(&mut session, request));
         let catalog = crate::qbi_aggregation::source_views(&session.draft, &session.draft);
         assert_eq!(catalog.len(), 3);
         let added = catalog

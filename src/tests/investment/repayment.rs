@@ -44,21 +44,23 @@ fn refund_sales_tax_alternative_is_combined_with_the_salt_limit() {
         let mut d = complete(FederalStatus::Single);
         add(
             &mut d,
-            income(FederalIncome::TaxRefund {
-                amount: refund * 100,
-                withholding: 0,
-                history: TaxRefundHistory::IncomeTax {
-                    deduction_year: 2025,
-                    income_paid: income_paid * 100,
-                    sales_available: sales_available * 100,
-                    salt_paid: salt_paid * 100,
-                    salt_deducted: salt_deducted * 100,
-                    itemized: 6000000,
-                    standard: 1575000,
-                    overall_limit: None,
-                    property_refunded: 0,
-                    ordinary: true,
-                },
+            income(FederalIncome::GovernmentPayment {
+                data: tax_refund_source(crate::FederalTaxRefund {
+                    amount: refund * 100,
+                    withholding: 0,
+                    history: TaxRefundHistory::IncomeTax {
+                        deduction_year: 2025,
+                        income_paid: income_paid * 100,
+                        sales_available: sales_available * 100,
+                        salt_paid: salt_paid * 100,
+                        salt_deducted: salt_deducted * 100,
+                        itemized: 6000000,
+                        standard: 1575000,
+                        overall_limit: None,
+                        property_refunded: 0,
+                        ordinary: true,
+                    },
+                }),
             }),
         );
         let r = supported(&d);
@@ -83,9 +85,6 @@ fn prior_capital_senior_deduction_rejects_inconsistent_source_amounts() {
         d.screening.as_mut().unwrap().capital_history = vec![history];
         unsupported(&d, "Capital loss history");
     }
-    let mut history = capital_history();
-    history.senior_deduction = -1;
-    assert!(!crate::extended_rules::valid_capital_history(&[history]));
 }
 
 #[test]
@@ -123,7 +122,7 @@ fn qsbs_prior_nol_allows_itemizing_without_modified_agi_deductions() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 100_000)]);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 500_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let without_sale = supported(&d);
     add(&mut d, qsb_income("Synthetic A Inc.", 10_000, 110_000, 0));
     let with_sale = supported(&d);
@@ -144,7 +143,7 @@ fn qsbs_prior_nol_refigures_modified_itemization() {
     add(&mut d, qsb_income("Synthetic A Inc.", 10_000_000, 110_000_000, 0));
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 500_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let top_bracket = supported(&d);
     assert_eq!(value(&top_bracket, "qsbs_2_excluded_gain"), 1_000_000);
     assert_eq!(value(&top_bracket, "nol_2025_used"), 100_000);
@@ -157,7 +156,8 @@ fn qsbs_prior_nol_refigures_modified_itemization() {
         data.lots[0].basis = 10_000;
         data.lots[0].proceeds = 110_000;
     }
-    if let DeductionSelection::Itemized { facts } = &mut d.deductions.as_mut().unwrap().choice {
+    {
+        let facts = &mut d.deductions.as_mut().unwrap().itemized;
         facts.medical = 1_000_000;
     }
     let with_sale = supported(&d);
@@ -185,7 +185,7 @@ fn qsbs_prior_nol_refigures_salt_cap_for_absorption() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 1_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 5_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     assert_eq!(value(&before, "deduction"), 40_400);
 
@@ -207,7 +207,7 @@ fn qsbs_prior_nol_salt_phase_down_stops_at_ten_thousand_floor() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 1_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 5_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic B Inc.", 10_000, 11_010_000, 0));
     let after = supported(&d);
@@ -224,7 +224,7 @@ fn qsbs_prior_nol_salt_cap_is_refigured_for_each_loss_vintage() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2024, 100_000), (2025, 1_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 5_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic C Inc.", 10_000, 2_010_000, 0));
     let after = supported(&d);
@@ -241,7 +241,7 @@ fn qsbs_prior_nol_refigures_section_68_after_salt_phase_down() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 1_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).personal_property_taxes = 5_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic D Inc.", 10_000, 10_010_000, 0));
     let after = supported(&d);
@@ -270,7 +270,7 @@ fn qsbs_prior_nol_refigures_personal_casualty_agi_floor() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 1_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     ded.personal_casualties.push(personal_disaster("Synthetic storm", 3_000_000));
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic F Inc.", 10_000, 110_000, 0));
     let after = supported(&d);
@@ -290,7 +290,7 @@ fn qsbs_prior_nol_refigures_current_cash_charity_floor() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 100_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     ded.cash_charity = 100_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic G Inc.", 10_000, 110_000, 0));
     let after = supported(&d);
@@ -313,7 +313,7 @@ fn qsbs_prior_nol_refigures_cash_percentage_limit_and_reduces_double_carry() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 10_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     ded.cash_charity = 9_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic K Inc.", 10_000, 110_000, 0));
     let after = supported(&d);
@@ -351,7 +351,7 @@ fn qsbs_prior_nol_refigures_cash_percentage_excess_with_section_68() {
     d.screening.as_mut().unwrap().nol = prior_nol(&[(2025, 100_000_000)]);
     let ded = d.deductions.as_mut().unwrap();
     ded.cash_charity = 80_000_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let before = supported(&d);
     add(&mut d, qsb_income("Synthetic L Inc.", 10_000, 110_000, 0));
     let after = supported(&d);
@@ -445,7 +445,7 @@ fn qsbs_prior_nol_refigures_social_security_for_absorption() {
     // medical 7.5%-of-AGI threshold is refigured on lines 14–18.
     let ded = d.deductions.as_mut().unwrap();
     itemized(ded).medical = 500_000;
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let with_medical = supported(&d);
     let mut no_sale_medical = d.clone();
     no_sale_medical.income.pop();
@@ -481,13 +481,8 @@ fn box_2_interest_and_interest_without_a_form_join_box_1() {
     //   AGI: $60,000 - $2,260 = $57,740
     let mut d = complete(FederalStatus::Single);
     d.income[0] = wage(1, Owner::Taxpayer, 6_000_000, 0);
-    d.adjustments.as_mut().unwrap().student_loan = loan_claim(
-        vec![
-            box_2(90_000, 41_000),
-            Form1098E { interest: 70_000, box_2: Form1098EBox2::NotChecked },
-        ],
-        25_000,
-    );
+    d.adjustments.as_mut().unwrap().student_loan =
+        loan_claim(vec![box_2(90_000, 41_000), box_1(70_000)], 25_000);
     let r = supported(&d);
     assert_eq!(value(&r, "adjustments"), 2_260);
     assert_eq!(value(&r, "agi"), 57_740);

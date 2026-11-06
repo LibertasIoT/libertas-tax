@@ -1,3 +1,5 @@
+pub use crate::ira_repayment_sources::{IraRepayment, IraRepaymentDeposit};
+pub(crate) use crate::retirement::special;
 // Coverage: Form 8606 special repayments (birth/adoption, emergency, domestic-abuse and
 //   terminal-illness distributions); see retirement.rs's Form 8606 block. Form 8915-F
 //   (qualified disaster distributions and their repayments) moved to disaster.rs (T3-8915,
@@ -5,87 +7,18 @@
 //   distributions, but Form 8606 line 6 also drops 2026 disaster repayments (disaster.rs
 //   repaid_in_return_year, via IraBasis::adjusted_year_end).
 
-use crate::federal_rules::valid_date;
-
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::exact::{self, Exact};
 use crate::kernel::ratio::fraction;
-use crate::retirement::IraAmountIssue;
+use crate::line_emission::emit as emit_lines;
+use crate::retirement_return::IraAmountIssue;
 use crate::{
-    FederalDraft, FederalIncome, FederalResult, IraBasis, Owner, RetirementException,
-    RetirementKind, RetirementTaxable, RetirementTreatment,
+    FederalDraft, FederalIncome, FederalResult, IraBasis, Owner, RetirementKind, RetirementTaxable,
+    RetirementTreatment,
 };
-use alloc::vec::Vec;
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// Repayment of a special 2026 traditional IRA distribution
-/// For qualified birth/adoption, emergency, domestic-abuse or terminal-illness distributions only. Keep the original gross distribution in Income and select the owner-level IRA basis worksheet. Repayments reduce taxable income under the separate Form 8606 worksheet; they are not regular contributions or ordinary 60-day rollovers.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct IraRepayment {
-    /// Original 2026 retirement Income entry ID
-    /// Must belong to this IRA owner and use one of the four supported exceptions. Use one record for all repayments of this entry. Prior-year distributions and employer-plan, Roth or inherited sources need their separate treatment.
-    #[libertas_number(min = 1)]
-    pub income: i64,
-    /// Actual deposits accepted as repayment
-    /// Include later-year deposits only after they have actually occurred; these may require amending the original return. Never enter planned deposits. Amounts cannot exceed the original qualified gross amount.
-    /// ----
-    /// Deposit to this owner's eligible traditional IRA
-    #[libertas_size(min = 1)]
-    pub payments: Vec<IraRepaymentDeposit>,
-    /// Eligible original distribution and accepted traditional IRA repayments confirmed
-    /// Check the receiving trustee’s repayment acceptance records and original distribution statement.
-    /// The receiving trustee accepted these as repayments of the linked distribution within its three-year period. No refunded or duplicated repayment, regular contribution, Roth conversion, disaster distribution or other repayment treatment. Include 2026 deposits in the actual December 31 value; do not adjust that value yourself. No credits none of these deposits as repayments, so the original distribution stays taxable.
-    pub confirmed: bool,
-}
-
-/// Special IRA repayment deposit
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct IraRepaymentDeposit {
-    /// Actual date deposited
-    #[libertas_date_only]
-    pub date: u32,
-    /// Amount deposited
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub amount: i64,
-}
-impl IraRepayment {
-    pub(crate) fn valid(&self) -> bool {
-        self.income > 0
-            && !self.payments.is_empty()
-            && self.payments.iter().all(|p| {
-                valid_date(p.date) && (2026..=2029).contains(&(p.date / 10000)) && p.amount >= 0
-            })
-    }
-    fn amount_exact(&self) -> Exact {
-        deposit_amount(&self.payments)
-    }
-}
-pub(crate) fn deposit_amount(payments: &[IraRepaymentDeposit]) -> Exact {
-    payments.iter().map(|p| exact::whole(p.amount)).sum()
-}
-pub(crate) fn special(facts: &RetirementException) -> bool {
-    matches!(
-        facts,
-        RetirementException::BirthAdoption { .. }
-            | RetirementException::Emergency { .. }
-            | RetirementException::DomesticAbuse { .. }
-            | RetirementException::TerminalIllness { .. }
-    )
-}
 impl IraBasis {
-    // Only confirmed repayments; an unconfirmed deposit stays in the
-    // year-end value like any other.
-    pub(crate) fn repaid_in_year_exact(&self) -> Exact {
-        self.special_repayments
-            .iter()
-            .filter(|p| p.confirmed)
-            .flat_map(|p| &p.payments)
-            .filter(|p| p.date / 10000 == 2026)
-            .map(|p| exact::whole(p.amount))
-            .sum()
-    }
     // Form 8606 line 6: the December 31 value less 2026 repayments of 2026 special
     // distributions and of 2026 qualified disaster distributions.
     pub(crate) fn adjusted_year_end_exact(&self, d: &FederalDraft) -> Exact {
@@ -99,7 +32,7 @@ impl IraBasis {
 pub(crate) fn calculate(
     d: &FederalDraft,
     r: &mut FederalResult,
-    basis: &crate::retirement::BasisResult,
+    basis: &crate::retirement_return::BasisResult,
 ) -> Result<[i64; 2], IraAmountIssue> {
     let mut excluded = [0, 0];
     let Some(a) = &d.adjustments else {
@@ -117,7 +50,7 @@ pub(crate) fn calculate(
             crate::require_localized!(
                 r,
                 unique,
-                &crate::IssueContext::Review,
+                &crate::IssueContext::owner(crate::TaxSection::Retirement, b.owner),
                 "Special IRA repayment",
                 "ISSUE_CONFIRM_ACTUAL_ACCEPTED_REPAYMENTS_AND_USE_ONE_RECORD_PER_ORIGINAL_6D4178D6",
                 "Use one repayment record per original Income entry.",
@@ -126,14 +59,20 @@ pub(crate) fn calculate(
             if !repayment.confirmed {
                 continue;
             }
-            let source = d.income.iter().find(|e| e.id == repayment.income && e.owner == b.owner);
+            let source = d.income.iter().find(|e| {
+                e.id == repayment.income && e.owner == crate::DocumentOwner::from(b.owner)
+            });
             let distribution = source.and_then(|e| match &e.income {
-                FederalIncome::Retirement { data }
-                    if data.kind == RetirementKind::Ira
-                        && data.taxable == RetirementTaxable::IraBasis =>
+                FederalIncome::Retirement { data: source }
+                    if {
+                        let data = &crate::FederalRetirement::from(source);
+                        data.kind == RetirementKind::Ira
+                            && data.taxable == Some(RetirementTaxable::IraBasis)
+                    } =>
                 {
+                    let data = &crate::FederalRetirement::from(source);
                     match &data.ordinary_distribution {
-                        RetirementTreatment::Exception { distributed, facts, .. }
+                        Some(RetirementTreatment::Exception { distributed, facts, .. })
                             if special(facts) =>
                         {
                             Some(*distributed)
@@ -151,7 +90,7 @@ pub(crate) fn calculate(
             crate::require_localized!(
                 r,
                 valid,
-                &crate::IssueContext::Review,
+                &crate::IssueContext::owner(crate::TaxSection::Retirement, b.owner),
                 "Special IRA repayment",
                 "ISSUE_LINK_A_SAME_OWNER_2026_TRADITIONAL_IRA_BIRTH_ADOPTION_EMERGENCY_DOM_D69B7407",
                 "Link a same-owner 2026 traditional IRA birth/adoption, emergency, domestic-abuse or terminal-illness distribution. Repay after distribution and within three years, no more than its qualified gross amount.",
@@ -168,13 +107,21 @@ pub(crate) fn calculate(
             .income
             .iter()
             .filter_map(|e| {
-                if e.owner != b.owner {
+                if e.owner != crate::DocumentOwner::from(b.owner) {
                     return None;
                 }
                 match &e.income {
-                    FederalIncome::Retirement { data } if data.kind == RetirementKind::Ira => {
+                    FederalIncome::Retirement { data: source }
+                        if {
+                            let data = &crate::FederalRetirement::from(source);
+                            data.kind == RetirementKind::Ira
+                        } =>
+                    {
+                        let data = &crate::FederalRetirement::from(source);
                         match &data.ordinary_distribution {
-                            RetirementTreatment::Exception { facts, .. } if special(facts) => {
+                            Some(RetirementTreatment::Exception { facts, .. })
+                                if special(facts) =>
+                            {
                                 basis.gross.amounts.get(&e.id).map(|v| exact::whole(v.0))
                             }
                             _ => None,

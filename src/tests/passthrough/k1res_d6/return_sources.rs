@@ -4,17 +4,14 @@ use super::*;
 fn k1res_d6_actual_selected_allowance_forwards_to_rental_sources_without_amt_fallback() {
     let mut session = d6_ptp_source_session(k1_1065_continuing(
         10_000_000,
-        ScorpRiskStart::Detailed {
-            capacity: 10_000_000,
-            profit: 0,
-            loss: 0,
-        },
+        ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
     ));
     let original = session.draft.clone();
     let dirty = session.dirty;
-    let calculation =
-        estimate_documents_from_save(&open_topic(&mut session, TaxSection::PassThrough));
-    accepted(&send(&mut session, calculation));
+    let calculation = estimate_documents_from_save(
+        &crate::tests::support::client::income_pages::open_document_center(&mut session),
+    );
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(&mut session, calculation));
     assert_eq!(session.draft, original);
     assert_eq!(session.dirty, dirty);
     // 2026-10-15: regular carry uses main's gross-only source; no original-year
@@ -35,10 +32,7 @@ fn k1res_d6_actual_selected_allowance_forwards_to_rental_sources_without_amt_fal
             [100_000; 2],
             (&crate::care::CareDeductions::default(), Some(&prepared)),
         );
-        assert_eq!(
-            result.section179_allowed_cents(&session.draft, 2),
-            expected_a
-        );
+        assert_eq!(result.section179_allowed_cents(&session.draft, 2), expected_a);
         assert_eq!(result.section179_allowed_cents(&session.draft, 3), 300_000);
         assert_eq!(result.income, expected_net);
         assert_eq!(result.income_by_id[&2], 20_000 - expected_a / 100);
@@ -47,11 +41,11 @@ fn k1res_d6_actual_selected_allowance_forwards_to_rental_sources_without_amt_fal
         assert_eq!(session.draft, original);
         assert_eq!(session.dirty, dirty);
     }
-    let reopened = open_topic(&mut session, TaxSection::PassThrough);
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut session);
     accepted(&send(&mut session, reopened));
     assert_eq!(session.draft, original);
     let mut cold = restart(original.clone());
-    let reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     accepted(&send(&mut cold, reopened));
     assert_eq!(cold.draft, original);
     // 2026-10-16: the production coordinator now supplies this invocation's
@@ -60,20 +54,8 @@ fn k1res_d6_actual_selected_allowance_forwards_to_rental_sources_without_amt_fal
     let result = supported(&cold.draft);
     assert_eq!(value(&result, "section179_deduction"), 10_000);
     for (prefix, first) in [("", 13_000), ("amt_", 14_000)] {
-        assert_eq!(
-            value(
-                &result,
-                &alloc::format!("{prefix}partnership_2_activity_net")
-            ),
-            first
-        );
-        assert_eq!(
-            value(
-                &result,
-                &alloc::format!("{prefix}partnership_3_activity_net")
-            ),
-            7_000
-        );
+        assert_eq!(value(&result, &alloc::format!("{prefix}partnership_2_activity_net")), first);
+        assert_eq!(value(&result, &alloc::format!("{prefix}partnership_3_activity_net")), 7_000);
     }
     assert!(result.issues.iter().all(|issue| !matches!(
         issue.display.key.as_str(),
@@ -88,21 +70,17 @@ fn k1res_d6_actual_selected_allowance_forwards_to_rental_sources_without_amt_fal
 fn k1res_d6_missing_amt_income_carry_remains_unavailable_after_normal_save() {
     let mut session = d6_ptp_source_session(k1_1065_continuing(
         10_000_000,
-        ScorpRiskStart::Detailed {
-            capacity: 10_000_000,
-            profit: 0,
-            loss: 0,
-        },
+        ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
     ));
-    let mut correction = open_topic(&mut session, TaxSection::PassThrough);
-    let P::SaveIncomes { documents, .. } = &mut correction else {
+    let mut correction =
+        crate::tests::support::client::income_pages::open_document_center(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut correction else { unreachable!() };
+    let crate::K1Document::K1Partnership(page) = &mut documents.common.k1.documents[0].document
+    else {
         unreachable!()
     };
-    let IncomeDocument::K1Partnership(page) = &mut documents.documents[0].document else {
-        unreachable!()
-    };
-    page.more.amt_section179_income_carry = None;
-    accepted(&send(&mut session, correction));
+    page.personal.as_mut().unwrap().amt_section179_income_carry = None;
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(&mut session, correction));
     let accepted_draft = session.draft.clone();
     assert!(d6_selected_source(&accepted_draft, crate::Section179IncomeSystem::Regular).is_ok());
     assert_eq!(
@@ -124,13 +102,14 @@ fn k1res_d6_missing_amt_income_carry_remains_unavailable_after_normal_save() {
     }));
     assert!(result.tax.is_none() && result.refund.is_none() && result.return_lines.is_empty());
     let dirty = session.dirty;
-    let calculation =
-        estimate_documents_from_save(&open_topic(&mut session, TaxSection::PassThrough));
-    accepted(&send(&mut session, calculation));
+    let calculation = estimate_documents_from_save(
+        &crate::tests::support::client::income_pages::open_document_center(&mut session),
+    );
+    accepted(&crate::tests::support::client::income_pages::candidate_save_review(&mut session, calculation));
     assert_eq!(session.draft, accepted_draft);
     assert_eq!(session.dirty, dirty);
     let mut cold = restart(accepted_draft.clone());
-    let reopened = open_topic(&mut cold, TaxSection::PassThrough);
+    let reopened = crate::tests::support::client::income_pages::open_document_center(&mut cold);
     accepted(&send(&mut cold, reopened));
     assert_eq!(cold.draft, accepted_draft);
     assert_eq!(estimate(&cold.draft), result);
@@ -140,11 +119,7 @@ fn k1res_d6_missing_amt_income_carry_remains_unavailable_after_normal_save() {
 fn k1res_d6_mixed_direct_sources_keep_native_routing_property_and_amt_stages() {
     let session = d6_ptp_source_session(k1_1065_continuing(
         10_000_000,
-        ScorpRiskStart::Detailed {
-            capacity: 10_000_000,
-            profit: 0,
-            loss: 0,
-        },
+        ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
     ));
     let (session, business, farm) = crate::tests::support::client::d6_mixed_direct_sources(session);
     let original = session.draft.clone();
@@ -155,46 +130,15 @@ fn k1res_d6_mixed_direct_sources_keep_native_routing_property_and_amt_stages() {
     // section1231); it is a property source, never another farm receipt.
     let result = supported(&original);
     assert_eq!(value(&result, "section179_deduction"), 13_000);
-    assert_eq!(
-        value(
-            &result,
-            &alloc::format!("business_{business}_section179_deduction")
-        ),
-        3_000
-    );
-    assert_eq!(
-        value(&result, &alloc::format!("business_{business}_net_profit")),
-        38_100
-    );
-    for (suffix, expected) in [
-        ("gain", 20_000),
-        ("ordinary", 16_000),
-        ("section1231", 4_000),
-    ] {
-        assert_eq!(
-            value(&result, &alloc::format!("farm_{farm}_land_0_{suffix}")),
-            expected
-        );
+    assert_eq!(value(&result, &alloc::format!("business_{business}_section179_deduction")), 3_000);
+    assert_eq!(value(&result, &alloc::format!("business_{business}_net_profit")), 38_100);
+    for (suffix, expected) in [("gain", 20_000), ("ordinary", 16_000), ("section1231", 4_000)] {
+        assert_eq!(value(&result, &alloc::format!("farm_{farm}_land_0_{suffix}")), expected);
     }
-    assert_eq!(
-        value(&result, &alloc::format!("business_{business}_depreciation")),
-        4_400
-    );
-    assert_eq!(
-        value(&result, &alloc::format!("business_{business}_home_office")),
-        1_500
-    );
-    assert_eq!(
-        value(
-            &result,
-            &alloc::format!("business_{business}_tentative_profit")
-        ),
-        39_600
-    );
-    assert_eq!(
-        value(&result, &alloc::format!("farm_{farm}_net_profit")),
-        12_500
-    );
+    assert_eq!(value(&result, &alloc::format!("business_{business}_depreciation")), 4_400);
+    assert_eq!(value(&result, &alloc::format!("business_{business}_home_office")), 1_500);
+    assert_eq!(value(&result, &alloc::format!("business_{business}_tentative_profit")), 39_600);
+    assert_eq!(value(&result, &alloc::format!("farm_{farm}_net_profit")), 12_500);
     // AMT changes the same7000 MACRS basis from1400 to1050. Neither the
     // fully allowed3000 election nor the1500 office changes: add350 once.
     assert_eq!(value(&result, "amt_business_depreciation_adjustment"), 350);
@@ -217,20 +161,13 @@ fn k1res_d6_mixed_direct_sources_keep_native_routing_property_and_amt_stages() {
 #[test]
 fn k1res_d6_percentage_depletion_boundary_keeps_cost_and_unselected_support() {
     use crate::tests::support::client::d6_business_boundary_source;
-    for (selected, percentage, repayment) in [
-        (true, true, false),
-        (true, true, true),
-        (true, false, false),
-        (false, true, false),
-    ] {
+    for (selected, percentage, repayment) in
+        [(true, true, false), (true, true, true), (true, false, false), (false, true, false)]
+    {
         let session = if selected {
             d6_ptp_source_session(k1_1065_continuing(
                 10_000_000,
-                ScorpRiskStart::Detailed {
-                    capacity: 10_000_000,
-                    profit: 0,
-                    loss: 0,
-                },
+                ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
             ))
         } else {
             Interview::new(TEST_USER, complete(FederalStatus::Single))
@@ -244,20 +181,13 @@ fn k1res_d6_percentage_depletion_boundary_keeps_cost_and_unselected_support() {
                 amt_carryover: 0,
             }
         } else {
-            RoyaltyDepletion::Cost {
-                adjusted_basis: 200_000,
-                recoverable_units: 10,
-                units_sold: 1,
-            }
+            RoyaltyDepletion::Cost { adjusted_basis: 200_000, recoverable_units: 10, units_sold: 1 }
         };
         let (mut session, id) = d6_business_boundary_source(
             session,
             10_000,
             true,
-            Some(BusinessDepletion {
-                kind: RoyaltyKind::OilGas,
-                depletion,
-            }),
+            Some(BusinessDepletion { kind: RoyaltyKind::OilGas, depletion }),
         );
         if repayment {
             // Complete existing historical source records cause the ordinary
@@ -267,7 +197,7 @@ fn k1res_d6_percentage_depletion_boundary_keeps_cost_and_unselected_support() {
         let before = session.draft.clone();
         let dirty = session.dirty;
         let request = open_topic(&mut session, TaxSection::SelfEmployment);
-        accepted(&send(&mut session, estimate_documents_from_save(&request)));
+        accepted(&crate::tests::support::client::income_pages::candidate_save_review(&mut session, estimate_documents_from_save(&request)));
         assert_eq!(session.draft, before);
         assert_eq!(session.dirty, dirty);
         let result = estimate(&before);
@@ -276,14 +206,7 @@ fn k1res_d6_percentage_depletion_boundary_keeps_cost_and_unselected_support() {
                 &result,
                 "NOTE_CURRENT_CARRYOVER_INPUTS_REUSE_COMPLETE_ORIGINAL_2025_REPAYMENT_2F25B188"
             ));
-            assert!(
-                before
-                    .screening
-                    .as_ref()
-                    .unwrap()
-                    .capital_history
-                    .is_empty()
-            );
+            assert!(before.screening.as_ref().unwrap().capital_history.is_empty());
         }
         if selected && percentage {
             // Dispatcher 2026-10-16: this original owner ordering is parked
@@ -315,23 +238,17 @@ fn k1res_d6_direct_at_risk_boundary_preserves_native_omission_and_known_controls
     for (fully_at_risk, profit) in [(false, -1_000), (true, -1_000), (false, 1_000)] {
         let session = d6_ptp_source_session(k1_1065_continuing(
             10_000_000,
-            ScorpRiskStart::Detailed {
-                capacity: 10_000_000,
-                profit: 0,
-                loss: 0,
-            },
+            ScorpRiskStart::Detailed { capacity: 10_000_000, profit: 0, loss: 0 },
         ));
         let (session, id) = d6_business_boundary_source(session, profit, fully_at_risk, None);
         let before = session.draft.clone();
         assert!(before.valid_stored());
-        assert!(crate::section179_return::needed(&before).unwrap());
+        assert!(crate::section179_return::needed(crate::related_forms::RelatedFormContext::original(&before, &crate::related_forms::effective_claimants(&before))).unwrap());
         let prepared =
             crate::section179_return::prepare(&before, crate::Section179IncomeSystem::Regular);
         if !fully_at_risk && profit < 0 {
-            assert!(
-                matches!(prepared, Err(crate::section179_return::Issue::Activity(actual,
-                "ISSUE_SECTION179_DIRECT_AT_RISK", _)) if actual == id)
-            );
+            assert!(matches!(prepared, Err(crate::section179_return::Issue::Activity(actual,
+                "ISSUE_SECTION179_DIRECT_AT_RISK", _)) if actual == id));
             // The existing public omission runs before selection on this
             // ordinary loss. Exercise the bound admission directly above;
             // never fabricate a retained loss to bypass the original owner.
@@ -351,10 +268,7 @@ fn k1res_d6_direct_at_risk_boundary_preserves_native_omission_and_known_controls
         } else {
             assert!(prepared.is_ok());
             let result = supported(&before);
-            assert_eq!(
-                value(&result, &alloc::format!("business_{id}_net_profit")),
-                profit
-            );
+            assert_eq!(value(&result, &alloc::format!("business_{id}_net_profit")), profit);
         }
         assert_eq!(session.draft, before);
         assert_eq!(restart(before.clone()).draft, before);

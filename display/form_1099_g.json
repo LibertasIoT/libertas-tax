@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 45000, "rule": {"select": "^<Form1099GPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["unemployment_compensation", "state_or_local_income_tax_refunds", "box_2_tax_year", "federal_income_tax_withheld", "rtaa_payments", "taxable_grants", "agriculture_payments", "trade_or_business_income", "market_gain", "family_leave_benefits", "state_details"]}]}},
+    {"order": 46000, "rule": {"select": "^<Form1099GPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "payer", "payer_telephone", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["unemployment_compensation", "state_or_local_income_tax_refunds", "box_2_tax_year", "federal_income_tax_withheld", "rtaa_payments", "taxable_grants", "agriculture_payments", "trade_or_business_income", "market_gain", "family_leave_benefits", "state_details"]}]}},
+    {"order": 280000, "rule": {"select": "^<FederalUnemployment>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["amount", "withholding", "ordinary"]}, {"ratio": 1, "fields": ["rtaa", "taxable_grants", "grant_use", "agriculture_payment", "market_gain"]}, {"ratio": 1, "fields": ["family_leave", "family_leave_includes_medical", "repayments"]}]}},
+    {"order": 481000, "rule": {"select": "^<libertas-tax::Form1099GPaper>", "flatten": true}},
+    {"order": 497000, "rule": {"select": "^<RefundDeduction>", "flatten": true}}
+  ]
+}

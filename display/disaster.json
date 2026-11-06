@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 239000, "rule": {"select": "^<FederalCasualtyLivingInsurance>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_LIVING_EVENT", "fields": ["event_reference", "loss_of_use", "lost_use_on", "regained_use_on"]}, {"title": "DISPLAY_LIVING_PAYMENTS", "fields": ["payments", "actual_living_expenses", "normal_living_expenses"]}, {"title": "DISPLAY_LIVING_TAX", "fields": ["prior_taxable_reported", "federal_disaster_area", "federal_declaration_reference", "confirmed"]}]}},
+    {"order": 240000, "rule": {"select": "^<FederalCasualtyLivingInsurance>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_LIVING_EVENT", "fields": ["event_reference", "loss_of_use", "lost_use_on", "regained_use_on"]}, {"title": "DISPLAY_LIVING_PAYMENTS", "fields": ["payments", "actual_living_expenses", "normal_living_expenses"]}, {"title": "DISPLAY_LIVING_TAX", "fields": ["prior_taxable_reported", "federal_disaster_area", "federal_declaration_reference", "confirmed"]}]}},
+    {"order": 998000, "rule": {"select": "^<FederalWildfireRelief>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["source_issuer", "source_recipient"]}, {"fields": ["paid", "declared", "reference"]}, {"title": "DISPLAY_SALE_AMOUNTS", "fields": ["amount", "withholding", "qualified"]}]}},
+    {"order": 999000, "rule": {"select": "^<FederalDisasterRelief>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["source_issuer", "source_recipient"]}, {"fields": ["received", "qualification", "purpose"]}, {"title": "DISPLAY_SALE_AMOUNTS", "fields": ["amount", "withholding", "qualified"]}]}}
+  ]
+}

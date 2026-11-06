@@ -32,8 +32,8 @@ fn unit16_clergy_native_housing_source_reaches_both_injured_owner_views() {
     let mut d = crate::tests::credits::form_3800::changed_filer_profile("clergy-source");
     d.credits.as_mut().unwrap().business_credits = None;
     for entry in &mut d.income {
-        if let FederalIncome::Wage { data } = &mut entry.income {
-            data.withholding = 1_000_000;
+        if let FederalIncome::Wage { data: crate::WageSource::W2(data) } = &mut entry.income {
+            data.form.withholding = Some(1_000_000);
         }
     }
     let joint = supported(&d);
@@ -41,7 +41,7 @@ fn unit16_clergy_native_housing_source_reaches_both_injured_owner_views() {
         let mut claim = allocation();
         claim.injured = owner;
         d.injured_spouse = Some(claim);
-        d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+        d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
         let r = supported(&d);
         let first = usize::from(owner == Owner::Spouse);
         assert_eq!(column(&r, "13a", "b"), [59500, 20000][first]);
@@ -102,6 +102,7 @@ fn unit16_clergy_wages_actual_client_save_reopen_restart() {
     extern crate std;
     use crate::tests::cross::interview::{accepted, document, open_topic};
     let mut d = crate::tests::credits::form_3800::changed_filer_profile("clergy-source");
+    name_accepted_income_documents(&mut d);
     let claim = d.screening.as_mut().unwrap().clergy.pop().unwrap();
     let mut session = Interview::new(TEST_USER, d);
     let seed = open_topic(&mut session, TaxSection::Wages);
@@ -111,10 +112,19 @@ fn unit16_clergy_wages_actual_client_save_reopen_restart() {
     }
     native.write_file("DIR", "seed.avro", &seed);
     let mut answers = seed;
-    let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-    let mut source = document(0, IncomeDocument::Clergy(ClergyRecord { role: claim.role.clone() }));
-    source.owner = claim.owner;
-    documents.documents.push(source);
+    let P::SaveWagesAnswers { records, .. } = &mut answers else { panic!() };
+    let mut source = document(
+        0,
+        IncomeSource::Record {
+            value: crate::IncomeRecord::Clergy(ClergyRecord { role: claim.role.clone() }),
+        },
+    );
+    source.owner = crate::DocumentOwner::from(claim.owner);
+    records.documents.push(
+        crate::IncomeRecordItem::from_income(source)
+            .and_then(crate::WagesRecordItem::from_income)
+            .expect("clergy record"),
+    );
     native.write_file("DIR", "answers.avro", &answers);
     if std::env::var("TAX_UNIT16_CLERGY_SEED_ONLY").as_deref() == Ok("1") {
         return;

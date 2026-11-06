@@ -40,7 +40,7 @@ fn unit13_personal_rental_suspended_expense_stays_with_its_actual_source() {
     let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     add(&mut d, income(personal_rent(1000, 21_000)));
     let mut profit = income(personal_rent(10_000, 0));
-    profit.owner = Owner::Spouse;
+    profit.owner = crate::DocumentOwner::Spouses;
     add(&mut d, profit);
     let r = supported(&d);
     // Passive profit10,000 admits10,000 of the first20,000 loss;
@@ -52,7 +52,7 @@ fn unit13_personal_rental_suspended_expense_stays_with_its_actual_source() {
     assert_eq!([column(&r, "14", "b"), column(&r, "14", "c")], [11_000, 0]);
     assert_nonallocation_ordinary_unchanged(&d, &r);
     let mut interest = income(savings_income(5000, 0));
-    interest.owner = Owner::Spouse;
+    interest.owner = crate::DocumentOwner::Spouses;
     add(&mut d, interest);
     let signed = supported(&d);
     assert_eq!(value(&signed, "form_8960_net_investment_income"), 5000);
@@ -73,7 +73,7 @@ fn unit13_personal_rental_cents_round_gross_and_allowed_expenses_in_native_categ
     let mut d = injured_return((200_000, 100_000), (50_000, 0), 0, allocation());
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut e = income(personal_rent(1000, 100));
-        e.owner = owner;
+        e.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::NonbusinessProperty { receipts, expenses, .. } = &mut e.income else {
             panic!()
         };
@@ -106,7 +106,7 @@ fn unit13_personal_rental_paired_halfcent_native_rounding_witness() {
         let mut d = complete(FederalStatus::Joint);
         for owner in [Owner::Taxpayer, Owner::Spouse] {
             let mut e = income(personal_rent(0, 0));
-            e.owner = owner;
+            e.owner = crate::DocumentOwner::from(owner);
             let FederalIncome::NonbusinessProperty { expenses, .. } = &mut e.income else {
                 panic!()
             };
@@ -124,19 +124,22 @@ fn unit13_personal_rental_paired_halfcent_native_rounding_witness() {
     let documents = [Owner::Taxpayer, Owner::Spouse].map(|owner| {
         let mut row = document(
             0,
-            IncomeDocument::EquipmentRental(EquipmentRent {
-                receipts: 0,
-                expenses: 50,
-                basis: 1_000_000,
-                depreciable_basis: 1_000_000,
-                assets: vec![],
-                history: PersonalRentalHistory::NONE,
-            }),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::EquipmentRental(EquipmentRent {
+                    related: crate::RelatedForms::default(),
+                    receipts: 0,
+                    expenses: 50,
+                    basis: 1_000_000,
+                    depreciable_basis: 1_000_000,
+                    assets: vec![],
+                    history: PersonalRentalHistory::NONE,
+                }),
+            },
         );
-        row.owner = owner;
+        row.owner = crate::DocumentOwner::from(owner);
         row
     });
-    let request = save_topic(&session.draft, TaxSection::OtherIncome, documents.to_vec());
+    let request = save_topic(&mut session, TaxSection::OtherIncome, documents.to_vec());
     accepted(&send(&mut session, request));
     let saved = supported(&session.draft);
     std::println!(
@@ -163,7 +166,7 @@ fn unit13_personal_rental_released_fractional_prior_rounds_combined_allowed_cost
     let mut d = complete(FederalStatus::Joint);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(personal_rent(1000, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::NonbusinessProperty { kind, .. } = &mut entry.income else { panic!() };
         let NonbusinessPropertyKind::PersonalRental { history, .. } = kind;
         history.regular = 49;
@@ -196,7 +199,7 @@ fn unit13_personal_rental_final_cost_uses_actual_amt_depreciation_and_history() 
     history.amt = 249;
     add(&mut d, entry);
     let mut profit = income(personal_rent(1000, 0));
-    profit.owner = Owner::Spouse;
+    profit.owner = crate::DocumentOwner::Spouses;
     add(&mut d, profit);
     for alternative in [false, true] {
         let mut output = FederalResult::empty(d.revision);
@@ -230,7 +233,7 @@ fn unit13_personal_rental_recharacterized_profit_keeps_own_prior_and_no_pool_off
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, income(personal_rent_with_history(1000, 100, 200, 400, true)));
     let mut loss = income(personal_rent(0, 500));
-    loss.owner = Owner::Spouse;
+    loss.owner = crate::DocumentOwner::Spouses;
     add(&mut d, loss);
     for alternative in [false, true] {
         let mut output = FederalResult::empty(d.revision);
@@ -254,7 +257,7 @@ fn unit13_personal_rental_consumes_same_mixed_real_estate_pool_and_allowance() {
         add(&mut d, income(personal_rent(0, 100)));
         let mut real_estate =
             income(FederalIncome::Rental { data: rental(if profit { 10_001 } else { 9900 }, 0) });
-        real_estate.owner = Owner::Spouse;
+        real_estate.owner = crate::DocumentOwner::Spouses;
         add(&mut d, real_estate);
         for alternative in [false, true] {
             let mut output = FederalResult::empty(d.revision);
@@ -279,7 +282,7 @@ fn unit13_personal_rental_display_retains_annual_held_residual_and_raw_costs() {
     let mut d = complete(FederalStatus::Joint);
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(personal_rent(0, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         let FederalIncome::NonbusinessProperty { expenses, .. } = &mut entry.income else {
             panic!()
         };

@@ -37,9 +37,12 @@ fn single_with_wages(wages: i64) -> Interview {
 }
 fn save_losses(s: &mut Interview, topic: TaxSection, value: LossCarryforward) -> Reply {
     let request = save_topic(
-        &s.draft.clone(),
+        s,
         topic,
-        vec![document(0, IncomeDocument::NetOperatingLoss(value))],
+        vec![document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(value) },
+        )],
     );
     send(s, request)
 }
@@ -86,9 +89,12 @@ fn operating_loss_kind_matches_hand_computed_form_172_and_6251() {
             "regular"
         };
         let request = save_topic(
-            &s.draft,
+            &mut s,
             TaxSection::SelfEmployment,
-            vec![document(0, IncomeDocument::NetOperatingLoss(bad))],
+            vec![document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(bad) },
+            )],
         );
         let estimate = super::support::client::estimate_documents_from_save(&request);
         for request in [estimate, request] {
@@ -106,12 +112,18 @@ fn operating_loss_kind_matches_hand_computed_form_172_and_6251() {
         }
     }
     let request = save_topic(
-        &s.draft,
+        &mut s,
         TaxSection::SelfEmployment,
-        vec![document(0, IncomeDocument::NetOperatingLoss(entered.clone()))],
+        vec![document(
+            0,
+            IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(entered.clone()) },
+        )],
     );
     assert!(matches!(
-        send(&mut s, super::support::client::estimate_documents_from_save(&request)),
+        crate::tests::support::client::income_pages::candidate_save_review(
+            &mut s,
+            super::support::client::estimate_documents_from_save(&request)
+        ),
         Reply::Response(P::IncomeRunningEstimate { .. })
     ));
     assert_eq!(s.draft, before);
@@ -139,7 +151,12 @@ fn operating_loss_kind_matches_hand_computed_form_172_and_6251() {
         page_documents(&open_topic(&mut s, TaxSection::SelfEmployment)),
         &[IncomeDocumentItem {
             refund_management_needed: Some(false),
-            ..document(0, IncomeDocument::NetOperatingLoss(entered.clone()))
+            ..document(
+                0,
+                IncomeSource::Record {
+                    value: crate::IncomeRecord::NetOperatingLoss(entered.clone())
+                }
+            )
         }]
     );
     let mut again = restart(s.draft.clone());
@@ -148,7 +165,10 @@ fn operating_loss_kind_matches_hand_computed_form_172_and_6251() {
         page_documents(&open_topic(&mut again, TaxSection::SelfEmployment)),
         &[IncomeDocumentItem {
             refund_management_needed: Some(false),
-            ..document(0, IncomeDocument::NetOperatingLoss(entered))
+            ..document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(entered) }
+            )
         }]
     );
     let saved = again.draft.clone();
@@ -157,8 +177,10 @@ fn operating_loss_kind_matches_hand_computed_form_172_and_6251() {
     assert_eq!(again.draft, saved);
     assert_eq!(supported(&again.draft), r);
     // Leaving it out is no history.
-    let before = s.draft.clone();
-    accepted(&send(&mut s, save_topic(&before, TaxSection::SelfEmployment, vec![])));
+    accepted(&{
+        let request = save_topic(&mut s, TaxSection::SelfEmployment, vec![]);
+        send(&mut s, request)
+    });
     let screening = s.draft.screening.as_ref().unwrap();
     assert_eq!(screening.nol, NolHistory::None);
     assert_eq!(screening.atnol, AtnolHistory::None);
@@ -286,17 +308,24 @@ fn operating_loss_rules_are_checked_on_both_sides() {
         losses(vec![], vec![atnol(2017, 1_000, true)]),
     ));
     // NOL_TWICE: the kind once for the return.
-    let current = s.draft.clone();
     let entered = losses(vec![nol(2021, 1_000)], vec![]);
     rejected_with(
-        send(
-            &mut s,
-            save_topic(
-                &current,
+        {
+            let request = save_topic(
+                &mut s,
                 TaxSection::SelfEmployment,
-                vec![document(0, IncomeDocument::NetOperatingLoss(entered.clone())); 2],
-            ),
-        ),
+                vec![
+                    document(
+                        0,
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::NetOperatingLoss(entered.clone())
+                        }
+                    );
+                    2
+                ],
+            );
+            send(&mut s, request)
+        },
         "NOL_TWICE",
     );
 }
@@ -323,7 +352,10 @@ fn the_farming_topic_shares_the_operating_loss_kind() {
     assert!(page_documents(&open_topic(&mut s, TaxSection::SelfEmployment)).contains(
         &IncomeDocumentItem {
             refund_management_needed: Some(false),
-            ..document(0, IncomeDocument::NetOperatingLoss(entered))
+            ..document(
+                0,
+                IncomeSource::Record { value: crate::IncomeRecord::NetOperatingLoss(entered) }
+            )
         }
     ));
 }
@@ -335,7 +367,7 @@ pub(in crate::tests) fn parent_request(s: &Interview, value: ParentReturn) -> P 
         page: TaxSection::ParentTax as i32,
         previous: TaxSection::OtherTaxes as i32,
         review: true,
-        estimate: vec![],
+        estimate: None,
         warnings: vec![],
         progress: vec![],
         value,
@@ -372,16 +404,14 @@ fn more_than_2700_of_interest_opens_the_parent_page_after_other_taxes() {
     let d = young_with_interest(2_000);
     let mut s = Interview::new(TEST_USER, d);
     assert!(!crate::interview::parent_tax_in_walk(&s.draft));
-    let Reply::Edit(mut request) = from_review(&mut s, TaxSection::InterestDividends) else {
-        panic!("expected the interest page")
-    };
-    let P::SaveIncomes { documents, .. } = &mut request else {
-        panic!("expected the interest page")
-    };
-    let IncomeDocument::Int1099(int) = &mut documents.documents[0].document else {
+    let mut request = crate::tests::support::client::income_pages::open_document_center(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::InterestDividendDocument::Int1099(int) =
+        &mut documents.common.interest_dividends.documents[0].document
+    else {
         panic!("expected a 1099-INT")
     };
-    int.taxable = 1_000_000;
+    int.interest_income = 1_000_000;
     let reply = send(&mut s, request);
     assert!(matches!(&reply, Reply::Edit(P::SaveParentTax { .. })), "{reply:?}");
     assert!(crate::interview::parent_tax_in_walk(&s.draft));
@@ -419,22 +449,8 @@ fn a_brother_on_the_parent_page_shares_the_parent_rate() {
 }
 
 #[test]
-fn unit47_parent_gain_admission_rejects_oversized_source_without_overflow() {
-    let mut source = ordinary_parent();
-    source.gains = Some(ParentGains {
-        qualified: i64::MAX,
-        long_term: 1,
-        combined: 1,
-        collectibles: 0,
-        unrecaptured: 0,
-        investment_election: 0,
-    });
-    assert!(!source.valid());
-}
-
-#[test]
 fn ptp_ebl_nol_native_later_deduction_and_same_source_correction() {
-    // Reg.1.199A-3(b)(1)(iv),(v),(c)(3)(ii): the 2024 EBL retained
+    // Reg.1.199A-3(b)(1)(iv),v,c(3)(ii): the 2024 EBL retained
     // 144000 principal /108000 original qualified after the earlier limits.
     // Entering 2026 it is still tax-suspended, outside the 8995 carry.
     // 130000 wages +20000 REIT −16100 standard =133900; section172
@@ -476,7 +492,7 @@ fn ptp_ebl_nol_native_later_deduction_and_same_source_correction() {
     let mut correction = open_topic(&mut cold, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
     let id = documents.documents[0].id;
-    let IncomeDocument::NetOperatingLoss(page) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::NetOperatingLoss(page) = &mut documents.documents[0].document else {
         unreachable!()
     };
     let PtpEblNol::Reported { qualified, remaining_qualified, .. } = &mut page.regular[0].ptp_ebl
@@ -500,7 +516,7 @@ fn ptp_ebl_nol_native_later_deduction_and_same_source_correction() {
     assert_eq!(cold.draft.income.iter().map(|e| e.id).collect::<Vec<_>>(), accepted_income_ids);
     let mut invalid = open_topic(&mut cold, TaxSection::SelfEmployment);
     let P::SaveIncomes { documents, .. } = &mut invalid else { unreachable!() };
-    let IncomeDocument::NetOperatingLoss(page) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::NetOperatingLoss(page) = &mut documents.documents[0].document else {
         unreachable!()
     };
     let PtpEblNol::Reported { qualified, .. } = &mut page.regular[0].ptp_ebl else {
@@ -697,7 +713,7 @@ fn ptp_ebl_nol_pooled_estate_first_origin_and_qualified_owner_are_independent() 
             })
             .collect(),
     });
-    add(&mut draft, income(FederalIncome::EstateTrustPortfolio { data: estate }));
+    add(&mut draft, income(FederalIncome::EstateTrustPortfolio { data: estate_source(estate) }));
     let mut sources = crate::estate_trust::loss_vintages(&draft, false);
     sources.reverse(); // Pool keeps estate first; that is not personal ownership.
     let projection = crate::estate_trust::pooled_loss_vintages(sources);

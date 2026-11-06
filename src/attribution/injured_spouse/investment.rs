@@ -1,17 +1,18 @@
 // Actual Form4952 collector inputs, separate from the ScheduleD source pool.
 use super::*;
+use crate::kernel::ratio::exact::{self, Exact};
 
 pub(crate) struct InvestmentElectionSources {
     pub elected: [i64; 2], // actual joint capital/qualified election dollars
     pub capital: Option<[[i64; 2]; 2]>, // [first-rounded owner][owner] capacities, dollars; not a partition
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub(crate) struct InvestmentSources {
     // Source cents [first-rounded owner][owner]: short, long, shareholder loan, investment K1 ordinary,
     // and the actual section1244 ordinary loss. These native components
     // round independently in the existing joint calculation.
-    cents: [[[i64; 5]; 2]; 2],
+    cents: [[[Exact; 5]; 2]; 2],
     unavailable: bool,
 }
 
@@ -27,7 +28,27 @@ impl InvestmentSources {
     }
     pub(crate) fn add_for_first(&mut self, first: usize, owner: Owner, amounts: [i64; 5]) {
         for (value, amount) in self.cents[first][owner_index(owner)].iter_mut().zip(amounts) {
-            *value += amount;
+            *value += exact::whole(amount);
+        }
+    }
+
+    pub(crate) fn add_weighted(&mut self, weights: Option<([i64; 2], i64)>, amounts: [i64; 5]) {
+        let Some((weights, denominator)) = weights else {
+            if amounts != [0; 5] {
+                self.unavailable = true;
+            }
+            return;
+        };
+        for (owner, weight) in weights.into_iter().enumerate() {
+            let Some(weight) = exact::ratio(weight, denominator) else {
+                self.unavailable = true;
+                return;
+            };
+            for first in 0..2 {
+                for (value, amount) in self.cents[first][owner].iter_mut().zip(amounts) {
+                    *value += exact::whole(amount) * &weight;
+                }
+            }
         }
     }
 
@@ -57,21 +78,16 @@ impl InvestmentSources {
     ) -> Option<[i64; 2]> {
         use crate::kernel::ratio::project_rounded_pair;
         // Reconcile all five independently rounded native source components.
+        let mut sources = [[0; 2]; 5];
         for (k, amount) in joint.into_iter().enumerate() {
-            project_rounded_pair(
-                amount,
-                [self.cents[first][0][k], self.cents[first][1][k]],
-                first,
-            )?;
+            let cents = [self.cents[first][0][k].clone(), self.cents[first][1][k].clone()];
+            let total = &cents[0] + &cents[1];
+            sources[k] = exact::project_rounded_pair(amount, &total, cents, first)?;
         }
         for (term, amount) in carry.into_iter().enumerate() {
             project_rounded_pair(amount, [prior[0][term], prior[1][term]], first)?;
         }
-        let source = project_rounded_pair(
-            joint[1],
-            [self.cents[first][0][1], self.cents[first][1][1]],
-            first,
-        )?;
+        let source = sources[1];
         let prior = project_rounded_pair(carry[1], [prior[0][1], prior[1][1]], first)?;
         let long: [i64; 2] = core::array::from_fn(|i| source[i] - prior[i]);
         // Capacities may overlap; the native joint pool and E-other..own

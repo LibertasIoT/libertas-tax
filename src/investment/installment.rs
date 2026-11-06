@@ -1,4 +1,4 @@
-// Coverage: Form 6252 — Supported (T3-6252, 2026-09-27; audited Missing 2026-09-24).
+// Coverage: Form 6252 — Supported (2026-09-27; audited Missing 2026-09-24).
 //   Lines: 1-18 and 19-26 for a 2026 installment sale entered on an existing sale fold (a
 //   continuing business asset or actual-expense vehicle held more than one year, a whole rental
 //   property, a farm-land parcel held more than one year): line 5 the fold's sale price, line 6
@@ -34,9 +34,13 @@
 //   1062 election; earlier-year business property held one year or less is not offered; an
 //   earlier-year rental gain on a return with unallowed passive losses (Form 8582); an
 //   earlier-year business gain when the section 1231 lookback recaptures part of this year's
-//   gain (Form 8995 line 1); a 2026 installment sale of investment property keeps
-//   RareSituation::InstallmentSale. Earlier-year business gains do not enter the section 179
-//   business-income limit. STORAGE_FORMAT 71. Tests (hand-computed): src/tests/investment/business.rs
+//   gain (Form 8995 line 1). Current-year investment/personal sales use InvestmentInstallmentSale,
+//   with raw source facts and native identity/owner/community retained in FederalIncomeEntry;
+//   Form 6252 gain joins Schedule D line 4/11, collectible classes and taxable-gain NIIT/investment-only Form4952.
+//   ElectOut or a nonpositive gain forwards the actual sale to Form 8949; personal/related losses
+//   are nondeductible. Related-buyer acceleration and eligible pledges use the shared engine;
+//   Part III income joins the same capital source once. Earlier-year business gains do not enter the section 179
+//   business-income limit. Tests (hand-computed): src/tests/investment/business.rs
 //   form_6252_equipment_installment_taxes_recapture_now_and_gain_by_payments,
 //   form_6252_building_installment_recognizes_unrecaptured_1250_first,
 //   form_6252_loans_above_basis_are_a_payment_in_the_year_of_sale,
@@ -52,57 +56,16 @@
 //   https://www.irs.gov/pub/irs-dft/f6252--dft.pdf (2026 draft form with its instructions)
 //   https://www.irs.gov/publications/p537
 //   https://www.irs.gov/instructions/i1040sd (Unrecaptured Section 1250 Gain Worksheet line 4)
+use crate::Owner;
+pub use crate::installment_payment::{NoteInterest, SalePayment};
 use crate::kernel::installment::{
-    PriorSaleCents, Schedule, YearOfSaleDollars, payment_year, year_of_sale,
+    Acceleration, PriorSaleCents, Schedule, YearOfSaleDollars, payment_year, pledge_payment,
+    related_disposition, year_of_sale,
 };
-use crate::kernel::lines::push_line;
 use crate::kernel::phase;
 use crate::kernel::ratio::dollars;
-use crate::{FederalDraft, FederalResult, FormLine, Owner, TaxForm};
-use alloc::{format, string::String, vec::Vec};
+use alloc::string::String;
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
-
-/// How you were paid
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-#[libertas_inline_choices]
-pub enum SalePayment {
-    /// All in 2026
-    InFull,
-    /// Installment sale: the buyer pays part after 2026
-    /// The gain is taxed as the payments arrive; depreciation recapture is taxed in 2026. Include the buyer's note in the sale price, and report the interest the buyer pays as interest income.
-    Installment {
-        /// Loans the buyer took over
-        /// Mortgages and other debts on the property that the buyer assumed or took the property subject to. Not a new loan the buyer got from a bank or from you.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        assumed_debt: i64,
-        /// Principal received in 2026
-        /// The down payment and the principal of every 2026 payment on the buyer's note, without interest. Include sale money paid at closing to your lender or for your selling costs.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        payments: i64,
-        /// Interest the buyer's note charges
-        interest: NoteInterest,
-        /// Something else applies
-        /// A sale by a dealer of property held for customers; a price that depends on later events; a note you pledged as security for a loan; or a note you sold, canceled or gave away in 2026.
-        #[libertas_default(false)]
-        special: bool,
-    },
-}
-
-/// Interest the buyer's note charges
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-#[libertas_inline_choices]
-pub enum NoteInterest {
-    /// At least the applicable federal rate
-    /// The rate the IRS publishes each month for the note's term, when the sale contract was signed.
-    Adequate,
-    /// A lower rate, or no interest
-    Low,
-}
 
 /// Installment payments from an earlier-year sale
 /// One for each sale before 2026 you report on the installment method. Use the Form 6252 you filed for the year of the sale.
@@ -120,23 +83,27 @@ pub struct InstallmentPayments {
     /// Gross profit
     /// Line 16 of the Form 6252 for the year of the sale.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub gross_profit: i64,
     /// Contract price
     /// Line 18 of the Form 6252 for the year of the sale.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub contract_price: i64,
     /// Payments received before 2026
     /// Lines 22 and 23 of your 2025 Form 6252 added together, without interest.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub earlier_payments: i64,
     /// Principal received in 2026
     /// Without interest; report the interest as interest income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub payments: i64,
     /// What you sold
     pub kind: PropertyCharacter,
@@ -147,6 +114,13 @@ pub struct InstallmentPayments {
     /// Qualified business income of a business sale
     #[libertas_default(NotQualified)]
     pub qbi: InstallmentQbi,
+    /// Original livestock classification
+    /// Use the sale-year property records. Null means those records do not establish the classification.
+    /// [NullText]
+    /// The original livestock classification is unavailable
+    /// [SetText]
+    /// The original property classification is
+    pub livestock: Option<crate::Livestock>,
 }
 
 /// Kind of property
@@ -165,7 +139,8 @@ pub enum PropertyCharacter {
         /// Unrecaptured section 1250 gain not yet reported
         /// For a building or other depreciated real property: the smaller of its depreciation and its gain, less the gain you reported from this sale before 2026. Zero for land or equipment.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         unrecaptured: i64,
     },
@@ -209,23 +184,27 @@ pub struct InstallmentSale {
     /// Gross profit
     /// Line 16 of the Form 6252 for the year of the sale.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub gross_profit: i64,
     /// Contract price
     /// Line 18 of the Form 6252 for the year of the sale.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
     pub contract_price: i64,
     /// Payments received before 2026
     /// Lines 22 and 23 of your 2025 Form 6252 added together, without interest.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub earlier_payments: i64,
     /// Principal received in 2026
     /// Without interest; report the interest as interest income.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub payments: i64,
     /// What you sold
     pub kind: SoldProperty,
@@ -248,10 +227,18 @@ pub enum SoldProperty {
     BusinessProperty {
         /// How you used it
         used: SoldUse,
+        /// Livestock classification from the original sale
+        /// Use the sale-year property records and Form 4797. Draft, breeding, dairy and sporting livestock qualify for the farmer estimated-tax test. This does not change the gain or its tax character.
+        /// [NullText]
+        /// The original livestock classification is unavailable
+        /// [SetText]
+        /// The original property classification is
+        livestock: Option<crate::Livestock>,
         /// Unrecaptured section 1250 gain not yet reported
         /// For a building or other depreciated real property: the smaller of its depreciation and its gain, less the gain you reported from this sale before 2026. Zero for land or equipment.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         unrecaptured: i64,
     },
@@ -298,7 +285,7 @@ impl InstallmentSale {
         let (kind, qbi) = match &self.kind {
             SoldProperty::LongTermCapital => (PropertyCharacter::LongTermCapital, None),
             SoldProperty::ShortTermCapital => (PropertyCharacter::ShortTermCapital, None),
-            SoldProperty::BusinessProperty { used, unrecaptured } => match used {
+            SoldProperty::BusinessProperty { used, unrecaptured, .. } => match used {
                 SoldUse::Business { qbi } => (
                     PropertyCharacter::BusinessProperty {
                         used: PropertyUse::Business,
@@ -330,6 +317,10 @@ impl InstallmentSale {
             kind,
             special: self.special,
             qbi: qbi.unwrap_or(InstallmentQbi::NotQualified),
+            livestock: match self.kind {
+                SoldProperty::BusinessProperty { livestock, .. } => livestock,
+                _ => None,
+            },
         }
     }
 }
@@ -349,6 +340,7 @@ impl InstallmentPayments {
                 PropertyCharacter::ShortTermCapital => SoldProperty::ShortTermCapital,
                 PropertyCharacter::BusinessProperty { used, unrecaptured } => {
                     SoldProperty::BusinessProperty {
+                        livestock: self.livestock,
                         used: match used {
                             PropertyUse::Business => SoldUse::Business {
                                 qbi: match &self.qbi {
@@ -369,6 +361,320 @@ impl InstallmentPayments {
     }
 }
 
+/// Installment sale in 2026
+/// Investment or personal-use property with a payment due after 2026. Enter exchange-traded securities, fully paid sales and losses as 1099-B sales. Enter a business, rental or farm asset's sale on that asset. Report actual interest separately as interest income.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct InvestmentInstallmentSale {
+    /// Property sold
+    #[libertas_size(min = 1)]
+    pub property: String,
+    /// Date acquired
+    #[libertas_date_only]
+    pub acquired: u32,
+    /// Date sold
+    #[libertas_date_only]
+    #[libertas_number(min = 20260101, max = 20261231)]
+    pub sold: u32,
+    /// What it was
+    pub use_kind: InstallmentUse,
+    /// Collectible capital asset
+    /// Investment or personal-use art, antiques, metals, gems, stamps, coins and similar capital assets. Long-term gains have a maximum 28% rate.
+    pub collectible: bool,
+    /// Selling price (Form 6252 line 5)
+    /// Cash, the buyer's note and loans the buyer took over, without interest. For a contingent price with a stated maximum, enter that maximum.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 1, max = 100000000000)]
+    pub price: i64,
+    /// Loans the buyer took over (line 6)
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub assumed_debt: i64,
+    /// Adjusted basis (line 8)
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub basis: i64,
+    /// Selling expenses (line 11)
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub selling_expenses: i64,
+    /// Principal received in 2026 (line 21)
+    /// Without interest. Include the down payment and sale money paid at closing to your lender or for selling costs.
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub payments: i64,
+    /// Interest the buyer's note charges
+    pub interest: NoteInterest,
+    /// Buyer
+    pub buyer: crate::Buyer,
+    /// Did a related buyer resell or give away the property in 2026?
+    pub second_disposition: SecondDisposition,
+    /// Net proceeds of a loan secured by the buyer's note in 2026
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    pub pledged: i64,
+    /// How to report it
+    pub method: InstallmentMethod,
+    /// Something else applies
+    pub other: InstallmentOther,
+}
+
+/// What it was
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[libertas_inline_choices]
+pub enum InstallmentUse {
+    /// Investment property
+    /// Land, a private business interest, a note or other property held for investment.
+    Investment,
+    /// Personal-use property
+    /// A gain is taxable; a personal loss is not deductible.
+    Personal,
+}
+
+/// How to report it
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
+)]
+#[libertas_inline_choices]
+pub enum InstallmentMethod {
+    /// Installment method: tax the gain as payments arrive
+    Installment,
+    /// Elect out: report the whole gain in 2026
+    /// Report the sale this way on a timely filed return, including extensions. Revocation requires IRS consent.
+    ElectOut,
+}
+
+/// Did a related buyer resell or give away the property in 2026?
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[libertas_inline_choices]
+pub enum SecondDisposition {
+    /// No
+    None,
+    /// Yes
+    Resold {
+        /// Date of the buyer's sale or gift
+        #[libertas_date_only]
+        on: u32,
+        /// Amount the buyer realized, or fair market value for a gift
+        #[libertas_money("USD", 2)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
+        amount_realized: i64,
+    },
+    /// Yes, but a Form 6252 line 29 exception applies
+    Excepted {
+        /// Exception
+        condition: ResaleException,
+    },
+}
+
+/// Exception
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
+)]
+pub enum ResaleException {
+    /// The first sale was stock sold to its issuing corporation (29b)
+    IssuingCorporation,
+    /// Involuntary conversion threatened after your sale (29c)
+    InvoluntaryConversion,
+    /// The buyer disposed of it after either party's death (29d)
+    AfterDeath,
+    /// You can establish to the IRS that neither sale principally avoided tax (29e)
+    NoTaxAvoidance,
+}
+
+/// Something else applies
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
+)]
+#[libertas_inline_choices]
+pub enum InstallmentOther {
+    /// None of these
+    NoneOfThese,
+    /// Qualified small business stock (section 1202)
+    QualifiedSmallBusinessStock,
+    /// A contingent price with no stated maximum
+    ContingentPriceNoMaximum,
+    /// A dealer's sale of property held for customers
+    DealerSale,
+}
+
+impl InvestmentInstallmentSale {
+    pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
+        use crate::validation::ValidationIssue as Issue;
+        if self.property.trim().is_empty() {
+            return Some(Issue::new("INSTALLMENT_PROPERTY_REQUIRED").at_field("property"));
+        }
+        if !crate::federal_rules::valid_date(self.acquired) || self.acquired > self.sold {
+            return Some(Issue::new("INSTALLMENT_SOLD_BEFORE_ACQUIRED").at_field("acquired"));
+        }
+        if !crate::federal_rules::valid_date(self.sold)
+            || !(20260101..=20261231).contains(&self.sold)
+        {
+            return Some(Issue::new("INSTALLMENT_SALE_DATE_INVALID").at_field("sold"));
+        }
+        for (field, amount) in [
+            ("assumed_debt", self.assumed_debt),
+            ("basis", self.basis),
+            ("selling_expenses", self.selling_expenses),
+            ("payments", self.payments),
+            ("pledged", self.pledged),
+        ] {
+            if amount < 0 {
+                return Some(Issue::new("INSTALLMENT_AMOUNT_NEGATIVE").at_field(field));
+            }
+        }
+        if self.basis.checked_add(self.selling_expenses).is_none() {
+            return Some(Issue::new("INSTALLMENT_AMOUNT_OVERFLOW").at_field("selling_expenses"));
+        }
+        if self.price <= 0 {
+            return Some(Issue::new("INSTALLMENT_PRICE_REQUIRED").at_field("price"));
+        }
+        if i128::from(self.assumed_debt) + i128::from(self.payments) > i128::from(self.price) {
+            return Some(Issue::new("INSTALLMENT_PAID_ABOVE_PRICE").at_field("payments"));
+        }
+        if let SecondDisposition::Resold { on, amount_realized } = self.second_disposition {
+            if !crate::federal_rules::valid_date(on) || on < self.sold || on > 20261231 {
+                return Some(
+                    Issue::new("INSTALLMENT_RESALE_BEFORE_SALE")
+                        .at_field("on")
+                        .in_field("second_disposition"),
+                );
+            }
+            if amount_realized < 0 {
+                return Some(
+                    Issue::new("INSTALLMENT_AMOUNT_NEGATIVE")
+                        .at_field("amount_realized")
+                        .in_field("second_disposition"),
+                );
+            }
+        }
+        if self.calculation().is_err() {
+            return Some(Issue::new("INSTALLMENT_AMOUNT_OVERFLOW").at_field("price"));
+        }
+        None
+    }
+
+    pub(crate) fn refusal(&self) -> Option<(&'static str, &'static str)> {
+        match self.other {
+            InstallmentOther::QualifiedSmallBusinessStock => {
+                return Some((
+                    "ISSUE_INSTALLMENT_QSBS",
+                    "Installment sales of qualified small business stock require the exclusion history; this sale is not calculated.",
+                ));
+            }
+            InstallmentOther::ContingentPriceNoMaximum => {
+                return Some((
+                    "ISSUE_INSTALLMENT_NO_MAXIMUM_PRICE",
+                    "A contingent installment price without a stated maximum requires a separate basis recovery schedule; this sale is not calculated.",
+                ));
+            }
+            InstallmentOther::DealerSale => {
+                return Some((
+                    "ISSUE_INSTALLMENT_DEALER_SALE",
+                    "Dealer sales of property held for customers cannot use this capital installment-sale worksheet.",
+                ));
+            }
+            InstallmentOther::NoneOfThese => {}
+        }
+        self.interest.refusal(self.price)
+    }
+
+    // Source eligibility stays here; the shared engine owns every payment and gain formula.
+    pub(crate) fn calculation(&self) -> Result<Option<CurrentSchedule>, ()> {
+        if self.method == InstallmentMethod::ElectOut
+            || i128::from(self.assumed_debt) + i128::from(self.payments) == i128::from(self.price)
+        {
+            return Ok(None);
+        }
+        let pledged = if self.price > 15_000_000 && self.use_kind == InstallmentUse::Investment {
+            let unpaid = self
+                .price
+                .checked_sub(self.assumed_debt)
+                .and_then(|value| value.checked_sub(self.payments))
+                .ok_or(())?;
+            pledge_payment(unpaid, self.pledged).ok_or(())?
+        } else {
+            0
+        };
+        let payments = self.payments.checked_add(pledged).ok_or(())?;
+        let Some(form) = year_of_sale(YearOfSaleDollars {
+            price: dollars(self.price),
+            debt: dollars(self.assumed_debt),
+            cost: dollars(self.basis),
+            depreciation: 0,
+            expenses: dollars(self.selling_expenses),
+            recapture: 0,
+            payments: dollars(payments),
+            other_recapture: 0,
+        }) else {
+            return Ok(None);
+        };
+        // Form 6252's year-of-sale amounts have already crossed their dollar boundary.
+        // Project that same line22 once, including excess debt and eligible pledge proceeds.
+        let acceleration = if self.buyer != crate::Buyer::Unrelated
+            && let SecondDisposition::Resold { amount_realized, .. } = self.second_disposition
+        {
+            // Line 32 compares reported lines 30 and 31. Give the engine the
+            // same reported line 30, just as contract and paid principal above.
+            let amount_realized = dollars(amount_realized).checked_mul(100).ok_or(())?;
+            Some(
+                related_disposition(
+                    PriorSaleCents {
+                        gross_profit: form.gross_profit.checked_mul(100).ok_or(())?,
+                        contract_price: form.contract.checked_mul(100).ok_or(())?,
+                        earlier_payments: 0,
+                        payments: form
+                            .excess_debt
+                            .checked_add(form.payments)
+                            .and_then(|value| value.checked_mul(100))
+                            .ok_or(())?,
+                    },
+                    amount_realized,
+                )
+                .ok_or(())?,
+            )
+        } else {
+            None
+        };
+        let current = CurrentSchedule { form, pledged, acceleration };
+        // Every reported dollar amount must remain representable as Money cents.
+        for amount in [
+            form.price,
+            form.debt,
+            form.cost,
+            form.expenses,
+            form.cost + form.expenses,
+            form.gross_profit,
+            form.contract,
+            form.excess_debt + form.payments,
+            current.gain(),
+        ] {
+            amount.checked_mul(100).ok_or(())?;
+        }
+        Ok(Some(current))
+    }
+}
+
+// Transient calculation output; raw answers alone are persisted.
+#[derive(Clone, Copy)]
+pub(crate) struct CurrentSchedule {
+    pub form: Schedule,
+    pub pledged: i64,
+    pub acceleration: Option<Acceleration>,
+}
+
+impl CurrentSchedule {
+    pub(crate) fn gain(self) -> i64 {
+        self.form.gain + self.acceleration.map_or(0, |value| value.income_dollars)
+    }
+}
+
 /// Installment sale from an earlier year
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 pub struct EarlierInstallment {
@@ -379,46 +685,6 @@ pub struct EarlierInstallment {
 }
 
 impl SalePayment {
-    pub(crate) fn installment(&self) -> bool {
-        matches!(self, Self::Installment { .. })
-    }
-    // The payment with the loans the buyer took over and the principal
-    // received scaled (cents) to the part of the sale one Form 6252 reports.
-    pub(crate) fn scaled(&self, part: impl Fn(i64) -> i64) -> Self {
-        match self {
-            Self::InFull => Self::InFull,
-            Self::Installment { assumed_debt, payments, interest, special } => Self::Installment {
-                assumed_debt: part(*assumed_debt),
-                payments: part(*payments),
-                interest: *interest,
-                special: *special,
-            },
-        }
-    }
-    // The server twin of INSTALLMENT_PAID_ABOVE_PRICE.
-    pub(crate) fn issue(&self, price: i64) -> Option<crate::validation::ValidationIssue> {
-        match self {
-            Self::Installment { assumed_debt, payments, .. }
-                if i128::from(*assumed_debt) + i128::from(*payments) > i128::from(price) =>
-            {
-                Some(
-                    crate::validation::ValidationIssue::new("INSTALLMENT_PAID_ABOVE_PRICE")
-                        .at_field("payments"),
-                )
-            }
-            _ => None,
-        }
-    }
-    pub(crate) fn valid(&self, price: i64) -> bool {
-        match self {
-            Self::InFull => true,
-            Self::Installment { assumed_debt, payments, .. } => {
-                (0..=100000000000).contains(assumed_debt)
-                    && (0..=100000000000).contains(payments)
-                    && assumed_debt + payments <= price
-            }
-        }
-    }
     // Lines 5-26 from the fold's whole-dollar amounts; None when paid in
     // full or when the sale has no gain.
     #[allow(clippy::too_many_arguments)]
@@ -445,167 +711,25 @@ impl SalePayment {
             other_recapture,
         })
     }
-    // The refusals every installment fold shares, by the sale price in
-    // cents; None when supported or paid in full.
-    pub(crate) fn refusal(&self, price: i64) -> Option<(&'static str, &'static str)> {
-        let Self::Installment { interest, special, .. } = self else {
-            return None;
-        };
-        if !self.valid(price) {
-            return Some((
-                "ISSUE_INSTALLMENT_PAYMENTS_EXCEED_PRICE",
-                crate::fixture_english!(
-                    "Installment sale: the loans the buyer took over and the principal received in 2026 cannot exceed the sale price (Form 6252 lines 5, 6 and 21)."
-                ),
-            ));
-        }
-        if *special {
-            return Some((
-                "ISSUE_INSTALLMENT_SPECIAL_TRANSACTION",
-                crate::fixture_english!(
-                    "An installment sale by a dealer, with a price that depends on later events, or with a note pledged as security or disposed of in 2026 is not calculated (Form 6252 line 4 and Part III; sections 453(b), 453A(d) and 453B)."
-                ),
-            ));
-        }
-        if *interest == NoteInterest::Low && price > 300_000 {
-            return Some((
-                "ISSUE_INSTALLMENT_UNSTATED_INTEREST",
-                crate::fixture_english!(
-                    "An installment note charging less than the applicable federal rate has unstated interest: part of the sale price is interest income (Form 6252 line 5; sections 483 and 1274, Publication 537), which is not calculated."
-                ),
-            ));
-        }
-        None
-    }
-}
-
-// Section 453A(b)(2): nondealer notes from 2026 sales above $150,000
-// (farm property excepted) outstanding at the end of the year.
-pub(crate) fn section_453a(draft: &FederalDraft) -> i64 {
-    let mut total = 0;
-    let mid_quarter = crate::depreciation::mid_quarter(draft);
-    for entry in &crate::community::property_entries(draft) {
-        match &entry.income {
-            crate::FederalIncome::Business { .. } | crate::FederalIncome::FarmRental { .. } => {
-                let assets = match &entry.income {
-                    crate::FederalIncome::Business { data } => &data.assets,
-                    crate::FederalIncome::FarmRental { data } => &data.assets,
-                    _ => continue,
-                };
-                for asset in assets {
-                    if let Some(v) = asset.sale_for(mid_quarter, false)
-                        && let Some(form) = v.installment
-                        && form.price > 150_000
-                    {
-                        total += form.outstanding();
-                    }
-                }
-            }
-            crate::FederalIncome::Rental { data } => {
-                if let Ok(Some(v)) = crate::asset_sale::rental_sale(data, false)
-                    && let Some(form) = v.installment
-                    && form.price > 150_000
-                {
-                    total += form.outstanding();
-                }
-            }
-            _ => {}
-        }
-    }
-    total
-}
-
-const SOURCE: &str = "https://www.irs.gov/pub/irs-dft/f6252--dft.pdf";
-
-fn row(
-    r: &mut FederalResult,
-    line: &str,
-    id: &str,
-    amount: i64,
-    input: &str,
-    explanation: crate::Message,
-) {
-    push_line(
-        r,
-        Some(FormLine::new(TaxForm::Form6252, line)),
-        id,
-        amount * 100,
-        &[input],
-        SOURCE,
-        explanation,
-    );
-}
-
-// One year-of-sale Form 6252's rows, and line 26's destination.
-pub(crate) fn report_sale(
-    r: &mut FederalResult,
-    prefix: &str,
-    input: &str,
-    form: &Schedule,
-    unrecaptured: i64,
-) {
-    let line13 = form.cost - form.depreciation + form.expenses + form.recapture;
-    for (line, suffix, amount, explanation) in [
-        ("5", "price", form.price, msg!("EXPLAIN_INSTALLMENT_N")),
-        ("6", "assumed_debt", form.debt, msg!("EXPLAIN_INSTALLMENT_N_2")),
-        ("7", "net_price", form.price - form.debt, msg!("EXPLAIN_INSTALLMENT_N_3")),
-        ("8", "cost", form.cost, msg!("EXPLAIN_INSTALLMENT_N_4")),
-        ("9", "depreciation", form.depreciation, msg!("EXPLAIN_INSTALLMENT_N_5")),
-        ("10", "adjusted_basis", form.cost - form.depreciation, msg!("EXPLAIN_INSTALLMENT_N_6")),
-        ("11", "expenses", form.expenses, msg!("EXPLAIN_INSTALLMENT_N_7")),
-        ("12", "recapture", form.recapture, msg!("EXPLAIN_INSTALLMENT_N_8")),
-        ("13", "total", line13, msg!("EXPLAIN_INSTALLMENT_N_9")),
-        ("16", "gross_profit", form.gross_profit, msg!("EXPLAIN_INSTALLMENT_N_10")),
-        ("17", "excess_debt", form.excess_debt, msg!("EXPLAIN_INSTALLMENT_N_11")),
-        ("18", "contract_price", form.contract, msg!("EXPLAIN_INSTALLMENT_N_12")),
-        ("20", "deemed_payment", form.excess_debt, msg!("EXPLAIN_INSTALLMENT_N_13")),
-        ("21", "payments", form.payments, msg!("EXPLAIN_INSTALLMENT_N_14")),
-        (
-            "22",
-            "total_payments",
-            form.excess_debt + form.payments,
-            msg!("EXPLAIN_INSTALLMENT_N_15"),
-        ),
-    ] {
-        row(r, line, &format!("{prefix}_{suffix}"), amount, input, explanation);
-    }
-    report_income(r, prefix, input, form, unrecaptured, true);
-}
-
-fn report_income(
-    r: &mut FederalResult,
-    prefix: &str,
-    input: &str,
-    form: &Schedule,
-    unrecaptured: i64,
-    section1231: bool,
-) {
-    row(r, "24", &format!("{prefix}_income"), form.income, input, msg!("EXPLAIN_N_INCOME"));
-    row(r, "25", &format!("{prefix}_ordinary"), form.ordinary, input, msg!("EXPLAIN_N_ORDINARY"));
-    row(
-        r,
-        "26",
-        &format!("{prefix}_gain"),
-        form.gain,
-        input,
-        if section1231 { msg!("EXPLAIN_N_GAIN") } else { msg!("EXPLAIN_N_GAIN_2") },
-    );
-    if section1231 && unrecaptured > 0 {
-        push_line(
-            r,
-            None,
-            &format!("{prefix}_unrecaptured_1250"),
-            unrecaptured * 100,
-            &[input],
-            "https://www.irs.gov/instructions/i1040sd",
-            msg!("EXPLAIN_N_UNRECAPTURED_N_2"),
-        );
-    }
 }
 
 impl InstallmentPayments {
+    pub(crate) fn livestock_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        let invalid = match self.kind {
+            PropertyCharacter::BusinessProperty { unrecaptured, .. } => {
+                self.livestock.is_some_and(|value| value != crate::Livestock::No)
+                    && unrecaptured != 0
+            }
+            _ => self.livestock.is_some(),
+        };
+        invalid.then(|| {
+            crate::validation::ValidationIssue::new("INSTALLMENT_LIVESTOCK_CHARACTER")
+                .at_field("kind")
+        })
+    }
     pub(crate) fn valid(&self) -> bool {
         !self.property.is_empty()
+            && self.livestock_issue().is_none()
             && (19870101..=20251231).contains(&self.sold)
             && crate::federal_rules::valid_date(self.sold)
             && (1..=100000000000).contains(&self.gross_profit)
@@ -641,307 +765,3 @@ impl InstallmentPayments {
         (form.gain, unrecaptured)
     }
 }
-
-fn earlier(draft: &FederalDraft) -> impl Iterator<Item = (usize, &InstallmentPayments)> {
-    draft
-        .screening
-        .iter()
-        .flat_map(|s| s.installment_payments.iter())
-        .map(|v| &v.sale)
-        .enumerate()
-        .filter(|(_, v)| v.supported())
-}
-
-// Earlier-year sales' Schedule D gains in cents, [short-term, long-term].
-// Same recognized amounts with their retained filer, before aggregation.
-pub(crate) fn earlier_capital_sources(draft: &FederalDraft) -> ([i64; 2], [[i64; 2]; 2]) {
-    let mut total = [0, 0];
-    let mut owners = [[0; 2]; 2];
-    for record in
-        draft.screening.iter().flat_map(|s| &s.installment_payments).filter(|v| v.sale.supported())
-    {
-        let sale = &record.sale;
-        let (gain, _) = sale.recognized();
-        let term = match sale.kind {
-            PropertyCharacter::ShortTermCapital => 0,
-            PropertyCharacter::LongTermCapital => 1,
-            PropertyCharacter::BusinessProperty { .. } => continue,
-        };
-        total[term] += gain * 100;
-        owners[usize::from(record.owner == Owner::Spouse)][term] += gain * 100;
-    }
-    (total, owners)
-}
-
-// The synthetic source id of an earlier-year sale; never an income entry's.
-fn source_id(index: usize) -> i64 {
-    -1 - index as i64
-}
-
-// Resolve the native source identity against its retained seller. This is
-// metadata only: do not run Form6252 again to establish an owner's amount.
-pub(crate) fn earlier_source_owner(draft: &FederalDraft, id: i64) -> Option<Owner> {
-    draft
-        .screening
-        .as_ref()?
-        .installment_payments
-        .iter()
-        .enumerate()
-        .find(|(index, record)| {
-            source_id(*index) == id
-                && record.sale.supported()
-                && matches!(record.sale.kind, PropertyCharacter::BusinessProperty { .. })
-        })
-        .map(|(_, record)| record.owner)
-}
-
-// Earlier-year business and rental property sales as section 1231 sources
-// (Form 4797 line 4), with whether each is a business you materially
-// participated in (not net investment income, not passive).
-pub(crate) fn earlier_sources(
-    draft: &FederalDraft,
-) -> Vec<(i64, crate::farm_land::LandGain, bool)> {
-    earlier(draft)
-        .filter_map(|(index, sale)| {
-            let PropertyCharacter::BusinessProperty { used, .. } = &sale.kind else {
-                return None;
-            };
-            let (gain, unrecaptured) = sale.recognized();
-            Some((
-                source_id(index),
-                crate::farm_land::LandGain {
-                    gain,
-                    percent: 0,
-                    recapture: 0,
-                    ordinary: 0,
-                    section1231: gain,
-                    unrecaptured,
-                },
-                *used == PropertyUse::Business,
-            ))
-        })
-        .collect()
-}
-
-// The part of an earlier-year installment gain a section 1231 lookback makes
-// ordinary (cents-free whole dollars): qualified business income of the
-// business that sold the property.
-fn qbi_part(
-    draft: &FederalDraft,
-    pool: &crate::extended_rules::RentalResult,
-    character: Option<&crate::section1231::Result1231>,
-    index: usize,
-) -> Result<i64, crate::section1231::SourceError> {
-    let Some(character) = character else {
-        return Ok(0);
-    };
-    let Some((_, sale)) = earlier(draft).find(|(i, _)| *i == index) else {
-        return Ok(0);
-    };
-    let form = payment_year(PriorSaleCents {
-        gross_profit: sale.gross_profit,
-        contract_price: sale.contract_price,
-        earlier_payments: sale.earlier_payments,
-        payments: sale.payments,
-    });
-    if form.gain <= 0 || character.net <= 0 || character.ordinary == 0 {
-        return Ok(0);
-    }
-    Ok(
-        match crate::section1231::activity_character(
-            draft,
-            pool,
-            character,
-            source_id(index),
-            false,
-        )? {
-            crate::section1231::PropertyCharacter::Capital => 0,
-            crate::section1231::PropertyCharacter::Ordinary => form.gain,
-            crate::section1231::PropertyCharacter::Recaptured(amount) => amount,
-        },
-    )
-}
-
-// The qualified business income of earlier-year installment sales by the
-// business named for each, in whole dollars: `Some(id)` joins that business,
-// `None` is a business no longer on the return (a stand-alone activity with
-// no W-2 wages and no qualified property).
-pub(crate) type QbiShares = Vec<(Option<i64>, i64, Owner)>;
-pub(crate) fn qbi_shares(
-    draft: &FederalDraft,
-    pool: &crate::extended_rules::RentalResult,
-    character: Option<&crate::section1231::Result1231>,
-) -> Result<QbiShares, crate::section1231::SourceError> {
-    let mut shares = Vec::new();
-    for (index, sale) in earlier(draft) {
-        let (
-            PropertyCharacter::BusinessProperty { used: PropertyUse::Business, .. },
-            InstallmentQbi::Qualified { business },
-        ) = (&sale.kind, &sale.qbi)
-        else {
-            continue;
-        };
-        let part = qbi_part(draft, pool, character, index)?;
-        if part == 0 {
-            continue;
-        }
-        // A business the return no longer holds is the same declared state.
-        let held = business.filter(|id| {
-            draft
-                .income
-                .iter()
-                .any(|e| e.id == *id && matches!(&e.income, crate::FederalIncome::Business { .. }))
-        });
-        shares.push((
-            held,
-            part,
-            draft.screening.as_ref().unwrap().installment_payments[index].owner,
-        ));
-    }
-    Ok(shares)
-}
-
-// The earlier-year sales' rows and refusals, and the return-level section
-// 453A limit on 2026 sales. `pool` is the regular-tax passive pool;
-// `character` the regular section 1231 result.
-pub(crate) fn report(
-    draft: &FederalDraft,
-    pool: &crate::extended_rules::RentalResult,
-    character: Option<&crate::section1231::Result1231>,
-    r: &mut FederalResult,
-) {
-    let outstanding = section_453a(draft);
-    if outstanding > 5_000_000 {
-        crate::issue_localized!(
-            r,
-            &crate::IssueContext::Review,
-            "Installment sales",
-            "ISSUE_INSTALLMENT_NOTES_FROM_RETURN_YEAR_SALES_ABOVE_150_000_TOTAL_MORE_THAN_5_0_5149A91B",
-            "Installment notes from 2026 sales above $150,000 total more than $5,000,000 at the end of 2026, so interest is owed on the deferred tax (section 453A, Form 6252 and Publication 537), which is not calculated.",
-        );
-    }
-    let Some(screening) = draft.screening.as_ref() else {
-        return;
-    };
-    for (index, value) in screening.installment_payments.iter().enumerate() {
-        let sale = &value.sale;
-        #[cfg(test)]
-        let section = format!("Installment payments: {}", sale.property);
-        if !sale.valid() {
-            crate::issue_localized!(
-                r,
-                &crate::IssueContext::Section(crate::TaxSection::InvestmentSales),
-                &section,
-                "ISSUE_ENTER_A_SALE_DATE_BEFORE_RETURN_YEAR_A_GROSS_PROFIT_NO_LARGER_THAN_THE_CON_7BB8E34C",
-                "Enter a sale date before 2026, a gross profit no larger than the contract price, and payments that do not exceed the contract price (Form 6252 lines 16, 18, 21 and 23).",
-            );
-            continue;
-        }
-        if sale.special {
-            crate::issue_localized!(
-                r,
-                &crate::IssueContext::Section(crate::TaxSection::InvestmentSales),
-                &section,
-                "ISSUE_THIS_EARLIER_YEAR_INSTALLMENT_SALE_IS_NOT_CALCULATED_A_RELATED_PART_7D8BAB22",
-                "This earlier-year installment sale is not calculated: a related-party sale, a dealer sale, a contingent price, a pledged or disposed note, remaining recapture, collectibles, small business stock, unstated interest, a different AMT gain or suspended passive losses need their own worksheets (Form 6252 lines 3, 4, 25 and Part III; Publication 537).",
-            );
-            continue;
-        }
-        let form = payment_year(PriorSaleCents {
-            gross_profit: sale.gross_profit,
-            contract_price: sale.contract_price,
-            earlier_payments: sale.earlier_payments,
-            payments: sale.payments,
-        });
-        let (_, unrecaptured) = sale.recognized();
-        let prefix = format!("installment_{}", index + 1);
-        let input = "screening.installment_payments";
-        row(
-            r,
-            "21",
-            &format!("{prefix}_payments"),
-            form.payments,
-            input,
-            msg!("EXPLAIN_N_PAYMENTS"),
-        );
-        row(
-            r,
-            "22",
-            &format!("{prefix}_total_payments"),
-            form.payments,
-            input,
-            msg!("EXPLAIN_N_TOTAL_PAYMENTS"),
-        );
-        row(
-            r,
-            "23",
-            &format!("{prefix}_earlier_payments"),
-            form.earlier_payments,
-            input,
-            msg!("EXPLAIN_N_EARLIER_PAYMENTS"),
-        );
-        let business = matches!(sale.kind, PropertyCharacter::BusinessProperty { .. });
-        report_income(r, &prefix, input, &form, unrecaptured, business);
-        // Form 4797 line 4: an earlier sale of business or rental property
-        // brings its Form 6252 line 26 gain into the section 1231 netting.
-        if business {
-            push_line(
-                r,
-                Some(FormLine::new(TaxForm::Form4797, "4")),
-                &format!("{prefix}_section1231"),
-                form.gain * 100,
-                &[input],
-                "https://www.irs.gov/instructions/i4797",
-                msg!("EXPLAIN_INSTALLMENT_N_SECTION1231"),
-            );
-        }
-        match &sale.kind {
-            PropertyCharacter::BusinessProperty { used: PropertyUse::Rental, .. }
-                if form.gain > 0 && pool.passive_loss > 0 =>
-            {
-                crate::issue_localized!(
-                    r,
-                    &crate::IssueContext::Section(crate::TaxSection::InvestmentSales),
-                    &section,
-                    "ISSUE_INSTALLMENT_GAIN_FROM_AN_EARLIER_SALE_OF_RENTAL_OR_PASSIVE_ACTIVITY_13F232BB",
-                    "Installment gain from an earlier sale of rental or passive-activity property is passive income that allows part of this return's unallowed passive losses (Form 8582 lines 1 through 4), which is not calculated.",
-                )
-            }
-            // The part a section 1231 lookback makes ordinary is qualified
-            // business income of the business that sold the property
-            // (Reg. 1.199A-3(b)(2)(ii)(A)); the figure is the activity the
-            // person named, if any.
-            PropertyCharacter::BusinessProperty { used: PropertyUse::Business, .. }
-                if matches!(sale.qbi, InstallmentQbi::Qualified { .. })
-                    && form.gain > 0
-                    && character.is_some_and(|v| v.net > 0 && v.ordinary > 0) =>
-            {
-                match qbi_part(draft, pool, character, index) {
-                    Ok(part) => row(
-                        r,
-                        "4",
-                        &format!("{prefix}_qualified_income"),
-                        part,
-                        input,
-                        msg!("EXPLAIN_INSTALLMENT_N_QUALIFIED_INCOME"),
-                    ),
-                    Err(error) => error.report_at(
-                        r,
-                        &crate::IssueContext::Section(crate::TaxSection::InvestmentSales),
-                        #[cfg(test)]
-                        &section,
-                    ),
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-// Community-property projection; accepted source facts are retained.
-
-crate::community::divide_enum!(SalePayment {
-    records: [Installment { amounts: [assumed_debt, payments], facts: [interest, special] }],
-    units: [InFull],
-    tuples: [],
-});

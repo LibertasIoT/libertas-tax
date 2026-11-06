@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 514000, "rule": {"select": "^<GdsPropertyPage>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_ASSET_PROPERTY", "fields": ["description", "cost", "credit_reduction", "acquired", "placed", "class", "listed", "earlier_business_percent"]}, {"title": "DISPLAY_ASSET_HISTORY", "fields": ["history", "method", "disposal", "partial"]}, {"title": "DISPLAY_ASSET_INVESTMENT_CREDIT", "fields": ["investment_credit"]}]}},
+    {"order": 515000, "rule": {"select": "^<GdsPropertyPage>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_ASSET_PROPERTY", "fields": ["description", "cost", "credit_reduction", "acquired", "placed", "class", "listed", "earlier_business_percent"]}, {"title": "DISPLAY_ASSET_HISTORY", "fields": ["history", "method", "disposal", "partial"]}, {"title": "DISPLAY_ASSET_INVESTMENT_CREDIT", "fields": ["investment_credit"]}]}},
+    {"order": 745000, "rule": {"select": "^<GdsAssetRecovery>.class", "promote": {"use_parent_name": false}}}
+  ]
+}

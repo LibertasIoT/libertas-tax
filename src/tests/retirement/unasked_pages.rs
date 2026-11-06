@@ -4,8 +4,7 @@ use crate::tests::federal::unasked_pages::{
 };
 use crate::tests::support::assert::{accepted, rejected_with};
 fn retirement_documents(s: &mut Interview) -> Vec<IncomeDocumentItem> {
-    let P::SaveIncomes { documents, .. } = retirement_page(s) else { unreachable!() };
-    documents.documents
+    crate::tests::support::client::income_pages::page_documents(&retirement_page(s))
 }
 fn excluded(r: &FederalResult) -> i64 {
     r.lines.iter().find(|l| l.id == "public_safety_1_excluded").map_or(0, |l| l.amount)
@@ -31,7 +30,12 @@ fn public_safety_premiums_through_the_1099_r_by_hand() {
         &mut s,
         vec![item(
             Owner::Taxpayer,
-            IncomeDocument::R1099(pension(3_000_000, officer(500_000, 400_000))),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(pension(
+                    3_000_000,
+                    officer(500_000, 400_000),
+                )),
+            },
         )],
     ));
     let id = s
@@ -60,10 +64,11 @@ fn public_safety_premiums_through_the_1099_r_by_hand() {
     // unchanged save keeps the revision.
     let saved = s.draft.clone();
     let mut again = restart(saved.clone());
-    let documents = retirement_documents(&mut again);
-    let IncomeDocument::R1099(r) = &documents[0].document else { panic!("{documents:?}") };
-    assert_eq!(r.public_safety, officer(500_000, 400_000));
-    let request = retirement_page(&mut again);
+    let P::SaveIncomes { followups, .. } = retirement_page(&mut again) else { unreachable!() };
+    assert!(followups.iter().any(|row| matches!(&row.answer,
+        crate::DocumentAnswer::RetirementPublicSafety { value } if *value == crate::PublicSafetyAnswer::of(officer(500_000, 400_000))
+    )));
+    let request = crate::tests::support::client::income_pages::open_document_center(&mut again);
     accepted(&send(&mut again, request));
     assert_eq!(again.draft, saved);
 }
@@ -78,7 +83,12 @@ fn public_safety_exclusion_is_capped_at_3000() {
             &mut s,
             vec![item(
                 Owner::Taxpayer,
-                IncomeDocument::R1099(pension(3_000_000, officer(500_000, funded))),
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(pension(
+                        3_000_000,
+                        officer(500_000, funded),
+                    )),
+                },
             )],
         ));
         assert_eq!(excluded(&supported(&s.draft)), expected, "{funded}");
@@ -90,10 +100,14 @@ fn public_safety_answer_rules_refuse_on_the_server() {
     let mut s = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let before = s.draft.clone();
     // Not from an IRA (box 7 IRA/SEP/SIMPLE).
-    let mut ira = pension(3_000_000, officer(500_000, 400_000));
-    ira.ira = true;
+    let mut ira = crate::tests::cross::interview::r1099(
+        3_000_000,
+        DistributionCode::Normal { what_happened: Disposition::Kept },
+        true,
+    );
+    ira.set_public_safety(officer(500_000, 400_000));
     rejected_with(
-        save_retirement(&mut s, vec![item(Owner::Taxpayer, IncomeDocument::R1099(ira))]),
+        crate::tests::support::client::retirement_pso_ira_refusal(&s.draft, ira),
         "PSO_NOT_FROM_AN_IRA",
     );
     // The part paid from the pension inside the premiums: $5,000.01 of
@@ -103,7 +117,12 @@ fn public_safety_answer_rules_refuse_on_the_server() {
             &mut s,
             vec![item(
                 Owner::Taxpayer,
-                IncomeDocument::R1099(pension(3_000_000, officer(500_000, 500_001))),
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(pension(
+                        3_000_000,
+                        officer(500_000, 500_001),
+                    )),
+                },
             )],
         ),
         "PSO_FUNDED_ABOVE_PREMIUMS",
@@ -114,7 +133,12 @@ fn public_safety_answer_rules_refuse_on_the_server() {
             &mut s,
             vec![item(
                 Owner::Taxpayer,
-                IncomeDocument::R1099(pension(400_000, officer(500_000, 400_001))),
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(pension(
+                        400_000,
+                        officer(500_000, 400_001),
+                    )),
+                },
             )],
         ),
         "PSO_FUNDED_ABOVE_GROSS",
@@ -124,7 +148,12 @@ fn public_safety_answer_rules_refuse_on_the_server() {
         &mut s,
         vec![item(
             Owner::Taxpayer,
-            IncomeDocument::R1099(pension(3_000_000, officer(500_000, 500_000))),
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(pension(
+                    3_000_000,
+                    officer(500_000, 500_000),
+                )),
+            },
         )],
     ));
 }
@@ -149,14 +178,29 @@ fn lump_sum_election_is_used_only_when_lower() {
 
 #[test]
 fn lump_sum_rules_refuse_on_the_server() {
-    let (mut s, documents) = lump_sum_return(1_000_000);
+    let (mut s, mut documents) = lump_sum_return(1_000_000);
+    // Accept the statement first; each refused candidate below edits only
+    // the election, using the statement's real accepted identity.
+    accepted(&save_retirement(&mut s, vec![documents[0].clone()]));
+    documents[0].id = s
+        .draft
+        .income
+        .iter()
+        .find(|row| matches!(row.income, FederalIncome::SocialSecurity { .. }))
+        .expect("accepted SSA-1099")
+        .id;
+    retirement_page(&mut s);
     let before = s.draft.clone();
     let mut twice = documents.clone();
     twice.push(documents[1].clone());
     rejected_with(save_retirement(&mut s, twice), "LUMP_SUM_ELECTION_TWICE");
     let with_year = |f: &dyn Fn(&mut SocialBenefitYear)| {
         let mut documents = documents.clone();
-        let IncomeDocument::SocialLumpSums(v) = &mut documents[1].document else { unreachable!() };
+        let IncomeSource::Record { value: crate::IncomeRecord::SocialLumpSums(v) } =
+            &mut documents[1].document
+        else {
+            unreachable!()
+        };
         f(&mut v.years[0]);
         documents
     };
@@ -183,7 +227,11 @@ fn lump_sum_rules_refuse_on_the_server() {
         "LUMP_SUM_REFIGURED_ABOVE_BENEFITS",
     );
     let mut two_years = documents.clone();
-    let IncomeDocument::SocialLumpSums(v) = &mut two_years[1].document else { unreachable!() };
+    let IncomeSource::Record { value: crate::IncomeRecord::SocialLumpSums(v) } =
+        &mut two_years[1].document
+    else {
+        unreachable!()
+    };
     v.years.push(v.years[0].clone());
     rejected_with(save_retirement(&mut s, two_years), "LUMP_SUM_YEAR_TWICE");
     assert_eq!(s.draft, before);
@@ -218,7 +266,13 @@ fn corrected(received: u32) -> RmdCorrection {
     }
 }
 fn rmd_tax(s: &mut Interview, value: MissedDistribution) -> i64 {
-    accepted(&save_retirement(s, vec![item(Owner::Taxpayer, IncomeDocument::MissedRmd(value))]));
+    accepted(&save_retirement(
+        s,
+        vec![item(
+            Owner::Taxpayer,
+            IncomeSource::Record { value: crate::IncomeRecord::MissedRmd(value) },
+        )],
+    ));
     let r = estimate(&s.draft);
     r.lines.iter().find(|l| l.id == "required_distribution_tax").map_or(0, |l| l.amount)
 }
@@ -239,7 +293,9 @@ fn missed_required_distribution_through_the_retirement_topic_by_hand() {
     let documents = retirement_documents(&mut again);
     assert_eq!(
         documents[0].document,
-        IncomeDocument::MissedRmd(missed(1_000_000, 400_000, corrected(20270301)))
+        IncomeSource::Record {
+            value: crate::IncomeRecord::MissedRmd(missed(1_000_000, 400_000, corrected(20270301)))
+        }
     );
     let request = retirement_page(&mut again);
     accepted(&send(&mut again, request));
@@ -278,7 +334,13 @@ fn missed_distribution_waiver_and_owner_rules() {
         &mut s,
         vec![item(
             Owner::Spouse,
-            IncomeDocument::MissedRmd(missed(1_000_000, 0, RmdCorrection::Uncorrected)),
+            IncomeSource::Record {
+                value: crate::IncomeRecord::MissedRmd(missed(
+                    1_000_000,
+                    0,
+                    RmdCorrection::Uncorrected,
+                )),
+            },
         )],
         "MESSAGE_MISSED_REQUIRED_DISTRIBUTION_YOUR_SPOUSE_S_GO_ON_THIS_RETURN_ONLY_WHEN_YOU_F",
         "[documents/documents/0/owner]",

@@ -1,7 +1,7 @@
 use super::lifecycle::{restart, send};
 use crate::{
-    Asset, BusinessAsset, FederalDraft, FederalIncome, IncomeDocument, TaxSection, Vehicle,
-    VehicleMethod,
+    Asset, AssetClass, AssetHistory, BusinessAsset, FederalDraft, FederalIncome,
+    FirstYearDeduction, IncomeSource, TaxSection, Vehicle, VehicleMethod,
 };
 use alloc::{vec, vec::Vec};
 
@@ -50,7 +50,7 @@ pub(in crate::tests) fn bind_saved_property_ids(
 pub(in crate::tests) fn save_native_asset_identities(
     mut draft: FederalDraft,
     source: i64,
-    page: IncomeDocument,
+    page: IncomeSource,
     topic: TaxSection,
 ) -> FederalDraft {
     let entry = draft.income.iter_mut().find(|entry| entry.id == source).unwrap();
@@ -67,7 +67,7 @@ pub(in crate::tests) fn save_native_asset_identities(
     document.owner = owner;
     document.community = community;
     document.refund_management = refund_management;
-    let request = crate::tests::cross::interview::save_topic(&session.draft, topic, vec![document]);
+    let request = crate::tests::cross::interview::save_topic(&mut session, topic, vec![document]);
     crate::tests::cross::interview::accepted(&send(&mut session, request));
     let entry = session.draft.income.iter_mut().find(|entry| entry.id == source).unwrap();
     assert_eq!(entry.owner, owner);
@@ -108,4 +108,30 @@ pub(in crate::tests) fn bind_saved_mileage_ids(
         }
     }
     assert!(rows.next().is_none());
+}
+
+// Exercise the native Save identity owner while retaining the independently
+// authored monetary and plan facts used by the calculation assertion.
+pub(in crate::tests) fn save_elected_business_asset(
+    draft: FederalDraft,
+    source: i64,
+    cost: i64,
+    elected: i64,
+) -> FederalDraft {
+    let mut page = crate::tests::cross::interview::business(50000 * 100);
+    let mut asset = crate::tests::cross::interview::asset(cost * 100, 20260601, AssetClass::Five);
+    asset.acquired = Some(20250120);
+    asset.gds_mut().unwrap().history = AssetHistory::New {
+        first_year: FirstYearDeduction::Section179 {
+            description: "Synthetic elected business equipment".into(),
+            elected: elected * 100,
+        },
+    };
+    page.assets = vec![asset];
+    save_native_asset_identities(
+        draft,
+        source,
+        IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
+        TaxSection::SelfEmployment,
+    )
 }

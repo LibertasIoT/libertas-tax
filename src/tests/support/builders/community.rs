@@ -8,13 +8,15 @@ pub(in crate::tests) fn community_w2_draft(
 ) -> FederalDraft {
     let mut d = complete(FederalStatus::Separate);
     d.setup.as_mut().unwrap().community_property = community_arizona();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income =
         vec![wage(1, Owner::Taxpayer, own, own_tax), wage(2, Owner::Spouse, spouse, spouse_tax)];
     for entry in &mut d.income {
         entry.community = CommunityShare::Community;
     }
     d.next_id = 3;
+    // Accepted Document center papers carry their printed names.
+    name_accepted_income_documents(&mut d);
     d
 }
 
@@ -37,8 +39,9 @@ pub(in crate::tests) fn community_interest_draft(
     statement_addressee: Owner,
 ) -> FederalDraft {
     let mut d = community_w2_draft(own_wages, spouse_wages, 0, 0);
-    let mut statement = income(FederalIncome::Interest { data: native_interest(interest, 0) });
-    statement.owner = statement_addressee;
+    let mut statement =
+        income(FederalIncome::Interest { data: interest_source(native_interest(interest, 0)) });
+    statement.owner = crate::DocumentOwner::from(statement_addressee);
     add(&mut d, statement);
     d
 }
@@ -52,7 +55,7 @@ pub(in crate::tests) fn community_dividend_draft(
 ) -> FederalDraft {
     let mut d = community_w2_draft(own_wages, spouse_wages, 0, 0);
     let mut statement = income(FederalIncome::Dividend {
-        data: FederalDividend {
+        data: dividend_source(FederalDividend {
             foreign_tax: 0,
             section_1202_gain: 0,
             section_1202_exclusion: None,
@@ -78,9 +81,9 @@ pub(in crate::tests) fn community_dividend_draft(
             cash_liquidation: 0,
             noncash_liquidation: 0,
             capital_returns: Vec::new(),
-        },
+        }),
     });
-    statement.owner = statement_addressee;
+    statement.owner = crate::DocumentOwner::from(statement_addressee);
     add(&mut d, statement);
     d
 }
@@ -96,7 +99,7 @@ pub(in crate::tests) fn community_joint_portfolio_draft(
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 foreign_tax: 0,
                 section_1202_gain: 0,
                 section_1202_exclusion: None,
@@ -122,7 +125,7 @@ pub(in crate::tests) fn community_joint_portfolio_draft(
                 cash_liquidation: 0,
                 noncash_liquidation: 0,
                 capital_returns: Vec::new(),
-            },
+            }),
         }),
     );
     d
@@ -135,25 +138,33 @@ pub(in crate::tests) fn community_portfolio_with_second_payers(
     d.income[3].label = "Fund A".into();
     let mut interest = d.income[2].clone();
     interest.label = "Bank B".into();
-    interest.owner = Owner::Taxpayer;
+    interest.owner = crate::DocumentOwner::Yours;
     let FederalIncome::Interest { data } = &mut interest.income else { unreachable!() };
+    let mut data = edit_interest(data);
     data.taxable = 300_000;
+    drop(data);
     add(&mut d, interest);
     let mut dividend = d.income[3].clone();
     dividend.label = "Fund B".into();
-    dividend.owner = Owner::Spouse;
+    dividend.owner = crate::DocumentOwner::Spouses;
     let FederalIncome::Dividend { data } = &mut dividend.income else { unreachable!() };
+    let mut data = edit_dividend(data);
     data.ordinary = 600_000;
     data.qualified = 100_000;
+    drop(data);
     add(&mut d, dividend);
     d
 }
 
 pub(in crate::tests) fn community_portfolio_with_extra_w2s(mut d: FederalDraft) -> FederalDraft {
     let FederalIncome::Wage { data: own } = &mut d.income[0].income else { unreachable!() };
+    let mut own = edit_wage(own);
     own.withholding = 600_002;
+    drop(own);
     let FederalIncome::Wage { data: spouse } = &mut d.income[1].income else { unreachable!() };
+    let mut spouse = edit_wage(spouse);
     spouse.withholding = 1_000_000;
+    drop(spouse);
     let own_id = d.next_id;
     add(&mut d, wage(own_id, Owner::Taxpayer, 1_999_998, 199_998));
     let spouse_id = d.next_id;

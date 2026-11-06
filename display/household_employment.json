@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 621000, "rule": {"select": "^<HouseholdSickWages>", "flatten": true}},
+    {"order": 622000, "rule": {"select": "^<HouseholdSickFunding>", "flatten": true}},
+    {"order": 623000, "rule": {"select": "^<HouseholdSickEnd>", "flatten": true}},
+    {"order": 624000, "rule": {"select": "^<HouseholdWageKind>", "flatten": true}},
+    {"order": 892000, "rule": {"select": "^<HouseholdEmployerView>.owner", "when_single_choice": "hide"}}
+  ]
+}

@@ -4,7 +4,7 @@ use crate::tests::*;
 // (whole dollars in, cents stored), and the election as the dependent's row.
 pub(in crate::tests) fn child_interest(taxable: i64) -> ChildIncome {
     ChildIncome::Interest {
-        data: native_interest(taxable * 100, 0),
+        data: native_interest(taxable * 100, 0).into(),
         kept: ChildStatementKept::default(),
     }
 }
@@ -13,10 +13,8 @@ pub(in crate::tests) fn child_dividends(
     qualified: i64,
     distributions: i64,
 ) -> ChildIncome {
-    ChildIncome::Dividend {
-        data: native_dividend(ordinary * 100, qualified * 100, distributions * 100),
-        kept: ChildStatementKept::default(),
-    }
+    let data = native_dividend(ordinary * 100, qualified * 100, distributions * 100);
+    ChildIncome::Dividend { statement_id: 0, data: dividend_source(data).into() }
 }
 pub(in crate::tests) fn child_election(
     child_id: i64,
@@ -25,11 +23,12 @@ pub(in crate::tests) fn child_election(
     other_parent: OtherParentChoice,
 ) -> FederalIncomeEntry {
     FederalIncomeEntry {
+        printed: None,
         refund_management: None,
         state_source: Default::default(),
         id: 0,
         label: alloc::format!("Child {child_id}"),
-        owner: Owner::Taxpayer,
+        owner: crate::DocumentOwner::Yours,
         income: FederalIncome::ChildElection {
             data: FederalChildElection {
                 child_id,
@@ -94,11 +93,11 @@ pub(in crate::tests) fn young_special_return(
     parent.status = FederalStatus::Single;
     parent.taxable = 25000000;
     d.income[0].income = FederalIncome::Dividend {
-        data: FederalDividend {
+        data: dividend_source(FederalDividend {
             collectible_distributions: collectibles * 100,
             unrecaptured_distributions: unrecaptured * 100,
             ..native_dividend(0, 0, (collectibles + unrecaptured + other) * 100)
-        },
+        }),
     };
     d
 }
@@ -110,10 +109,10 @@ pub(in crate::tests) fn child_interest_gains(
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 section199a: ReitDividends::None,
                 ..native_dividend(400000, 400000, 600000)
-            },
+            }),
         }),
     );
     investment_borrowing(&mut d, 4000, 2000, 2000);
@@ -148,7 +147,7 @@ pub(in crate::tests) fn child_election_owner_fixture(owner: Owner, mixed: bool) 
         vec![child_interest(2_000)]
     };
     let mut entry = child_election(child, statements, 0, OtherParentChoice::NotNeeded);
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     add(&mut draft, entry);
     draft
 }

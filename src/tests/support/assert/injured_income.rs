@@ -88,7 +88,7 @@ pub(in crate::tests) mod alimony_recapture_sources {
                         }
                     };
                     let mut entry = income(FederalIncome::Alimony { data: received });
-                    entry.owner = recipient;
+                    entry.owner = crate::DocumentOwner::from(recipient);
                     add(&mut d, entry);
                     let payer =
                         if recipient == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
@@ -238,7 +238,7 @@ pub(in crate::tests) mod bonds_cooperative_sources {
         let mut draft = injured_return((60_000, 5_000), (20_000, 500), 1_000, allocation());
         add(&mut draft, income(savings_income(1000, 0)));
         let mut linked = income(FederalIncome::Interest {
-            data: FederalInterest {
+            data: interest_source(FederalInterest {
                 us_obligations: gross * 100,
                 adjustments: (prior != 0).then_some(InterestAdjustments {
                     previously_reported: prior * 100,
@@ -246,9 +246,9 @@ pub(in crate::tests) mod bonds_cooperative_sources {
                 }),
                 special: InterestSpecial::NoneOfThese,
                 ..Default::default()
-            },
+            }),
         });
-        linked.owner = Owner::Spouse;
+        linked.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, linked);
         let linked_id = draft.income.last().unwrap().id;
         // Actual source recipient is spouse; the education beneficiary is taxpayer.
@@ -261,7 +261,7 @@ pub(in crate::tests) mod bonds_cooperative_sources {
             vec![bond_student(-1, tuition, 0)],
         );
         let FederalIncome::SavingsBonds { data } = &mut record.income else { unreachable!() };
-        data.interest_statement = linked_id;
+        data.answers.as_mut().unwrap().interest_statement = linked_id;
         add(&mut draft, record);
         assert_eq!(crate::savings_bonds::source_rule(&draft.income), None);
         let sources = crate::savings_bonds::sources(&draft.income);
@@ -279,7 +279,7 @@ pub(in crate::tests) mod bonds_cooperative_sources {
             assert_eq!(value(result, "agi"), 81_000 + remaining);
             assert_eq!(crate::savings_bonds::source_rule(&draft.income), None);
             let (record, data) = crate::savings_bonds::record(&draft.income).unwrap();
-            assert_eq!((record.owner, data.interest_statement), (Owner::Spouse, linked_id));
+            assert_eq!((record.owner.owned(), data.interest_statement), (Owner::Spouse, linked_id));
         });
     }
 
@@ -298,6 +298,8 @@ pub(in crate::tests) mod bonds_cooperative_sources {
                 farm.header = None;
                 FederalIncome::FarmRental {
                     data: FederalFarmRental {
+                        improvement_buildings: Vec::new(),
+                        interest_limit_election: None,
                         farm,
                         expenses: data.expenses,
                         assets: vec![],
@@ -313,27 +315,28 @@ pub(in crate::tests) mod bonds_cooperative_sources {
             }
         };
         let mut activity = income(activity);
-        activity.owner = Owner::Spouse;
+        activity.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, activity);
         let activity_id = draft.income.last().unwrap().id;
         let mut data = FederalCooperative { patronage: 200_000, ..Default::default() };
-        let mut allocation = crate::cooperative::automatic(&data, Some(activity_id));
+        let mut allocation = crate::cooperative::automatic(&data);
         allocation.income_use = if matches!(route, Route::Business) {
             CoopIncomeUse::DeductiblePurchases
         } else {
             CoopIncomeUse::ProductionSales
         };
         data.allocations.push(allocation);
-        let mut entry = income(FederalIncome::Cooperative { data });
-        entry.owner = Owner::Spouse;
+        let mut entry = income(FederalIncome::Cooperative { data: cooperative_source(data) });
+        entry.owner = crate::DocumentOwner::Spouses;
         add(&mut draft, entry);
+        claim_last_cooperative(&mut draft, activity_id);
         let parent = draft.income.last().unwrap().id;
         assert_eq!(crate::cooperative::graph_rule(&draft), None);
         check_states(draft, [0, 12_000], |draft, result| {
             let sources = crate::cooperative::sources(draft);
             assert_eq!(sources.len(), 1);
             assert_eq!(
-                (sources[0].parent, sources[0].owner, sources[0].allocation.activity),
+                (sources[0].parent, sources[0].owner, sources[0].activity),
                 (parent, Owner::Spouse, Some(activity_id))
             );
             assert_eq!(value(result, &alloc::format!("cooperative_{parent}_taxable")), 2000);
@@ -394,6 +397,13 @@ pub(in crate::tests) mod home_employee_niit_sources {
                 for reversed in [false, true] {
                     let d = persisted(fixture(source, owner, injured, reversed), source, owner);
                     let r = money(&d, source, owner);
+                    if matches!(source, Source::UncoveredEmployee) {
+                        assert_eq!(r.tax, None);
+                        assert!(
+                            !r.lines.iter().any(|line| line.id.starts_with("form_8379_line_18_"))
+                        );
+                        continue;
+                    }
                     let mut other = [10000, 10000];
                     let owner_index = usize::from(owner == Owner::Spouse);
                     let inj = usize::from(injured == Owner::Spouse);
@@ -481,6 +491,11 @@ pub(in crate::tests) mod home_payroll_actual_clients {
         answered: bool,
     ) -> FederalResult {
         let r = money(d, source, owner);
+        if matches!(source, Source::UncoveredEmployee) {
+            assert_eq!(r.tax, None);
+            assert!(!r.lines.iter().any(|line| line.id.starts_with("form_8379_line_18_")));
+            return r;
+        }
         assert_eq!(d.injured_spouse.as_ref().unwrap().injured, injured);
         let index = usize::from(owner == Owner::Spouse);
         let inj = usize::from(injured == Owner::Spouse);
@@ -662,13 +677,27 @@ pub(in crate::tests) mod k1_activity_niit_sources {
                         .filter(|row| !row.id.starts_with("form_8379_"))
                         .collect::<Vec<_>>()
                 );
-                let topic = if matches!(source, Source::Rental) {
-                    TaxSection::Rentals
-                } else {
-                    TaxSection::PassThrough
+                let open = |session: &mut Interview| {
+                    if matches!(source, Source::Rental) {
+                        open_topic(session, TaxSection::Rentals)
+                    } else {
+                        crate::tests::support::client::income_pages::open_document_center(session)
+                    }
                 };
                 let mut session = Interview::new(TEST_USER, draft.clone());
-                let request = open_topic(&mut session, topic);
+                crate::tests::support::client::admit_native_fixture_facts(&mut session);
+                let request =
+                    crate::tests::support::client::income_pages::open_document_center(&mut session);
+                accepted(&send(&mut session, request));
+                let request = open(&mut session);
+                accepted(&send(&mut session, request));
+                assert_eq!(session.draft.income, draft.income);
+                let draft = session.draft.clone();
+                let accepted_result = supported(&draft);
+                assert_native_money_unchanged(&accepted_result, &result);
+                assert_eq!(accepted_result.return_lines, result.return_lines);
+                let result = accepted_result;
+                let request = open(&mut session);
                 accepted(&send(&mut session, request));
                 assert_eq!(session.draft, draft);
                 assert_eq!(estimate(&session.draft), result);
@@ -678,7 +707,7 @@ pub(in crate::tests) mod k1_activity_niit_sources {
                 assert_eq!(saved, draft);
                 let mut restarted = restart(saved);
                 assert_eq!(estimate(&restarted.draft), result);
-                let reopened = open_topic(&mut restarted, topic);
+                let reopened = open(&mut restarted);
                 accepted(&send(&mut restarted, reopened));
                 assert_eq!(restarted.draft, draft);
                 assert_eq!(estimate(&restarted.draft), result);

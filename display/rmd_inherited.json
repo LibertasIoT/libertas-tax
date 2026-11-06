@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 334000, "rule": {"select": "^<InheritedRmd>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_INHERITED_ACCOUNT", "fields": ["kind", "owner_birth", "died", "balance", "incoming", "closing"]}, {"title": "DISPLAY_INHERITED_ELECTION", "fields": ["eligibility", "deadline_election", "confirmed"]}]}},
+    {"order": 335000, "rule": {"select": "^<InheritedRmd>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_INHERITED_ACCOUNT", "fields": ["kind", "owner_birth", "died", "balance", "incoming", "closing"]}, {"title": "DISPLAY_INHERITED_ELECTION", "fields": ["eligibility", "deadline_election", "confirmed"]}]}}
+  ]
+}

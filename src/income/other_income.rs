@@ -1,6 +1,6 @@
-// Coverage: Form 1040 lines 1b/1d/1h and Schedule 1 line 8 income with no form of its own, and Pub. 525 Worksheet 2 (unit b9-2,
-//   2026-10-10; i1040gi (2025) "Lines 8a Through 8z", Pub. 525 "Other Income", "Recoveries" and
-//   "Unemployment Benefits", Rev. Rul. 2023-14, 26 U.S.C. 61, 74, 111).
+// Coverage: Form 1040 lines 1b/1d/1h and Schedule 1 line 8 income with no form of its own, and Pub. 525 Worksheet 2;
+//   i1040gi (2025) "Lines 8a Through 8z", Pub. 525 "Other Income", "Recoveries" and
+//   "Unemployment Benefits", Rev. Rul. 2023-14, 26 U.S.C. 61, 74, 111.
 //   Household employee wages without a W-2 enter 1b (a W-2-due notice at $3,000);
 //   strike benefits enter 1h and EIC earned income but not IRA compensation; Medicaid
 //   waiver pay enters 1d, with a matching 8s exclusion when care was in the home.
@@ -23,6 +23,10 @@
 //   "previously refunded" amount.
 //   Evidence: this module, information_returns.rs, tax_refund.rs, federal_rules.rs, unknowns.rs;
 //   tests/other_income.rs (fixtures D and E, with the 8g, 8i, 8m, 8u, 8v and 8z kinds).
+pub use crate::prior_recovery_source::{
+    PriorYearRecovery, VehicleInterestRecovery, VehicleRecoveryYear, VehicleRefundOrigin,
+};
+
 use crate::kernel::phase;
 use crate::kernel::ratio::positive;
 use crate::{FederalDraft, FederalIncome, PrizeDisposition};
@@ -38,12 +42,14 @@ pub struct OtherIncomeItem {
     /// Amount received in 2026
     /// In cash, or the fair market value of property you received. For a prize, its cash part; the value of goods or services is asked with the prize. For a refund or reimbursement of an earlier year's deduction, the total you got back.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Federal income tax withheld
     /// From the payer's statement, if any.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub withholding: i64,
 }
@@ -60,7 +66,8 @@ pub enum OtherIncomeKind {
         /// Value of goods or services won
         /// Their fair market value, in addition to the cash amount.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         noncash: i64,
         /// What happened to it
@@ -100,7 +107,8 @@ pub enum OtherIncomeKind {
     CardInsurance {
         /// Premiums you paid for this insurance in 2026
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         premiums: i64,
     },
     /// Benefits from a private or union unemployment fund
@@ -109,7 +117,8 @@ pub enum OtherIncomeKind {
         /// Your payments into the fund not yet recovered
         /// Zero for benefits paid from regular union dues.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         contributions: i64,
     },
@@ -121,40 +130,6 @@ pub enum OtherIncomeKind {
         #[libertas_size(min = 1)]
         description: alloc::string::String,
     },
-}
-
-/// That year's return
-/// Publication 525 Worksheet 2, from the federal return of the year you deducted it. Enter every refund or reimbursement of the same year's itemized deductions together, as one item. A state or local income tax refund of the same year is entered as its 1099-G; the App figures both together.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-
-pub struct PriorYearRecovery {
-    /// Year you deducted it
-    // Tax structure: this retained source belongs to a year before the 2026 return year.
-    #[libertas_number(min = 2010, max = 2025)]
-    #[libertas_default(2025)]
-    pub year: i32,
-    /// What you deducted for the items refunded
-    /// That year's deduction for them after its limits, such as medical costs only above the 7.5% floor. The taxable part is never more than this.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub deducted: i64,
-    /// Total itemized deductions that year
-    /// Schedule A line 17 (line 29 for 2010–2017).
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub itemized: i64,
-    /// Standard deduction you could have taken that year
-    /// With any age or blindness additions; zero if you had to itemize (married filing separately with a spouse who itemized).
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub standard: i64,
-    /// Taxable income that year
-    /// Form 1040 line 15, or a negative amount when your deductions were more than your income.
-    #[libertas_money("USD", 2)]
-    pub taxable_income: i64,
-    /// That year's return had no special tax-benefit situation
-    /// Yes when, that year, you had no unused credits, no alternative minimum tax and no tax figured at the 0% capital gain rate, you could not be claimed as a dependent, nothing was refunded for it in an earlier year, and the refund is not of real estate, personal property or sales tax. That year's return shows it. No leaves this item out of the estimate with a notice; that refiguring is not calculated.
-    pub ordinary: bool,
 }
 
 // Where one item's amount lands on Schedule 1 (cents). Digital assets, inmate pay,
@@ -374,16 +349,6 @@ impl Worksheet {
 }
 
 impl PriorYearRecovery {
-    pub(crate) fn valid(&self) -> bool {
-        let money = |v: i64| (0..=100_000_000_000).contains(&v);
-        (2010..=2025).contains(&self.year)
-            && money(self.deducted)
-            && money(self.itemized)
-            && money(self.standard)
-            && (-100_000_000_000..=100_000_000_000).contains(&self.taxable_income)
-            && self.deducted <= self.itemized
-    }
-
     // The worksheet of this one item with no state refund of the year.
     pub(crate) fn alone(&self, amount: i64) -> Worksheet {
         Worksheet::figure(
@@ -416,13 +381,13 @@ pub(crate) struct YearWorksheet {
 // limit, and a refund of real estate or personal property tax reaches line 8z
 // through Worksheet 2a (Pub. 525 Worksheets 2 and 2a). A failing refund is
 // reported where the refund is entered; here it adds nothing.
-fn mortgage_recoveries(d: &FederalDraft) -> impl Iterator<Item = (i64, &PriorYearRecovery)> {
-    d.deductions.iter().flat_map(|d| d.mortgage_loans()).filter_map(|loan| {
-        match &loan.refund_of_interest {
+fn mortgage_recoveries(d: &FederalDraft) -> impl Iterator<Item = (i64, PriorYearRecovery)> {
+    d.deductions.iter().flat_map(|d| d.mortgage_loans().unwrap_or_default()).filter_map(|loan| {
+        match loan.refund_of_interest {
             crate::MortgageInterestRefund::Yes {
                 amount,
-                origin: crate::MortgageRefundOrigin::Deducted(worksheet),
-            } if worksheet.ordinary => Some((*amount, worksheet)),
+                origin: Some(crate::MortgageRefundOrigin::Deducted(worksheet)),
+            } if worksheet.ordinary => Some((amount, worksheet)),
             _ => None,
         }
     })
@@ -431,7 +396,11 @@ pub(crate) fn worksheets(d: &FederalDraft) -> Vec<YearWorksheet> {
     let mut years: Vec<i32> = Vec::new();
     for entry in &d.income {
         let year = match &entry.income {
-            FederalIncome::TaxRefund { history, .. } => history.single_year(),
+            FederalIncome::GovernmentPayment { data }
+                if data.form.state_or_local_income_tax_refunds != 0 =>
+            {
+                crate::FederalTaxRefund::from(data).history.single_year()
+            }
             FederalIncome::OtherIncome { data } => match &data.kind {
                 OtherIncomeKind::Recovery { worksheet } if worksheet.ordinary => {
                     Some(worksheet.year)
@@ -462,10 +431,12 @@ fn year_worksheet(d: &FederalDraft, year: i32) -> Option<YearWorksheet> {
     let mut recovery_facts_differ = false;
     for entry in &d.income {
         match &entry.income {
-            FederalIncome::TaxRefund { amount, history, .. }
-                if history.single_year() == Some(year) && refund.is_none() =>
+            FederalIncome::GovernmentPayment { data }
+                if refund.is_none()
+                    && data.form.state_or_local_income_tax_refunds != 0
+                    && crate::FederalTaxRefund::from(data).history.single_year() == Some(year) =>
             {
-                refund = Some((*amount, history));
+                refund = Some(crate::FederalTaxRefund::from(data));
             }
             FederalIncome::OtherIncome { data } => {
                 if let OtherIncomeKind::Recovery { worksheet } = &data.kind
@@ -485,8 +456,10 @@ fn year_worksheet(d: &FederalDraft, year: i32) -> Option<YearWorksheet> {
             _ => {}
         }
     }
-    for (amount, worksheet) in mortgage_recoveries(d).filter(|(_, w)| w.year == year) {
-        line_2 += phase::cap(amount, [worksheet.deducted]);
+    let mortgage_recoveries: Vec<_> =
+        mortgage_recoveries(d).filter(|(_, w)| w.year == year).collect();
+    for (amount, worksheet) in &mortgage_recoveries {
+        line_2 += phase::cap(*amount, [worksheet.deducted]);
         if let Some(prior) = recovery_facts {
             recovery_facts_differ |= prior.itemized != worksheet.itemized
                 || prior.standard != worksheet.standard
@@ -495,13 +468,13 @@ fn year_worksheet(d: &FederalDraft, year: i32) -> Option<YearWorksheet> {
             recovery_facts = Some(worksheet);
         }
     }
-    let (line_1a, line_1b) = match refund {
-        Some((amount, history)) => history.state_local_lost(amount).ok().flatten()?,
+    let (line_1a, line_1b) = match &refund {
+        Some(refund) => refund.history.state_local_lost(refund.amount).ok().flatten()?,
         None => (0, 0),
     };
-    let (itemized, standard, taxable_income, facts_differ) = match (refund, recovery_facts) {
-        (Some((_, history)), Some(worksheet)) => {
-            let (itemized, standard) = history.year_deductions()?;
+    let (itemized, standard, taxable_income, facts_differ) = match (&refund, recovery_facts) {
+        (Some(refund), Some(worksheet)) => {
+            let (itemized, standard) = refund.history.year_deductions()?;
             (
                 itemized,
                 standard,
@@ -509,8 +482,8 @@ fn year_worksheet(d: &FederalDraft, year: i32) -> Option<YearWorksheet> {
                 itemized != worksheet.itemized || standard != worksheet.standard,
             )
         }
-        (Some((_, history)), None) => {
-            let (itemized, standard) = history.year_deductions()?;
+        (Some(refund), None) => {
+            let (itemized, standard) = refund.history.year_deductions()?;
             (itemized, standard, 0, false)
         }
         (None, Some(worksheet)) => {
@@ -540,7 +513,7 @@ pub(crate) struct Ctx<'a> {
 
 // One line 8z row of a record, named by what the amount is.
 fn row(ctx: &mut Ctx<'_>, kind: &str, amount: i64, explanation: crate::Message) {
-    crate::kernel::lines::line_cents(
+    crate::line_emission::line_cents(
         ctx.result,
         &alloc::format!("other_income_{}_{kind}", ctx.id),
         amount,
@@ -663,20 +636,81 @@ pub(crate) fn collect_years(
     result: &mut crate::FederalResult,
 ) {
     use crate::injured_spouse::income_categories::IncomeCategory;
+    if let Some(deductions) = &d.deductions {
+        let mut vehicle_years = alloc::collections::BTreeMap::<
+            i32,
+            Vec<(&crate::VehicleLoanSource, &VehicleRecoveryYear)>,
+        >::new();
+        for loan in deductions.vehicle_loans.iter().filter(|loan| loan.model().refund > 0) {
+            let origin = deductions
+                .vehicle_recoveries
+                .iter()
+                .find(|row| row.id == loan.id)
+                .map(|row| &row.origin);
+            match origin {
+                Some(crate::VehicleRefundOrigin::NotDeducted) => {}
+                Some(crate::VehicleRefundOrigin::Deducted { prior }) => {
+                    vehicle_years.entry(prior.year).or_default().push((loan, prior));
+                }
+                None => {
+                    crate::require_localized!(
+                        result,
+                        false,
+                        &crate::IssueContext::Section(crate::TaxSection::Deductions),
+                        "Vehicle-interest refund",
+                        "DOCUMENT_VEHICLE_REFUND_BENEFIT",
+                        "Establish whether this refunded interest was deducted on the prior return's Schedule 1-A.",
+                    );
+                }
+            }
+        }
+        for (year, sources) in vehicle_years {
+            let prior = sources[0].1;
+            let consistent = sources.iter().all(|(_, facts)| *facts == prior);
+            let refund = i64::try_from(
+                sources.iter().map(|(loan, _)| i128::from(loan.model().refund)).sum::<i128>(),
+            )
+            .ok();
+            let taxable = refund
+                .filter(|_| consistent)
+                .and_then(|refund| PriorYearRecovery::vehicle_recovery(prior, refund));
+            crate::require_localized!(
+                result,
+                taxable.is_some(),
+                &crate::IssueContext::Section(crate::TaxSection::Deductions),
+                "Vehicle-interest refund",
+                "DOCUMENT_VEHICLE_REFUND_BENEFIT",
+                "Establish the prior Schedule 1-A deduction's tax benefit using the same prior-return facts for every refund from that year. Unused credits, AMT, zero-rate gains or other dependent effects need that return's tax-benefit recomputation.",
+            );
+            if let Some(taxable) = taxable {
+                totals.recovery_8z += taxable;
+                crate::line_emission::line_cents(
+                    result,
+                    &alloc::format!("vehicle_interest_recovery_{year}"),
+                    taxable,
+                    &["deductions.vehicle_recoveries"],
+                    "https://www.irs.gov/pub/irs-dft/f1098vli--dft.pdf",
+                    crate::Message::new("EXPLAIN_VEHICLE_INTEREST_RECOVERY", Vec::new()),
+                );
+            }
+        }
+    }
     for year in worksheets(d) {
         // Record the actual combined worksheet outputs at the point the
         // one native owner assigns them. A stand-alone recovery preview
         // cannot explain the shared prior-year tax-benefit ceiling.
         if let Some(refund) = d.income.iter().find(|entry| {
             matches!(
-                &entry.income, FederalIncome::TaxRefund { history, .. }
-                    if history.single_year() == Some(year.year)
+                &entry.income, FederalIncome::GovernmentPayment { data }
+                    if data.form.state_or_local_income_tax_refunds != 0
+                        && crate::FederalTaxRefund::from(data).history.single_year() == Some(year.year)
             )
         }) {
             totals
                 .injured_other_sources
-                .insert(refund.id, Some(crate::kernel::ratio::exact::whole(0)));
-            let owner = usize::from(refund.owner == crate::Owner::Spouse);
+                .entry(refund.id)
+                .or_insert_with(|| Some(crate::kernel::ratio::exact::whole(0)));
+            let owner = usize::from(refund.owner == crate::DocumentOwner::Spouses);
             totals.record_income_component(
                 refund.id,
                 owner,
@@ -710,7 +744,7 @@ pub(crate) fn collect_years(
                 .insert(recovery.id, Some(crate::kernel::ratio::exact::whole(0)));
             totals.record_income_component(
                 recovery.id,
-                usize::from(recovery.owner == crate::Owner::Spouse),
+                usize::from(recovery.owner == crate::DocumentOwner::Spouses),
                 IncomeCategory::Other8z,
                 Some(year.sheet.to_8z - year.sheet.to_8z_taxes),
                 Some(year.sheet.to_8z - year.sheet.to_8z_taxes),
@@ -722,7 +756,7 @@ pub(crate) fn collect_years(
         totals.recovery_8z += year.sheet.to_8z;
         totals.recovery_8z_taxes += year.sheet.to_8z_taxes;
         if year.sheet.to_8z != 0 || year.sheet.line_3 != 0 {
-            crate::kernel::lines::line_cents(
+            crate::line_emission::line_cents(
                 result,
                 &alloc::format!("recovery_{}_taxable", year.year),
                 year.sheet.line_11,
@@ -765,8 +799,12 @@ pub(crate) fn recovery_issues(
     crate::require_localized!(
         result,
         !d.income.iter().any(|other| {
-            matches!(&other.income, FederalIncome::TaxRefund { history, .. }
-                if history.single_year().is_none() && history.deduction_years().contains(&year))
+            matches!(&other.income, FederalIncome::GovernmentPayment { data }
+            if {
+                let history = crate::FederalTaxRefund::from(data).history;
+                data.form.state_or_local_income_tax_refunds != 0
+                    && history.single_year().is_none() && history.deduction_years().contains(&year)
+            })
         }),
         context,
         source,
@@ -782,5 +820,30 @@ pub(crate) fn recovery_issues(
             "ISSUE_RECOVERY_REFUND_YEAR_FACTS_DIFFER",
             "This recovery and the state or local tax refund of the same year state different itemized or standard deductions for that year. Both come from that year's return: correct whichever is wrong.",
         );
+    }
+}
+
+impl PriorYearRecovery {
+    // IRC 111 and the Form 1098-VLI box 5 instructions: refigure the
+    // nonitemized deduction, rather than apply the Schedule A worksheet.
+    pub(crate) fn vehicle_recovery(prior: &VehicleRecoveryYear, refund: i64) -> Option<i64> {
+        if !prior.ordinary {
+            return None;
+        }
+        use crate::kernel::ratio::dollars;
+        let deduction = |interest| {
+            crate::federal_rules::additional_deductions(
+                dollars(prior.magi),
+                prior.status,
+                0,
+                0,
+                dollars(interest),
+            )[2] * 100
+        };
+        let lost = positive(
+            deduction(prior.eligible_interest)
+                - deduction(positive(prior.eligible_interest - refund)),
+        );
+        Some(positive(lost + prior.taxable_income.min(0)))
     }
 }

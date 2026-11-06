@@ -71,9 +71,9 @@ fn unit13_native_payroll_other_missing_source_packet_is_not_observed_zero() {
     // The actual closed producer knows zero; a missing synthetic packet does not.
     for entry in &mut d.income {
         if let FederalIncome::Wage { data } = &mut entry.income {
-            data.employee_tips = None;
-            data.work_deductions.tips_claim = TipsClaim::No;
-            data.uncollected_tax = Some(W2UncollectedTax {
+            edit_wage(data).employee_tips = None;
+            edit_wage(data).work_deductions.tips_claim = TipsClaim::No;
+            edit_wage(data).uncollected_tax = Some(W2UncollectedTax {
                 tip_social: 0,
                 tip_medicare: 0,
                 life_social: 0,
@@ -90,13 +90,30 @@ fn unit13_native_payroll_other_missing_source_packet_is_not_observed_zero() {
     facts.income_categories.other_payroll_taxes =
         Some(Box::new(NativeOtherPayrollTaxes::default()));
     let totals = actual_liability_totals(&r);
-    let known = crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-        .unwrap();
+    let known = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &r,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert!(crate::injured_spouse::separate_taxes(&d, &known).is_some());
     facts.income_categories.other_payroll_taxes = None;
-    let missing =
-        crate::injured_spouse::owners::project_sources(&d, &r, None, &facts, Some(&totals))
-            .unwrap();
+    let missing = crate::injured_spouse::owners::project_sources(
+        crate::related_forms::RelatedFormContext::original(
+            &d,
+            &crate::related_forms::effective_claimants(&d),
+        ),
+        &r,
+        None,
+        &facts,
+        Some(&totals),
+    )
+    .unwrap();
     assert_eq!(crate::injured_spouse::separate_taxes(&d, &missing), None);
     assert_eq!(supported(&d), r);
 }

@@ -1,7 +1,7 @@
 // Actual retained NIIT-use source attribution under the approved R3/R6
 // shared-limit class. Ordinary money and capital ownership are independent.
 use super::*;
-use crate::tests::cross::interview::{accepted, open_topic};
+use crate::tests::cross::interview::{accepted, open_document_center, open_topic};
 
 #[test]
 fn unit13_niit_partial_survivor_native_money_and_accepted_history_lifecycle() {
@@ -10,15 +10,12 @@ fn unit13_niit_partial_survivor_native_money_and_accepted_history_lifecycle() {
             let d = retained_niit_return(injured, reversed);
             assert_retained_niit_money(&d);
             let mut session = restart(d);
-            for topic in
-                [TaxSection::Wages, TaxSection::InterestDividends, TaxSection::InvestmentSales]
-            {
-                let page = open_topic(&mut session, topic);
-                accepted(&send(&mut session, roundtrip_native_request(page)));
-            }
+            crate::tests::support::client::admit_native_fixture_facts(&mut session);
+            let page = open_document_center(&mut session);
+            accepted(&send(&mut session, roundtrip_native_request(page)));
             let draft = roundtrip_native_draft(session.draft.clone());
             let mut reopened = restart(draft);
-            let page = open_topic(&mut reopened, TaxSection::InvestmentSales);
+            let page = open_document_center(&mut reopened);
             accepted(&send(&mut reopened, page));
             let r = assert_retained_niit_money(&reopened.draft);
             assert_eq!(column(&r, "13b", "b"), 3500);
@@ -213,9 +210,9 @@ fn unit13_niit_partial_survivor_zero_native_tax_needs_no_retained_use_answer() {
             if matches!(entry.income, FederalIncome::Wage { .. }) {
                 *entry = wage(
                     entry.id,
-                    entry.owner,
-                    if entry.owner == Owner::Taxpayer { 10_000_000 } else { 5_000_000 },
-                    if entry.owner == Owner::Taxpayer { 1_000_000 } else { 500_000 },
+                    entry.owner.owned(),
+                    if entry.owner == crate::DocumentOwner::Yours { 10_000_000 } else { 5_000_000 },
+                    if entry.owner == crate::DocumentOwner::Yours { 1_000_000 } else { 500_000 },
                 );
             }
         }
@@ -269,7 +266,7 @@ fn unit13_niit_partial_survivor_opposite_current_exclusions_cannot_mean_known_ze
         .retain(|row| row.component != "capital_loss_limit");
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(savings_income(20_000, 0));
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut d, entry);
     }
     // These ACTUAL native nonpassive excluded capital components are +5000
@@ -291,15 +288,16 @@ fn unit13_niit_partial_survivor_opposite_current_exclusions_cannot_mean_known_ze
     assert_eq!(r.balance, Some(575_800));
     let mut plain = d.clone();
     plain.injured_spouse = None;
-    plain.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+    plain.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
     let ordinary = supported(&plain);
     assert_eq!(ordinary.return_lines, r.return_lines);
     assert_eq!((ordinary.tax, ordinary.balance), (r.tax, r.balance));
     let mut session = restart(d);
-    for topic in [TaxSection::Farming, TaxSection::InvestmentSales] {
-        let page = open_topic(&mut session, topic);
-        accepted(&send(&mut session, roundtrip_native_request(page)));
-    }
+    crate::tests::support::client::admit_native_fixture_facts(&mut session);
+    let page = open_document_center(&mut session);
+    accepted(&send(&mut session, roundtrip_native_request(page)));
+    let page = open_topic(&mut session, TaxSection::Farming);
+    accepted(&send(&mut session, roundtrip_native_request(page)));
     let draft = roundtrip_native_draft(session.draft.clone());
     let result = supported(&restart(draft).draft);
     assert_eq!(result.return_lines, r.return_lines);

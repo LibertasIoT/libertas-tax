@@ -67,34 +67,6 @@ pub(crate) struct Lines {
     pub w_magi_test: bool,
 }
 
-pub(crate) fn itemizes(d: &FederalDraft) -> bool {
-    d.deductions.as_ref().is_some_and(|v| {
-        matches!(
-            v.choice,
-            crate::DeductionSelection::Itemized { .. }
-                | crate::DeductionSelection::Automatic {
-                    expenses: crate::ItemizedChoice::Yes { .. }
-                }
-        )
-    })
-}
-
-pub(crate) fn with_route(d: &FederalDraft, itemize: bool) -> FederalDraft {
-    let mut working = d.clone();
-    if let Some(ded) = working.deductions.as_mut()
-        && let crate::DeductionSelection::Automatic {
-            expenses: crate::ItemizedChoice::Yes { facts },
-        } = &ded.choice
-    {
-        ded.choice = if itemize {
-            crate::DeductionSelection::Itemized { facts: facts.clone() }
-        } else {
-            crate::DeductionSelection::Automatic { expenses: crate::ItemizedChoice::No }
-        };
-    }
-    working
-}
-
 fn separate(d: &FederalDraft) -> bool {
     d.setup.as_ref().is_some_and(|s| s.filing_status() == FederalStatus::Separate)
 }
@@ -149,23 +121,51 @@ pub(crate) struct ScheduleAFacts {
     pub loan_interest_cents: i64,
     pub property_taxes_cents: i64,
     pub mortgage_credit: i64,
-    pub estate_taxes: i64,
 }
 // Transient invocation facts observed by the existing complete-return pass.
 // Default is only the first solver input; it is never accepted source data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HomeContext {
+    pub itemizes: Option<bool>,
     pub agi_dollars: i64,
     pub salt_magi_dollars: Option<i64>,
     pub salt_cap_cents: i64,
+    pub estate_salt_cents: i64,
     pub modified_agi_cents: alloc::collections::BTreeMap<i64, i64>,
+    pub(crate) macrs: Option<alloc::sync::Arc<crate::macrs_source::MacrsElectionView>>,
+    pub(crate) participation:
+        Option<alloc::sync::Arc<crate::direct_participation::DirectParticipationView>>,
 }
 impl HomeContext {
+    pub(crate) fn bind_macrs(
+        &mut self,
+        view: &alloc::sync::Arc<crate::macrs_source::MacrsElectionView>,
+    ) {
+        self.macrs = Some(view.clone());
+    }
+    pub(crate) fn bind_participation(
+        &mut self,
+        view: &alloc::sync::Arc<crate::direct_participation::DirectParticipationView>,
+    ) {
+        self.participation = Some(view.clone());
+    }
+    pub(crate) fn source_context<'a>(
+        &'a self,
+        draft: &'a FederalDraft,
+        claims: &'a alloc::collections::BTreeMap<i64, i64>,
+    ) -> crate::related_forms::RelatedFormContext<'a> {
+        let context = match &self.participation {
+            Some(view) => crate::related_forms::RelatedFormContext::bound(draft, claims, view),
+            None => crate::related_forms::RelatedFormContext::original(draft, claims),
+        };
+        self.macrs.as_ref().map_or(context, |view| context.with_macrs(view))
+    }
     pub(crate) fn stable_with(&self, next: &Self) -> bool {
         self.salt_magi_dollars
             .zip(next.salt_magi_dollars)
             .is_some_and(|(previous, observed)| previous.abs_diff(observed) <= 1)
             && self.salt_cap_cents == next.salt_cap_cents
+            && self.estate_salt_cents == next.estate_salt_cents
             && self.modified_agi_cents.len() == next.modified_agi_cents.len()
             && self.modified_agi_cents.iter().all(|(site, amount)| {
                 next.modified_agi_cents.get(site).is_some_and(|next| amount.abs_diff(*next) <= 100)
@@ -173,14 +173,39 @@ impl HomeContext {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn next_context(
     draft: &FederalDraft,
     agi_dollars: i64,
     salt_magi_dollars: i64,
     salt_cap_cents: i64,
+    estate_salt_cents: i64,
     selected: Option<&crate::Section179PreparedAllocation>,
     current: &HomeContext,
 ) -> Result<HomeContext, crate::Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    next_context_with_claims(
+        crate::related_forms::RelatedFormContext::original(draft, &source_claims),
+        agi_dollars,
+        salt_magi_dollars,
+        salt_cap_cents,
+        estate_salt_cents,
+        selected,
+        current,
+    )
+}
+
+pub(crate) fn next_context_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    agi_dollars: i64,
+    salt_magi_dollars: i64,
+    salt_cap_cents: i64,
+    estate_salt_cents: i64,
+    selected: Option<&crate::Section179PreparedAllocation>,
+    current: &HomeContext,
+) -> Result<HomeContext, crate::Section179PreparedIssue> {
+    let crate::related_forms::RelatedFormContext { draft, claims: source_claims, .. } =
+        form_context;
     // The Line 11 Worksheet stops on successive observed SALT MAGI, keeping
     // this pass's results and its input cap rather than applying another cap.
     let salt_cap_cents = if current
@@ -192,12 +217,16 @@ pub(crate) fn next_context(
         salt_cap_cents
     };
     let mut result = HomeContext {
+        itemizes: current.itemizes,
         agi_dollars,
         salt_magi_dollars: Some(salt_magi_dollars),
         salt_cap_cents,
+        estate_salt_cents,
         modified_agi_cents: Default::default(),
+        participation: Some(form_context.participation()),
+        macrs: Some(form_context.macrs()),
     };
-    let profits = invocation_profits(draft, selected, current)?;
+    let profits = invocation_profits_with_claims(draft, selected, current, source_claims)?;
     let calculations =
         site_calculation::calculate(draft, &profits, current).map_err(|(site, key)| {
             crate::Section179PreparedIssue::SourceBoundaryUnavailable(site, key)
@@ -214,8 +243,8 @@ pub(crate) fn next_context(
                     "HOME_CASUALTY_CHARACTER_UNAVAILABLE",
                 ),
             )?;
-            // 2026-10-17, i8829 line9/MIP Step1 and dispatcher D06:
-            // exclude home gross and home-use deductions only. Nonhome
+            // Form 8829 line 9 and mortgage-premium Step 1 exclude
+            // home gross and home-use deductions only. Nonhome
             // business costs and every other actual adjustment stay observed.
             let net = calculation
                 .gross_cents
@@ -251,11 +280,23 @@ impl HomeIncome {
     // Schedule C line 7 excludes cost of goods sold, and line 28 does not
     // deduct that cost again. Schedule F's receipt owner already nets its
     // resale and inventory costs.
+    #[cfg(test)]
     pub(crate) fn from_source(
         draft: &FederalDraft,
         source: i64,
         business: &FederalBusiness,
         operating_cents: i64,
+    ) -> Result<Self, crate::Section179PreparedIssue> {
+        let source_claims = crate::related_forms::effective_claimants(draft);
+        Self::from_source_with_claims(draft, source, business, operating_cents, &source_claims)
+    }
+
+    pub(crate) fn from_source_with_claims(
+        draft: &FederalDraft,
+        source: i64,
+        business: &FederalBusiness,
+        operating_cents: i64,
+        source_claims: &alloc::collections::BTreeMap<i64, i64>,
     ) -> Result<Self, crate::Section179PreparedIssue> {
         let goods = if matches!(business.activity, crate::BusinessActivity::Farming { .. }) {
             0
@@ -263,9 +304,14 @@ impl HomeIncome {
             business.inventory.cost()
         };
         Ok(Self {
-            gross_cents: crate::federal_rules::farm_receipts(draft, source, business)?
-                .checked_sub(goods)
-                .ok_or(crate::Section179PreparedIssue::AmountOverflow(source))?,
+            gross_cents: crate::federal_rules::farm_receipts_with_claims(
+                draft,
+                source,
+                business,
+                source_claims,
+            )?
+            .checked_sub(goods)
+            .ok_or(crate::Section179PreparedIssue::AmountOverflow(source))?,
             operating_cents: operating_cents
                 .checked_sub(goods)
                 .ok_or(crate::Section179PreparedIssue::AmountOverflow(source))?,
@@ -273,12 +319,29 @@ impl HomeIncome {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn deduction_with_context(
     draft: &FederalDraft,
     source: i64,
     profits: &alloc::collections::BTreeMap<i64, HomeIncome>,
     home: &HomeContext,
 ) -> Result<i64, crate::Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    deduction_with_context_with_claims(
+        home.source_context(draft, &source_claims),
+        source,
+        profits,
+        home,
+    )
+}
+
+pub(crate) fn deduction_with_context_with_claims(
+    form_context: crate::related_forms::RelatedFormContext<'_>,
+    source: i64,
+    profits: &alloc::collections::BTreeMap<i64, HomeIncome>,
+    home: &HomeContext,
+) -> Result<i64, crate::Section179PreparedIssue> {
+    let draft = form_context.draft;
     if !draft
         .income
         .iter()
@@ -307,8 +370,8 @@ pub(crate) fn deduction_with_context(
     let income = profits
         .get(&source)
         .ok_or(crate::Section179PreparedIssue::SourceIncomeUnavailable(source))?;
-    if crate::unknowns::business_loss_needs_risk(
-        draft,
+    if crate::unknowns::business_loss_needs_risk_with_claims(
+        form_context,
         source,
         data,
         data.expense_with_office(
@@ -331,10 +394,11 @@ pub(crate) fn deduction_with_context(
     Ok(deduction)
 }
 
-fn invocation_profits(
+fn invocation_profits_with_claims(
     draft: &FederalDraft,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: &HomeContext,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<alloc::collections::BTreeMap<i64, HomeIncome>, crate::Section179PreparedIssue> {
     draft
         .income
@@ -347,15 +411,22 @@ fn invocation_profits(
                 selected
                     .map_or_else(
                         || {
-                            crate::section179_return::operating(
+                            crate::section179_return::operating_with_claims(
                                 draft,
                                 entry.id,
                                 data,
                                 None,
                                 Some(home),
+                                source_claims,
                             )
                             .and_then(|operating_cents| {
-                                HomeIncome::from_source(draft, entry.id, data, operating_cents)
+                                HomeIncome::from_source_with_claims(
+                                    draft,
+                                    entry.id,
+                                    data,
+                                    operating_cents,
+                                    source_claims,
+                                )
                             })
                         },
                         |value| value.home_income(entry.id),
@@ -366,13 +437,14 @@ fn invocation_profits(
         .collect()
 }
 
-pub(crate) fn report_with_section179(
+pub(crate) fn report_with_section179_with_claims(
     draft: &FederalDraft,
     result: &mut FederalResult,
     source: i64,
     _business: &FederalBusiness,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<(), crate::Section179PreparedIssue> {
     if draft.home_sites.is_empty() {
         return Ok(());
@@ -381,11 +453,12 @@ pub(crate) fn report_with_section179(
         source,
         "HOME_CONTEXT_REQUIRED",
     ))?;
-    let calculations =
-        site_calculation::calculate(draft, &invocation_profits(draft, selected, home)?, home)
-            .map_err(|(site, key)| {
-                crate::Section179PreparedIssue::SourceBoundaryUnavailable(site, key)
-            })?;
+    let calculations = site_calculation::calculate(
+        draft,
+        &invocation_profits_with_claims(draft, selected, home, source_claims)?,
+        home,
+    )
+    .map_err(|(site, key)| crate::Section179PreparedIssue::SourceBoundaryUnavailable(site, key))?;
     for calculation in calculations {
         // One Form8829 per physical home and owner, emitted from its leading
         // actual activity; each activity's own deduction remains separately allocated.
@@ -426,8 +499,11 @@ pub(crate) fn schedule_a_shares(
     let mut interest = [exact::whole(0), exact::whole(0)];
     let mut points = [exact::whole(0), exact::whole(0)];
     let mut insurance = exact::whole(0);
-    let loans = draft.deductions.as_ref().map_or(&[][..], |ded| ded.mortgage_loans());
-    let allowances = crate::mortgage_limit::loan_allowances(loans, separate(draft));
+    let loans = draft
+        .deductions
+        .as_ref()
+        .map_or_else(alloc::vec::Vec::new, |ded| ded.mortgage_loans().unwrap_or_default());
+    let allowances = crate::mortgage_limit::loan_allowances(&loans, separate(draft));
     for site in &draft.home_sites {
         let source_taxes = crate::kernel::ratio::checked_sum(
             site.costs
@@ -507,14 +583,7 @@ pub(crate) fn schedule_a_checks_with_section179(
         facts.paid_interest,
         facts.loan_interest_cents,
         facts.property_taxes_cents,
-        facts.estate_taxes,
     );
-    if facts.estate_taxes != 0 && has_actual(draft) {
-        return Err(crate::Section179PreparedIssue::SourceBoundaryUnavailable(
-            0,
-            "HOME_ESTATE_SALT_SOURCE_UNAVAILABLE",
-        ));
-    }
     if facts.mortgage_credit != 0
         && draft.home_sites.iter().any(|site| !site.mortgage_loans.is_empty())
     {
@@ -529,29 +598,47 @@ pub(crate) fn schedule_a_checks_with_section179(
 // The current canonical source slice admits home losses, whose recognized
 // business gains/recapture remain explicitly unavailable in the casualty owner.
 // With no admitted gains, Form4684 Section B net losses are ordinary losses.
+#[cfg(test)]
 pub(crate) fn casualty_ordinary(
     draft: &FederalDraft,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: &HomeContext,
 ) -> Result<i64, crate::Section179PreparedIssue> {
-    crate::kernel::ratio::checked_sum(casualty_by_owner(draft, selected, home)?)
-        .ok_or(crate::Section179PreparedIssue::AggregateAmountOverflow)
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    casualty_ordinary_with_claims(draft, selected, home, &source_claims)
 }
 
-pub(crate) fn casualty_by_owner(
+pub(crate) fn casualty_ordinary_with_claims(
     draft: &FederalDraft,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: &HomeContext,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<i64, crate::Section179PreparedIssue> {
+    crate::kernel::ratio::checked_sum(casualty_by_owner_with_claims(
+        draft,
+        selected,
+        home,
+        source_claims,
+    )?)
+    .ok_or(crate::Section179PreparedIssue::AggregateAmountOverflow)
+}
+
+pub(crate) fn casualty_by_owner_with_claims(
+    draft: &FederalDraft,
+    selected: Option<&crate::Section179PreparedAllocation>,
+    home: &HomeContext,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<[i64; 2], crate::Section179PreparedIssue> {
     let mut amounts = [0i64; 2];
     if draft.home_sites.is_empty() {
         return Ok(amounts);
     }
-    for calculation in
-        site_calculation::calculate(draft, &invocation_profits(draft, selected, home)?, home)
-            .map_err(|(site, key)| {
-                crate::Section179PreparedIssue::SourceBoundaryUnavailable(site, key)
-            })?
+    for calculation in site_calculation::calculate(
+        draft,
+        &invocation_profits_with_claims(draft, selected, home, source_claims)?,
+        home,
+    )
+    .map_err(|(site, key)| crate::Section179PreparedIssue::SourceBoundaryUnavailable(site, key))?
     {
         let loss = calculation.casualty.allowed_casualty_cents().ok_or(
             crate::Section179PreparedIssue::SourceBoundaryUnavailable(
@@ -569,12 +656,13 @@ pub(crate) fn casualty_by_owner(
 
 /// Match the return's once-rounded ordinary amount while preserving its known
 /// taxpayer/spouse source attribution through the existing native projection.
-pub(crate) fn casualty_by_owner_dollars(
+pub(crate) fn casualty_by_owner_dollars_with_claims(
     draft: &FederalDraft,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: &HomeContext,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<[i64; 2], crate::Section179PreparedIssue> {
-    let cents = casualty_by_owner(draft, selected, home)?;
+    let cents = casualty_by_owner_with_claims(draft, selected, home, source_claims)?;
     let total = crate::kernel::ratio::checked_sum(cents)
         .ok_or(crate::Section179PreparedIssue::AggregateAmountOverflow)?;
     crate::kernel::ratio::project_rounded_pair(crate::kernel::ratio::dollars(total), cents, 0)

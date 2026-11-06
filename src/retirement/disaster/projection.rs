@@ -3,7 +3,8 @@
 // The earlier source IDs remain untagged; their combined IRA taxable row is
 // not actual line20. This projection splits18/19/20 and preserves their21 sum.
 use super::Form;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row};
+use crate::kernel::lines::{LineValue, row};
+use crate::line_emission::emit as emit_lines;
 use crate::{FederalDraft, FederalIncome, FederalIncomeEntry, FederalResult, FormLine, TaxForm};
 use alloc::collections::BTreeMap;
 
@@ -25,7 +26,14 @@ pub(super) struct Projection {
 fn category(entry: &FederalIncomeEntry) -> usize {
     match &entry.income {
         FederalIncome::Roth { .. } => 2,
-        FederalIncome::Retirement { data } if data.kind.ira() => 1,
+        FederalIncome::Retirement { data: source }
+            if {
+                let data = &crate::FederalRetirement::from(source);
+                data.kind.ira()
+            } =>
+        {
+            1
+        }
         _ => 0,
     }
 }
@@ -39,11 +47,11 @@ impl Projection {
         taxable: i64,
     ) {
         let disaster = match &entry.income {
-            FederalIncome::Roth { data } => &data.disaster,
-            FederalIncome::Retirement { data } => &data.disaster,
+            FederalIncome::Roth { data } => crate::RothWithdrawal::from(data).disaster,
+            FederalIncome::Retirement { data } => crate::FederalRetirement::from(data).disaster,
             _ => unreachable!(),
         };
-        let crate::DisasterDistribution::Qualified { fema, earlier, .. } = disaster else {
+        let crate::DisasterDistribution::Qualified { fema, earlier, .. } = &disaster else {
             unreachable!();
         };
         let category = category(entry);
@@ -62,11 +70,17 @@ impl Projection {
             }
             Some(_) => false,
             None => {
-                let who = if entry.owner == crate::Owner::Spouse { "spouse" } else { "taxpayer" };
+                let who = if entry.owner == crate::DocumentOwner::Spouses {
+                    "spouse"
+                } else {
+                    "taxpayer"
+                };
                 let kind = if category == 2 { "roth" } else { "ira" };
                 let first = if category == 2 { "19" } else { "15a" };
                 let basis_method = category == 2
-                    || matches!(&entry.income, FederalIncome::Retirement { data } if data.taxable == crate::RetirementTaxable::IraBasis);
+                    || entry.income.retirement().is_some_and(|data| {
+                        data.taxable == Some(crate::RetirementTaxable::IraBasis)
+                    });
                 basis_method
                     && r.lines
                         .iter()
@@ -100,11 +114,17 @@ pub(super) fn available(d: &FederalDraft) -> [[i64; 3]; 2] {
     let mut total = [[0; 3]; 2];
     for entry in &d.income {
         let gross = match &entry.income {
-            FederalIncome::Retirement { data } => data.gross,
-            FederalIncome::Roth { data } => data.gross,
+            FederalIncome::Retirement { data: source } => {
+                let data = &crate::FederalRetirement::from(source);
+                data.gross
+            }
+            FederalIncome::Roth { data: source } => {
+                let data = &crate::RothWithdrawal::from(source);
+                data.gross
+            }
             _ => continue,
         };
-        total[usize::from(entry.owner == crate::Owner::Spouse)][category(entry)] += gross;
+        total[usize::from(entry.owner == crate::DocumentOwner::Spouses)][category(entry)] += gross;
     }
     total
 }

@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 47000, "rule": {"select": "^<Form1098VliPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "lender", "lender_telephone", "payer_of_record", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_1", "box_2a", "box_2b", "box_2c", "box_2d", "box_3a", "box_3b", "box_4", "box_5", "box_6", "box_7"]}]}},
+    {"order": 48000, "rule": {"select": "^<Form1098VliPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "lender", "lender_telephone", "payer_of_record", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_1", "box_2a", "box_2b", "box_2c", "box_2d", "box_3a", "box_3b", "box_4", "box_5", "box_6", "box_7"]}]}},
+    {"order": 697000, "rule": {"select": "^<Form1098VliPaper>.lender", "promote": true}}
+  ]
+}

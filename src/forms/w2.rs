@@ -1,8 +1,10 @@
-// Coverage: Form W-2 — Supported (unit B10-2; audited 2026-10-12).
+// Coverage: Form W-2 — Supported (audited 2026-10-12).
 //   Boxes 1–8 and 10–14: ordinary wages/withholding, allocated/actual/noncash tips,
 //   qualified tips without code TP, D/E/F/S/G/H/AA/BB/EE deferrals, W/T benefits,
 //   A/B/M/N uncollected payroll tax, K section 4999 tax, Q combat pay, II Medicaid
-//   waiver exclusions and TA employer contributions. Statutory box 13 routes gross
+//   waiver exclusions and TA employer contributions. Box d control number and
+//   informational box 12 C/J/V/Y/DD/GG/HH retain their printed values without
+//   changing the wage boxes or adding a second tax treatment. Statutory box 13 routes gross
 //   pay once to the same owner's expenses-only Schedule C (or a zero-expense C),
 //   retains QBI, uses gross pay for earned income and excludes the profit from SE.
 //   Box 14a RRTA compensation/tier 1/tier 2/Medicare/actual additional withholding
@@ -70,13 +72,7 @@ pub(crate) fn collect(ctx: &mut WageContext<'_>, w: &FederalWage) {
         crate::W2Payroll::SocialSecurity => {
             (w.social_wages + w.social_tips, w.social_tax, w.medicare_wages, w.medicare_tax)
         }
-        crate::W2Payroll::Railroad {
-            compensation,
-            tier_1,
-            tier_2,
-            medicare,
-            additional_medicare,
-        } => {
+        crate::W2Payroll::Railroad { compensation, tier_1, medicare, .. } => {
             crate::require_localized!(
                 r,
                 w.social_wages == 0
@@ -89,10 +85,7 @@ pub(crate) fn collect(ctx: &mut WageContext<'_>, w: &FederalWage) {
                 "W2_RAILROAD_WITH_SOCIAL_SECURITY_BOXES",
                 "Railroad retirement compensation belongs in box 14a; boxes 3 through 7 must be blank.",
             );
-            t.rrta_compensation[owner] += compensation;
-            t.rrta_medicare[owner] += medicare;
-            t.rrta_additional_withheld[owner] += additional_medicare;
-            t.rrta_tier_2_forms[owner] += i64::from(tier_2 > 0);
+            collect_railroad(t, owner, &w.payroll);
             if w.employee_tips.is_some() {
                 crate::federal_rules::note_once_scoped(
                     r,
@@ -128,6 +121,16 @@ pub(crate) fn collect(ctx: &mut WageContext<'_>, w: &FederalWage) {
         "A church employee or ministerial W-2 must show zero Social Security and Medicare wages (boxes 3 and 5); box 1 is reported on Schedule SE line 5a for church employees or line 2 for ministerial services.",
     );
     if let Some(facts) = &w.employee_tips {
+        if w.tips_without_w2 && facts.coverage == crate::TipCoverage::Railroad {
+            crate::federal_rules::note_once_scoped(
+                r,
+                crate::Message::new(
+                    "NOTE_RAILROAD_TIPS_REPORT_TO_EMPLOYER",
+                    alloc::vec::Vec::new(),
+                ),
+                ctx.context.clone(),
+            );
+        }
         match facts.calculate() {
             Ok(tips) => {
                 t.wages[owner] += tips.income;
@@ -225,7 +228,9 @@ pub(crate) fn collect(ctx: &mut WageContext<'_>, w: &FederalWage) {
         social_wages <= crate::year_constants::SOCIAL_SECURITY_WAGE_BASE_CENTS
             && social_tax + uncollected_social
                 <= crate::year_constants::MAX_EMPLOYEE_SOCIAL_SECURITY_TAX_CENTS
-            && social_tax + uncollected_social <= fraction(social_wages, 62, 1000) + 1,
+            && social_tax + uncollected_social
+                <= fraction(social_wages, 62, 1000)
+                    + crate::year_constants::W2_PAYROLL_RATE_ROUNDING_TOLERANCE_CENTS,
         &ctx.context,
         source,
         "ISSUE_EXCESS_SOCIAL_SECURITY_WITHHOLDING_BY_ONE_EMPLOYER_REQUIRES_EMPLOYE_35C66F28",
@@ -233,10 +238,27 @@ pub(crate) fn collect(ctx: &mut WageContext<'_>, w: &FederalWage) {
     );
     crate::require_localized!(
         r,
-        medicare_tax + uncollected_medicare + 1 >= fraction(medicare_wages, 145, 10000),
+        medicare_tax
+            + uncollected_medicare
+            + crate::year_constants::W2_PAYROLL_RATE_ROUNDING_TOLERANCE_CENTS
+            >= fraction(medicare_wages, 145, 10000),
         &ctx.context,
         source,
         "ISSUE_MEDICARE_WITHHOLDING_BELOW_ORDINARY_PAYROLL_TAX_REQUIRES_SPECIAL_PA_3993480B",
         "Medicare withholding below ordinary payroll tax requires special payroll review.",
     );
+}
+
+// The actual RRTA source accumulator shared with employee pay without a W-2.
+// No box1 income, ordinary Medicare wages, tip, credit or employer checks here.
+pub(crate) fn collect_railroad(t: &mut Totals, owner: usize, payroll: &crate::W2Payroll) {
+    if let crate::W2Payroll::Railroad {
+        compensation, tier_2, medicare, additional_medicare, ..
+    } = payroll
+    {
+        t.rrta_compensation[owner] += compensation;
+        t.rrta_medicare[owner] += medicare;
+        t.rrta_additional_withheld[owner] += additional_medicare;
+        t.rrta_tier_2_forms[owner] += i64::from(*tier_2 > 0);
+    }
 }

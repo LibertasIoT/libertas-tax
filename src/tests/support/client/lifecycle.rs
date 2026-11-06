@@ -68,6 +68,12 @@ pub(in crate::tests) fn roundtrip_native_request(request: P) -> P {
 pub(in crate::tests) fn roundtrip_native_draft(draft: FederalDraft) -> FederalDraft {
     let records = native_draft_records(&draft);
     let decoded = draft_from_native_records(draft.tax_year, &records);
+    if decoded != draft {
+        extern crate std;
+        use std::format;
+        std::fs::write("/tmp/claude-1000/dbg/rt_a.txt", format!("{:#?}", decoded)).ok();
+        std::fs::write("/tmp/claude-1000/dbg/rt_b.txt", format!("{:#?}", draft)).ok();
+    }
     assert_eq!(decoded, draft);
     assert_eq!(native_draft_records(&decoded), records);
     decoded
@@ -106,4 +112,85 @@ pub(in crate::tests) fn draft_from_native_records(
         .collect();
     let (draft, _) = crate::return_records::assemble(TEST_USER, tax_year, decoded).unwrap();
     draft
+}
+
+pub(in crate::tests) fn answer_no_estimates(reply: Reply) -> Reply {
+    answer_payment_method(reply, None)
+}
+pub(in crate::tests) fn answer_payment_method(
+    reply: Reply,
+    accepted_plan: Option<crate::NextYearEstimate>,
+) -> Reply {
+    // Retain an actual accepted answer only while the server still offers it.
+    // A singleton NotNeeded is the server's sole applicable answer, not a new
+    // Yes/No fact. An inapplicable accepted answer otherwise remains unanswered.
+    let next_year = match &reply {
+        Reply::Response(P::BeginPayments { allowed_farmer_next_year, value, .. }) => {
+            let mut plan = accepted_plan.or_else(|| {
+                matches!(value.more.next_year, crate::federal_model::NextYearInitial::NotNeeded)
+                    .then_some(crate::NextYearEstimate::NotNeeded)
+            });
+            if let Some(
+                crate::NextYearEstimate::SameAsThisReturn { farmer_fisherman_next_year }
+                | crate::NextYearEstimate::WithChanges { farmer_fisherman_next_year, .. },
+            ) = &mut plan
+            {
+                if allowed_farmer_next_year.as_slice() == [crate::FarmerNextYear::NotNeeded as i32]
+                {
+                    *farmer_fisherman_next_year = crate::FarmerNextYear::NotNeeded;
+                } else if !allowed_farmer_next_year.contains(&(*farmer_fisherman_next_year as i32))
+                {
+                    plan = None;
+                }
+            }
+            plan
+        }
+        _ => None,
+    };
+    let Some(next_year) = next_year else {
+        return reply;
+    };
+    match reply {
+        Reply::Response(P::BeginPayments {
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate,
+            warnings,
+            progress,
+            allowed_prior_returns,
+            allowed_farmer,
+            allowed_farmer_next_year,
+            allowed_refund_management,
+            value,
+        }) => Reply::Edit(P::SavePayments {
+            user: TEST_USER,
+            cookie,
+            revision,
+            page,
+            previous,
+            review,
+            estimate: estimate.map(Into::into),
+            warnings,
+            progress,
+            allowed_prior_returns,
+            allowed_farmer,
+            allowed_farmer_next_year,
+            allowed_refund_management,
+            value: crate::Payments {
+                withheld: value.withheld,
+                estimated: value.estimated.unwrap_or(crate::EstimatedPaymentEntry::None),
+                extension: value.extension,
+                more: crate::PaymentsMore {
+                    penalty: value.more.penalty,
+                    next_year,
+                    extension_payer: value.more.extension_payer,
+                    extension_refund_property: value.more.extension_refund_property,
+                },
+            },
+        }),
+        other => other,
+    }
 }

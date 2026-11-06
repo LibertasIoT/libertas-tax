@@ -47,15 +47,18 @@ pub enum RiskMethod {
 pub struct RiskSimplified {
     /// Adjusted basis at the start of 2026, without subtracting liabilities
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis_start: i64,
     /// Nonfinancing increases during 2026, excluding current income and gains
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub increases: i64,
     /// Nonfinancing decreases and excluded amounts, excluding current losses
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub decreases: i64,
 }
 
@@ -66,11 +69,13 @@ pub struct RiskDetailed {
     pub opening: RiskDetailedOpening,
     /// Nonfinancing increases over the applicable interval, excluding current Part I income and gains
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub increases: i64,
     /// Nonfinancing decreases over the applicable interval, excluding current Part I losses
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub decreases: i64,
     /// Depletion and basis by year over that same interval
     pub depletion: Vec<RiskDepletionYear>,
@@ -98,13 +103,15 @@ pub enum RiskDetailedOpening {
         investment: RiskHistoricalInvestment,
         /// Eligible net outside collateral at the effective date (line 12)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         collateral: i64,
         /// Earlier losses and amounts not at risk by year (line 12 worksheet)
         earlier_losses: Vec<RiskEarlierLoss>,
         /// Other excluded amounts at the effective date, excluding financing entered below
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         excluded_other: i64,
     },
@@ -144,12 +151,14 @@ pub struct PriorRiskBalance {
     pub year: u32,
     /// Regular line 19b, including an actual zero
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_llm_doc_field(allow_empty = false)]
     pub regular: i64,
     /// Separately tracked AMT line 19b, including an actual zero
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amt: i64,
 }
 
@@ -158,35 +167,43 @@ pub struct PriorRiskBalance {
 pub struct RiskHistoricalInvestment {
     /// Cash in the activity
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub cash: i64,
     /// Inventory
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub inventory: i64,
     /// Cost or other basis of depreciable assets
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depreciable_basis: i64,
     /// Accumulated depreciation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depreciation: i64,
     /// Basis of depletable assets when contributed
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depletable_basis: i64,
     /// Accumulated depletion since contribution
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depletion: i64,
     /// Adjusted land basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub land_basis: i64,
     /// Other asset basis
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub other_basis: i64,
     /// Accounting method at the effective date
     pub accounting: RiskHistoricalAccounting,
@@ -201,15 +218,18 @@ pub enum RiskHistoricalAccounting {
     Accrual {
         /// Trade notes and accounts receivable
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         receivable: i64,
         /// Bad-debt reserve actually deducted under former section 166(c)
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         reserve: i64,
         /// Accounts payable
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         payable: i64,
     },
 }
@@ -223,11 +243,13 @@ pub struct RiskEarlierLoss {
     pub year: u32,
     /// Net loss after the worksheet excess-depletion adjustment
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub loss: i64,
     /// Amounts not at risk at that year end
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub not_at_risk: i64,
 }
 
@@ -240,11 +262,13 @@ pub struct RiskDepletionYear {
     pub year: u32,
     /// Depletion deduction
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub depletion: i64,
     /// Adjusted basis for that depletion computation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub basis: i64,
 }
 
@@ -256,7 +280,8 @@ pub struct RiskFinancing {
     pub description: String,
     /// Principal included in this computation
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub amount: i64,
     /// Where this amount enters the computation
     pub movement: RiskFinancingMovement,
@@ -291,7 +316,8 @@ pub enum RiskFinancingTerms {
     Recourse {
         /// Principal protected against economic loss
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         protected: i64,
         /// Lender has an interest in the activity other than as a creditor, or is related to such a person
@@ -309,11 +335,13 @@ pub enum RiskFinancingTerms {
     OutsideCollateral {
         /// Eligible net fair market value of outside collateral
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         collateral: i64,
         /// Principal protected against economic loss
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         protected: i64,
         /// Lender has an interest in the activity other than as a creditor, or is related to such a person
@@ -391,11 +419,13 @@ pub enum RiskQnfCollateral {
     Other {
         /// Total gross fair market value of collateral
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         total_gross_fmv: i64,
         /// Gross fair market value of nonincidental other collateral
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         other_gross_fmv: i64,
     },
 }
@@ -410,7 +440,8 @@ pub struct RiskRecaptureHistory {
     /// Negative closing 1978 risk floor, only where that historical exception applies
     #[libertas_money("USD", 2)]
     // Tax structure: the historical 1978 risk floor is nonpositive.
-    #[libertas_number(max = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(max = 0, min = -100000000000)]
     #[libertas_default(0)]
     pub floor_1978: i64,
 }
@@ -420,11 +451,13 @@ pub struct RiskRecaptureHistory {
 pub struct RiskRecaptureAmounts {
     /// Losses actually deducted after 1978
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub deducted_post1978: i64,
     /// Prior recapture already reported
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub recaptured_before: i64,
 }
 

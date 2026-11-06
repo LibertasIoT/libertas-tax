@@ -2,15 +2,30 @@ use super::*;
 use crate::tests::cross::interview::{
     accepted, document, open_topic, page_documents, rejected_with, save_topic,
 };
+use crate::tests::support::client::income_pages::{open_documents, save_documents};
 
-fn save_investments(s: &mut Interview, documents: Vec<IncomeDocument>) -> Reply {
-    let request = save_topic(
-        &s.draft,
-        TaxSection::InterestDividends,
-        documents.into_iter().map(|d| document(0, d)).collect(),
-    );
+fn save_investments(s: &mut Interview, documents: Vec<IncomeSource>) -> Reply {
+    let (records, sources): (Vec<_>, Vec<_>) = documents
+        .into_iter()
+        .map(|d| document(0, d))
+        .partition(|row| matches!(row.document, IncomeSource::Record { .. }));
+    let source_reply = if sources.is_empty() {
+        None
+    } else {
+        let reply = crate::tests::support::client::income_pages::save_source_fixtures(s, sources);
+        if matches!(reply, Reply::Response(P::Problem { .. })) {
+            return reply;
+        }
+        accepted(&reply);
+        Some(reply)
+    };
+    if records.is_empty() {
+        return source_reply.expect("at least one source or record");
+    }
+    let request = save_topic(s, TaxSection::InterestDividends, records);
     send(s, request)
 }
+
 fn investment_session() -> Interview {
     Interview::new(TEST_USER, complete(FederalStatus::Single))
 }
@@ -25,17 +40,14 @@ fn printed_interest() -> Int1099 {
         ..native_int1099("Broker".into(), 100_000)
     }
 }
-fn printed_dividend() -> Div1099 {
-    Div1099 {
-        more: DivMore {
-            capital_distributions: 50_000,
-            section_897_ordinary: 40_000,
-            section_897_capital: 20_000,
-            foreign_country: "United Kingdom".into(),
-            ..Default::default()
-        },
+fn printed_dividend() -> DividendSource {
+    div1099_source(Div1099 {
+        capital_distributions: 50_000,
+        section_897_ordinary: 40_000,
+        section_897_capital: 20_000,
+        foreign_country: "United Kingdom".into(),
         ..native_div1099("Fund".into(), 100_000, 0)
-    }
+    })
 }
 fn printed_oid() -> Oid1099 {
     Oid1099 {
@@ -55,29 +67,53 @@ fn injured_spouse_merged_1099_components_keep_owner_through_save_and_restart() {
         wage(2, Owner::Spouse, 2_000_000, 50_000),
     ];
     d.next_id = 3;
-    d.checklist.whole_return |= WholeReturnTopics::INJURED_SPOUSE.0;
+    d.set_situations(SpouseSituations::INJURED_SPOUSE.0, true);
     d.injured_spouse = Some(InjuredSpouseAllocation::defaults());
     let mut s = Interview::new(TEST_USER, d);
     let mut int = printed_interest();
     int.taxable = 150_000;
     int.more = IntMore { withholding: 2_000, ..Default::default() };
-    int.nominee = Some(InterestNominee { taxable: 45_000, ..Default::default() });
+    int.nominee = Some(InterestNominee { taxable: 45_000, ..Default::default() }.into());
     let mut oid = printed_oid();
     oid.oid = 100_000;
     oid.other_periodic_interest = 0;
     oid.more = OidMore::default();
-    oid.nominee = Some(OidNominee { oid: 20_000, ..Default::default() });
+    oid.nominee = Some(OidNominee { oid: 20_000, ..Default::default() }.into());
     let mut div = printed_dividend();
-    div.more = DivMore { capital_distributions: 50_000, withholding: 3_000, ..Default::default() };
-    div.nominee = Some(DividendNominee { ordinary: 30_000, capital: 10_000, ..Default::default() });
+    div.form = div1099_source(Div1099 {
+        capital_distributions: 50_000,
+        withholding: 3_000,
+        ..native_div1099("Fund".into(), 100_000, 0)
+    })
+    .form;
+    div.nominee =
+        Some(DividendNominee { ordinary: 30_000, capital: 10_000, ..Default::default() }.into());
     let mut rows = vec![
-        document(0, IncomeDocument::Int1099(int.clone())),
-        document(0, IncomeDocument::Oid1099(oid.clone())),
-        document(0, IncomeDocument::Div1099(div.clone())),
+        document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(int.clone())),
+            },
+        ),
+        document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Oid1099(oid_document(oid.clone())),
+            },
+        ),
+        document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(div.clone())),
+            },
+        ),
     ];
-    rows[2].owner = Owner::Spouse;
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, rows);
-    accepted(&send(&mut s, request));
+    rows[2].owner = crate::DocumentOwner::Spouses;
+    let request = save_documents(&mut s, rows);
+    let request = fixture_owner_inputs(&s.draft, request);
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut s, request,
+    ));
     let original = s.draft.clone();
     let result = supported(&original);
     for (line, amounts) in [("13b", [2_950, 1_850, 1_100]), ("19", [5_550, 5_020, 530])] {
@@ -96,16 +132,32 @@ fn injured_spouse_merged_1099_components_keep_owner_through_save_and_restart() {
     let identities: Vec<_> = original.income.iter().map(|e| (e.id, e.owner)).collect();
     let mut s = restart(original.clone());
     assert_eq!(estimate(&s.draft), result);
-    let reopened = page_documents(&open_topic(&mut s, TaxSection::InterestDividends)).to_vec();
+    int.recipient = accepted_document_names(&s.draft, Owner::Taxpayer).recipient;
+    oid.recipient = accepted_document_names(&s.draft, Owner::Taxpayer).recipient;
+    div.form.recipient = accepted_document_names(&s.draft, Owner::Spouse).recipient;
+    int.more.calls = IntCalls { nominee: vec![0], ..Default::default() };
+    oid.more.calls = OidCalls { nominee: vec![0] };
+    div.calls = DivCalls { nominee: vec![0], ..Default::default() };
+    let reopened = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect::<Vec<_>>();
     assert_eq!(
         reopened.iter().map(|r| r.document.clone()).collect::<Vec<_>>(),
         vec![
-            IncomeDocument::Int1099(int),
-            IncomeDocument::Oid1099(oid),
-            IncomeDocument::Div1099(div)
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(int))
+            },
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Oid1099(oid_document(oid))
+            },
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(div))
+            }
         ]
     );
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, reopened);
+    let request = save_documents(&mut s, reopened);
+    let request = fixture_owner_inputs(&s.draft, request);
     accepted(&send(&mut s, request));
     assert_eq!(s.draft.income.iter().map(|e| (e.id, e.owner)).collect::<Vec<_>>(), identities);
     let mut reversed = s.draft.clone();
@@ -126,9 +178,15 @@ fn injured_spouse_merged_1099_components_keep_owner_through_save_and_restart() {
 #[test]
 fn investment_printed_boxes_flow_once_through_public_page_and_restart() {
     let documents = vec![
-        IncomeDocument::Int1099(printed_interest()),
-        IncomeDocument::Div1099(printed_dividend()),
-        IncomeDocument::Oid1099(printed_oid()),
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(printed_interest())),
+        },
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(printed_dividend())),
+        },
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Oid1099(oid_document(printed_oid())),
+        },
     ];
     let mut s = investment_session();
     accepted(&save_investments(&mut s, documents.clone()));
@@ -138,11 +196,12 @@ fn investment_printed_boxes_flow_once_through_public_page_and_restart() {
     assert_eq!(value(&r, "capital_gain"), 500);
     assert_eq!(value(&r, "agi"), 63_750);
     let mut s = restart(s.draft);
-    let reopened = page_documents(&open_topic(&mut s, TaxSection::InterestDividends))
-        .iter()
-        .map(|i| i.document.clone())
+    let reopened = page_documents(&open_documents(&mut s))
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .map(|i| i.document)
         .collect::<Vec<_>>();
-    assert_eq!(reopened, documents);
+    assert_eq!(reopened, expected_named_sources(&s.draft, Owner::Taxpayer, documents));
 }
 
 #[test]
@@ -153,18 +212,35 @@ fn investment_section_897_subsets_validate_on_page_and_restored_records() {
     ] {
         let mut s = investment_session();
         let mut v = printed_dividend();
-        v.more.section_897_ordinary = ordinary;
-        v.more.section_897_capital = capital;
+        v.form.section_897_ordinary = Some(ordinary);
+        v.form.section_897_capital = Some(capital);
         let before = s.draft.clone();
-        rejected_with(save_investments(&mut s, vec![IncomeDocument::Div1099(v)]), key);
+        rejected_with(
+            save_investments(
+                &mut s,
+                vec![IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Div1099(dividend_document(v)),
+                }],
+            ),
+            key,
+        );
         assert_eq!(s.draft, before);
-        accepted(&save_investments(&mut s, vec![IncomeDocument::Div1099(printed_dividend())]));
+        accepted(&save_investments(
+            &mut s,
+            vec![IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(
+                    printed_dividend(),
+                )),
+            }],
+        ));
         let FederalIncome::Dividend { data } = &mut s.draft.income.last_mut().unwrap().income
         else {
             panic!("dividend")
         };
+        let mut data = edit_dividend(data);
         data.section_897_ordinary = ordinary;
         data.section_897_capital = capital;
+        drop(data);
         let r = estimate(&s.draft);
         assert_eq!(r.state, ResultState::Incomplete);
         assert_eq!(
@@ -199,15 +275,31 @@ fn investment_prior_inclusion_matches_pub550_savings_bond_example() {
     v.adjustments =
         Some(crate::InterestAdjustments { previously_reported: 40_640, ..Default::default() });
     let mut s = investment_session();
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Int1099(v.clone())]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(v.clone())),
+        }],
+    ));
     let entry = s.draft.income.last().unwrap();
     let id = entry.id;
     assert_eq!(retained_components(&s.draft, id).interest, 720);
     assert_eq!(return_line(&supported(&s.draft), "2b"), 700); // Form1040 whole dollars
     assert_eq!(s.draft.income.last().unwrap().id, id);
+    v.more.calls = IntCalls { nominee: vec![0], ..Default::default() };
     assert_eq!(
-        page_documents(&open_topic(&mut s, TaxSection::InterestDividends))[0].document,
-        IncomeDocument::Int1099(v)
+        page_documents(&open_documents(&mut s))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(v))
+            }
+        )
     );
     assert_eq!(retained_components(&restart(s.draft).draft, id).interest, 720);
 }
@@ -233,7 +325,14 @@ fn investment_inherited_bond_prior_owner_inclusion_is_removed_once() {
     let mut s = investment_session();
     accepted(&save_investments(
         &mut s,
-        vec![IncomeDocument::Int1099(inherited), IncomeDocument::Int1099(bank)],
+        vec![
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(inherited)),
+            },
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(bank)),
+            },
+        ],
     ));
     assert_eq!(retained_components(&s.draft, s.draft.income[1].id).interest, 30_000);
     assert_eq!(return_line(&supported(&s.draft), "2b"), 60_000);
@@ -247,9 +346,14 @@ fn investment_nominee_matches_pub550_joint_account_example() {
     let mut v = printed_interest();
     v.taxable = 150_000;
     v.more = IntMore { withholding: 2_000, ..Default::default() };
-    v.nominee = Some(crate::InterestNominee { taxable: 45_000, ..Default::default() });
+    v.nominee = Some(crate::InterestNominee { taxable: 45_000, ..Default::default() }.into());
     let mut s = investment_session();
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Int1099(v.clone())]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(v.clone())),
+        }],
+    ));
     let id = s.draft.income.last().unwrap().id;
     let parts = retained_components(&s.draft, id);
     assert_eq!(parts.interest, 105_000);
@@ -257,9 +361,20 @@ fn investment_nominee_matches_pub550_joint_account_example() {
     assert_eq!(return_line(&supported(&s.draft), "2b"), 105_000);
     assert!(noted(&supported(&s.draft), "NOTE_INVESTMENT_NOMINEE"));
     let mut s = restart(s.draft);
+    v.more.calls = IntCalls { nominee: vec![0], ..Default::default() };
     assert_eq!(
-        page_documents(&open_topic(&mut s, TaxSection::InterestDividends))[0].document,
-        IncomeDocument::Int1099(v)
+        page_documents(&open_documents(&mut s))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(v))
+            }
+        )
     );
     assert_eq!(retained_components(&s.draft, id), parts);
 }
@@ -269,54 +384,66 @@ fn investment_nominee_matches_pub550_joint_account_example() {
 #[test]
 fn investment_dividend_components_coexist_with_disjoint_final_return_split() {
     let mut v = printed_dividend();
-    v.qualified = 40_000;
-    v.more = DivMore {
-        capital_distributions: 50_000,
-        unrecaptured_distributions: 10_000,
-        collectible_distributions: 5_000,
-        section199a: 20_000,
-        section_897_ordinary: 10_000,
-        section_897_capital: 5_000,
-        exempt_dividends: 30_000,
-        private_activity_dividends: 8_000,
-        foreign_tax: 5_000,
-        withholding: 2_000,
-        ..Default::default()
+    v.form.qualified = Some(40_000);
+    v.form = crate::Form1099DivPaper {
+        capital_distributions: Some(50_000),
+        unrecaptured_distributions: Some(10_000),
+        collectible_distributions: Some(5_000),
+        section199a: Some(20_000),
+        section_897_ordinary: Some(10_000),
+        section_897_capital: Some(5_000),
+        exempt_dividends: Some(30_000),
+        private_activity_dividends: Some(8_000),
+        foreign_tax: Some(5_000),
+        withholding: Some(2_000),
+        foreign_country: alloc::string::String::new(),
+        ..v.form
     };
-    v.answers.reit_eligible = Some(true);
-    v.nominee = Some(crate::DividendNominee {
-        ordinary: 30_000,
-        qualified: 5_000,
-        capital: 10_000,
-        unrecaptured: 4_000,
-        collectible: 2_000,
-        section_199a: 10_000,
-        section_897_ordinary: 2_000,
-        section_897_capital: 1_000,
-        exempt: 10_000,
-        private_activity: 5_000,
-        foreign_tax: 1_500,
-        ..Default::default()
-    });
-    v.answers.after_death = Some(crate::DividendsAfterDeath {
-        ordinary: 10_000,
-        qualified: 3_000,
-        capital_distributions: 5_000,
-        unrecaptured_distributions: 1_000,
-        collectible_distributions: 500,
-        section199a: 2_000,
-        section_897_ordinary: 1_000,
-        section_897_capital: 500,
-        exempt_dividends: 5_000,
-        private_activity_dividends: 1_000,
-        foreign_tax: 500,
-        ..Default::default()
-    });
+    v.reit_eligible = Some(true.into());
+    v.nominee = Some(
+        crate::DividendNominee {
+            ordinary: 30_000,
+            qualified: 5_000,
+            capital: 10_000,
+            unrecaptured: 4_000,
+            collectible: 2_000,
+            section_199a: 10_000,
+            section_897_ordinary: 2_000,
+            section_897_capital: 1_000,
+            exempt: 10_000,
+            private_activity: 5_000,
+            foreign_tax: 1_500,
+            ..Default::default()
+        }
+        .into(),
+    );
+    v.after_death = Some(
+        crate::DividendsAfterDeath {
+            ordinary: 10_000,
+            qualified: 3_000,
+            capital_distributions: 5_000,
+            unrecaptured_distributions: 1_000,
+            collectible_distributions: 500,
+            section199a: 2_000,
+            section_897_ordinary: 1_000,
+            section_897_capital: 500,
+            exempt_dividends: 5_000,
+            private_activity_dividends: 1_000,
+            foreign_tax: 500,
+            ..Default::default()
+        }
+        .into(),
+    );
     let mut d = complete(FederalStatus::Single);
     d.people.as_mut().unwrap().taxpayer.died =
         Some(crate::FinalReturn { date: 20260630, ordinary: true, bonds: None, estate_medical: 0 });
     let mut s = Interview::new(TEST_USER, d);
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Div1099(v.clone())]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(v.clone())),
+        }],
+    ));
     let id = s.draft.income.last().unwrap().id;
     let p = retained_components(&s.draft, id);
     assert_eq!(
@@ -333,9 +460,25 @@ fn investment_dividend_components_coexist_with_disjoint_final_return_split() {
     );
     assert_eq!(value(&supported(&s.draft), "agi"), 60_950);
     let mut s = restart(s.draft);
+    v.calls = DivCalls {
+        nominee: vec![0],
+        after_death: vec![0],
+        reit_eligible: vec![0, 1],
+        ..Default::default()
+    };
     assert_eq!(
-        page_documents(&open_topic(&mut s, TaxSection::InterestDividends))[0].document,
-        IncomeDocument::Div1099(v)
+        page_documents(&open_documents(&mut s))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(v))
+            }
+        )
     );
     assert_eq!(retained_components(&s.draft, id), p);
 }
@@ -355,20 +498,28 @@ fn investment_oid_nominee_preserves_negative_treasury_character() {
         withholding: 2_000,
         ..Default::default()
     };
-    v.nominee = Some(crate::OidNominee {
-        oid: 20_000,
-        treasury_oid: -10_000,
-        market_discount: 2_500,
-        bond_premium: 3_000,
-        exempt: 10_000,
-        tax_exempt_bond_premium: 1_000,
-        private_activity: 1_000,
-        ..Default::default()
-    });
+    v.nominee = Some(
+        crate::OidNominee {
+            oid: 20_000,
+            treasury_oid: -10_000,
+            market_discount: 2_500,
+            bond_premium: 3_000,
+            exempt: 10_000,
+            tax_exempt_bond_premium: 1_000,
+            private_activity: 1_000,
+            ..Default::default()
+        }
+        .into(),
+    );
     let mut s = investment_session();
     accepted(&save_investments(
         &mut s,
-        vec![IncomeDocument::Oid1099(v.clone()), IncomeDocument::TaxableBondPremium(true)],
+        vec![
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Oid1099(oid_document(v.clone())),
+            },
+            IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) },
+        ],
     ));
     let p = retained_components(&s.draft, s.draft.income.last().unwrap().id);
     assert_eq!(
@@ -376,9 +527,20 @@ fn investment_oid_nominee_preserves_negative_treasury_character() {
         (50_500, 27_000, 4_000, 2_000)
     );
     let mut s = restart(s.draft);
+    v.more.calls = OidCalls { nominee: vec![0] };
     assert_eq!(
-        page_documents(&open_topic(&mut s, TaxSection::InterestDividends))[0].document,
-        IncomeDocument::Oid1099(v)
+        page_documents(&open_documents(&mut s))
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Oid1099(oid_document(v))
+            }
+        )
     );
 }
 
@@ -394,7 +556,12 @@ fn investment_already_net_report_is_not_reduced_twice() {
     let mut s = investment_session();
     accepted(&save_investments(
         &mut s,
-        vec![IncomeDocument::Oid1099(v), IncomeDocument::TaxableBondPremium(true)],
+        vec![
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Oid1099(oid_document(v)),
+            },
+            IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) },
+        ],
     ));
     assert_eq!(return_line(&supported(&s.draft), "2b"), 100_000);
 }
@@ -427,14 +594,24 @@ pub(in crate::tests) fn annual_row(name: &str, amount: i64, premium: i64) -> Ann
 }
 fn annual_page(s: &mut Interview) -> (i64, Vec<AnnualDebtRecord>) {
     let page = open_topic(s, TaxSection::InterestDividends);
-    let values = page_documents(&page);
-    values
+    let P::SaveIncomes { followups, .. } = page else { unreachable!() };
+    s.draft
+        .income
         .iter()
-        .find_map(|i| match &i.document {
-            IncomeDocument::Int1099(v) => {
-                Some((i.id, v.adjustments.as_ref()?.instrument_records.as_ref()?.records.clone()))
-            }
-            _ => None,
+        .find_map(|entry| {
+            let FederalIncome::Interest { .. } = &entry.income else { return None };
+            let prefix = alloc::format!("income/{}/", entry.id);
+            followups.iter().find_map(|row| {
+                if !row.key.starts_with(&prefix) {
+                    return None;
+                }
+                let crate::DocumentAnswer::InterestAdjustment { value: Some(adjustments) } =
+                    &row.answer
+                else {
+                    return None;
+                };
+                Some((entry.id, adjustments.instrument_records.as_ref()?.records.clone()))
+            })
         })
         .unwrap()
 }
@@ -463,7 +640,11 @@ fn investment_client_added_annual_row_saves_and_reopens_with_assigned_identity()
     let mut s = investment_session();
     accepted(&save_investments(
         &mut s,
-        vec![IncomeDocument::Int1099(annual_interest(records.records))],
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(annual_interest(
+                records.records,
+            ))),
+        }],
     ));
     let result = supported(&s.draft);
     assert_eq!(return_line(&result, "2b"), 100_000);
@@ -491,8 +672,12 @@ fn investment_annual_premium_matches_pub550_gross_and_net() {
         accepted(&save_investments(
             &mut s,
             vec![
-                IncomeDocument::Int1099(annual_interest(vec![row])),
-                IncomeDocument::TaxableBondPremium(true),
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::Int1099(interest_document(
+                        annual_interest(vec![row]),
+                    )),
+                },
+                IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) },
             ],
         ));
         let (parent, rows) = annual_page(&mut s);
@@ -520,8 +705,12 @@ fn investment_annual_premium_is_per_instrument_and_feeds_schedule_a_once() {
     accepted(&save_investments(
         &mut s,
         vec![
-            IncomeDocument::Int1099(annual_interest(vec![a, b])),
-            IncomeDocument::TaxableBondPremium(true),
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(
+                    annual_interest(vec![a, b]),
+                )),
+            },
+            IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) },
         ],
     ));
     let (parent, rows) = annual_page(&mut s);
@@ -529,8 +718,11 @@ fn investment_annual_premium_is_per_instrument_and_feeds_schedule_a_once() {
     let mut copy =
         crate::unknowns::supported(&s.draft, &mut Vec::new()).unwrap_or_else(|| s.draft.clone());
     assert_eq!(crate::investment_statements::computed_bond_premium(&copy), 20_000);
-    copy.deductions.as_mut().unwrap().choice =
-        DeductionSelection::Itemized { facts: itemized(copy.deductions.as_mut().unwrap()).clone() };
+    {
+        copy.deductions.as_mut().unwrap().itemized =
+            itemized(copy.deductions.as_mut().unwrap()).clone();
+        copy.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     assert_eq!(value(&supported(&copy), "bond_premium_deduction"), 200);
     assert_ne!(rows[0].id, rows[1].id);
 }
@@ -542,7 +734,12 @@ fn investment_annual_reconciliation_rejects_failed_save_without_allocating_ids()
     document.taxable += 1;
     let before = s.draft.clone();
     rejected_with(
-        save_investments(&mut s, vec![IncomeDocument::Int1099(document)]),
+        save_investments(
+            &mut s,
+            vec![IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(document)),
+            }],
+        ),
         "DEBT_INSTRUMENT_TOTAL_MISMATCH",
     );
     assert_eq!(s.draft, before);
@@ -588,7 +785,12 @@ fn investment_annual_signed_treasury_and_documented_private_activity_survive() {
         ..Default::default()
     });
     let mut s = investment_session();
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Oid1099(v)]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Oid1099(oid_document(v)),
+        }],
+    ));
     let id = s.draft.income.last().unwrap().id;
     let values = retained_components(&s.draft, id);
     assert_eq!(
@@ -611,9 +813,13 @@ fn investment_net_reports_need_actual_retained_offset_when_not_elected() {
                     .map(|ordinary| DebtPremiumOffset { ordinary, treasury: 0 }),
                 ..Default::default()
             });
-            let mut documents = vec![IncomeDocument::Int1099(v)];
+            let mut documents = vec![IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(v)),
+            }];
             if let Some(answer) = answer {
-                documents.push(IncomeDocument::TaxableBondPremium(answer));
+                documents.push(IncomeSource::Record {
+                    value: crate::IncomeRecord::TaxableBondPremium(answer),
+                });
             }
             let mut s = investment_session();
             accepted(&save_investments(&mut s, documents));
@@ -645,9 +851,13 @@ fn investment_gross_premium_election_preserves_mandatory_exempt_reduction() {
             tax_exempt_bond_premium: 2_000,
             ..Default::default()
         };
-        let mut documents = vec![IncomeDocument::Int1099(v)];
+        let mut documents = vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(v)),
+        }];
         if let Some(answer) = answer {
-            documents.push(IncomeDocument::TaxableBondPremium(answer));
+            documents.push(IncomeSource::Record {
+                value: crate::IncomeRecord::TaxableBondPremium(answer),
+            });
         }
         let mut s = investment_session();
         accepted(&save_investments(&mut s, documents));
@@ -669,9 +879,15 @@ fn investment_annual_net_offset_belongs_to_retained_owner_once() {
             });
             row.net_premium_offset =
                 offset.map(|ordinary| DebtPremiumOffset { ordinary, treasury: 0 });
-            let mut documents = vec![IncomeDocument::Int1099(annual_interest(vec![row]))];
+            let mut documents = vec![IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(
+                    annual_interest(vec![row]),
+                )),
+            }];
             if let Some(election) = election {
-                documents.push(IncomeDocument::TaxableBondPremium(election));
+                documents.push(IncomeSource::Record {
+                    value: crate::IncomeRecord::TaxableBondPremium(election),
+                });
             }
             let mut s = investment_session();
             accepted(&save_investments(&mut s, documents));
@@ -699,17 +915,30 @@ fn investment_annual_source_identity_is_stable_and_collision_checked() {
     let mut s = investment_session();
     accepted(&save_investments(
         &mut s,
-        vec![IncomeDocument::Int1099(annual_interest(vec![
-            annual_row("First", 10_000, 0),
-            annual_row("Second", 20_000, 0),
-        ]))],
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(annual_interest(
+                vec![annual_row("First", 10_000, 0), annual_row("Second", 20_000, 0)],
+            ))),
+        }],
     ));
     let (parent, before) = annual_page(&mut s);
     let draft = s.draft.clone();
     let mut page = open_topic(&mut s, TaxSection::InterestDividends);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    let IncomeDocument::Int1099(v) = &mut documents.documents[0].document else { unreachable!() };
-    let rows = &mut v.adjustments.as_mut().unwrap().instrument_records.as_mut().unwrap().records;
+    let P::SaveIncomes { followups, .. } = &mut page else { unreachable!() };
+    let prefix = alloc::format!("income/{parent}/");
+    let rows = followups
+        .iter_mut()
+        .find_map(|row| {
+            if !row.key.starts_with(&prefix) {
+                return None;
+            }
+            let crate::DocumentAnswer::InterestAdjustment { value: Some(value) } = &mut row.answer
+            else {
+                return None;
+            };
+            Some(&mut value.instrument_records.as_mut()?.records)
+        })
+        .unwrap();
     rows.reverse();
     rows[0].instrument = "Renamed second".into();
     accepted(&send(&mut s, page));
@@ -721,12 +950,22 @@ fn investment_annual_source_identity_is_stable_and_collision_checked() {
     // Read-only identities cannot be changed to a parent or repeated child ID.
     for collision in [parent, after[0].id] {
         let mut page = open_topic(&mut s, TaxSection::InterestDividends);
-        let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-        let IncomeDocument::Int1099(v) = &mut documents.documents[0].document else {
-            unreachable!()
-        };
-        v.adjustments.as_mut().unwrap().instrument_records.as_mut().unwrap().records[1].id =
-            collision;
+        let P::SaveIncomes { followups, .. } = &mut page else { unreachable!() };
+        let rows = followups
+            .iter_mut()
+            .find_map(|row| {
+                if !row.key.starts_with(&prefix) {
+                    return None;
+                }
+                let crate::DocumentAnswer::InterestAdjustment { value: Some(value) } =
+                    &mut row.answer
+                else {
+                    return None;
+                };
+                Some(&mut value.instrument_records.as_mut()?.records)
+            })
+            .unwrap();
+        rows[1].id = collision;
         let before_failed = s.draft.clone();
         assert!(matches!(send(&mut s, page), Reply::Response(P::Problem { .. })));
         assert_eq!(s.draft, before_failed);
@@ -736,8 +975,10 @@ fn investment_annual_source_identity_is_stable_and_collision_checked() {
         else {
             unreachable!()
         };
+        let mut data = edit_interest(data);
         data.adjustments.as_mut().unwrap().instrument_records.as_mut().unwrap().records[1].id =
             collision;
+        drop(data);
         assert!(!restored.valid_stored());
     }
     // An estimate is a pure calculation and cannot allocate child identities.
@@ -767,8 +1008,12 @@ fn investment_bond_premium_manual_control_preserves_independent_amounts_and_dedu
     accepted(&save_investments(
         &mut s,
         vec![
-            IncomeDocument::Int1099(annual_interest(vec![a, b])),
-            IncomeDocument::TaxableBondPremium(true),
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(
+                    annual_interest(vec![a, b]),
+                )),
+            },
+            IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) },
         ],
     ));
     let (_, rows) = annual_page(&mut s);
@@ -778,7 +1023,7 @@ fn investment_bond_premium_manual_control_preserves_independent_amounts_and_dedu
         panic!("expected deductions page")
     };
     let P::SaveDeductions { value: deductions, .. } = &mut page else { unreachable!() };
-    deductions.route = DeductionRoute::Itemize;
+    deductions.itemize_override = Some(ItemizeOverride::Itemize);
     accepted(&send(&mut s, page));
     let known = |id| OtherItemizedLine::BondPremium {
         amount: 5_000,
@@ -847,7 +1092,9 @@ fn investment_fbar_required_choice_preserves_ordinary_tax() {
         };
         accepted(&save_investments(
             &mut s,
-            vec![IncomeDocument::ForeignAccountOrTrust(answer.clone())],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::ForeignAccountOrTrust(answer.clone()),
+            }],
         ));
         let r = supported(&s.draft);
         assert_eq!(r.tax, baseline.tax);
@@ -855,7 +1102,7 @@ fn investment_fbar_required_choice_preserves_ordinary_tax() {
         let page = open_topic(&mut again, TaxSection::InterestDividends);
         assert_eq!(
             page_documents(&page)[0].document,
-            IncomeDocument::ForeignAccountOrTrust(answer)
+            IncomeSource::Record { value: crate::IncomeRecord::ForeignAccountOrTrust(answer) }
         );
         let P::SaveIncomes { foreign_countries, .. } = page else { unreachable!() };
         assert_eq!(foreign_countries.len(), 243);
@@ -885,13 +1132,15 @@ fn investment_fbar_page_and_restored_answer_guards_reject_invalid_combinations()
         rejected_with(
             save_investments(
                 &mut s,
-                vec![IncomeDocument::ForeignAccountOrTrust(ForeignAccountOrTrust {
-                    account,
-                    fbar_required: required,
-                    fbar_countries: countries.clone(),
-                    trust: false,
-                    highest_value: Some(4_000_000),
-                })],
+                vec![IncomeSource::Record {
+                    value: crate::IncomeRecord::ForeignAccountOrTrust(ForeignAccountOrTrust {
+                        account,
+                        fbar_required: required,
+                        fbar_countries: countries.clone(),
+                        trust: false,
+                        highest_value: Some(4_000_000),
+                    }),
+                }],
             ),
             key,
         );
@@ -920,19 +1169,29 @@ fn investment_8815_canonical_prior_inclusion_and_source_lifecycle() {
     let saved = s.draft.clone();
     let mut s = restart(saved.clone());
     assert_eq!(supported(&s.draft), r);
-    let page = open_topic(&mut s, TaxSection::InterestDividends);
-    let rows = page_documents(&page).to_vec();
+    let page = open_documents(&mut s);
+    let rows = page_documents(&page)
+        .into_iter()
+        .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+        .collect::<Vec<_>>();
     let mut reordered = rows.clone();
     reordered.reverse();
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, reordered);
+    let request = save_documents(&mut s, reordered);
     accepted(&send(&mut s, request));
     let bond = rows
         .iter()
-        .find(|r| matches!(r.document, IncomeDocument::SavingsBonds(_)))
+        .find(|r| {
+            matches!(
+                r.document,
+                IncomeSource::InterestDividend {
+                    value: crate::InterestDividendDocument::SavingsBonds(_)
+                }
+            )
+        })
         .unwrap()
         .clone();
     let before = s.draft.clone();
-    let request = save_topic(&before, TaxSection::InterestDividends, vec![bond]);
+    let request = save_documents(&mut s, vec![bond]);
     rejected_with(send(&mut s, request), "SAVINGS_BONDS_SOURCE_INVALID");
     assert_eq!(s.draft, before);
     let mut invalid = before.clone();
@@ -942,9 +1201,11 @@ fn investment_8815_canonical_prior_inclusion_and_source_lifecycle() {
         .find(|e| matches!(e.income, FederalIncome::SavingsBonds { .. }))
         .unwrap();
     let FederalIncome::SavingsBonds { data } = &mut e.income else { unreachable!() };
-    data.interest_statement = 999_999;
+    data.answers.as_mut().unwrap().interest_statement = 999_999;
     assert_eq!(estimate(&invalid).state, ResultState::Incomplete);
-    let request = save_topic(&s.draft, TaxSection::InterestDividends, vec![]);
+    let mut request = open_documents(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.interest_dividends.documents.clear();
     accepted(&send(&mut s, request)); // deleting both is an ordinary valid save
 }
 
@@ -964,6 +1225,99 @@ fn investment_8815_mixed_prior_allocation_omits_only_education_benefit() {
     assert_eq!(supported(&restart(s.draft.clone()).draft), r);
 }
 
+// Form 8815 line 6 may already subtract earlier reported interest. Its
+// supporting redemption record retains gross interest for that adjustment once.
+#[test]
+fn investment_8815_entry_keeps_gross_interest_and_issue_date_with_the_document() {
+    let mut session = education_bond_session(printed_interest(), 300_000);
+    let original = session
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::SavingsBonds { data } => data.answers.clone(),
+            _ => None,
+        })
+        .unwrap();
+    let mut rows = page_documents(&open_documents(&mut session));
+    for row in &mut rows {
+        if let IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::SavingsBonds(entry),
+        } = &mut row.document
+        {
+            entry.form.line6 = 200_000;
+            entry.earliest_issue_date = Some(20110101);
+        }
+    }
+    let request = save_documents(&mut session, rows);
+    accepted(&send(&mut session, request));
+    let mut restored = restart(session.draft.clone());
+    let rows = page_documents(&open_documents(&mut restored));
+    let entry = rows
+        .iter()
+        .find_map(|row| match &row.document {
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::SavingsBonds(entry),
+            } => Some(entry),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (entry.form.line6, entry.redemption_interest, entry.earliest_issue_date),
+        (200_000, Some(300_000), Some(20110101))
+    );
+    let data = restored
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| match &entry.income {
+            FederalIncome::SavingsBonds { data } => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(data.answers.as_ref(), Some(&original));
+    assert_eq!(value(&supported(&restored.draft), "form_8815_interest"), 2_000);
+}
+
+#[test]
+fn investment_8815_missing_redemption_facts_save_as_pending_without_inference() {
+    let mut session = education_bond_session(printed_interest(), 300_000);
+    let mut rows = page_documents(&open_documents(&mut session));
+    for row in &mut rows {
+        if let IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::SavingsBonds(entry),
+        } = &mut row.document
+        {
+            entry.redemption_interest = None;
+            entry.earliest_issue_date = None;
+        }
+    }
+    let request = save_documents(&mut session, rows);
+    accepted(&send(&mut session, request));
+    let mut restored = restart(session.draft.clone());
+    let rows = page_documents(&open_documents(&mut restored));
+    let entry = rows
+        .iter()
+        .find_map(|row| match &row.document {
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::SavingsBonds(entry),
+            } => Some(entry),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (entry.form.line6, entry.redemption_interest, entry.earliest_issue_date),
+        (300_000, None, None)
+    );
+    assert!(crate::savings_bonds::record(&restored.draft.income).is_none());
+    let Reply::Response(P::Review { remaining_items, .. }) =
+        send(&mut restored, P::ReviewAccepted { user: TEST_USER })
+    else {
+        panic!("expected review of the saved documents")
+    };
+    assert!(remaining_items.iter().any(|item| item.section == TaxSection::InterestDividends));
+}
+
 // Derived Schedule B pB-1 seller-financing fixture (2026 DRAFT instructions,
 // August10/2026): $5,400 received = $4,000 principal + $1,400 interest.
 // Only $1,400 is taxable interest; buyer facts stay attached to the source.
@@ -978,28 +1332,26 @@ fn investment_seller_mortgage_interest_preserves_buyer_and_interest_owner() {
         },
         interest: 140_000,
     };
-    accepted(&save_investments(&mut s, vec![IncomeDocument::SellerMortgageInterest(v.clone())]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::SellerMortgageInterest(v.clone()),
+        }],
+    ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "2b"), 140_000);
     assert_eq!(value(&r, "agi"), 61_400);
-    let source = s.draft.income.iter().find(|e| matches!(&e.income, FederalIncome::Interest { data } if data.seller_mortgage.is_some())).unwrap();
+    let source = s.draft.income.iter().find(|e| matches!(&e.income, FederalIncome::Interest { data } if FederalInterest::from(data).seller_mortgage.is_some())).unwrap();
     assert_eq!(source.label, "Synthetic buyer");
     let source_id = source.id;
     let mut s = restart(s.draft.clone());
     let rows = page_documents(&open_topic(&mut s, TaxSection::InterestDividends)).to_vec();
     assert_eq!(rows[0].id, source_id);
-    assert_eq!(rows[0].document, IncomeDocument::SellerMortgageInterest(v.clone()));
-    assert_eq!(supported(&s.draft), r);
-    let before = s.draft.clone();
-    let mut invalid = v;
-    invalid.buyer.buyer_tin = "ABCDEFGHI".into();
-    let request = save_topic(
-        &before,
-        TaxSection::InterestDividends,
-        vec![document(source_id, IncomeDocument::SellerMortgageInterest(invalid))],
+    assert_eq!(
+        rows[0].document,
+        IncomeSource::Record { value: crate::IncomeRecord::SellerMortgageInterest(v.clone()) }
     );
-    rejected_with(send(&mut s, request), "SELLER_MORTGAGE_BUYER_INVALID");
-    assert_eq!(s.draft, before);
+    assert_eq!(supported(&s.draft), r);
 }
 
 // Derived composite1099-DIV fixture. Pub550(2025), return of capital and
@@ -1012,14 +1364,21 @@ fn investment_seller_mortgage_interest_preserves_buyer_and_interest_owner() {
 #[test]
 fn investment_composite_div_preserves_printed_boxes_and_reuses_capital_owner_once() {
     let mut v = printed_dividend();
-    v.more.capital_distributions = 0;
-    v.more.section_897_capital = 0;
-    v.more.nondividend_distributions = 12_000;
-    v.more.cash_liquidation = 30_000;
-    v.more.noncash_liquidation = 4_000;
+    v.form.calendar_year = Some(2026);
+    v.form.payer.federal_id = "00-1234567".into();
+    v.form.payer.address = "100 Example St, Example, CA 90001".into();
+    v.form.payer_telephone = "202-555-0100".into();
+    v.form.account_number = "000-DIV-17".into();
+    v.form.investment_expenses = Some(600);
+    v.form.fatca = true;
+    v.form.withholding = Some(2_300);
+    v.form.capital_distributions = Some(0);
+    v.form.section_897_capital = Some(0);
+    v.form.nondividend_distributions = Some(12_000);
+    v.form.cash_liquidation = Some(30_000);
+    v.form.noncash_liquidation = Some(4_000);
     v.capital_returns = vec![
         CapitalReturn1099Div {
-            payer: "Fund lot1".into(),
             kind: CapitalDistributionKind::Nondividend,
             amount: 12_000,
             property: vec![],
@@ -1028,7 +1387,6 @@ fn investment_composite_div_preserves_printed_boxes_and_reuses_capital_owner_onc
             special: false,
         },
         CapitalReturn1099Div {
-            payer: "Fund lot2".into(),
             kind: CapitalDistributionKind::FinalLiquidation,
             amount: 30_000,
             property: vec![LiquidationProperty {
@@ -1041,36 +1399,227 @@ fn investment_composite_div_preserves_printed_boxes_and_reuses_capital_owner_onc
         },
     ];
     let mut s = investment_session();
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Div1099(v.clone())]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(v.clone())),
+        }],
+    ));
     let id = s.draft.income.last().unwrap().id;
     assert_eq!(s.draft.income.len(), 2); //W2 and one actual DIV; no synthetic source records
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "3b"), 100_000);
+    assert_eq!(retained_components(&s.draft, id).withholding, 2_300);
+    assert_eq!(return_line(&r, "25b"), 2_300); // One physical box 4, including both capital lots.
     assert_eq!(value(&r, "capital_gain"), 20); //120-80=40; final340-360=-20
     assert_eq!(value(&r, &alloc::format!("distribution_{id}_lot_0_basis_reduction")), 80);
     assert_eq!(value(&r, &alloc::format!("distribution_{id}_lot_0_remaining_basis")), 0);
     assert_eq!(value(&r, &alloc::format!("distribution_{id}_lot_1_capital_gain")), -20);
     let mut s = restart(s.draft);
     assert_eq!(estimate(&s.draft), r);
-    let reopened = open_topic(&mut s, TaxSection::InterestDividends);
-    assert_eq!(page_documents(&reopened)[0].id, id);
-    assert_eq!(page_documents(&reopened)[0].document, IncomeDocument::Div1099(v.clone()));
-    let before = s.draft.clone();
-    v.more.nondividend_distributions += 1;
-    let request = save_topic(
-        &s.draft,
-        TaxSection::InterestDividends,
-        vec![document(id, IncomeDocument::Div1099(v))],
+    v.calls = DivCalls { nominee: vec![0], ..Default::default() };
+    let reopened = open_documents(&mut s);
+    assert_eq!(
+        page_documents(&reopened)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()[0]
+            .id,
+        id
     );
-    rejected_with(send(&mut s, request), "DIV_CAPITAL_RETURNS_RECONCILE");
+    assert_eq!(
+        page_documents(&reopened)
+            .into_iter()
+            .filter(|row| matches!(row.document, IncomeSource::InterestDividend { .. }))
+            .collect::<Vec<_>>()[0]
+            .document,
+        expected_named_source(
+            &s.draft,
+            Owner::Taxpayer,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(v.clone()))
+            }
+        )
+    );
+    // Submit the reopened paper itself: no fixture answers accompany a correction.
+    let mut rows = page_documents(&reopened);
+    let row = rows.iter_mut().find(|row| row.id == id).unwrap();
+    let IncomeSource::InterestDividend { value: crate::InterestDividendDocument::Div1099(paper) } =
+        &mut row.document
+    else {
+        panic!("DIV paper")
+    };
+    paper.corrected = true;
+    paper.payer_telephone.clear();
+    paper.account_number.clear();
+    paper.investment_expenses = Some(0);
+    paper.fatca = false;
+    v.form = paper.clone();
+    let request = save_documents(&mut s, rows);
+    accepted(&send(&mut s, request));
+    let mut s = restart(s.draft);
+    let rows = page_documents(&open_documents(&mut s));
+    let row = rows.iter().find(|row| row.id == id).unwrap();
+    assert_eq!(
+        row.document,
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(v.form.clone())
+        }
+    );
+    let FederalIncome::Dividend { data } = &s.draft.income.last().unwrap().income else {
+        panic!("DIV")
+    };
+    assert_eq!(data.capital_returns, v.capital_returns);
+    assert_eq!(s.draft.income.len(), 2);
+    assert_eq!(retained_components(&s.draft, id).withholding, 2_300);
+    let actual = estimate(&s.draft);
+    assert_eq!(actual.revision, r.revision + 1);
+    let mut expected = r.clone();
+    expected.revision = actual.revision;
+    assert_eq!(actual, expected);
+    let before = s.draft.clone();
+    v.form.nondividend_distributions = Some(v.form.nondividend_distributions.unwrap_or(0) + 1);
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut s,
+        vec![document(
+            id,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(dividend_document(v)),
+            },
+        )],
+    );
+    crate::tests::support::client::current_income_refusal(
+        "div-capital-returns-reconcile",
+        &mut s,
+        request,
+        "DIV_CAPITAL_RETURNS_RECONCILE",
+        "[documents/common/interest_dividends/documents/0/document/nondividend_distributions]",
+    );
     assert_eq!(s.draft, before);
     let mut bad = before;
     let FederalIncome::Dividend { data } = &mut bad.income.last_mut().unwrap().income else {
         panic!("DIV")
     };
+    let mut data = edit_dividend(data);
     data.cash_liquidation += 1;
-    assert!(!bad.valid_stored());
-    assert_eq!(estimate(&bad).state, ResultState::Incomplete);
+    // Paper corrections retain the original lots until their topic reconciles them.
+    drop(data);
+    assert!(bad.valid_stored());
+    assert!(
+        estimate(&bad)
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "DIV_CAPITAL_RETURNS_RECONCILE")
+    );
+}
+
+#[test]
+fn investment_div_native_answers_survive_printed_correction_and_record_restart() {
+    use crate::DocumentAnswer as A;
+    let mut draft = complete(FederalStatus::Single);
+    draft.people.as_mut().unwrap().taxpayer.died =
+        Some(FinalReturn { date: 20260630, ordinary: true, bonds: None, estate_medical: 0 });
+    let mut s = Interview::new(TEST_USER, draft);
+    let paper = crate::Form1099DivPaper {
+        calendar_year: Some(2026),
+        capital_distributions: Some(10_000),
+        section_1202_gain: Some(2_000),
+        nondividend_distributions: Some(3_000),
+        section199a: Some(20_000),
+        ..div1099_source(native_div1099("Synthetic answer fund".into(), 100_000, 0)).form
+    };
+    let request = save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Div1099(paper),
+            },
+        )],
+    );
+    accepted(&send(&mut s, request));
+    let id = s.draft.income.last().unwrap().id;
+    let prefix = alloc::format!("income/{id}/");
+    let expected = vec![
+        (
+            "capital_returns",
+            A::DividendCapitalReturns {
+                value: vec![CapitalReturn1099Div {
+                    kind: CapitalDistributionKind::Nondividend,
+                    amount: 3_000,
+                    property: vec![],
+                    basis: 2_000,
+                    term: GainTerm::Long,
+                    special: false,
+                }],
+            },
+        ),
+        (
+            "nominee",
+            A::DividendNominee {
+                value: Some(DividendNominee { ordinary: 10_000, ..Default::default() }.into()),
+            },
+        ),
+        (
+            "after_death",
+            A::DividendAfterDeath {
+                value: Some(DividendsAfterDeath { ordinary: 5_000, ..Default::default() }.into()),
+            },
+        ),
+        ("reit", A::DividendEligibility { value: Some(true.into()) }),
+        ("exclusion", A::DividendFundExclusion { value: Some(crate::FundQsbsExclusion::Hundred) }),
+        ("special", A::DividendTreatment { value: crate::DividendSpecial::Foreign }),
+    ];
+    let mut request = open_topic(&mut s, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = &mut request else { unreachable!() };
+    for (suffix, answer) in &expected {
+        let key = alloc::format!("{prefix}{suffix}");
+        let row = followups.iter_mut().find(|row| row.key == key).unwrap();
+        row.answer = answer.clone();
+    }
+    accepted(&send(&mut s, request));
+    assert!(noted(&estimate(&s.draft), "WARN_DIVIDEND_FOREIGN_LEFT_OUT"));
+    let mut s = restart(s.draft);
+    let mut request = open_documents(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let rows = &mut documents.common.interest_dividends.documents;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
+    let crate::InterestDividendDocument::Div1099(paper) = &mut rows[0].document else {
+        panic!("DIV paper")
+    };
+    paper.corrected = true;
+    paper.payer.name = "Corrected synthetic answer fund".into();
+    paper.account_number = "000-corrected".into();
+    let corrected = paper.clone();
+    accepted(&send(&mut s, request));
+    let mut s = restart(s.draft);
+    let rows = page_documents(&open_documents(&mut s));
+    assert_eq!(
+        rows.iter().find(|row| row.id == id).unwrap().document,
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(corrected)
+        }
+    );
+    let request = open_topic(&mut s, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = request else { unreachable!() };
+    let mut actual = followups
+        .into_iter()
+        .filter_map(|row| {
+            let key = row.key.strip_prefix(&prefix)?.into();
+            Some((key, row.answer))
+        })
+        .collect::<Vec<(alloc::string::String, A)>>();
+    let mut expected = expected
+        .into_iter()
+        .map(|(key, answer)| (key.into(), answer))
+        .collect::<Vec<(alloc::string::String, A)>>();
+    // Keep every keyed payload and duplicate check while ignoring presentation order.
+    actual.sort_by(|left, right| left.0.cmp(&right.0));
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(actual, expected);
+    assert_eq!(s.draft.income.len(), 2);
+    assert!(noted(&estimate(&s.draft), "WARN_DIVIDEND_FOREIGN_LEFT_OUT"));
 }
 
 // Pub1212(Rev.December2025), printedJanuary26,2026 p.8 Examples2/3:
@@ -1099,7 +1648,12 @@ fn investment_original_oid_de_minimis_matches_irs_examples_and_strict_boundary()
         ..native_oid1099("Original issuer".into(), amount, 0)
     };
     let mut s = investment_session();
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Oid1099(make(row.clone(), 0))]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Oid1099(oid_document(make(row.clone(), 0))),
+        }],
+    ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "2b"), 0);
     assert!(noted(&r, "NOTE_DEBT_DE_MINIMIS_OID"));
@@ -1110,12 +1664,25 @@ fn investment_original_oid_de_minimis_matches_irs_examples_and_strict_boundary()
     // This$5 is a derived validation probe, never the source's annual oracle.
     row.amounts.oid = 500;
     rejected_with(
-        save_investments(&mut s, vec![IncomeDocument::Oid1099(make(row.clone(), 500))]),
+        save_investments(
+            &mut s,
+            vec![IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Oid1099(oid_document(make(
+                    row.clone(),
+                    500,
+                ))),
+            }],
+        ),
         "DEBT_DE_MINIMIS_OID_CONFLICT",
     );
     assert_eq!(s.draft, before);
     row.original_issue.as_mut().unwrap().elect_de_minimis_oid = true;
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Oid1099(make(row, 500))]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Oid1099(oid_document(make(row, 500))),
+        }],
+    ));
     assert_eq!(return_line(&supported(&s.draft), "2b"), 500);
 }
 
@@ -1130,14 +1697,17 @@ fn investment_schedule_b_lists_seller_first_and_named_adjustments_foot() {
         accrued_interest: 5_000,
         ..Default::default()
     };
-    v.nominee = Some(InterestNominee {
-        taxable: 30_000,
-        us_obligations: 10_000,
-        bond_premium: 4_000,
-        treasury_bond_premium: 2_000,
-        accrued_interest: 1_000,
-        ..Default::default()
-    });
+    v.nominee = Some(
+        InterestNominee {
+            taxable: 30_000,
+            us_obligations: 10_000,
+            bond_premium: 4_000,
+            treasury_bond_premium: 2_000,
+            accrued_interest: 1_000,
+            ..Default::default()
+        }
+        .into(),
+    );
     v.adjustments = Some(InterestAdjustments { previously_reported: 10_000, ..Default::default() });
     let seller = SellerMortgageInterest {
         buyer: SellerMortgageParty {
@@ -1151,9 +1721,11 @@ fn investment_schedule_b_lists_seller_first_and_named_adjustments_foot() {
     accepted(&save_investments(
         &mut s,
         vec![
-            IncomeDocument::Int1099(v),
-            IncomeDocument::SellerMortgageInterest(seller),
-            IncomeDocument::TaxableBondPremium(true),
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Int1099(interest_document(v)),
+            },
+            IncomeSource::Record { value: crate::IncomeRecord::SellerMortgageInterest(seller) },
+            IncomeSource::Record { value: crate::IncomeRecord::TaxableBondPremium(true) },
         ],
     ));
     let broker = s.draft.income[1].id;
@@ -1188,14 +1760,16 @@ fn investment_seller_schedule_b_below_threshold_does_not_require_part_iii() {
     let mut s = investment_session();
     accepted(&save_investments(
         &mut s,
-        vec![IncomeDocument::SellerMortgageInterest(SellerMortgageInterest {
-            buyer: SellerMortgageParty {
-                buyer: "Buyer".into(),
-                buyer_tin: "123456789".into(),
-                buyer_address: "1 Main St, Boston MA 02110".into(),
-            },
-            interest: 140_000,
-        })],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::SellerMortgageInterest(SellerMortgageInterest {
+                buyer: SellerMortgageParty {
+                    buyer: "Buyer".into(),
+                    buyer_tin: "123456789".into(),
+                    buyer_address: "1 Main St, Boston MA 02110".into(),
+                },
+                interest: 140_000,
+            }),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "schedule_b_taxable_interest"), 1400);
@@ -1218,7 +1792,14 @@ fn foreign_deduction_uses_retained_instrument_tax_after_nominee_and_death() {
     let mut s = investment_session();
     s.draft.people.as_mut().unwrap().taxpayer.died =
         Some(FinalReturn { date: 20260630, ordinary: true, bonds: None, estate_medical: 0 });
-    accepted(&save_investments(&mut s, vec![IncomeDocument::Int1099(annual_interest(vec![a, b]))]));
+    accepted(&save_investments(
+        &mut s,
+        vec![IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(annual_interest(
+                vec![a, b],
+            ))),
+        }],
+    ));
     s.draft.credits.as_mut().unwrap().foreign_tax = ForeignTaxClaim::Deduction {
         taxes: vec![ForeignTaxDeducted {
             owners: None,
@@ -1228,7 +1809,10 @@ fn foreign_deduction_uses_retained_instrument_tax_after_nominee_and_death() {
         }],
     };
     let facts = itemized(s.draft.deductions.as_mut().unwrap()).clone();
-    s.draft.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        s.draft.deductions.as_mut().unwrap().itemized = facts;
+        s.draft.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     let accepted_source = s.draft.clone();
     let r = supported(&s.draft);
     assert_eq!(value(&r, "other_taxes_deduction"), 80);
@@ -1236,4 +1820,126 @@ fn foreign_deduction_uses_retained_instrument_tax_after_nominee_and_death() {
     assert_eq!(value(&r, "foreign_tax_credit"), 0);
     assert_eq!(s.draft, accepted_source);
     assert_eq!(supported(&restart(s.draft).draft), r);
+}
+
+#[test]
+fn investment_8818_collects_saves_and_reopens_without_an_8815() {
+    let mut session = investment_session();
+    let paper = printed_bond_redemption();
+    let request = save_documents(
+        &mut session,
+        vec![document(
+            0,
+            IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::Form8818(paper.clone()),
+            },
+        )],
+    );
+    accepted(&send(&mut session, request));
+    let mut restored = restart(session.draft.clone());
+    let rows = page_documents(&open_documents(&mut restored));
+    let mut papers = rows.iter().filter(|row| {
+        matches!(
+            row.document,
+            IncomeSource::InterestDividend { value: crate::InterestDividendDocument::Form8818(_) }
+        )
+    });
+    let row = papers.next().expect("the separately accepted Form 8818 reopens");
+    assert!(papers.next().is_none());
+    assert!(row.id > 0);
+    assert_eq!(
+        row.document,
+        IncomeSource::InterestDividend { value: crate::InterestDividendDocument::Form8818(paper) }
+    );
+    let data = restored
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| {
+            let FederalIncome::BondRedemption { data } = &entry.income else { return None };
+            Some(data)
+        })
+        .expect("the independent paper must retain its own accepted source");
+    assert_eq!(data.form_8815, None);
+    assert!(crate::savings_bonds::record(&restored.draft.income).is_none());
+    assert!(
+        !estimate(&restored.draft).lines.iter().any(|line| line.id == "savings_bond_exclusion")
+    );
+}
+
+#[test]
+fn investment_8818_topic_link_uses_existing_exclusion_and_preserves_printed_sources() {
+    let mut session = education_bond_session(printed_interest(), 300_000);
+    let mut rows = page_documents(&open_documents(&mut session));
+    let target = rows
+        .iter_mut()
+        .find_map(|row| {
+            let IncomeSource::InterestDividend {
+                value: crate::InterestDividendDocument::SavingsBonds(entry),
+            } = &mut row.document
+            else {
+                return None;
+            };
+            // Form 8815 line 6 is net; the separate redemption paper is gross.
+            entry.form.line6 = 200_000;
+            entry.redemption_interest = None;
+            entry.earliest_issue_date = None;
+            Some(row.id)
+        })
+        .unwrap();
+    rows.push(document(
+        0,
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Form8818(printed_bond_redemption()),
+        },
+    ));
+    let request = save_documents(&mut session, rows);
+    accepted(&send(&mut session, request));
+    let before_link = session.draft.clone();
+    let mut page = open_topic(&mut session, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = &mut page else { unreachable!() };
+    let link = followups
+        .iter_mut()
+        .find_map(|row| {
+            let crate::DocumentAnswer::BondRedemptionForm8815 { value } = &mut row.answer else {
+                return None;
+            };
+            Some(value)
+        })
+        .expect("the link belongs to the topic, after document collection");
+    assert!(link.is_none());
+    *link = Some(crate::BondRedemptionLink { form_8815: target });
+    accepted(&send(&mut session, page));
+    let mut restored = restart(session.draft.clone());
+    let reopened = open_topic(&mut restored, TaxSection::InterestDividends);
+    let P::SaveIncomes { followups, .. } = reopened else { unreachable!() };
+    assert!(followups.iter().any(|row| matches!(&row.answer,
+        crate::DocumentAnswer::BondRedemptionForm8815 { value: Some(value) }
+            if value.form_8815 == target)));
+    let saved = restored
+        .draft
+        .income
+        .iter()
+        .find_map(|entry| {
+            let FederalIncome::SavingsBonds { data } = &entry.income else { return None };
+            Some(data)
+        })
+        .unwrap();
+    // Resolution is transient: the actual accepted papers remain unchanged.
+    assert_eq!(
+        (saved.form.line6, saved.redemption_interest, saved.earliest_issue_date),
+        (200_000, None, None)
+    );
+    assert_eq!(value(&supported(&restored.draft), "form_8815_interest"), 2_000);
+    assert_eq!(value(&supported(&restored.draft), "savings_bond_exclusion"), 2_000);
+    assert_eq!(
+        restored
+            .draft
+            .income
+            .iter()
+            .filter(|entry| matches!(entry.income, FederalIncome::Interest { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(before_link.income.len(), restored.draft.income.len());
 }

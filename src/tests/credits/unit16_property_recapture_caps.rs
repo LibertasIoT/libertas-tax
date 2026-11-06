@@ -11,7 +11,7 @@ fn draft(owner: Owner, filer: CarryFiler) -> FederalDraft {
     .income
     .pop()
     .unwrap();
-    entry.owner = owner;
+    entry.owner = crate::DocumentOwner::from(owner);
     let FederalIncome::Business { data } = &mut entry.income else { panic!() };
     data.activity = BusinessActivity::Ordinary {
         returns: 0,
@@ -153,7 +153,7 @@ fn unit16_r4_property_owner_editor_save_reopen_restart() {
     let changed = session.draft.income.last().unwrap();
     assert_eq!(changed.id, original.id);
     assert_eq!(changed.income, original.income);
-    assert_eq!(changed.owner, Owner::Spouse);
+    assert_eq!(changed.owner, crate::DocumentOwner::Spouses);
     let after = check(&session.draft, Owner::Spouse, filer);
     assert_ne!(value(&before, "general_business_credit"), value(&after, "general_business_credit"));
     let saved = session.draft.clone();

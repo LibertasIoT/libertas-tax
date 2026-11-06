@@ -52,10 +52,12 @@ pub(in crate::tests) fn joint_employer_adoption_return() -> FederalDraft {
     add(&mut d, wage(3, Owner::Spouse, 2_000_000, 200_000));
     for (entry, payment) in d.income.iter_mut().zip([600_000, 200_000, 400_000]) {
         let FederalIncome::Wage { data } = &mut entry.income else { unreachable!() };
+        let mut data = edit_wage(data);
         data.social_wages += payment;
         data.medicare_wages += payment;
         data.social_tax = data.social_wages * 62 / 1000;
         data.medicare_tax = data.medicare_wages * 145 / 10000;
+        drop(data);
     }
     let mut child = adoption_child(
         AdoptionKind::Domestic {
@@ -85,12 +87,14 @@ pub(in crate::tests) fn set_joint_adoption_w2(
     code_t: i64,
 ) {
     let FederalIncome::Wage { data } = &mut d.income[entry].income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.wages = wages;
     data.social_wages = (wages + code_t).min(18_450_000);
     data.medicare_wages = wages + code_t;
     data.social_tax = data.social_wages * 62 / 1000;
     data.medicare_tax =
         data.medicare_wages * 145 / 10000 + (data.medicare_wages - 20_000_000).max(0) * 9 / 1000;
+    drop(data);
 }
 
 pub(in crate::tests) fn set_joint_adoption_exclusion(
@@ -236,10 +240,13 @@ pub(in crate::tests) fn foreign_adoption_benefits(current: i64, earlier: i64) ->
 }
 
 pub(in crate::tests) fn source_adoption_code_t(d: &mut FederalDraft, owner: Owner, cents: i64) {
-    let index = d.income.iter().position(|entry| entry.owner == owner).unwrap();
+    let index =
+        d.income.iter().position(|entry| entry.owner == crate::DocumentOwner::from(owner)).unwrap();
     let FederalIncome::Wage { data } = &mut d.income[index].income else { panic!() };
+    let mut data = edit_wage(data);
     data.other_box12.push(W2CodeAmount { code: W2Code::T, amount: cents });
     let wages = data.wages;
+    drop(data);
     set_joint_adoption_w2(d, index, wages, cents);
 }
 

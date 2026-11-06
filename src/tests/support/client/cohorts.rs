@@ -5,9 +5,12 @@ pub(in crate::tests) fn save_existing_business(
     page: Business,
 ) -> Reply {
     let request = crate::tests::cross::interview::save_topic(
-        &session.draft,
+        session,
         TaxSection::SelfEmployment,
-        vec![crate::tests::cross::interview::document(id, IncomeDocument::Business(page))],
+        vec![crate::tests::cross::interview::document(
+            id,
+            IncomeSource::Record { value: crate::IncomeRecord::Business(page) },
+        )],
     );
     send(session, request)
 }

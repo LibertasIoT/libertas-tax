@@ -1,0 +1,77 @@
+{
+ "source": {
+  "title": "Publication 936, Home Mortgage Interest Deduction (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 9",
+  "example": "Refinancing, Example 2 ($25,000 of the $100,000 loan improved the home)",
+  "url": "https://www.irs.gov/pub/irs-dft/p936--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "cffebfc18a51480ced26c807b771666b2f99251adc69a2b71ddcf17fb761d960"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "filer single, born 1980-06-15, with $80,000 wages; the loan is secured by the main home and is within the debt limits",
+   "reason": "the example gives only the loan facts"
+  },
+  {
+   "fact": "Form 1098 box 1 interest is $0",
+   "reason": "only the deductible points are compared"
+  },
+  {
+   "fact": "the 2006 mortgage refinanced was acquisition debt; the first payment was July 1, so six payments were made in 2026",
+   "reason": "the example: refinanced a 2006 mortgage and made six payments"
+  },
+  {
+   "fact": "the 2006 mortgage had a 30-year term",
+   "reason": "the example gives no term; the page asks when the earlier debt ends"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19800615,
+ "pages": [
+  {
+   "page": "wages",
+   "w2": [
+    {
+     "wages": 80000,
+     "withholding": 0,
+     "social_wages": 80000,
+     "social_tax": 4960,
+     "medicare_wages": 80000,
+     "medicare_tax": 1160
+    }
+   ]
+  },
+  {
+   "page": "mortgages",
+   "loans": [
+    {
+     "interest": 0,
+     "principal": 0,
+     "originated": 20260701,
+     "refinance": [
+      75000,
+      20060101,
+      25000
+     ],
+     "points": {
+      "kind": "improvement",
+      "amount": 2000,
+      "term_months": 180
+     }
+    }
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "SchA",
+   "line": "8c",
+   "amount": 550,
+   "provenance": "printed"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

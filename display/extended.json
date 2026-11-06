@@ -1,0 +1,32 @@
+{
+  "rules": [
+    {"order": 34000, "rule": {"select": "^<Form3921Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "transferor", "employee", "corporation"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["corrected", "account_number", "granted", "exercised", "exercise_price", "market_price", "shares"]}]}},
+    {"order": 380000, "rule": {"select": "^<ForeignTaxPage>.Ordinary", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["basis", "sources", "situations", "history", "carryback", "amt_limitation"]}, {"ratio": 1, "fields": ["interest_allocation", "investment_assets", "loss_history", "state_taxes", "rate_adjustment"]}]}},
+    {"order": 424000, "rule": {"select": "^<RentalBuilding>", "flatten": {"name_row": false}}},
+    {"order": 425000, "rule": {"select": "^<FederalRental>", "flatten": {"name_row": false}}},
+    {"order": 426000, "rule": {"select": "^<RentalPersonalUse>", "flatten": true}},
+    {"order": 427000, "rule": {"select": "^<ForeignWages>", "flatten": {"name_row": false}}},
+    {"order": 428000, "rule": {"select": "^<ForeignQualification>", "flatten": true}},
+    {"order": 429000, "rule": {"select": "^<ForeignTaxPage>", "flatten": true}},
+    {"order": 430000, "rule": {"select": "^<ForeignAmtLimitation>", "flatten": true}},
+    {"order": 431000, "rule": {"select": "^<Form3921Paper>", "flatten": {"name_row": false}}},
+    {"order": 433000, "rule": {"select": "^<ForeignSourceCategory>", "flatten": true}},
+    {"order": 434000, "rule": {"select": "^<ForeignSourceRow>", "flatten": {"name_row": false}}},
+    {"order": 435000, "rule": {"select": "^<RentalBusiness>", "flatten": true}},
+    {"order": 437000, "rule": {"select": "^<ExemptPension>", "flatten": {"name_row": false}}},
+    {"order": 438000, "rule": {"select": "^<RentalHistory>", "flatten": true}},
+    {"order": 439000, "rule": {"select": "^<BusinessPayroll>", "flatten": true}},
+    {"order": 440000, "rule": {"select": "^<PayrollW2>", "flatten": {"name_row": false}}},
+    {"order": 679000, "rule": {"select": "^<RentalExpense>.category", "promote": true}},
+    {"order": 680000, "rule": {"select": "^<Form3921Paper>.transferor", "promote": {"use_parent_name": false}}},
+    {"order": 680100, "rule": {"select": "^<Form3921Paper>.transferor", "label": "DISPLAY_FORM3921_TRANSFEROR"}},
+    {"order": 680200, "rule": {"select": "^<Form3921Paper>.employee", "label": "DISPLAY_FORM3921_EMPLOYEE"}},
+    {"order": 680300, "rule": {"select": "^<Form3921Paper>.corporation", "label": "DISPLAY_FORM3921_CORPORATION"}},
+    {"order": 681000, "rule": {"select": "^<ForeignSourceRow>.label", "promote": true}},
+    {"order": 683000, "rule": {"select": "^<ExemptPension>.label", "promote": true}},
+    {"order": 684000, "rule": {"select": "^<PayrollW2>.label", "promote": true}},
+    {"order": 962000, "rule": {"select": "^<ForeignTaxPage>.Ordinary", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_FTC_INCOME", "fields": ["basis", "sources", "situations", "history"]}, {"title": "DISPLAY_FTC_CARRYBACK", "fields": ["carryback", "amt_limitation", "interest_allocation"]}, {"title": "DISPLAY_FTC_RECORDS", "fields": ["investment_assets", "loss_history", "state_taxes", "rate_adjustment"]}]}},
+    {"order": 963000, "rule": {"select": "^<ForeignTaxPage>.Ordinary", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_FTC_INCOME", "fields": ["basis", "sources", "situations", "history"]}, {"title": "DISPLAY_FTC_CARRYBACK", "fields": ["carryback", "amt_limitation", "interest_allocation"]}, {"title": "DISPLAY_FTC_RECORDS", "fields": ["investment_assets", "loss_history", "state_taxes", "rate_adjustment"]}]}},
+    {"order": 970000, "rule": {"select": "^<ForeignTaxInitial>.Ordinary", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_FTC_INCOME", "fields": ["basis", "sources", "situations", "history"]}, {"title": "DISPLAY_FTC_CARRYBACK", "fields": ["carryback", "amt_limitation", "interest_allocation"]}, {"title": "DISPLAY_FTC_RECORDS", "fields": ["investment_assets", "loss_history", "state_taxes", "rate_adjustment"]}]}}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 625000, "rule": {"select": "^<SalePayment>", "flatten": true}},
+    {"order": 626000, "rule": {"select": "^<InstallmentPayments>", "flatten": {"name_row": false}}},
+    {"order": 628000, "rule": {"select": "^<InvestmentInstallmentSale>", "flatten": {"name_row": false}}},
+    {"order": 629000, "rule": {"select": "^<InvestmentInstallmentSale>.property", "promote": true}},
+    {"order": 794000, "rule": {"select": "^<InstallmentPayments>.property", "promote": true}}
+  ]
+}

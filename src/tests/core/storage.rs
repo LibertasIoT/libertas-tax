@@ -1,202 +1,16 @@
 use super::*;
-use crate::migration124::{Migration124, migrate_in};
-use crate::return_records::{self, Records};
-use crate::storage::{LoadedReturn, RecordTransaction, ReturnStore, Returns, persist_in, read_in};
-use crate::tests::cross::interview::open_topic;
-use alloc::collections::BTreeMap;
+use crate::return_records;
+use crate::storage::{
+    GenerationMismatch, ReturnStore, Returns, persist_with_in, read_in, reset_mismatched_in,
+};
+use crate::tests::support::client::income_pages::open_documents;
+use crate::tests::support::storage::{NativeTransaction, Store};
 use core::num::NonZeroUsize;
-use libertas::AvroDecode;
 use libertas::LibertasUser;
-use libertas::data::{KeyCodec, KeyDecode, wire};
+use libertas::data::{KeyCodec, wire};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 extern crate std;
 
-// Synthetic legacy fixtures use the frozen body. Independent baseline bytes
-// below were produced by the actual pre-HOME native encoder (2026-10-18).
-#[derive(libertas_macros::LibertasAvroEncode)]
-#[allow(clippy::large_enum_variant)]
-enum LegacyFixtureEnvelope {
-    StorageFormat { format: u32 },
-    Draft { draft: crate::migration124::Draft124 },
-}
-
-// Native bounded Data boundary, not a real Hub. All values and requests use the
-// SDK codec. A private transaction snapshot becomes visible only on commit.
-#[derive(Clone, Default)]
-struct Store {
-    values: BTreeMap<Vec<u8>, Vec<u8>>,
-    reads: usize,
-    writes: usize,
-    pages: usize,
-    mutations: usize,
-    mutation_bytes: usize,
-    fail_read: bool,
-    fail_after: Option<usize>,
-    fail_commit: bool,
-    cookies: usize,
-}
-struct NativeTransaction {
-    values: BTreeMap<Vec<u8>, Vec<u8>>,
-    mutations: usize,
-    mutation_bytes: usize,
-    pages: usize,
-    fail_read: bool,
-    fail_after: Option<usize>,
-}
-impl NativeTransaction {
-    fn new(store: &Store) -> Self {
-        Self {
-            values: store.values.clone(),
-            mutations: 0,
-            mutation_bytes: 0,
-            pages: 0,
-            fail_read: store.fail_read,
-            fail_after: store.fail_after,
-        }
-    }
-    fn admit(&mut self, operation: wire::Operation, bytes: usize) {
-        let request = wire::Request {
-            version: wire::VERSION,
-            id: 1,
-            checked: false,
-            command: wire::Command::ExecuteInTransaction { transaction: 1, operation },
-        };
-        assert!(request.to_avro().len() <= wire::MAX_REQUEST_BYTES, "Data ResourceLimit frame");
-        self.mutations += 1;
-        self.mutation_bytes += bytes;
-        assert!(self.mutation_bytes <= 16 * 1024 * 1024, "Data ResourceLimit mutation bytes");
-        assert_ne!(self.fail_after, Some(self.mutations), "injected fatal Data write failure");
-    }
-}
-impl RecordTransaction for NativeTransaction {
-    fn exists(&mut self, key: &TaxDataKey) -> bool {
-        self.values.contains_key(&key.to_key_bytes().unwrap())
-    }
-    fn get(&mut self, key: &TaxDataKey) -> Option<TaxAppData> {
-        assert!(!self.fail_read, "injected fatal Data read failure");
-        self.values
-            .get(&key.to_key_bytes().unwrap())
-            .map(|value| TaxAppData::from_avro(value).expect("fatal corrupt Data value"))
-    }
-    fn records(&mut self, user: LibertasUser, year: i32) -> Records {
-        assert!(!self.fail_read, "injected fatal Data scan failure");
-        let prefix = TaxDataKey::return_record_prefix(user, year).unwrap();
-        let mut page_entries = 0;
-        let mut page_bytes = 0;
-        let mut records = Vec::new();
-        for (key, bytes) in self.values.iter().filter(|(key, _)| key.starts_with(&prefix)) {
-            let size = key.len() + bytes.len();
-            if page_entries == 4096 || page_bytes + size > 8 * 1024 * 1024 {
-                self.pages += 1;
-                page_entries = 0;
-                page_bytes = 0;
-            }
-            assert!(size <= 8 * 1024 * 1024);
-            page_entries += 1;
-            page_bytes += size;
-            records.push((
-                TaxDataKey::decode_key(key).unwrap(),
-                TaxAppData::from_avro(bytes).expect("fatal corrupt Data scan value"),
-            ));
-        }
-        self.pages += 1;
-        records
-    }
-    fn put(&mut self, key: &TaxDataKey, value: &TaxAppData) {
-        let key = key.to_key_bytes().unwrap();
-        let value = value.to_avro();
-        assert!(value.len() <= wire::MAX_VALUE_BYTES, "Data ResourceLimit value");
-        self.admit(
-            wire::Operation::Put { key: key.clone(), value: value.clone() },
-            key.len() + value.len(),
-        );
-        self.values.insert(key, value);
-    }
-    fn delete(&mut self, key: &TaxDataKey) {
-        let key = key.to_key_bytes().unwrap();
-        self.admit(wire::Operation::Delete(key.clone()), key.len());
-        self.values.remove(&key);
-    }
-}
-impl Store {
-    fn commit(&mut self, tx: NativeTransaction) {
-        assert!(!self.fail_commit, "injected fatal Data commit failure");
-        self.values = tx.values;
-        self.mutations = tx.mutations;
-        self.mutation_bytes = tx.mutation_bytes;
-        self.pages += tx.pages;
-        if tx.mutations > 0 {
-            self.writes += 1;
-        }
-    }
-    fn seed(&mut self, user: LibertasUser, draft: FederalDraft) {
-        for (key, value) in return_records::project(user, &draft, 1).unwrap() {
-            self.values.insert(key.to_key_bytes().unwrap(), value.to_avro());
-        }
-    }
-    fn legacy(&mut self, user: LibertasUser, draft: FederalDraft) {
-        self.values.insert(
-            TaxDataKey::StorageFormat { user }.to_key_bytes().unwrap(),
-            LegacyFixtureEnvelope::StorageFormat { format: 124 }.to_avro(),
-        );
-        self.values.insert(
-            TaxDataKey::Draft { user }.to_key_bytes().unwrap(),
-            LegacyFixtureEnvelope::Draft { draft: draft.try_into().unwrap() }.to_avro(),
-        );
-    }
-
-    fn saved(&self, user: LibertasUser) -> FederalDraft {
-        self.saved_year(user, 2026)
-    }
-    fn saved_year(&self, user: LibertasUser, year: i32) -> FederalDraft {
-        read_in(&mut NativeTransaction::new(self), user, year).unwrap().unwrap().draft
-    }
-    fn bytes(&self, user: LibertasUser) -> usize {
-        let prefix = TaxDataKey::return_record_prefix(user, 2026).unwrap();
-        self.values
-            .iter()
-            .filter(|(key, _)| key.starts_with(&prefix))
-            .map(|(_, value)| value.len())
-            .sum()
-    }
-    fn migrate(&mut self, user: LibertasUser, year: i32) -> Result<Migration124, &'static str> {
-        let mut tx = NativeTransaction::new(self);
-        let result = migrate_in(&mut tx, user, year)?;
-        self.commit(tx);
-        Ok(result)
-    }
-}
-impl ReturnStore for Store {
-    fn load_or_initialize(&mut self, user: LibertasUser, year: i32) -> LoadedReturn {
-        self.reads += 1;
-        let mut tx = NativeTransaction::new(self);
-        let loaded = read_in(&mut tx, user, year).expect("fatal keyed corruption");
-        self.commit(tx);
-        loaded.unwrap_or_else(|| {
-            assert!(
-                !self.values.contains_key(&TaxDataKey::Draft { user }.to_key_bytes().unwrap()),
-                "quiesced migration required"
-            );
-            self.cookies += 1;
-            let mut draft = FederalDraft::empty(alloc::format!("fresh-{}", self.cookies));
-            draft.tax_year = year;
-            LoadedReturn::fresh(draft, user)
-        })
-    }
-    fn persist(
-        &mut self,
-        user: LibertasUser,
-        base: Option<&WorkingHeader>,
-        draft: &FederalDraft,
-        changed: bool,
-    ) -> bool {
-        let mut tx = NativeTransaction::new(self);
-        let saved =
-            persist_in(&mut tx, user, base, draft, changed).expect("fatal keyed corruption");
-        self.commit(tx);
-        saved
-    }
-}
 fn cache(bytes: usize, store: Store) -> Returns<Store> {
     Returns::with_store(NonZeroUsize::new(bytes).unwrap(), store)
 }
@@ -209,27 +23,7 @@ fn finish(user: LibertasUser, draft: &FederalDraft) -> P {
         previous: TaxSection::Review as i32,
         review: true,
         progress: vec![],
-    }
-}
-
-#[test]
-fn stable_legacy_roots_decode_exact_124_bytes_and_do_not_move() {
-    assert_eq!(TaxAppData::StorageFormat { format: 2 }.to_avro(), [0, 4]);
-    let draft = complete(FederalStatus::Joint);
-    let bytes = TaxAppData::Draft { draft: draft.clone().try_into().unwrap() }.to_avro();
-    assert_eq!(bytes[0], 2);
-    assert_eq!(
-        TaxAppData::from_avro(&bytes).unwrap(),
-        TaxAppData::Draft { draft: draft.try_into().unwrap() }
-    );
-    for user in [0, 1, u32::MAX as i64 + 1, i64::MAX] {
-        for (tag, key) in
-            [(0u8, TaxDataKey::StorageFormat { user }), (1, TaxDataKey::Draft { user })]
-        {
-            let bytes = key.to_key_bytes().unwrap();
-            assert_eq!(bytes, [&[0, tag][..], &(user as u64 ^ (1 << 63)).to_be_bytes()].concat());
-            assert_eq!(TaxDataKey::decode_key(&bytes).unwrap(), key);
-        }
+        refund: crate::tests::cross::interview::whole_refund(),
     }
 }
 
@@ -282,14 +76,6 @@ fn warm_navigation_and_estimates_do_no_writes_and_identity_is_checked_before_loa
     let writes = returns.store().writes;
     assert!(returns.handle(1, P::OpenInterview { user: 1 }).is_some());
     assert_eq!(returns.store().reads, 1);
-    let mut preview = crate::tests::support::client::survey::survey_preview_document(
-        IncomeDocument::W2(crate::tests::cross::interview::w2(6_200_000)),
-    );
-    if let P::PreviewDocument { user, foreign_countries, .. } = &mut preview {
-        *user = 1;
-        *foreign_countries = crate::foreign_accounts::countries();
-    }
-    assert!(returns.handle(1, preview).is_some());
     assert_eq!(returns.store().writes, writes);
 }
 
@@ -339,16 +125,21 @@ fn exact_record_bytes_track_save_growth_shrink_and_oversized_request_lifetime() 
     store.seed(2, draft.clone());
     let budget = store.bytes(TEST_USER);
     let mut returns = cache(budget, store);
-    returns.interview(2);
     let documents = (0..3)
         .map(|_| {
             crate::tests::cross::interview::document(
                 0,
-                IncomeDocument::W2(crate::tests::cross::interview::w2(6_000_000)),
+                IncomeSource::Wage {
+                    value: crate::WageDocument::W2(wage_document(
+                        crate::tests::cross::interview::w2(6_000_000),
+                    )),
+                },
             )
         })
         .collect();
-    let request = crate::tests::cross::interview::save_documents(&draft, documents);
+    let request =
+        crate::tests::cross::interview::save_documents(returns.interview(TEST_USER), documents);
+    returns.interview(2);
     crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, request).unwrap());
     let grown = returns.store().saved(TEST_USER);
     assert!(returns.store().bytes(TEST_USER) > budget);
@@ -359,7 +150,14 @@ fn exact_record_bytes_track_save_growth_shrink_and_oversized_request_lifetime() 
     assert_eq!(returns.store().reads, reads);
     assert!(returns.handle(TEST_USER, P::ReviewAccepted { user: TEST_USER }).is_some());
     assert_eq!(returns.len(), 1);
-    let request = crate::tests::cross::interview::save_documents(&grown, vec![]);
+    let navigation = crate::tests::cross::interview::navigate(&grown, TaxSection::Documents);
+    let Reply::Edit(mut request @ P::SaveDocuments { .. }) =
+        returns.handle(TEST_USER, navigation).unwrap()
+    else {
+        panic!("actual oversized source editor")
+    };
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    documents.common.wages.documents.clear();
     crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, request).unwrap());
     assert_eq!(returns.encoded_bytes(), returns.store().bytes(TEST_USER));
     let small = returns.store().saved(TEST_USER);
@@ -369,11 +167,16 @@ fn exact_record_bytes_track_save_growth_shrink_and_oversized_request_lifetime() 
         .map(|_| {
             crate::tests::cross::interview::document(
                 0,
-                IncomeDocument::W2(crate::tests::cross::interview::w2(6_000_000)),
+                IncomeSource::Wage {
+                    value: crate::WageDocument::W2(wage_document(
+                        crate::tests::cross::interview::w2(6_000_000),
+                    )),
+                },
             )
         })
         .collect();
-    let request = crate::tests::cross::interview::save_documents(&small, documents);
+    let request =
+        crate::tests::cross::interview::save_documents(returns.interview(TEST_USER), documents);
     crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, request).unwrap());
     assert_eq!(returns.len(), 0);
     assert_eq!(returns.encoded_bytes(), 0);
@@ -394,16 +197,25 @@ fn successful_save_commits_before_reply_and_unchanged_or_stale_edits_never_write
     assert_eq!(saved.revision, draft.revision + 1);
     assert_eq!(returns.store().writes, 1);
     assert!(!returns.interview(TEST_USER).dirty);
+    let format_key = return_records::format_key(TEST_USER, draft.tax_year).to_key_bytes().unwrap();
+    assert_eq!(
+        TaxAppData::from_avro(&returns.store().values[&format_key]).unwrap(),
+        TaxAppData::StorageFormat { format: STORAGE_FORMAT }
+    );
     assert!(matches!(
         returns.handle(TEST_USER, finish(TEST_USER, &draft)),
         Some(Reply::Response(P::Problem { .. }))
     ));
     assert_eq!(returns.store().writes, 1);
     let request = crate::tests::cross::interview::save_documents(
-        &saved,
+        returns.interview(TEST_USER),
         vec![crate::tests::cross::interview::document(
             saved.income[0].id,
-            IncomeDocument::W2(crate::tests::cross::interview::w2(6_000_000)),
+            IncomeSource::Wage {
+                value: crate::WageDocument::W2(wage_document(crate::tests::cross::interview::w2(
+                    6_000_000,
+                ))),
+            },
         )],
     );
     // The existing candidate owner decides whether these source facts changed.
@@ -411,6 +223,116 @@ fn successful_save_commits_before_reply_and_unchanged_or_stale_edits_never_write
     let saved = returns.store().saved(TEST_USER);
     let mut cold = cache(64 * 1024 * 1024, returns.store().clone());
     assert_eq!(cold.interview(TEST_USER).draft, saved);
+}
+
+#[test]
+fn accepted_callback_runs_once_after_identity_match_and_stores_final_cache_values() {
+    let draft = complete(FederalStatus::Single);
+    let base = return_records::header(&draft, 1);
+    let mut stale = base.clone();
+    stale.revision += 1;
+    let mut store = Store::default();
+    store.seed(TEST_USER, draft.clone());
+    let mut calls = 0;
+    assert_eq!(
+        store.persist_with(TEST_USER, Some(&stale), draft.tax_year, || {
+            calls += 1;
+            (draft.clone(), true, ())
+        }),
+        None
+    );
+    assert_eq!(calls, 0);
+    assert_eq!(store.writes, 0);
+    let mut interview = Interview::new(TEST_USER, draft.clone());
+    assert_eq!(
+        store.persist_with(TEST_USER, Some(&base), draft.tax_year, || {
+            calls += 1;
+            assert!(matches!(
+                interview.handle(finish(TEST_USER, &draft)),
+                Some(Reply::Response(P::Finished { .. }))
+            ));
+            (interview.draft.clone(), interview.dirty, 7)
+        }),
+        Some(7)
+    );
+    assert_eq!(calls, 1);
+    assert_eq!(store.writes, 1);
+    let saved = store.saved(TEST_USER);
+    assert_eq!(saved, interview.draft);
+    assert!(saved.finished);
+    assert_eq!(saved.revision, draft.revision + 1);
+    let mut returns = cache(1024 * 1024, store);
+    assert_eq!(returns.interview(TEST_USER).draft, saved);
+    assert_eq!(returns.encoded_bytes(), returns.store().bytes(TEST_USER));
+    let saved_base = return_records::header(&saved, 1);
+    assert!(returns.store_mut().persist(TEST_USER, Some(&saved_base), &saved, false));
+    assert_eq!(returns.store().writes, 1);
+    assert_eq!(returns.encoded_bytes(), returns.store().bytes(TEST_USER));
+}
+
+#[test]
+fn document_save_constructs_once_after_persisted_match_and_reloads_a_stale_editor() {
+    let draft = complete(FederalStatus::Single);
+    let mut store = Store::default();
+    store.seed(TEST_USER, draft.clone());
+    let mut returns = cache(64 * 1024 * 1024, store);
+    let mut request = open_documents(returns.interview(TEST_USER));
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::WageDocument::W2(form) = &mut documents.common.wages.documents[0].document else {
+        unreachable!()
+    };
+    *form.wages.as_mut().expect("printed wages") += 10_000;
+    let mut competing = draft.clone();
+    competing.revision += 1;
+    returns.store_mut().seed(TEST_USER, competing.clone());
+    assert!(matches!(returns.handle(TEST_USER, request), Some(Reply::Response(P::Problem { .. }))));
+    assert_eq!(returns.store().accepted_callbacks, 0);
+    assert_eq!(returns.store().writes, 0);
+    assert_eq!(returns.interview(TEST_USER).draft, competing);
+
+    let mut request = open_documents(returns.interview(TEST_USER));
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::WageDocument::W2(form) = &mut documents.common.wages.documents[0].document else {
+        unreachable!()
+    };
+    *form.wages.as_mut().expect("printed wages") += 10_000;
+    crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, request).unwrap());
+    assert_eq!(returns.store().accepted_callbacks, 1);
+    assert_eq!(returns.store().writes, 1);
+    let saved = returns.store().saved(TEST_USER);
+    assert_eq!(saved.revision, competing.revision + 1);
+    assert_eq!(returns.interview(TEST_USER).draft, saved);
+    let encoded = returns.encoded_bytes();
+    let unchanged = open_documents(returns.interview(TEST_USER));
+    crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, unchanged).unwrap());
+    assert_eq!(returns.store().accepted_callbacks, 2);
+    assert_eq!(returns.store().writes, 1);
+    assert_eq!(returns.store().saved(TEST_USER), saved);
+    assert_eq!(returns.interview(TEST_USER).draft, saved);
+    assert_eq!(returns.encoded_bytes(), encoded);
+    let mut cold = cache(64 * 1024 * 1024, returns.store().clone());
+    assert_eq!(cold.interview(TEST_USER).draft, saved);
+}
+
+#[test]
+fn failed_document_transaction_never_publishes_its_candidate_to_cache() {
+    let draft = complete(FederalStatus::Single);
+    let mut store = Store::default();
+    store.seed(TEST_USER, draft.clone());
+    let before = store.values.clone();
+    let mut returns = cache(64 * 1024 * 1024, store);
+    let mut request = open_documents(returns.interview(TEST_USER));
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let crate::WageDocument::W2(form) = &mut documents.common.wages.documents[0].document else {
+        unreachable!()
+    };
+    *form.wages.as_mut().expect("printed wages") += 10_000;
+    returns.store_mut().fail_commit = true;
+    assert!(catch_unwind(AssertUnwindSafe(|| returns.handle(TEST_USER, request))).is_err());
+    assert_eq!(returns.store().accepted_callbacks, 1);
+    assert_eq!(returns.store().values, before);
+    assert_eq!(returns.interview(TEST_USER).draft, draft);
+    assert!(!returns.interview(TEST_USER).dirty);
 }
 
 #[test]
@@ -520,98 +442,59 @@ fn corrupt_keyed_returns_and_failed_reads_never_reset_or_cache() {
 }
 
 #[test]
-fn migration_124_preserves_two_users_high_ids_nested_links_and_distinct_year_namespace() {
-    let mut first = complete(FederalStatus::Joint);
-    first.income[0].id = u32::MAX as i64 + 21;
-    first.next_id = i64::MAX - 1;
-    first.revision = 83;
-    let second = benefit_return(FederalStatus::Joint);
-    let mut other_year = first.clone();
-    other_year.tax_year = 2027;
-    // Storage namespace isolation only: this is not a claim of 2027 tax-rule support.
-    let mut store = Store::default();
-    store.legacy(TEST_USER, first.clone());
-    store.legacy(2, second.clone());
-    store.seed(TEST_USER, other_year.clone());
-    let untouched = store.values.clone();
-    assert_eq!(store.migrate(TEST_USER, 2026).unwrap(), Migration124::Migrated);
-    assert_eq!(store.saved(TEST_USER), first);
-    assert_eq!(store.saved_year(TEST_USER, 2027), other_year);
-    assert_eq!(
-        store.values[&TaxDataKey::Draft { user: 2 }.to_key_bytes().unwrap()],
-        untouched[&TaxDataKey::Draft { user: 2 }.to_key_bytes().unwrap()]
-    );
-    let once = store.values.clone();
-    assert_eq!(store.migrate(TEST_USER, 2026).unwrap(), Migration124::AlreadyMigrated);
-    assert_eq!(store.values, once);
-    assert_eq!(store.migrate(2, 2026).unwrap(), Migration124::Migrated);
-    assert_eq!(store.saved(2), second);
-    let mut returns = cache(64 * 1024 * 1024, store);
-    let request = crate::tests::cross::interview::save_documents(&first, vec![]);
-    crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, request).unwrap());
-    let pruned = returns.store().saved(TEST_USER);
-    assert!(pruned.income.is_empty());
-    assert_eq!(pruned.next_id, first.next_id);
-    assert_eq!(returns.store().saved_year(TEST_USER, 2027), other_year);
-    assert_eq!(returns.store().saved(2), second);
-}
-
-#[test]
-fn migration_unknown_format_is_checked_before_body_and_failure_leaves_old_bytes_intact() {
-    let first = complete(FederalStatus::Single);
-    let mut store = Store::default();
-    store.legacy(TEST_USER, first.clone());
-    store.values.insert(
-        TaxDataKey::StorageFormat { user: TEST_USER }.to_key_bytes().unwrap(),
-        TaxAppData::StorageFormat { format: 123 }.to_avro(),
-    );
-    store.values.insert(TaxDataKey::Draft { user: TEST_USER }.to_key_bytes().unwrap(), vec![255]);
-    assert_eq!(store.migrate(TEST_USER, 2026), Err("Unsupported legacy storage format"));
-    for at_commit in [false, true] {
+fn missing_or_unknown_generation_rejects_before_versioned_values_or_edits() {
+    let draft = complete(FederalStatus::Single);
+    let header = return_records::header(&draft, 1);
+    for format in [None, Some(1), Some(STORAGE_FORMAT - 1), Some(STORAGE_FORMAT + 1)] {
         let mut store = Store::default();
-        store.legacy(TEST_USER, first.clone());
-        let old = store.values.clone();
-        if at_commit {
-            store.fail_commit = true;
+        store.seed(TEST_USER, draft.clone());
+        let key = return_records::format_key(TEST_USER, draft.tax_year).to_key_bytes().unwrap();
+        let error = if let Some(format) = format {
+            store.values.insert(key, TaxAppData::StorageFormat { format }.to_avro());
+            "Unknown or corrupt storage format marker"
         } else {
-            store.fail_after = Some(3);
-        }
-        assert!(catch_unwind(AssertUnwindSafe(|| store.migrate(TEST_USER, 2026))).is_err());
-        assert_eq!(store.values, old);
-        store.fail_after = None;
-        store.fail_commit = false;
-        assert_eq!(store.migrate(TEST_USER, 2026).unwrap(), Migration124::Migrated);
-        let mut restarted = cache(64 * 1024 * 1024, store);
-        assert_eq!(restarted.interview(TEST_USER).draft, first);
-        assert!(matches!(
-            restarted.handle(TEST_USER, finish(TEST_USER, &first)),
-            Some(Reply::Response(P::Finished { .. }))
-        ));
+            store.values.remove(&key);
+            "Records without storage format marker"
+        };
+        let mut tx = NativeTransaction::new(&store);
+        // A decoder sentinel models an unreadable retired header/body without
+        // constructing malformed or out-of-bounds schema values.
+        tx.block_versioned_reads = true;
+        assert_eq!(read_in(&mut tx, TEST_USER, draft.tax_year).err(), Some(error));
+        let mut admitted = false;
+        assert_eq!(
+            persist_with_in(&mut tx, TEST_USER, Some(&header), draft.tax_year, || {
+                admitted = true;
+                (&draft, true, ())
+            }),
+            Err(error)
+        );
+        assert!(!admitted, "incompatible generation must not admit an edit");
+        assert_eq!(tx.scans, 0, "typed body records must remain unread");
+        assert_eq!(tx.key_scans, if format.is_none() { 2 } else { 0 });
+        assert_eq!(tx.mutations, 0);
+        assert_eq!(tx.values, store.values);
     }
 }
 
 #[test]
-fn wage_specials_saved_sources_survive_store_cache_cold_read_and_link_deletion() {
+fn wage_specials_saved_sources_survive_store_cache_and_cold_read() {
     let mut d = complete(FederalStatus::Joint);
     add(&mut d, income(cash_business(0)));
     let business_id = d.income[1].id;
     let mut store = Store::default();
     store.seed(TEST_USER, d.clone());
     let mut returns = cache(64 * 1024 * 1024, store);
-    let mut statutory = crate::tests::cross::interview::w2(5_000_000);
+    let mut statutory = w2_source(crate::tests::cross::interview::w2(5_000_000));
     statutory.more.statutory = true;
-    statutory.answers.statutory_business = Some(business_id);
+    statutory.answers.statutory_business =
+        Some(StatutoryBusiness::Business { source: business_id });
     statutory.answers.medicaid_waiver = 100_000;
     statutory.more.box12 = vec![
         Box12Entry { code: W2Code::Q, amount: 200_000 },
         Box12Entry { code: W2Code::II, amount: 300_000 },
     ];
-    let mut railroad = crate::tests::cross::interview::document(
-        0,
-        IncomeDocument::W2(crate::tests::cross::interview::w2(26_000_000)),
-    );
-    railroad.owner = Owner::Spouse;
-    let IncomeDocument::W2(w) = &mut railroad.document else { panic!() };
+    let mut w = crate::tests::cross::interview::w2(26_000_000);
     w.social_wages = 0;
     w.social_tax = 0;
     w.medicare_wages = 0;
@@ -623,21 +506,87 @@ fn wage_specials_saved_sources_survive_store_cache_cold_read_and_link_deletion()
         medicare: 377_000,
         additional_medicare: 54_000,
     };
-    let request = crate::tests::cross::interview::save_documents(
-        &d,
-        vec![crate::tests::cross::interview::document(1, IncomeDocument::W2(statutory)), railroad],
+    let mut railroad = crate::tests::cross::interview::document(
+        0,
+        IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w)) },
     );
+    railroad.owner = crate::DocumentOwner::Spouses;
+    let request = crate::tests::cross::interview::save_documents(
+        returns.interview(TEST_USER),
+        vec![
+            crate::tests::cross::interview::document(
+                1,
+                IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(statutory)) },
+            ),
+            railroad,
+        ],
+    );
+    let supplied = crate::tests::support::client::income_pages::page_documents(&request);
     crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, request).unwrap());
+    let answers = crate::tests::support::client::income_pages::information_return_answers(
+        returns.interview(TEST_USER),
+        &supplied,
+    );
+    crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, answers).unwrap());
     let accepted = returns.interview(TEST_USER).draft.clone();
     assert!(accepted.valid_stored());
     assert_eq!(returns.store().saved(TEST_USER), accepted);
     let mut cold = cache(64 * 1024 * 1024, returns.store().clone());
     assert_eq!(cold.interview(TEST_USER).draft, accepted);
-    let request =
-        crate::tests::cross::interview::save_topic(&accepted, TaxSection::SelfEmployment, vec![]);
+}
+
+#[test]
+fn statutory_wage_link_clear_survives_save_and_cold_read() {
+    let accepted = statutory_storage_return(true);
+    let mut store = Store::default();
+    store.seed(TEST_USER, accepted.clone());
+    let mut cold = cache(64 * 1024 * 1024, store);
+    let mut clear_link = open_documents(cold.interview(TEST_USER));
+    let P::SaveDocuments { documents, .. } = &mut clear_link else { unreachable!() };
+    let row = documents
+        .common
+        .wages
+        .documents
+        .iter_mut()
+        .find(|row| row.id == accepted.income[0].id)
+        .unwrap();
+    let crate::WageDocument::W2(wage) = &mut row.document else { unreachable!() };
+    let mut answers = stored_w2_answers(&accepted, 0);
+    answers.statutory_business = None;
+    wage_document(W2Source { form: wage.clone(), answers });
+    let supplied = crate::tests::support::client::income_pages::page_documents(&clear_link);
+    crate::tests::cross::interview::accepted(&cold.handle(TEST_USER, clear_link).unwrap());
+    let answers = crate::tests::support::client::income_pages::information_return_answers(
+        cold.interview(TEST_USER),
+        &supplied,
+    );
+    crate::tests::cross::interview::accepted(&cold.handle(TEST_USER, answers).unwrap());
+    let cleared = cold.interview(TEST_USER).draft.clone();
+    let FederalIncome::Wage { data } = &cleared.income[0].income else { panic!() };
+    let data = &FederalWage::from(data);
+    assert_eq!(data.statutory_business, None);
+    assert_eq!(data.wages, 5_000_000);
+    assert_eq!(data.medicaid_waiver, 100_000);
+    let mut reopened = cache(64 * 1024 * 1024, cold.store().clone());
+    assert_eq!(reopened.interview(TEST_USER).draft, cleared);
+    assert_eq!(reopened.store().saved(TEST_USER), cleared);
+}
+
+#[test]
+fn unlinked_statutory_wage_survives_business_deletion_and_cold_read() {
+    let draft = statutory_storage_return(false);
+    let mut store = Store::default();
+    store.seed(TEST_USER, draft);
+    let mut cold = cache(64 * 1024 * 1024, store);
+    let request = crate::tests::cross::interview::save_topic(
+        cold.interview(TEST_USER),
+        TaxSection::SelfEmployment,
+        vec![],
+    );
     crate::tests::cross::interview::accepted(&cold.handle(TEST_USER, request).unwrap());
     let deleted = cold.interview(TEST_USER).draft.clone();
     let FederalIncome::Wage { data } = &deleted.income[0].income else { panic!() };
+    let data = &FederalWage::from(data);
     assert_eq!(data.statutory_business, None);
     assert_eq!(data.wages, 5_000_000);
     assert_eq!(data.medicaid_waiver, 100_000);
@@ -712,26 +661,22 @@ fn care_completion_normal_store_save_cold_read_and_reopen_preserve_supplied_fact
 }
 
 // Shared with the existing native-capacity test: no copied lot fixture.
-pub(in crate::tests) fn rehearse_heavy(draft: &FederalDraft) {
+pub(in crate::tests) fn exercise_heavy(draft: &FederalDraft) {
     assert!(draft.valid_stored());
-    let legacy = TaxAppData::Draft { draft: draft.clone().try_into().unwrap() }.to_avro();
-    assert!(legacy.len() <= wire::MAX_VALUE_BYTES, "legacy fixture must itself be persistable");
     let records = return_records::project(TEST_USER, draft, 1).unwrap();
     let expected_bytes: usize = records
         .iter()
         .map(|(key, value)| key.to_key_bytes().unwrap().len() + value.to_avro().len())
-        .sum::<usize>()
-        + TaxDataKey::Draft { user: TEST_USER }.to_key_bytes().unwrap().len();
-    let mut store = Store::default();
-    store.legacy(TEST_USER, draft.clone());
-    let old = store.values.clone();
-    store.fail_after = Some(records.len());
-    assert!(catch_unwind(AssertUnwindSafe(|| store.migrate(TEST_USER, draft.tax_year))).is_err());
-    assert_eq!(store.values, old);
+        .sum();
+    let mut store = Store { fail_after: Some(records.len()), ..Store::default() };
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| store.persist(TEST_USER, None, draft, true))).is_err()
+    );
+    assert!(store.values.is_empty());
     store.fail_after = None;
-    assert_eq!(store.migrate(TEST_USER, draft.tax_year).unwrap(), Migration124::Migrated);
+    assert!(store.persist(TEST_USER, None, draft, true));
     assert_eq!(store.mutation_bytes, expected_bytes);
-    assert_eq!(store.mutations, records.len() + 1);
+    assert_eq!(store.mutations, records.len());
     assert_eq!(store.saved(TEST_USER), *draft);
     let mutations = store.mutations;
     let bytes = store.mutation_bytes;
@@ -742,11 +687,12 @@ pub(in crate::tests) fn rehearse_heavy(draft: &FederalDraft) {
         assert!(returns.store().pages >= 2);
     }
     assert_eq!(returns.encoded_bytes(), return_records::value_bytes(&records));
-    let mut editor = Interview::new(TEST_USER, draft.clone());
-    let mut page = open_topic(&mut editor, TaxSection::InvestmentSales);
-    let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    for item in &mut documents.documents {
-        let IncomeDocument::Sale1099B(sale) = &mut item.document else { unreachable!() };
+    let mut page = open_documents(returns.interview(TEST_USER));
+    let P::SaveDocuments { documents, .. } = &mut page else { unreachable!() };
+    for item in &mut documents.common.investment_sales.documents {
+        let crate::InvestmentSaleDocument::Sale1099B(sale) = &mut item.document else {
+            unreachable!()
+        };
         sale.description.push_str(" corrected");
     }
     crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, page).unwrap());
@@ -757,10 +703,9 @@ pub(in crate::tests) fn rehearse_heavy(draft: &FederalDraft) {
     if draft.income.len() > 4096 {
         assert!(returns.store().mutations > 4096);
     }
-    let mut editor = Interview::new(TEST_USER, corrected.clone());
-    let mut prune = open_topic(&mut editor, TaxSection::InvestmentSales);
-    let P::SaveIncomes { documents, .. } = &mut prune else { unreachable!() };
-    documents.documents.clear();
+    let mut prune = open_documents(returns.interview(TEST_USER));
+    let P::SaveDocuments { documents, .. } = &mut prune else { unreachable!() };
+    documents.common.investment_sales.documents.clear();
     crate::tests::cross::interview::accepted(&returns.handle(TEST_USER, prune).unwrap());
     let pruned = returns.store().saved(TEST_USER);
     assert_eq!(pruned.income.len(), 1, "the W-2 stays");
@@ -768,34 +713,9 @@ pub(in crate::tests) fn rehearse_heavy(draft: &FederalDraft) {
     let mut restarted = cache(64 * 1024 * 1024, returns.store().clone());
     assert_eq!(restarted.interview(TEST_USER).draft, pruned);
     std::println!(
-        "Unit53 full native bounded migration rows={} mutations={mutations} bytes={bytes}; correction and prune committed; real Hub not exercised",
+        "Unit53 full native bounded save rows={} mutations={mutations} bytes={bytes}; correction and prune committed; real Hub not exercised",
         draft.income.len()
     );
-}
-
-#[test]
-fn legacy_missing_marker_or_body_is_not_a_successful_empty_migration() {
-    let mut empty = Store::default();
-    assert_eq!(empty.migrate(TEST_USER, 2026).unwrap(), Migration124::NoLegacyReturn);
-    for missing_marker in [false, true] {
-        let mut store = Store::default();
-        store.legacy(TEST_USER, complete(FederalStatus::Single));
-        let missing = if missing_marker {
-            TaxDataKey::StorageFormat { user: TEST_USER }
-        } else {
-            TaxDataKey::Draft { user: TEST_USER }
-        };
-        store.values.remove(&missing.to_key_bytes().unwrap());
-        if missing_marker {
-            store
-                .values
-                .insert(TaxDataKey::Draft { user: TEST_USER }.to_key_bytes().unwrap(), vec![255]);
-        }
-        let before = store.values.clone();
-        assert!(store.migrate(TEST_USER, 2026).is_err());
-        assert_eq!(store.values, before);
-        assert_eq!(store.writes, 0);
-    }
 }
 
 #[test]
@@ -831,24 +751,6 @@ fn warm_save_cannot_repair_corrupt_persisted_records_with_matching_revision() {
         assert_eq!(returns.store().values, before);
         assert_eq!(returns.store().writes, 0);
     }
-}
-
-#[test]
-fn invalid_stored_financial_answers_are_blocked_without_resetting_them() {
-    let mut draft = complete(FederalStatus::Single);
-    let FederalIncome::Wage { data } = &mut draft.income[0].income else { unreachable!() };
-    data.wages = -1;
-    assert!(!draft.valid_stored());
-    let mut store = Store::default();
-    store.seed(TEST_USER, draft.clone());
-    let before = store.values.clone();
-    let mut returns = cache(64 * 1024 * 1024, store);
-    assert!(matches!(
-        returns.handle(TEST_USER, P::OpenInterview { user: TEST_USER }),
-        Some(Reply::Response(P::Problem { .. }))
-    ));
-    assert_eq!(returns.interview(TEST_USER).draft, draft);
-    assert_eq!(returns.store().values, before);
 }
 
 #[test]
@@ -891,7 +793,7 @@ fn first_accepted_save_creates_complete_records_and_unchanged_setup_keeps_revisi
 fn unrelated_users_do_not_increase_return_read_pages_or_reset_their_records() {
     let mut store = Store::default();
     for user in 2..=200 {
-        store.values.insert(TaxDataKey::Draft { user }.to_key_bytes().unwrap(), vec![255]);
+        store.values.insert(TaxDataKey::StorageFormat { user }.to_key_bytes().unwrap(), vec![255]);
     }
     let untouched = store.values.clone();
     let mut returns = cache(64 * 1024 * 1024, store);
@@ -919,8 +821,12 @@ fn admitted_oversized_payment_waiver_hits_data_limit_without_partial_save_or_tru
     else {
         panic!("expected payments editor")
     };
+    // Long enough that the payment section is the largest stored record of the return.
+    let explanation =
+        "The disaster closed my workplace and delayed my estimated tax payment. ".repeat(8);
+    let explanation = explanation.trim_end();
     let P::SavePayments { value, .. } = &mut page else { unreachable!() };
-    value.penalty = PenaltyChoice::Figure {
+    value.more.penalty = PenaltyChoice::Figure {
         prior_tax: 1_000_000,
         prior_agi: Some(6_000_000),
         full_year: true,
@@ -930,22 +836,45 @@ fn admitted_oversized_payment_waiver_hits_data_limit_without_partial_save_or_tru
         income: IncomeTiming::Evenly,
         waiver: Waiver::Full {
             reason: PenaltyWaiverReason::CasualtyOrDisasterOrUnusual,
-            explanation: "X".repeat(wire::MAX_VALUE_BYTES + 1),
+            explanation: explanation.into(),
         },
     };
     assert!(page.to_avro().len() < wire::MAX_REQUEST_BYTES);
+    // Admit the ordinary waiver through the same editor before modeling a backend
+    // whose capacity is one encoded byte below this complete payment section.
+    // The SDK value guard above keeps its real limit independently.
+    let mut admitted = Interview::new(TEST_USER, draft.clone());
+    crate::tests::cross::interview::accepted(&crate::tests::support::client::send(
+        &mut admitted,
+        page.clone(),
+    ));
+    let records = return_records::project(TEST_USER, &admitted.draft, 1).unwrap();
+    let payment_bytes = records
+        .iter()
+        .find_map(|(_, value)| {
+            matches!(value, TaxAppData::PaymentsSection { .. }).then(|| value.to_avro().len())
+        })
+        .unwrap();
+    let limit = payment_bytes - 1;
+    // Header and unrelated sections must fit, so the failed write is the intact
+    // payment value rather than an earlier mutation.
+    assert!(records.iter().all(|(_, value)| {
+        matches!(value, TaxAppData::PaymentsSection { .. }) || value.to_avro().len() <= limit
+    }));
+    returns.store_mut().backend_value_limit = Some(limit);
     let before = returns.store().values.clone();
     assert!(catch_unwind(AssertUnwindSafe(|| returns.handle(TEST_USER, page))).is_err());
     assert_eq!(returns.store().values, before);
     assert_eq!(returns.store().writes, 0);
     let candidate = &returns.interview(TEST_USER).draft;
     assert!(candidate.valid_stored(), "native accepted answers remain valid before Data limit");
-    let Some(PenaltyWaiver::Full { explanation, .. }) =
+    let Some(PenaltyWaiver::Full { explanation: retained, .. }) =
         &candidate.payments.as_ref().unwrap().waiver
     else {
         unreachable!()
     };
-    assert_eq!(explanation.len(), wire::MAX_VALUE_BYTES + 1);
+    assert_eq!(retained, explanation);
+    assert_eq!(candidate, &admitted.draft);
     let mut restarted = cache(64 * 1024 * 1024, returns.store().clone());
     assert_eq!(restarted.interview(TEST_USER).draft, draft);
 }
@@ -1018,209 +947,98 @@ fn concurrent_initial_open_uses_the_committed_return_without_overwriting_it() {
 }
 
 #[test]
-fn retained_124_fixture_conversion_keeps_answers_and_both_coverage_boolean_branches() {
-    let mut cases =
-        vec![FederalDraft::empty("124-empty".into()), benefit_return(FederalStatus::Joint)];
-    for payroll_covered in [false, true] {
-        let mut draft = complete(FederalStatus::Single);
+fn current_employee_payroll_sources_survive_native_storage_roundtrip() {
+    use crate::{EmployeeCoverage, EmployeePayrollSource, EmployeeWageReason, SourceCents};
+    let mut draft = complete(FederalStatus::Single);
+    let railroad = employee_railroad_source([
+        SourceCents::Reported { amount: 13_579 },
+        SourceCents::Unavailable,
+        SourceCents::NotReported,
+        SourceCents::Reported { amount: 197 },
+        SourceCents::NotReported,
+    ]);
+    for payroll in [
+        EmployeePayrollSource::Unavailable,
+        EmployeePayrollSource::Form8919 {
+            reason: EmployeeWageReason::Ss8Determination { date: 20260501 },
+        },
+        EmployeePayrollSource::Government {
+            social: EmployeeCoverage::NotCovered,
+            medicare: EmployeeCoverage::Covered,
+            reason: Some(EmployeeWageReason::Ss8Pending { filed_on: 20260601 }),
+        },
+        EmployeePayrollSource::Railroad { reported: railroad.clone() },
+        EmployeePayrollSource::TotalizationCertificate,
+        EmployeePayrollSource::ForeignGovernment,
+        EmployeePayrollSource::RailroadRepresentative { reported: railroad },
+    ] {
         let mut source = omitted_employee_wages(13_579);
         let FederalIncome::EmployeeWages { data } = &mut source else { unreachable!() };
-        data.complete = payroll_covered;
+        data.payroll = payroll;
         add(&mut draft, income(source));
-        cases.push(draft);
     }
-    assert_eq!(
-        LegacyFixtureEnvelope::StorageFormat { format: 124 }.to_avro(),
-        TaxAppData::StorageFormat { format: 124 }.to_avro()
-    );
-    for draft in cases {
-        let old_bytes =
-            LegacyFixtureEnvelope::Draft { draft: draft.clone().try_into().unwrap() }.to_avro();
-        let stored = TaxAppData::Draft { draft: draft.clone().try_into().unwrap() };
-        assert_eq!(
-            stored.to_avro(),
-            old_bytes,
-            "frozen-body fixture keeps its complete legacy envelope"
-        );
-        let TaxAppData::Draft { draft: retained } = TaxAppData::from_avro(&old_bytes).unwrap()
-        else {
-            unreachable!()
-        };
-        assert_eq!(
-            retained.into_current().unwrap(),
-            draft,
-            "all current facts and old bool branches survive"
-        );
-    }
-}
-
-// 2026-10-18: produced by the original pre-HOME native App/SDK encoder, not
-// by the retained DTOs. Stored business/office/casualty declarations match
-// 701d0e944; the producing ad546ee6f export differs only in report routing.
-#[test]
-fn retained_124_native_home_and_casualty_bytes_keep_their_exact_facts() {
-    use crate::migration124::{BusinessHomeOffice124, FederalIncome124, OfficeHome124};
-    for (name, bytes) in [
-        ("none", include_bytes!("../../../tests/fixtures/storage124/none.avro").as_slice()),
-        (
-            "simplified",
-            include_bytes!("../../../tests/fixtures/storage124/simplified.avro").as_slice(),
-        ),
-        (
-            "owned",
-            include_bytes!("../../../tests/fixtures/storage124/actual-owned.avro").as_slice(),
-        ),
-        (
-            "signed",
-            include_bytes!("../../../tests/fixtures/storage124/actual-rented-signed.avro")
-                .as_slice(),
-        ),
-    ] {
-        let mut offset = 0;
-        let value = TaxAppData::avro_decode(bytes, &mut offset).unwrap();
-        assert_eq!(offset, bytes.len());
-        assert_eq!(value.to_avro(), bytes);
-        let TaxAppData::Draft { draft } = value else { panic!() };
-        assert_eq!(draft.cookie, "synthetic-retained124-home");
-        assert_eq!(draft.revision, 17);
-        let FederalIncome124::Business { data } = &draft.income[0].income else { panic!() };
-        assert!(matches!(
-            data.activity,
-            BusinessActivity::Ordinary {
-                returns: 12_345,
-                receipts: 5_000_000_123,
-                accounting: BusinessAccounting::Accrual
-            }
-        ));
-        let properties = &draft.deductions.as_ref().unwrap().personal_casualties[0].properties;
-        assert_eq!(properties.len(), 2);
-        assert_eq!(properties[0].basis, 6_000_000_123);
-        assert_eq!(properties[0].before, 7_000_000_456);
-        assert_eq!(properties[0].reimbursement, 2_000_000_321);
-        assert_eq!(properties[1].basis, 123_456);
-        assert_eq!(properties[1].received, 23_456);
-        match (name, &data.home_office) {
-            ("none", BusinessHomeOffice124::None) => {
-                let counter = draft.next_id;
-                let migrated = draft.into_current().unwrap();
-                assert!(migrated.home_sites.is_empty());
-                let event = &migrated.deductions.as_ref().unwrap().personal_casualties[0];
-                assert_eq!(event.id, counter);
-                assert_eq!(event.properties[0].id, counter + 1);
-                assert_eq!(event.properties[1].id, counter + 2);
-                assert_eq!(migrated.next_id, counter + 3);
-                assert!(migrated.valid_stored());
-            }
-            ("simplified", BusinessHomeOffice124::Simplified { months, prior_operating, .. }) => {
-                assert_eq!(*prior_operating, 4_294_967_397);
-                assert_eq!(months[1].days, 14);
-                assert_eq!(months[11].square_feet, 112);
-                assert!(draft.into_current().is_err());
-            }
-            ("owned", BusinessHomeOffice124::ActualExpenses { office, eligible: true }) => {
-                assert!(matches!(
-                    office.home,
-                    OfficeHome124::Owned {
-                        basis: 5_000_000_123,
-                        land: 1_000_000_321,
-                        first_used: 20210315,
-                        ..
-                    }
-                ));
-                assert_eq!(office.direct, 56_789);
-                assert!(draft.into_current().is_err());
-            }
-            ("signed", BusinessHomeOffice124::ActualExpenses { office, eligible: false }) => {
-                assert_eq!(data.notary_profit, -4_294_967_399);
-                assert_eq!(office.insurance, -12_345);
-                assert_eq!(properties[0].received, -4_294_967_401);
-                assert!(matches!(office.home, OfficeHome124::Rented { rent: 4_294_967_411 }));
-                assert!(draft.into_current().is_err());
-            }
-            _ => panic!("retained office variant changed for {name}"),
-        }
-    }
-}
-
-#[test]
-fn unavailable_legacy_home_migration_keeps_every_original_record() {
-    for bytes in [
-        include_bytes!("../../../tests/fixtures/storage124/simplified.avro").as_slice(),
-        include_bytes!("../../../tests/fixtures/storage124/actual-owned.avro").as_slice(),
-    ] {
-        let mut store = Store::default();
-        store.values.insert(
-            TaxDataKey::StorageFormat { user: TEST_USER }.to_key_bytes().unwrap(),
-            TaxAppData::StorageFormat { format: 124 }.to_avro(),
-        );
-        store
-            .values
-            .insert(TaxDataKey::Draft { user: TEST_USER }.to_key_bytes().unwrap(), bytes.to_vec());
-        let original = store.values.clone();
-        assert!(store.migrate(TEST_USER, 2026).is_err());
-        assert_eq!(store.values, original);
-        assert_eq!(store.writes, 0);
-        assert_eq!(store.mutations, 0);
-    }
-}
-
-#[test]
-fn legacy_casualty_identity_allocation_cannot_exhaust_the_counter() {
-    let TaxAppData::Draft { mut draft } =
-        TaxAppData::from_avro(include_bytes!("../../../tests/fixtures/storage124/none.avro"))
-            .unwrap()
-    else {
-        panic!()
-    };
-    draft.next_id = i64::MAX - 2;
-    draft.deductions.as_mut().unwrap().personal_casualties[0].properties.truncate(1);
-    assert!(draft.into_current().is_err());
+    f18_cold(&draft);
 }
 
 #[test]
 fn applied_credit_native_save_reopen_restart_and_rejection_are_atomic() {
-    use crate::tests::cross::interview::{navigate, payments_value, save_payments};
+    use crate::tests::cross::interview::finish_request;
     let draft = complete(FederalStatus::Single);
     let mut store = Store::default();
     store.seed(TEST_USER, draft.clone());
     let mut returns = cache(64 * 1024 * 1024, store);
-    let request = navigate(&draft, TaxSection::Payments);
-    let Some(Reply::Edit(page)) = returns.handle(TEST_USER, request) else { panic!("payments") };
-    let mut value = payments_value(&page).0.clone();
-    value.credit_applied_next_year = 100_050;
-    value.credit_recipient = Some(OverpaymentRecipient::SpouseAccount);
+    let start = |d: &FederalDraft| P::StartFinish {
+        user: TEST_USER,
+        cookie: d.cookie.clone(),
+        revision: d.revision,
+    };
+    let Some(Reply::Response(P::BeginFinish { mut refund, .. })) =
+        returns.handle(TEST_USER, start(&draft))
+    else {
+        panic!("finish")
+    };
+    refund.credit_applied_next_year = 100_050;
+    refund.credit_recipient = Some(OverpaymentRecipient::SpouseAccount);
     // Forged readonly capacity is ignored; the candidate computes its own.
-    value.credit_capacity = Some(i64::MAX);
-    let request = save_payments(&draft, value.clone());
-    crate::tests::support::assert::accepted(&returns.handle(TEST_USER, request).unwrap());
+    refund.credit_capacity = Some(i64::MAX);
+    let request = finish_request(&draft, refund.clone());
+    assert!(matches!(
+        returns.handle(TEST_USER, request),
+        Some(Reply::Response(P::Finished { .. }))
+    ));
     let accepted = returns.store().saved(TEST_USER);
     let mut restarted = cache(64 * 1024 * 1024, returns.store().clone());
     assert_eq!(restarted.interview(TEST_USER).draft, accepted);
-    let request = navigate(&accepted, TaxSection::Payments);
-    let Some(Reply::Edit(page)) = restarted.handle(TEST_USER, request) else { panic!("payments") };
-    let reopened = payments_value(&page).0;
+    let Some(Reply::Response(P::BeginFinish { refund: reopened, .. })) =
+        restarted.handle(TEST_USER, start(&accepted))
+    else {
+        panic!("finish")
+    };
     assert_eq!(
         (reopened.credit_applied_next_year, reopened.credit_recipient),
         (100_050, Some(OverpaymentRecipient::SpouseAccount))
     );
     let maximum = reopened.credit_capacity.unwrap();
     let before = restarted.store().values.clone();
-    value.credit_applied_next_year = maximum + 1; // raw cents, even if whole-dollar rounding fits
+    refund.credit_applied_next_year = maximum + 1; // raw cents, even if whole-dollar rounding fits
     let Some(Reply::Response(P::Problem { message, field, .. })) =
-        restarted.handle(TEST_USER, save_payments(&accepted, value.clone()))
+        restarted.handle(TEST_USER, finish_request(&accepted, refund.clone()))
     else {
         panic!("excess credit must be rejected")
     };
-    assert_eq!(field.as_deref(), Some("[value/credit_applied_next_year]"));
+    assert_eq!(field.as_deref(), Some("[refund/credit_applied_next_year]"));
     assert_eq!(
         message,
         Message::new("PAY_CREDIT_ABOVE_CAPACITY", vec![MessageArg::usd_cents(maximum)]).encode()
     );
     assert_eq!(restarted.store().values, before);
     assert_eq!(restarted.interview(TEST_USER).draft, accepted);
-    value.credit_applied_next_year = 0;
-    let request = save_payments(&accepted, value);
-    crate::tests::support::assert::accepted(&restarted.handle(TEST_USER, request).unwrap());
+    refund.credit_applied_next_year = 0;
+    let request = finish_request(&accepted, refund);
+    assert!(matches!(
+        restarted.handle(TEST_USER, request),
+        Some(Reply::Response(P::Finished { .. }))
+    ));
     let corrected = restarted.store().saved(TEST_USER);
     assert_eq!(corrected.payments.as_ref().unwrap().credit_applied_next_year, 0);
     let mut cold = cache(64 * 1024 * 1024, restarted.store().clone());
@@ -1228,60 +1046,210 @@ fn applied_credit_native_save_reopen_restart_and_rejection_are_atomic() {
 }
 
 #[test]
-fn unit42_prior_home_carry_frozen124_bridge_never_invents_amt_or_character() {
-    let mut source = rental(12_000, 0);
-    source.home_depreciation_carryover = crate::SourceCents::Reported { amount: 12_345 };
-    // This fixture represents only the facts present in the retained carrier.
-    source.amt_home_depreciation_carryover = crate::SourceCents::Unavailable;
-    source.home_casualty_carryover = crate::SourceCents::Unavailable;
-    source.amt_home_casualty_carryover = crate::SourceCents::Unavailable;
-    let retained = crate::migration124::FederalRental124::try_from(source).unwrap();
-    let bytes = retained.to_avro();
-    let mut offset = 0;
-    let decoded = crate::migration124::FederalRental124::avro_decode(&bytes, &mut offset).unwrap();
-    assert_eq!(offset, bytes.len());
-    assert_eq!(decoded.to_avro(), bytes);
-    assert_eq!(decoded.home_depreciation_carryover, 12_345);
-    let current = FederalRental::from(decoded);
-    assert_eq!(
-        current.home_depreciation_carryover,
-        crate::SourceCents::Reported { amount: 12_345 }
-    );
-    assert_eq!(current.amt_home_depreciation_carryover, crate::SourceCents::Unavailable);
-    assert_eq!(current.home_casualty_carryover, crate::SourceCents::Unavailable);
-    assert_eq!(current.amt_home_casualty_carryover, crate::SourceCents::Unavailable);
+fn mismatched_return_offers_confirmation_without_mutation_then_initializes_only_its_user_year() {
+    for format in [None, Some(STORAGE_FORMAT - 1)] {
+        let mut store = Store::default();
+        let draft = complete(FederalStatus::Single);
+        store.seed(TEST_USER, draft.clone());
+        store.seed(TEST_USER + 1, draft.clone());
+        let mut prior = draft.clone();
+        prior.tax_year -= 1;
+        store.seed(TEST_USER, prior);
+        let key = return_records::format_key(TEST_USER, 2026).to_key_bytes().unwrap();
+        match format {
+            None => {
+                store.values.remove(&key);
+            }
+            Some(format) => {
+                store.values.insert(key, TaxAppData::StorageFormat { format }.to_avro());
+            }
+        }
+        let prefix = TaxDataKey::return_record_prefix(TEST_USER, 2026).unwrap();
+        let untouched: Vec<_> = store
+            .values
+            .iter()
+            .filter(|(key, _)| !key.starts_with(&prefix))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let old_count = store.values.keys().filter(|key| key.starts_with(&prefix)).count();
+        let before = store.values.clone();
+        let mut returns = cache(1024 * 1024, store);
+        for request in [P::Enter { user: TEST_USER }, P::OpenInterview { user: TEST_USER }] {
+            let Some(Reply::Response(P::StoredReturnUnavailable {
+                tax_year,
+                format: observed,
+                ..
+            })) = returns.handle(TEST_USER, request)
+            else {
+                panic!("mismatch refusal")
+            };
+            assert_eq!((tax_year, observed), (2026, format));
+        }
+        assert!(matches!(
+            returns.handle(TEST_USER, P::EstimateSetup {
+                user: TEST_USER,
+                value: ReturnSetup { filing: Filing::MarriedJointly },
+            }),
+            Some(Reply::Response(P::Problem { message, field: None }))
+                if message == libertas::libertas_formatted_text("STORED_RETURN_OLDER_VERSION", &[])
+        ));
+        assert_eq!(
+            returns.store().values,
+            before,
+            "leaving or cancelling the confirmation sends nothing"
+        );
+        assert_eq!(returns.store().writes, 0);
+        assert!(matches!(
+            returns
+                .handle(TEST_USER, P::StartNewReturn { user: TEST_USER, tax_year: 2026, format }),
+            Some(Reply::Response(P::BeginSetup { .. })) | Some(Reply::Edit(P::SaveSetup { .. }))
+        ));
+        let fresh = returns.store().saved(TEST_USER);
+        let mut ordinary = cache(1024 * 1024, Store::default());
+        ordinary.handle(TEST_USER, P::OpenInterview { user: TEST_USER });
+        let mut expected = ordinary.store().saved(TEST_USER);
+        expected.cookie = fresh.cookie.clone();
+        assert_eq!(fresh, expected);
+        assert_eq!(
+            returns.store().writes,
+            2,
+            "one deletion transaction, then normal first editor commit"
+        );
+        assert_eq!(
+            returns
+                .store()
+                .values
+                .iter()
+                .filter(|(key, _)| !key.starts_with(&prefix))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>(),
+            untouched
+        );
+        assert_eq!(returns.store().reset_removed, Some(old_count));
+        assert!(
+            matches!(TaxAppData::from_avro(&returns.store().values[&return_records::format_key(TEST_USER, 2026).to_key_bytes().unwrap()]).unwrap(), TaxAppData::StorageFormat { format } if format == STORAGE_FORMAT)
+        );
+    }
 }
 
 #[test]
-fn unit42_prior_home_carry_frozen124_zero_is_unknown_and_inverse_preserves_facts() {
-    let mut source = rental(12_000, 0);
-    source.home_depreciation_carryover = crate::SourceCents::Unavailable;
-    source.amt_home_depreciation_carryover = crate::SourceCents::Unavailable;
-    source.home_casualty_carryover = crate::SourceCents::Unavailable;
-    source.amt_home_casualty_carryover = crate::SourceCents::Unavailable;
-    let retained = crate::migration124::FederalRental124::try_from(source.clone()).unwrap();
-    assert_eq!(retained.home_depreciation_carryover, 0);
-    let current = FederalRental::from(retained);
-    assert_eq!(current, source);
-    for (field, fact) in [
-        (0, crate::SourceCents::NotReported),
-        (0, crate::SourceCents::Reported { amount: 0 }),
-        (1, crate::SourceCents::Reported { amount: 1 }),
-        (2, crate::SourceCents::Reported { amount: 0 }),
-        (3, crate::SourceCents::NotReported),
-    ] {
-        let mut unrepresentable = source.clone();
-        *match field {
-            0 => &mut unrepresentable.home_depreciation_carryover,
-            1 => &mut unrepresentable.amt_home_depreciation_carryover,
-            2 => &mut unrepresentable.home_casualty_carryover,
-            _ => &mut unrepresentable.amt_home_casualty_carryover,
-        } = fact;
+fn confirmed_reset_rechecks_generation_and_never_decodes_retired_values() {
+    let draft = complete(FederalStatus::Single);
+    let mut store = Store::default();
+    store.seed(TEST_USER, draft.clone());
+    let marker = return_records::format_key(TEST_USER, 2026).to_key_bytes().unwrap();
+    store.values.remove(&marker);
+    let count = store.values.len();
+    let mut tx = NativeTransaction::new(&store);
+    tx.block_versioned_reads = true;
+    assert_eq!(
+        reset_mismatched_in(&mut tx, TEST_USER, 2026, GenerationMismatch { format: None }),
+        Ok(Some(count))
+    );
+    assert!(tx.values.is_empty());
+    assert_eq!(tx.scans, 0);
+    assert_eq!(tx.mutations, count);
+    store.values.insert(marker, TaxAppData::StorageFormat { format: STORAGE_FORMAT - 1 }.to_avro());
+    let before = store.values.clone();
+    let mut changed = NativeTransaction::new(&store);
+    assert_eq!(
+        reset_mismatched_in(&mut changed, TEST_USER, 2026, GenerationMismatch { format: None }),
+        Ok(None)
+    );
+    assert_eq!(changed.values, before);
+    assert_eq!(changed.mutations, 0);
+    store.seed(TEST_USER, draft);
+    let before = store.values.clone();
+    let mut returns = cache(1024 * 1024, store);
+    for tax_year in [2026, 2025] {
+        let _ = returns
+            .handle(TEST_USER, P::StartNewReturn { user: TEST_USER, tax_year, format: None });
+        assert_eq!(returns.store().values, before);
+    }
+    assert_eq!(returns.store().writes, 0);
+}
+
+#[test]
+fn corrupt_marker_or_current_required_records_never_offer_or_perform_reset() {
+    for corrupt_marker in [false, true] {
+        let mut store = Store::default();
+        store.seed(TEST_USER, complete(FederalStatus::Single));
+        if corrupt_marker {
+            store.values.insert(
+                return_records::format_key(TEST_USER, 2026).to_key_bytes().unwrap(),
+                TaxAppData::SetupSection { setup: None }.to_avro(),
+            );
+        } else {
+            store
+                .values
+                .remove(&return_records::header_key(TEST_USER, 2026).to_key_bytes().unwrap());
+        }
+        let before = store.values.clone();
+        let mut returns = cache(1024 * 1024, store);
         assert!(
-            crate::migration124::FederalIncome124::try_from(FederalIncome::Rental {
-                data: unrepresentable
-            })
+            catch_unwind(AssertUnwindSafe(
+                || returns.handle(TEST_USER, P::OpenInterview { user: TEST_USER })
+            ))
             .is_err()
         );
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            returns.handle(
+                TEST_USER,
+                P::StartNewReturn { user: TEST_USER, tax_year: 2026, format: None },
+            )
+        }));
+        if corrupt_marker {
+            assert!(result.is_err());
+        }
+        assert_eq!(returns.store().values, before);
+        assert_eq!(returns.store().writes, 0);
     }
+}
+
+#[test]
+fn source_only_payment_parts_persist_before_reply_and_keep_ids_after_cold_read() {
+    let (session, printed) =
+        crate::tests::support::builders::related_forms::related_component_editor();
+    let mut store = Store::default();
+    store.seed(TEST_USER, session.draft);
+    let mut returns = cache(64 * 1024 * 1024, store);
+    accepted(&returns.handle(TEST_USER, printed).unwrap());
+    let draft = &returns.interview(TEST_USER).draft;
+    let source = draft
+        .income
+        .iter()
+        .find_map(|entry| matches!(entry.income, FederalIncome::K1099 { .. }).then_some(entry.id))
+        .unwrap();
+    let request = P::SavePaymentParts {
+        user: TEST_USER,
+        cookie: draft.cookie.clone(),
+        revision: draft.revision,
+        key: alloc::format!("income/{source}/parts"),
+        value: vec![
+            crate::KPart { id: 0, amount: 15_000, belongs: None, refunded: 0 },
+            crate::KPart { id: 0, amount: 25_000, belongs: None, refunded: 0 },
+        ],
+    };
+    let request = P::from_avro(&request.to_avro()).unwrap();
+    let Reply::Response(P::PaymentPartsSaved { value, revision }) =
+        returns.handle(TEST_USER, request.clone()).unwrap()
+    else {
+        panic!("expected accepted source-only return")
+    };
+    let accepted = returns.store().saved(TEST_USER);
+    assert_eq!(accepted, returns.interview(TEST_USER).draft);
+    assert_eq!(accepted.revision, revision);
+    let FederalIncome::K1099 { data } =
+        &accepted.income.iter().find(|entry| entry.id == source).unwrap().income
+    else {
+        unreachable!()
+    };
+    assert_eq!(data.parts, value);
+    assert!(data.parts.iter().all(|part| part.id > 0 && part.id != source));
+    let mut cold = cache(64 * 1024 * 1024, returns.store().clone());
+    assert_eq!(cold.interview(TEST_USER).draft, accepted);
+    let before = cold.store().values.clone();
+    error(cold.handle(TEST_USER, request).unwrap());
+    assert_eq!(cold.interview(TEST_USER).draft, accepted);
+    assert_eq!(cold.store().values, before, "stale source submission cannot change persisted data");
 }

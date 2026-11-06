@@ -1,6 +1,9 @@
 use crate::tests::*;
 pub(in crate::tests) fn bba_interest_reduction() -> FederalBbaAuditInterest {
     FederalBbaAuditInterest {
+        partnership: Default::default(),
+        reviewed_year_partner: Default::default(),
+        id: 0,
         source_id: "AUDIT-2025-EXAMPLE".into(),
         furnished_on: 20260615,
         interest_adjustment: -100_000,
@@ -40,7 +43,18 @@ pub(in crate::tests) fn bba_thousand_dollar_reduction() -> FederalBbaAuditIntere
 pub(in crate::tests) fn bba_low_tax_return() -> FederalDraft {
     let mut draft = complete(FederalStatus::Single);
     draft.income = vec![wage(1, Owner::Taxpayer, 1_000_000, 0)];
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_thousand_dollar_reduction());
+    draft.deductions.as_mut().unwrap().itemize_override = None;
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_thousand_dollar_reduction()));
     draft
+}
+
+// A directly built return: the partner statement is yours, as your section added it.
+pub(in crate::tests) fn added_bba(
+    document: crate::FederalBbaAuditInterest,
+) -> crate::BbaAuditSource {
+    let mut source = crate::BbaAuditSource::from(document);
+    source.assigned = crate::DocumentRecipient::Taxpayer;
+    source.owner_source = Some(crate::OwnerSource::Added);
+    source
 }

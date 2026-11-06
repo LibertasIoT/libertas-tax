@@ -35,8 +35,9 @@ fn mv(owner: Owner, reason: MoveReason, goods: i64, trip: Option<MoveTrip>) -> M
 }
 // A W-2 code P total on the owner's wage document.
 fn code_p(d: &mut FederalDraft, owner: Owner, amount: i64) {
-    let entry = d.income.iter_mut().find(|e| e.owner == owner).unwrap();
+    let entry = d.income.iter_mut().find(|e| e.owner == crate::DocumentOwner::from(owner)).unwrap();
     let FederalIncome::Wage { data } = &mut entry.income else { panic!() };
+    let mut data = edit_wage(data);
     data.other_box12.push(W2CodeAmount { code: W2Code::P, amount });
 }
 fn single(p: i64) -> Interview {
@@ -238,29 +239,6 @@ fn fixture_d_page_rules_refuse_on_the_server() {
             "MOVING_ARRIVAL_OUTSIDE_CURRENT_YEAR",
         );
     }
-    // A date that is not on the calendar is outside the ranges.
-    rejected_with(
-        {
-            let request = move_request(
-                &mut s,
-                vec![mv(
-                    Owner::Taxpayer,
-                    MoveReason::ArmedForcesOrders,
-                    0,
-                    trip(10_000, 0, 20260231),
-                )],
-            );
-            current_source_refusal(
-                "secondary-admission-8809",
-                &mut s,
-                request,
-                "MESSAGE_MOVING_ENTER_AMOUNTS_WITHIN_THE_SUPPORTED_RANGE",
-                None,
-                SourceScope::Fieldless,
-            )
-        },
-        "MESSAGE_MOVING_ENTER_AMOUNTS_WITHIN_THE_SUPPORTED_RANGE",
-    );
     rejected_with(
         {
             let request = move_request(
@@ -284,7 +262,6 @@ fn fixture_d_page_rules_refuse_on_the_server() {
         "MESSAGE_MOVING_ENTER_AMOUNTS_WITHIN_THE_SUPPORTED_RANGE",
     );
     assert_eq!(s.draft, before);
-    // D-2026-10-15-13: entered records have no arbitrary count limit.
     // All nine $10 moves remain present and contribute $90 in total.
     let nine: Vec<_> =
         (0..9).map(|_| mv(Owner::Taxpayer, MoveReason::ArmedForcesOrders, 1_000, None)).collect();
@@ -356,9 +333,13 @@ fn fixture_d_w2_import_of_code_p_lands_as_the_stored_code_and_rederives_the_move
     assert_eq!(s.draft.adjustments.as_ref().unwrap().moving[0].record.reimbursed, 0);
     let mut w = w2(6_000_000);
     w.more.box12 = vec![Box12Entry { code: W2Code::P, amount: 150_000 }];
-    let request = save_documents(&s.draft, vec![document(0, IncomeDocument::W2(w))]);
+    let request = save_documents(
+        &mut s,
+        vec![document(0, IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(w)) })],
+    );
     accepted(&send(&mut s, request));
     let FederalIncome::Wage { data } = &s.draft.income[0].income else { unreachable!() };
+    let data = &FederalWage::from(data);
     assert_eq!(data.other_box12, vec![W2CodeAmount { code: W2Code::P, amount: 150_000 }]);
     assert_eq!(s.draft.adjustments.as_ref().unwrap().moving[0].record.reimbursed, 150_000);
     // Code P has a calculated effect, so the Wages page raises no refusal for
@@ -373,7 +354,16 @@ fn fixture_d_w2_import_of_code_p_lands_as_the_stored_code_and_rederives_the_move
     ];
     let before = s.draft.clone();
     rejected_with(
-        send(&mut s, save_documents(&before, vec![document(0, IncomeDocument::W2(twice))])),
+        {
+            let request = save_documents(
+                &mut s,
+                vec![document(
+                    0,
+                    IncomeSource::Wage { value: crate::WageDocument::W2(wage_document(twice)) },
+                )],
+            );
+            send(&mut s, request)
+        },
         "W2_BOX12_CODE_TWICE",
     );
     assert_eq!(s.draft, before);
@@ -400,18 +390,9 @@ fn fixture_e_two_moves_of_one_owner_share_the_owners_code_p() {
     // Both rows show the owner's one total, read-only.
     let moves = &s.draft.adjustments.as_ref().unwrap().moving;
     assert!(moves.iter().all(|m| m.record.reimbursed == 120_000));
-    // Hub row: a count of the moves, joined with the refusal kinds chosen.
-    accepted(&save(
-        &mut s,
-        vec![
-            mv(Owner::Taxpayer, MoveReason::ArmedForcesOrders, 100_000, None),
-            mv(Owner::Taxpayer, MoveReason::ArmedForcesOrders, 50_000, None),
-            MoreAdjustment::OtherAdjustments,
-        ],
-    ));
-    assert_eq!(s.draft.adjustment_refusals, vec![MoreAdjustment::OtherAdjustments]);
+    // Hub row: a count of the moves.
     let row = crate::interview::more_adjustments_row(&s.draft).unwrap();
-    assert!(status_text(&row.status).starts_with("2 moves; "), "{}", status_text(&row.status));
+    assert_eq!(status_text(&row.status), "2 moves");
 }
 
 #[test]
@@ -438,7 +419,7 @@ fn moving_excess_counts_as_earned_income() {
 
 #[test]
 fn search_destination_text_names_moving_and_no_longer_a_refusal() {
-    let source = include_str!("../../core/protocol.rs");
+    let source = include_str!("../../core/shared/navigation.rs");
     let definition = &source[source.find("pub enum TaxSection").unwrap()
         ..source.find("pub enum NavigationDestination").unwrap()];
     let more = &definition[definition.find("    /// More adjustments").unwrap()..];

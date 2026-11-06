@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"order": 336000, "rule": {"select": "^<IsoShareSale>", "when": {"mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_ISO_1099B", "fields": ["description", "shares", "sold", "proceeds", "withholding"]}, {"title": "DISPLAY_ISO_3921", "fields": ["granted", "exercised", "exercise_price", "market_price"]}]}},
+    {"order": 337000, "rule": {"select": "^<IsoShareSale>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_ISO_1099B", "fields": ["description", "shares", "sold", "proceeds", "withholding"]}, {"title": "DISPLAY_ISO_3921", "fields": ["granted", "exercised", "exercise_price", "market_price"]}]}}
+  ]
+}

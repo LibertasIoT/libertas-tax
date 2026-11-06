@@ -3,7 +3,7 @@ use crate::tests::support::client::{read_native_draft, write_native_draft};
 // ordinary native handler; private artifacts retain only the accepted draft.
 extern crate std;
 use super::unit47_children::{child, page};
-use super::unit47_coverdell::{record, topic};
+use super::unit47_coverdell::{lead_tax, record, topic};
 use super::*;
 use crate::tests::cross::interview::{open_other_taxes, other_taxes_request, save_you};
 
@@ -45,7 +45,7 @@ fn fixture(case: &str) -> (Interview, P, P) {
     let guide = other_taxes_request(
         &seed,
         &s.draft,
-        vec![OtherTax::AlternativeMinimumTax, topic(vec![facts])],
+        vec![lead_tax(), topic(vec![facts])],
     );
     (s, seed, guide)
 }
@@ -172,12 +172,8 @@ fn client_submit_bridge(case: &str) {
                     unreachable!()
                 };
                 // OtherTaxes reopens in the existing canonical topic order,
-                // independent of the submitted order used to prove row1 paths.
-                assert_eq!(expected.taxes[0], OtherTax::AlternativeMinimumTax);
-                assert_eq!(
-                    actual.taxes,
-                    vec![expected.taxes[1].clone(), OtherTax::AlternativeMinimumTax]
-                );
+                // which the submitted order used to prove row1 paths matches.
+                assert_eq!(actual.taxes, expected.taxes);
             }
             let accepted = s.draft.clone();
             let shown = reopened(&mut s, case);

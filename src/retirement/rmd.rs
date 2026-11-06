@@ -1,3 +1,4 @@
+use crate::rmd_sources::{RmdCorrection, RmdFiling};
 // Coverage: Form5329 PRINT PartIX (2026-10-13): per-filer lines52a–55
 //   reuse actual minimums, eligible timely amounts, waiver requests and the
 //   existing10%/25% buckets. Other plans' excess distributions cannot offset
@@ -5,168 +6,13 @@
 //   Evidence: retirement.rs RMD controls and corpus footings; IRS2026 draft
 //   f5329 and i5329 lines53/54 (per-plan cap and RC waiver presentation).
 // Form 5329 Part IX, using calculated or administrator-supplied requirements.
-use crate::federal_rules::valid_date;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
-use crate::kernel::lines::{line, line_cents};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{dollars, fraction};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::{line, line_cents};
 use crate::{FederalDraft, FederalResult, Owner};
-use alloc::string::String;
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
-/// Required-distribution account group
-/// One entry per plan or legally aggregatable group. Never offset one group's shortfall with another group's excess. Choose an administrator's required amount or calculate from own IRA balances and beneficiary facts.
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RequiredDistribution {
-    /// Person required to withdraw
-    pub owner: Owner,
-    /// Plan or inherited-owner label
-    /// Use a descriptive synthetic label, not an account number or tax ID.
-    pub label: String,
-    /// Required-minimum source
-    pub required: crate::RmdMinimum,
-    /// Amount satisfying these requirements by their deadlines
-    /// Include eligible qualified charitable distributions. Exclude corrective payments after the deadline, rollovers and unrelated accounts. If two deadlines fall in 2026, do not count a payment made after the first deadline against its missed requirement or count a payment twice.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub timely: i64,
-    /// Later correction and additional-tax return
-    pub correction: RmdCorrection,
-    /// Reasonable-cause waiver request, if any
-    /// IRS approval is not automatic. The requested amount is removed from the reported shortfall pending IRS review; retain and file the explanation with Form 5329.
-    pub waiver: Option<RmdWaiver>,
-}
-
-// The Retirement topic's kind (unit u5-adjust): one account group as the
-// page asks it; the page item's owner completes the stored record.
-/// Missed required minimum distribution
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct MissedDistribution {
-    /// Plan or IRA group
-    /// A short name, such as "Traditional IRAs" or "Employer 401(k)". Do not enter an account number. Own traditional IRAs may be grouped; inherited IRAs only with the same deceased owner; each employer plan is separate.
-    #[libertas_size(min = 1)]
-    pub label: String,
-    /// Required minimum for 2026
-    pub required: crate::RmdMinimum,
-    /// Taken by the deadline
-    /// Include qualified charitable distributions. Leave out payments made after the deadline and rollovers.
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
-    pub timely: i64,
-    /// Correction
-    pub correction: RmdCorrection,
-    /// Waiver requested for reasonable cause
-    /// Leave empty for no waiver request. The IRS decides; the estimate removes the amount pending its review. IRS approval is not automatic: retain and file the explanation with Form 5329.
-    /// [NullText]
-    /// Do not request a reasonable-cause waiver
-    /// [SetText]
-    /// I request a reasonable-cause waiver for
-    #[libertas_default($null)]
-    pub waiver: Option<RmdWaiver>,
-}
-impl MissedDistribution {
-    pub(crate) fn record(&self, owner: Owner) -> RequiredDistribution {
-        RequiredDistribution {
-            owner,
-            label: self.label.clone(),
-            required: self.required.clone(),
-            timely: self.timely,
-            correction: self.correction.clone(),
-            waiver: self.waiver.clone(),
-        }
-    }
-    pub(crate) fn from_record(v: &RequiredDistribution) -> Self {
-        Self {
-            label: v.label.clone(),
-            required: v.required.clone(),
-            timely: v.timely,
-            correction: v.correction.clone(),
-            waiver: v.waiver.clone(),
-        }
-    }
-}
-
-/// Correction records
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RmdCorrection {
-    /// Full correction or a dated filing commitment is missing
-    Uncorrected,
-    /// Full correction received; return filed or planned
-    Corrected {
-        /// Date the full shortfall was withdrawn from the responsible plan or eligible account group
-        /// Partial correction does not qualify this group for the reduced rate. Do not split an uncorrected plan to obtain 10% treatment on only its corrected portion.
-        #[libertas_date_only]
-        received: u32,
-        /// Return reflecting this additional tax
-        filed: RmdFiling,
-        /// Deficiency-notice mailing date, if any
-        /// [NullText]
-        /// No deficiency notice has been mailed for this tax
-        /// [SetText]
-        /// The deficiency notice was mailed on
-        #[libertas_date_only]
-        notice: Option<u32>,
-        /// Assessment date, if any
-        /// [NullText]
-        /// This additional tax has not been assessed
-        /// [SetText]
-        /// This additional tax was assessed on
-        #[libertas_date_only]
-        assessed: Option<u32>,
-    },
-}
-
-/// Additional-tax return submission
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum RmdFiling {
-    /// Already submitted
-    Submitted {
-        /// Actual submission date
-        #[libertas_date_only]
-        date: u32,
-    },
-    /// Prepare an estimate for a planned submission
-    Planned {
-        /// Intended submission date
-        /// The reduced-rate estimate depends on actually submitting the return reflecting this tax by the correction-window deadline. This prototype does not file it. Update the calculation if filing is delayed or an IRS notice or assessment arrives first.
-        #[libertas_date_only]
-        date: u32,
-    },
-}
-impl RmdFiling {
-    fn date(&self) -> u32 {
-        match self {
-            Self::Submitted { date } | Self::Planned { date } => *date,
-        }
-    }
-}
-
-/// Requested reasonable-cause relief
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct RmdWaiver {
-    /// Shortfall amount for which relief is requested
-    #[libertas_money("USD", 2)]
-    #[libertas_number(min = 1)]
-    pub amount: i64,
-    /// Explanation of reasonable error and corrective steps
-    pub explanation: String,
-}
-impl RequiredDistribution {
-    pub(crate) fn valid(&self) -> bool {
-        self.required.valid()
-            && (0..=100000000000).contains(&self.timely)
-            && self.waiver.as_ref().is_none_or(|v| (1..=100000000000).contains(&v.amount))
-            && match &self.correction {
-                RmdCorrection::Uncorrected => true,
-                RmdCorrection::Corrected { received, filed, notice, assessed } => {
-                    [Some(*received), Some(filed.date()), *notice, *assessed]
-                        .into_iter()
-                        .flatten()
-                        .all(|v| valid_date(v) && v >= 20260101)
-                }
-            }
-    }
-}
 // Completed native per-owner taxes; omitted zero form rows remain actual zeros.
 #[derive(Default)]
 pub(crate) struct RmdTaxes {

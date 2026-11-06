@@ -103,8 +103,9 @@ pub(super) fn add_payments(
                     Some(())
                 };
             if category == 0 {
-                for payment in pay.estimated_payments.iter().filter(|p| p.payer == payer) {
-                    add(payment.amount, payment.refund_property.as_ref())?;
+                for (amount, _, property) in pay.estimated.funding().filter(|(_, p, _)| *p == payer)
+                {
+                    add(amount, property)?;
                 }
             } else if pay.extension_payer == Some(payer) {
                 add(pay.extension, pay.extension_refund_property.as_ref())?;
@@ -136,7 +137,13 @@ struct Bin {
     earned: bool,
 }
 
-fn bin(entry: &FederalIncomeEntry, state: u16, earned_needed: bool) -> Option<Bin> {
+fn bin(
+    d: &FederalDraft,
+    entry: &FederalIncomeEntry,
+    state: u16,
+    earned_needed: bool,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Option<Bin> {
     let percent =
         crate::community::refund_community_percent(&entry.income, entry.community, state)?;
     Some(Bin {
@@ -145,7 +152,7 @@ fn bin(entry: &FederalIncomeEntry, state: u16, earned_needed: bool) -> Option<Bi
         // them. Irrelevant accepted facts are retained, not erased.
         management: (state == 7 && percent > 0).then_some(entry.refund_management).flatten(),
         earned: if percent > 0 && earned_needed {
-            crate::community::refund_earned(&entry.income)?
+            crate::community::refund_earned(d, entry, source_claims)?
         } else {
             false
         },
@@ -169,7 +176,7 @@ pub(super) fn management_needed(
         (Some(refund), Some(0)) if refund > 0 => {}
         _ => return None,
     }
-    let percent = bin(entry, 7, false)?.community_percent;
+    let percent = crate::community::refund_community_percent(&entry.income, entry.community, 7)?;
     if percent == 0 {
         return Some(false);
     }
@@ -180,7 +187,7 @@ pub(super) fn management_needed(
     for (category, category_owners) in owners.iter().enumerate() {
         let matching = sources.rows.iter().find(|row| row.id == entry.id);
         if matching.is_none_or(|row| row.cents[category] == 0)
-            || category_owners[owner_index(entry.owner)] == 0
+            || category_owners[owner_index(entry.owner.owned())] == 0
         {
             continue;
         }
@@ -192,13 +199,15 @@ pub(super) fn management_needed(
 }
 
 pub(super) fn add_withholding(
-    d: &FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     r: &FederalResult,
     injured: Owner,
     state: u16,
     earned_needed: bool,
     funds: &mut RefundFunds,
 ) -> Option<()> {
+    let d = form_context.draft;
+    let source_claims = form_context.claims;
     let owners = r.withholding_sources.as_deref()?.projected(d, owner_index(injured))?;
     let sources = r.withholding_sources.as_deref()?;
     for (category, amounts) in owners.into_iter().enumerate() {
@@ -214,7 +223,7 @@ pub(super) fn add_withholding(
                 sources.rows.iter().filter(|row| row.owner == owner && row.cents[category] > 0)
             {
                 let entry = d.income.iter().find(|entry| entry.id == row.id)?;
-                let current = bin(entry, state, earned_needed)?;
+                let current = bin(d, entry, state, earned_needed, source_claims)?;
                 let raw = row.cents[category];
                 raw_total = raw_total.checked_add(raw)?;
                 if let Some((_, weight)) =

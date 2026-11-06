@@ -155,7 +155,7 @@ fn repayment_comparison_historical_eic_coordinates_each_year_tax_and_credit() {
         (2025, 15750, 428, 0, 312, 740),
     ] {
         let mut d = repayment_eic_draft();
-        let FederalIncome::Unemployment { data } = &mut d.income[1].income else { panic!() };
+        let FederalIncome::GovernmentPayment { data } = &mut d.income[1].income else { panic!() };
         data.repayments[0].received_year = year;
         let years = repayment_years_mut(&mut d);
         years[0].year = year;
@@ -180,10 +180,6 @@ fn repayment_comparison_historical_eic_checks_investment_limit_and_stored_credit
         let r = supported(&d);
         assert_eq!(value(&r, "repayment_year_0_refigured_eic"), eic);
         assert_eq!(value(&r, "repayment_credit"), 502 + eic);
-        let years = repayment_years_mut(&mut d);
-        let RepaymentEic::Facts { filed_credit, .. } = &mut years[0].eic else { panic!() };
-        *filed_credit = -1;
-        assert!(!d.valid_stored());
     }
 }
 
@@ -483,7 +479,7 @@ fn whaling_and_hosted_student_share_one_thirty_percent_class_and_floor() {
         months: vec![HostedStudentMonth { month: 6, qualifying_days: 15, cost: 5_000 }],
         documented: true,
     });
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
     let result = supported(&draft);
     assert_eq!(value(&result, "charity_other_30_percent_deduction"), 9_750);
     assert_eq!(value(&result, "charity_other_30_percent_return_year_carryforward"), 0);

@@ -1,5 +1,5 @@
-// Coverage: Form 1099-LTC with Form 8853 Section C (unit B6a, 2026-10-09; the stored LtcBenefits
-//   kind split into the per-form document and a per-insured periods record).
+// Coverage: Form 1099-LTC with Form 8853 Section C, with a per-form document
+//   and a per-insured periods record.
 //   Lines: Section C lines 14a-26 for each LTC period: the insured, the recipient line 15, line 16
 //   terminal illness, lines 17-20 (per diem payments of every qualified contract of the insured,
 //   box 1 and the chronically ill box 2), line 21 ($430 times the days, Rev. Proc. 2025-32 section
@@ -8,28 +8,29 @@
 //   insured's filing unit first, then in proportion). Other-policyholder raw allocated limits
 //   retain the pre-receipts-cap amount. The required Insured other-payee fact selects the full
 //   sole-payee limit or insured priority allocation; exclusion and taxable income remain separate.
-//   Tests: unit46_ltc raw allocation/source/lifecycle controls. Reimbursed benefits of a qualified
+//   The shared printed-party carrier retains the insured's identity independently of the personal
+//   insured-period link. The latest certification date distinguishes blank from unavailable evidence.
+//   Tests: LTC raw allocation/source/lifecycle controls. Reimbursed benefits of a qualified
 //   contract and accelerated death benefits of a terminally ill insured are excluded without Section C (section
 //   101(g)(1), 7702B(a)(2)).
-//   Entry: IncomeDocument::Ltc1099 (Form 1099-LTC, importable) names the insured person's
-//   IncomeDocument::LtcInsured record through the request catalog `$.ltc_insured` (empty uses the
-//   only record; on a joint return either filer's), both on the Other income page. The record holds
+//   Entry: OtherIncomeDocument::Ltc1099 (Form 1099-LTC, importable) names the insured person's
+//   IncomeRecord::LtcInsured record through the request catalog `$.ltc_insured` (empty uses the
+//   only record; on a joint return either filer's). The form belongs to the Document center;
+//   its periods record is edited on Other income. The record holds
 //   one period or several; a per diem payment with no record to use is taxed in full, with a notice.
 //   Boundaries: a nonqualified contract's unresolved mandatory tax character withholds the
 //   complete estimate; it is not silently omitted as an unavailable benefit. Typed accident/health
 //   funding, permanent-injury and current medical reimbursement facts are computed outside
 //   SectionC; established annuity/recovery sources are linked once. Actual additional interest
-//   joins taxable interest. Qualified life/viatical streams independently use section101(g).
+//   is collected with the payer's statement and joins taxable interest. A checked optional box 4
+//   establishes qualified status without a duplicate topic answer. Qualified life/viatical streams
+//   independently use section101(g).
 //   Tests: tests/health/health_accounts.rs (fixtures F8-F10), tests/health/interview.rs ltc1099_* and
 //   ltc_insured_*. Sources: https://www.irs.gov/pub/irs-pdf/f1099ltc.pdf and i1099ltc.pdf (Rev. April
 //   2025), https://www.irs.gov/pub/irs-dft/f8853--dft.pdf and i8853--dft.pdf (2026 drafts), Rev.
 //   Proc. 2025-32 section 4.62, 26 U.S.C. 101(g), 7702B.
-use crate::federal_rules::valid_date;
-use crate::kernel::phase;
-use crate::kernel::ratio::exact::whole;
-use crate::kernel::ratio::positive;
-use crate::year_constants::LTC_PER_DIEM_LIMIT_CENTS;
-use crate::{LtcContract, LtcContractPage, LtcPaymentOrigin, NonqualifiedCareTreatment};
+use crate::dates::source_valid_date as valid_date;
+use crate::{LtcContract, LtcPaymentOrigin, NonqualifiedCareTreatment};
 use alloc::{string::String, vec::Vec};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 
@@ -61,12 +62,14 @@ pub enum CareBenefitRecipient {
         /// Periodic payments to the insured person's filing unit for this period
         /// Include payments to the insured and the insured's spouse only if they file jointly. Exclude terminal-illness payments and reimbursements.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         insured_received: i64,
         /// Periodic payments to all other policyholders outside this return
         /// Exclude the insured filing unit above and the current return's payments. For a joint return combine your and your spouse's payments in Received, not here. Use the common recipients' allocation statement.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         others_received: i64,
     },
 }
@@ -93,12 +96,14 @@ pub struct CareBenefitPeriod {
     /// Qualified long-term-care services provided during this period
     /// Total costs for the insured under a licensed practitioner's plan of care, across all payees. Do not subtract reimbursements here. These costs are not automatically a medical deduction; report only otherwise eligible unreimbursed costs in Medical.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub services: i64,
     /// Reimbursements received or expected for those services
     /// Include insurance and other reimbursements for all payees. Exclude reimbursements under contracts issued before August 1, 1996 that were not later exchanged or modified to increase benefits. Never include periodic payments or terminal-illness benefits here.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reimbursements: i64,
     /// This return's place in the shared allocation
     pub recipient: CareBenefitRecipient,
@@ -133,12 +138,14 @@ pub struct CareBenefitPeriodInput {
     /// Qualified long-term-care services provided during this period
     /// Total costs for the insured under a licensed practitioner's plan of care, across all payees. Do not subtract reimbursements here. These costs are not automatically a medical deduction; report only otherwise eligible unreimbursed costs in Medical.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub services: i64,
     /// Reimbursements received or expected for those services
     /// Include insurance and other reimbursements for all payees. Exclude reimbursements under contracts issued before August 1, 1996 that were not later exchanged or modified to increase benefits. Never include periodic payments or terminal-illness benefits here.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub reimbursements: i64,
     /// This return's place in the shared allocation
     pub recipient: CareBenefitRecipient,
@@ -168,108 +175,226 @@ impl CareBenefitPeriod {
                 }
             }
     }
-    // Aggregate limit, raw allocated line25 limit, exclusion used and taxable
-    // payments. Required payee facts distinguish the raw limit from exclusion.
-    pub(crate) fn amounts(&self) -> (i64, i64, i64, i64) {
-        let days = i64::from(crate::dates::days_between(self.starts, self.ends) + 1);
-        // Form 8853 Section C lines 21-25: the larger of the per diem limit for the
-        // days and the care costs, less reimbursements.
-        let limit = positive(
-            phase::floor(days * LTC_PER_DIEM_LIMIT_CENTS, self.services) - self.reimbursements,
-        );
-        let (allocated, share) = match self.recipient {
-            CareBenefitRecipient::Insured { other_payees } => {
-                let share = phase::cap(self.received, [limit]);
-                (if other_payees { share } else { limit }, share)
-            }
-            CareBenefitRecipient::Other { insured_received, others_received } => {
-                let remaining = positive(limit - insured_received);
-                let payments = whole(self.received) + whole(others_received);
-                let allocated = if payments == whole(0) {
-                    0
-                } else {
-                    crate::kernel::ratio::exact::rounded(
-                        &(whole(remaining) * whole(self.received) / payments),
-                    )
-                    .expect("allocated LTC limit never exceeds its native remaining limit")
-                };
-                (allocated, phase::cap(self.received, [allocated]))
-            }
+}
+
+/// Form 1099-LTC — Long-Term Care and Accelerated Death Benefits
+// IRS Form 1099-LTC, Rev. April 2025, Copy B.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+#[libertas_llm_doc_trans(
+    instruction = "Read the PAYER'S printed party block into payer, the POLICYHOLDER'S name, TIN and address into recipient, and the INSURED'S name, TIN and address into insured_party. Copy names, identification numbers and addresses exactly as printed, preserving masking, punctuation, leading zeros and address line breaks; use empty text for absent identity fields and report illegible identity text as an error. Never infer the policyholder from household names or the insured's name. Read one Form 1099-LTC (Long-Term Care and Accelerated Death Benefits) exactly. Its revision has no tax year printed in the title; check the calendar year box against the supplied year and report a mismatch as an error. Use a corrected form in place of the original. Report an illegible amount, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs. Never infer a value that is not printed. Read box 1 gross long-term care benefits and box 2 accelerated death benefits, returning null for a clearly blank box; report an error when both are blank. For box 3 return PerDiem when Per diem is checked, Reimbursed when Reimbursed amount is checked, and NotChecked when neither is. Read box 4 into box4_qualified: true when checked and false when unchecked; a checked box establishes qualified contract status, while an unchecked optional box leaves actual qualification unanswered. Never infer contract history, premium funding, payment origin or a linked annuity/recovery source. For box 5 return Chronic when Chronically ill is checked and Terminal when Terminally ill is checked, and leave it unanswered when neither is. Read the latest Date certified into date_certified as a DateOnly value for a legible printed date or null for a clearly blank date; report an illegible date as an error. Do not infer a certification date from an illness checkbox or care period. Read the printed calendar year, corrected checkbox, payer telephone number and account number. Leave blank text empty, never the text 0. Do not choose the insured person's periods record or infer it from printed identity; the filer answers that association separately. The file may hold several copies of this form, such as Copy B and Copy C; copies of the same form are one form.",
+    validation = "$.document_facts",
+    doc_type = "application/pdf,image/*",
+    duplicate_identity = "@.payer.federal_id,@.recipient.federal_id,@.calendar_year,@.insured_party.federal_id,@.benefits,@.accelerated,@.account_number",
+    form_date_order = "MonthDayYear"
+)]
+pub struct Ltc1099Paper {
+    /// For calendar year
+    #[libertas_llm_doc_field(allow_empty = false)]
+    pub calendar_year: i32,
+    /// CORRECTED (if checked)
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub corrected: bool,
+    /// PAYER'S name, TIN and address
+    #[libertas_llm_doc_field]
+    pub payer: crate::PrintedParty,
+    /// PAYER'S telephone no.
+    #[libertas_llm_doc_field(allow_empty = true)]
+    #[libertas_default("")]
+    pub payer_phone: String,
+    /// POLICYHOLDER'S name, TIN and address
+    #[libertas_llm_doc_field]
+    pub recipient: crate::PrintedParty,
+    /// Account number
+    #[libertas_llm_doc_field(allow_empty = true)]
+    #[libertas_default("")]
+    pub account_number: String,
+    /// INSURED'S name, TIN and address
+    #[libertas_llm_doc_field]
+    pub insured_party: crate::PrintedParty,
+    /// Box 1 Gross long-term care benefits paid
+    /// [NullText]
+    /// Box 1 Gross long-term care benefits paid is blank
+    /// [SetText]
+    /// Printed box 1 gross long-term care benefits paid
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub benefits: Option<i64>,
+    /// Box 2 Accelerated death benefits paid
+    /// [NullText]
+    /// Box 2 Accelerated death benefits paid is blank
+    /// [SetText]
+    /// Printed box 2 accelerated death benefits paid
+    #[libertas_llm_doc_field(blank = $null)]
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub accelerated: Option<i64>,
+    /// Box 3 Per diem / Reimbursed amount
+    #[libertas_llm_doc_field]
+    #[libertas_inline_choices]
+    pub paid: LtcPaidBasis,
+    /// Box 4 Qualified contract (optional)
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box4_qualified: bool,
+    /// Box 5 Chronically ill / Terminally ill (optional)
+    /// [NullText]
+    /// Neither illness box is checked
+    /// [SetText]
+    /// Printed illness status
+    #[libertas_llm_doc_field]
+    #[libertas_inline_choices]
+    #[libertas_default($null)]
+    pub illness: Option<LtcIllness>,
+    /// Box 5 Date certified
+    /// [NullText]
+    /// No date is printed
+    /// [SetText]
+    /// Printed date certified
+    #[libertas_llm_doc_field]
+    #[libertas_date_only]
+    #[libertas_default($null)]
+    pub date_certified: Option<u32>,
+}
+
+impl Ltc1099Paper {
+    pub(crate) fn intrinsic_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        let date_certified = match self.date_certified {
+            Some(date) => crate::SourceDate::Reported { date },
+            None => crate::SourceDate::NotReported,
         };
-        (limit, allocated, share, positive(self.received - share))
+        ltc_intrinsic_issue(
+            self.benefits.unwrap_or(0),
+            self.accelerated.unwrap_or(0),
+            &date_certified,
+        )
     }
 }
 
-// Projection of the already calculated Section C taxable amount. These
-// transient source amounts are not another benefit computation or ledger.
-pub(crate) struct InjuredLtcPart {
-    pub key: String,
-    pub taxable: i64,
-    pub receipts: Option<[i64; 2]>,
-}
-pub(crate) fn injured_period(
-    id: i64,
-    index: usize,
-    period: &CareBenefitPeriod,
-    forms: &[(&crate::FederalIncomeEntry, i64)],
-    single_period: bool,
-    taxable: i64,
-) -> InjuredLtcPart {
-    let mut annual = [0; 2];
-    for (entry, amount) in forms {
-        annual[usize::from(entry.owner == crate::Owner::Spouse)] += amount;
-    }
-    let receipts = if let Some(payees) = &period.injured_payees {
-        let mut amounts = [0; 2];
-        let valid = payees.valid(period.received)
-            && payees.payments().iter().all(|payment| {
-                if let Some((entry, _)) = forms.iter().find(|(e, _)| e.id == payment.source) {
-                    amounts[usize::from(entry.owner == crate::Owner::Spouse)] += payment.amount;
-                    true
-                } else {
-                    false
-                }
-            });
-        valid.then_some(amounts)
-    } else if single_period {
-        (annual.iter().sum::<i64>() == period.received).then_some(annual)
-    } else {
-        match annual {
-            [a, 0] if a > 0 => Some([period.received, 0]),
-            [0, a] if a > 0 => Some([0, period.received]),
-            _ => (period.received == 0).then_some([0; 2]),
+impl From<&Ltc1099Paper> for Ltc1099 {
+    fn from(paper: &Ltc1099Paper) -> Self {
+        let Ltc1099Paper {
+            // Printed identification fields do not enter the tax calculation.
+            calendar_year: _,
+            corrected: _,
+            payer,
+            payer_phone: _,
+            recipient,
+            account_number: _,
+            insured_party,
+            benefits,
+            accelerated,
+            paid,
+            box4_qualified,
+            illness,
+            date_certified,
+        } = paper;
+        Self {
+            payer: payer.clone(),
+            recipient: recipient.clone(),
+            insured_party: insured_party.clone(),
+            benefits: benefits.unwrap_or(0),
+            accelerated: accelerated.unwrap_or(0),
+            // Not a box of the paper: the wrapper's answer supplies it (`LtcSource::interest`).
+            interest: 0,
+            paid: *paid,
+            box4_qualified: *box4_qualified,
+            illness: *illness,
+            date_certified: match date_certified {
+                Some(date) => crate::SourceDate::Reported { date: *date },
+                None => crate::SourceDate::NotReported,
+            },
         }
-    };
-    InjuredLtcPart { key: alloc::format!("ltc_{}_period_{}", id, index + 1), taxable, receipts }
+    }
 }
 
 /// 1099-LTC
 #[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
 #[libertas_llm_doc_trans(
-    instruction = "Read one Form 1099-LTC (Long-Term Care and Accelerated Death Benefits) exactly. Its revision has no tax year printed in the title; check the calendar year box against the supplied year and report a mismatch as an error. Use a corrected form in place of the original. Report an illegible amount, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs. Never infer a value that is not printed. Read box 1 gross long-term care benefits and box 2 accelerated death benefits, returning zero for a clearly blank box; report an error when both are blank. For box 3 return PerDiem when Per diem is checked, Reimbursed when Reimbursed amount is checked, and NotChecked when neither is. For box 4 return Qualified with qualification Qualified when it is checked and leave the field unanswered otherwise. Never infer contract history, premium funding, payment origin, interest or a linked annuity/recovery source. For box 5 return Chronic when Chronically ill is checked and Terminal when Terminally ill is checked, and leave it unanswered when neither is. Do not read the payer, policyholder or insured name, address or TIN, the account number or the date certified, and do not choose the insured person's periods record; the filer answers those. The file may hold several copies of this form, such as Copy B and Copy C; copies of the same form are one form.",
+    instruction = "Read the PAYER'S printed party block into payer, the POLICYHOLDER'S name, TIN and address into recipient, and the INSURED'S name, TIN and address into insured_party. Copy names, identification numbers and addresses exactly as printed, preserving masking, punctuation, leading zeros and address line breaks; use empty text for absent identity fields and report illegible identity text as an error. Never infer the policyholder from household names or the insured's name. Read one Form 1099-LTC (Long-Term Care and Accelerated Death Benefits) exactly. Its revision has no tax year printed in the title; check the calendar year box against the supplied year and report a mismatch as an error. Use a corrected form in place of the original. Report an illegible amount, or two values that conflict, as an error. Return amounts as decimal numbers without commas or currency signs. Never infer a value that is not printed. Read box 1 gross long-term care benefits and box 2 accelerated death benefits, returning zero for a clearly blank box; report an error when both are blank. For box 3 return PerDiem when Per diem is checked, Reimbursed when Reimbursed amount is checked, and NotChecked when neither is. Read box 4 into box4_qualified: true when checked and false when unchecked; a checked box establishes qualified contract status, while an unchecked optional box leaves actual qualification unanswered. Never infer contract history, premium funding, payment origin or a linked annuity/recovery source. For box 5 return Chronic when Chronically ill is checked and Terminal when Terminally ill is checked, and leave it unanswered when neither is. Read the latest Date certified into date_certified: Reported for a legible printed date, NotReported for a clearly blank date and Unavailable when it cannot be read. Do not infer a certification date from an illness checkbox or care period. Do not read the account number. Do not choose the insured person's periods record or infer it from printed identity; the filer answers that association separately. The file may hold several copies of this form, such as Copy B and Copy C; copies of the same form are one form.",
     validation = "$.document_facts",
-    doc_type = "application/pdf,image/*"
+    doc_type = "application/pdf,image/*",
+    form_date_order = "MonthDayYear"
 )]
 pub struct Ltc1099 {
+    /// PAYER'S name, TIN and address
+    #[libertas_llm_doc_field]
+    pub payer: crate::PrintedParty,
+    /// POLICYHOLDER'S name, TIN and address
+    #[libertas_llm_doc_field]
+    pub recipient: crate::PrintedParty,
+    /// INSURED'S name, identifying number and address
+    #[libertas_llm_doc_field]
+    pub insured_party: crate::PrintedParty,
     /// Box 1 gross long-term care benefits
     /// Enter only a form on which you or your spouse is the policyholder.
     #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub benefits: i64,
     /// Box 2 accelerated death benefits
     #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub accelerated: i64,
     /// Interest paid in addition to the benefits
     /// From the payer's actual statement, not part of box1 or2. Interest is taxable even when the benefits are excluded. Do not also enter it as a separate1099-INT amount.
+    #[libertas_llm_doc_field]
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub interest: i64,
+    /// How it was paid (box 3)
+    #[libertas_llm_doc_field]
+    #[libertas_inline_choices]
+    pub paid: LtcPaidBasis,
+    /// Qualified contract checkbox (box 4)
+    #[libertas_llm_doc_field]
+    #[libertas_default(false)]
+    pub box4_qualified: bool,
+    /// The insured person was (box 5)
+    /// Certified by a physician as expected to die within 24 months (terminally ill), or by a licensed health care practitioner as needing help with two daily activities or supervision for a cognitive impairment (chronically ill).
+    /// [NullText]
+    /// Neither illness box is checked
+    /// [SetText]
+    /// Printed illness status
+    #[libertas_llm_doc_field]
+    #[libertas_inline_choices]
+    #[libertas_default($null)]
+    pub illness: Option<LtcIllness>,
+    /// Box 5 date certified
+    #[libertas_llm_doc_field]
+    #[libertas_default(Unavailable)]
+    pub date_certified: crate::SourceDate,
+}
+
+/// Accepted Form 1099-LTC
+/// The printed form and the topic answers it calls for, kept apart.
+#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
+pub struct LtcSource {
+    /// Form 1099-LTC as printed
+    pub form: Ltc1099Paper,
+    /// Interest paid in addition to the benefits
+    /// From the payer's statement, outside boxes 1 and 2. Do not enter the same interest again on Form 1099-INT.
+    /// [NullText]
+    /// Interest paid in addition to the benefits is blank
+    /// [SetText]
+    /// Interest paid in addition to the benefits (from the payer's statement; not a box of Form 1099-LTC)
+    #[libertas_money("USD", 2)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
+    #[libertas_default($null)]
+    pub interest: Option<i64>,
     /// Actual source of box1 benefits
     /// Choose Insurance for LTC insurance; do not infer an accelerated death-benefit source from illness alone. No source detail is needed when box1 is zero.
     /// [NullText]
@@ -284,27 +409,15 @@ pub struct Ltc1099 {
     /// [SetText]
     /// The box 2 accelerated benefits came from
     pub accelerated_origin: Option<LtcPaymentOrigin>,
-    /// How it was paid (box 3)
-    #[libertas_llm_doc_field]
-    #[libertas_inline_choices]
-    pub paid: LtcPaidBasis,
-    /// Contract (box 4)
-    /// Box 4 is optional for the payer; your policy says whether it is a qualified long-term care contract.
-    #[libertas_llm_doc_field]
-    #[libertas_inline_choices]
-    pub contract: LtcContractPage,
-    /// The insured person was (box 5)
-    /// Certified by a physician as expected to die within 24 months (terminally ill), or by a licensed health care practitioner as needing help with two daily activities or supervision for a cognitive impairment (chronically ill).
-    #[libertas_llm_doc_field]
-    #[libertas_inline_choices]
-    pub illness: LtcIllness,
+    /// Contract qualification and history not established by box 4
+    #[libertas_default(Unknown)]
+    pub contract: LtcContract,
     /// Long-term care periods for the insured person
     /// Needed for per diem payments. Empty uses your only periods record; one entered on this same page is chosen after you save it.
     /// [NullText]
     /// Use the insured person's only long-term care periods record
     /// [SetText]
     /// The insured person's periods record is
-    #[libertas_enum_source("$.ltc_insured")]
     #[libertas_default($null)]
     pub insured: Option<i64>,
 }
@@ -340,16 +453,19 @@ pub enum LtcIllness {
 pub struct FederalLtcPayment {
     /// Box 1 gross long-term care benefits
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub benefits: i64,
     /// Box 2 accelerated death benefits
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     pub accelerated: i64,
     /// Interest paid in addition to the benefits
     /// From the payer's actual statement, not part of box1 or2. Interest is taxable even when the benefits are excluded. Do not also enter it as a separate1099-INT amount.
     #[libertas_money("USD", 2)]
-    #[libertas_number(min = 0)]
+    // Leave headroom for exact cents totals.
+    #[libertas_number(min = 0, max = 100000000000)]
     #[libertas_default(0)]
     pub interest: i64,
     /// Actual source of box1 benefits
@@ -362,10 +478,20 @@ pub struct FederalLtcPayment {
     pub accelerated_origin: Option<LtcPaymentOrigin>,
     /// How it was paid (box 3)
     pub paid: LtcPaidBasis,
-    /// Contract (box 4)
+    /// Printed qualified contract checkbox (box 4)
+    pub box4_qualified: bool,
+    /// Actual contract qualification and history
     pub contract: LtcContract,
     /// The insured person was (box 5)
-    pub illness: LtcIllness,
+    /// [NullText]
+    /// Neither illness box is checked
+    /// [SetText]
+    /// Printed illness status
+    #[libertas_default($null)]
+    pub illness: Option<LtcIllness>,
+    /// Box 5 date certified
+    #[libertas_default(Unavailable)]
+    pub date_certified: crate::SourceDate,
     /// Periods record identity
     /// The income identity of the insured person's periods record; empty uses the only one.
     #[libertas_hidden]
@@ -421,13 +547,15 @@ pub enum LtcPeriods {
         /// Qualified long-term care costs for those days
         /// Costs of care under a licensed practitioner's plan of care, before reimbursements.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         services: i64,
         /// Reimbursements for those costs
         /// From insurance or anyone else, received or expected. Not the per diem payments.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         reimbursements: i64,
         /// Payments to others for this person
@@ -440,10 +568,10 @@ pub enum LtcPeriods {
         /// How the periods are set
         method: CarePeriodMethod,
         /// Periods
-        /// ----
-        /// Period
         // Tax structure: nonoverlapping care intervals cannot outnumber the calendar days in a year.
         #[libertas_size(min = 2, max = 366)]
+        /// ----
+        /// Period
         periods: Vec<CareBenefitPeriod>,
     },
 }
@@ -467,13 +595,15 @@ pub enum LtcPeriodsInput {
         /// Qualified long-term care costs for those days
         /// Costs of care under a licensed practitioner's plan of care, before reimbursements.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         services: i64,
         /// Reimbursements for those costs
         /// From insurance or anyone else, received or expected. Not the per diem payments.
         #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
+        // Leave headroom for exact cents totals.
+        #[libertas_number(min = 0, max = 100000000000)]
         #[libertas_default(0)]
         reimbursements: i64,
         /// Payments to others for this person
@@ -486,10 +616,10 @@ pub enum LtcPeriodsInput {
         /// How the periods are set
         method: CarePeriodMethod,
         /// Periods
-        /// ----
-        /// Period
         // Tax structure: nonoverlapping care intervals cannot outnumber the calendar days in a year.
         #[libertas_size(min = 2, max = 366)]
+        /// ----
+        /// Period
         periods: Vec<CareBenefitPeriodInput>,
     },
 }
@@ -600,78 +730,103 @@ impl FederalLtcInsured {
         }
         None
     }
-    // The periods Section C is figured over, with the linked forms' line 20 payments
-    // (cents) as the one period's payments; None when several periods' own payments
-    // do not total them.
-    pub(crate) fn rows(&self, line_20: i64) -> Option<Vec<CareBenefitPeriod>> {
-        match &self.periods {
-            LtcPeriods::One { starts, ends, services, reimbursements, recipient } => {
-                Some(alloc::vec![CareBenefitPeriod {
-                    starts: *starts,
-                    ends: *ends,
-                    received: line_20,
-                    services: *services,
-                    reimbursements: *reimbursements,
-                    recipient: recipient.clone(),
-                    injured_payees: None,
-                }])
-            }
-            LtcPeriods::Several { periods, .. } => {
-                (crate::kernel::ratio::checked_sum(periods.iter().map(|p| p.received))
-                    == Some(line_20))
-                .then(|| periods.clone())
-            }
-        }
-    }
 }
 
-// Input paths in these Page projections have the same field names as their
-// accepted records. Union payloads are transparent; no variant segment is added.
-// Unresolved character remains an accepted source that withholds the estimate.
-// Only the existing independently-entered-source refusal belongs in preflight;
-// the whole-return reference owner still checks shared annuity gross totals.
-pub(crate) fn document_issue(
-    d: &crate::FederalDraft,
-    owner: crate::Owner,
-    document: &crate::IncomeDocument,
-) -> Option<crate::validation::ValidationIssue> {
-    match document {
-        crate::IncomeDocument::Ltc1099(page) => {
-            let record = page.record();
-            record.issue().or_else(|| {
-                record
-                    .character_issue(d, owner)
-                    .filter(|issue| issue.key == "LTC1099_SOURCE_UNAVAILABLE")
-            })
-        }
-        crate::IncomeDocument::LtcInsured(page) => page.record().issue(),
-        _ => None,
-    }
-}
-
-record_page_conversions!(FederalLtcPayment, Ltc1099, [&], |value, Target| {
-    Target {
-        benefits: value.benefits,
-        accelerated: value.accelerated,
-        interest: value.interest,
-        benefit_origin: value.benefit_origin.clone(),
-        accelerated_origin: value.accelerated_origin.clone(),
-        paid: value.paid,
-        contract: (&value.contract).into(),
-        illness: value.illness,
-        insured: value.insured,
-    }
-});
-
-impl Ltc1099 {
+impl LtcSource {
+    /// The internal record the calculations read.
     pub(crate) fn record(&self) -> FederalLtcPayment {
         self.into()
     }
-}
-impl FederalLtcPayment {
-    pub(crate) fn page(&self) -> Ltc1099 {
-        self.into()
+    /// A newly entered form: no topic answer is given yet.
+    pub(crate) fn printed(form: Ltc1099Paper) -> Self {
+        Self {
+            form,
+            interest: None,
+            benefit_origin: None,
+            accelerated_origin: None,
+            contract: LtcContract::Unknown,
+            insured: None,
+        }
     }
+    /// The topic answers of an accepted source survive a correction of its paper.
+    pub(crate) fn keep_answers(&mut self, accepted: &Self) {
+        self.interest = accepted.interest;
+        self.benefit_origin = accepted.benefit_origin.clone();
+        self.accelerated_origin = accepted.accelerated_origin.clone();
+        self.contract = accepted.contract.clone();
+        self.insured = accepted.insured;
+    }
+}
+// One-way: every printed box either reaches the internal model or is named as
+// not read by any calculation, so a new box cannot be forgotten.
+impl From<&LtcSource> for FederalLtcPayment {
+    fn from(source: &LtcSource) -> Self {
+        let LtcSource { form, interest, benefit_origin, accelerated_origin, contract, insured } =
+            source;
+        let Ltc1099 {
+            // The parties name and assign the document; no figure reads them.
+            payer: _,
+            recipient: _,
+            insured_party: _,
+            benefits,
+            accelerated,
+            interest: _,
+            paid,
+            box4_qualified,
+            illness,
+            date_certified,
+        } = &Ltc1099::from(form);
+        Self {
+            benefits: *benefits,
+            accelerated: *accelerated,
+            interest: interest.unwrap_or(0),
+            benefit_origin: benefit_origin.clone(),
+            accelerated_origin: accelerated_origin.clone(),
+            paid: *paid,
+            box4_qualified: *box4_qualified,
+            // The optional checked box establishes qualification; an unchecked box does not.
+            // https://www.irs.gov/instructions/i1099ltc
+            contract: if *box4_qualified {
+                LtcContract::Qualified {
+                    qualification: crate::CareContractQualification::Qualified,
+                }
+            } else {
+                contract.clone()
+            },
+            illness: *illness,
+            date_certified: date_certified.clone(),
+            insured: *insured,
+        }
+    }
+}
+
+fn ltc_intrinsic_issue(
+    benefits: i64,
+    accelerated: i64,
+    date_certified: &crate::SourceDate,
+) -> Option<crate::validation::ValidationIssue> {
+    use crate::validation::ValidationIssue;
+    // The periodic/excluded previews and federal receipt owners carry native Cents.
+    // Admit against that actual receiver, never a fixed per-box money ceiling.
+    if benefits.checked_add(accelerated).is_none() {
+        return Some(
+            ValidationIssue::new("MEDICAL_REQUIRED_OUTPUT_UNAVAILABLE").at_field("accelerated"),
+        );
+    }
+    if benefits + accelerated <= 0 {
+        return Some(ValidationIssue::new("LTC1099_NO_AMOUNT").at_field("benefits"));
+    }
+    if date_certified.source_fact().is_err() {
+        return Some(
+            ValidationIssue::new("LTC1099_DATE_CERTIFIED_INVALID")
+                .at_field("date")
+                .in_field("date_certified"),
+        );
+    }
+    None
+}
+
+impl FederalLtcPayment {
     pub(crate) fn valid(&self) -> bool {
         // Arithmetic exclusion: the federal before_rental MAGI/unearned pools,
         // Olympic AGI-to-Cents input and final income rows still have native
@@ -682,24 +837,28 @@ impl FederalLtcPayment {
             && (0..=100000000000).contains(&self.interest)
             && self.insured.is_none_or(|id| id > 0)
             && self.contract.valid()
-            && self.rule().is_none()
+            && self.intrinsic_issue().is_none()
     }
     // The page's rules, repeated against accepted facts.
     pub(crate) fn rule(&self) -> Option<&'static str> {
         self.issue().map(|issue| issue.key)
     }
+    pub(crate) fn effective_contract(&self) -> &LtcContract {
+        const PRINTED_QUALIFIED: LtcContract =
+            LtcContract::Qualified { qualification: crate::CareContractQualification::Qualified };
+        if self.box4_qualified && matches!(self.contract, LtcContract::Unknown) {
+            &PRINTED_QUALIFIED
+        } else {
+            &self.contract
+        }
+    }
+    pub(crate) fn intrinsic_issue(&self) -> Option<crate::validation::ValidationIssue> {
+        ltc_intrinsic_issue(self.benefits, self.accelerated, &self.date_certified)
+    }
     pub(crate) fn issue(&self) -> Option<crate::validation::ValidationIssue> {
         use crate::validation::ValidationIssue;
-        // The periodic/excluded previews and federal receipt owners carry native Cents.
-        // Admit against that actual receiver, never a fixed per-box money ceiling.
-        if self.benefits.checked_add(self.accelerated).is_none() {
-            return Some(
-                crate::validation::ValidationIssue::new("MEDICAL_REQUIRED_OUTPUT_UNAVAILABLE")
-                    .at_field("accelerated"),
-            );
-        }
-        if self.benefits + self.accelerated <= 0 {
-            return Some(ValidationIssue::new("LTC1099_NO_AMOUNT").at_field("benefits"));
+        if let Some(issue) = self.intrinsic_issue() {
+            return Some(issue);
         }
         if self.benefit_origin.as_ref().is_some_and(|o| !matches!(o, LtcPaymentOrigin::Insurance))
             || matches!(self.accelerated_origin, Some(LtcPaymentOrigin::Insurance))
@@ -720,14 +879,14 @@ impl FederalLtcPayment {
         }
         if let LtcContract::Nonqualified {
             treatment: NonqualifiedCareTreatment::AccidentHealth { funding, .. },
-        } = &self.contract
+        } = self.effective_contract()
             && let Some(issue) = funding.issue()
         {
             return Some(issue.in_field("funding").in_field("treatment").in_field("contract"));
         }
         if let LtcContract::Nonqualified {
             treatment: NonqualifiedCareTreatment::AccidentHealth { .. },
-        } = &self.contract
+        } = self.effective_contract()
             && self.accident_health().is_none()
         {
             return Some(
@@ -740,314 +899,11 @@ impl FederalLtcPayment {
         None
     }
     pub(crate) fn accident_health(&self) -> Option<(i64, i64)> {
-        match &self.contract {
+        match self.effective_contract() {
             LtcContract::Nonqualified { treatment } => treatment.accident_health(self.benefits),
             _ => None,
         }
     }
-    pub(crate) fn character_issue(
-        &self,
-        d: &crate::FederalDraft,
-        owner: crate::Owner,
-    ) -> Option<crate::validation::ValidationIssue> {
-        use crate::validation::ValidationIssue;
-        if self.benefits > 0 && !matches!(self.benefit_origin, Some(LtcPaymentOrigin::Insurance)) {
-            return Some(
-                ValidationIssue::new("ISSUE_LTC_SOURCE_CHARACTER_UNRESOLVED")
-                    .at_field("benefit_origin"),
-            );
-        }
-        if self.accelerated > 0
-            && !self.accelerated_origin.as_ref().is_some_and(LtcPaymentOrigin::life_eligible)
-        {
-            return Some(
-                ValidationIssue::new("ISSUE_LTC_LIFE_CHARACTER_UNRESOLVED")
-                    .at_field("accelerated_origin"),
-            );
-        }
-        if self.benefits > 0 {
-            match &self.contract {
-                LtcContract::Qualified { .. } if self.contract.qualified() => {}
-                LtcContract::Nonqualified {
-                    treatment: NonqualifiedCareTreatment::AccidentHealth { .. },
-                } if self.accident_health().is_some() => {}
-                LtcContract::Nonqualified {
-                    treatment: NonqualifiedCareTreatment::LifeAnnuity { source },
-                } => {
-                    if !annuity_source(d, *source, owner, self.benefits) {
-                        return Some(
-                            ValidationIssue::new("LTC1099_SOURCE_UNAVAILABLE")
-                                .at_field("source")
-                                .in_field("treatment")
-                                .in_field("contract"),
-                        );
-                    }
-                }
-                _ => {
-                    return Some(
-                        ValidationIssue::new("ISSUE_LTC_NONQUALIFIED_CHARACTER_UNRESOLVED")
-                            .at_field("contract"),
-                    );
-                }
-            }
-        }
-        if let LtcContract::Nonqualified {
-            treatment: NonqualifiedCareTreatment::AccidentHealth { recovery: Some(id), .. },
-        } = &self.contract
-            && !recovery_source(d, *id, owner, self.benefits)
-        {
-            return Some(
-                ValidationIssue::new("LTC1099_SOURCE_UNAVAILABLE")
-                    .at_field("recovery")
-                    .in_field("treatment")
-                    .in_field("contract"),
-            );
-        }
-        None
-    }
-    pub(crate) fn character_rule(
-        &self,
-        d: &crate::FederalDraft,
-        owner: crate::Owner,
-    ) -> Option<&'static str> {
-        self.character_issue(d, owner).map(|issue| issue.key)
-    }
-    // Section C line 20 payments of this form (cents): the per diem box 1 and the
-    // chronically ill box 2 of a qualified contract. A reimbursed amount and a
-    // terminally ill accelerated death benefit are excluded without Section C.
-    pub(crate) fn periodic(&self) -> i64 {
-        if self.paid == LtcPaidBasis::Reimbursed {
-            return 0;
-        }
-        let benefits = if self.contract.qualified()
-            && matches!(self.benefit_origin, Some(LtcPaymentOrigin::Insurance))
-        {
-            self.benefits
-        } else {
-            0
-        };
-        let accelerated = if self.illness != LtcIllness::Terminal
-            && self.accelerated_origin.as_ref().is_some_and(LtcPaymentOrigin::life_eligible)
-        {
-            self.accelerated
-        } else {
-            0
-        };
-        benefits + accelerated
-    }
-    pub(crate) fn excluded(&self) -> i64 {
-        let benefits = if self.contract.qualified()
-            && self.paid == LtcPaidBasis::Reimbursed
-            && matches!(self.benefit_origin, Some(LtcPaymentOrigin::Insurance))
-        {
-            self.benefits
-        } else {
-            0
-        };
-        let accelerated = if (self.illness == LtcIllness::Terminal
-            || self.paid == LtcPaidBasis::Reimbursed)
-            && self.accelerated_origin.as_ref().is_some_and(LtcPaymentOrigin::life_eligible)
-        {
-            self.accelerated
-        } else {
-            0
-        };
-        benefits + accelerated
-    }
-    pub(crate) fn preview(&self) -> Option<i64> {
-        // Linked annuity/recovery character and the shared per-diem limit need
-        // the coordinated return. Only a completely known outright exclusion
-        // has a standalone row preview.
-        (self.rule().is_none()
-            && self.periodic() == 0
-            && self.excluded() == self.benefits + self.accelerated)
-            .then_some(self.interest)
-    }
-}
-
-// Which periods record a 1099-LTC names: an explicit choice is the record's income
-// identity, an empty one uses the only record (the owner's, or on a joint return
-// either filer's).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Link {
-    Record(i64),
-    // No record to use: none entered, or several and none chosen.
-    Missing,
-    // The chosen record belongs to the other filer on a separate return.
-    OtherOwner,
-}
-pub(crate) fn resolve(d: &crate::FederalDraft, owner: crate::Owner, insured: Option<i64>) -> Link {
-    use crate::FederalIncome;
-    let joint = d.setup.as_ref().is_some_and(|s| crate::federal_rules::joint(s.filing_status()));
-    match insured {
-        Some(id) => match d.income.iter().find(|e| e.id == id) {
-            Some(e) if matches!(e.income, FederalIncome::LtcInsured { .. }) => {
-                if e.owner != owner && !joint { Link::OtherOwner } else { Link::Record(id) }
-            }
-            _ => Link::Missing,
-        },
-        None => {
-            let mut records = d.income.iter().filter(|e| {
-                (joint || e.owner == owner) && matches!(e.income, FederalIncome::LtcInsured { .. })
-            });
-            match (records.next(), records.next()) {
-                (Some(e), None) => Link::Record(e.id),
-                _ => Link::Missing,
-            }
-        }
-    }
-}
-// The link of a 1099-LTC that has a per diem payment to place.
-pub(crate) fn link_of(d: &crate::FederalDraft, e: &crate::FederalIncomeEntry) -> Option<Link> {
-    match &e.income {
-        crate::FederalIncome::LtcBenefits { data } if data.periodic() > 0 => {
-            Some(resolve(d, e.owner, data.insured))
-        }
-        _ => None,
-    }
-}
-// The forms that name a record, with their line 20 payments.
-pub(crate) fn payments(d: &crate::FederalDraft, id: i64) -> Vec<(&crate::FederalIncomeEntry, i64)> {
-    d.income
-        .iter()
-        .filter(|e| link_of(d, e) == Some(Link::Record(id)))
-        .filter_map(|e| match &e.income {
-            crate::FederalIncome::LtcBenefits { data } => Some((e, data.periodic())),
-            _ => None,
-        })
-        .collect()
-}
-
-// These are references to existing independently entered sources. No tax or
-// gross is copied into another accepted income record.
-pub(crate) fn annuity_source(
-    d: &crate::FederalDraft,
-    id: i64,
-    owner: crate::Owner,
-    amount: i64,
-) -> bool {
-    d.income.iter().any(|e|e.id==id && e.owner==owner && matches!(&e.income,crate::FederalIncome::Retirement { data } if data.annuity_benefit_source() && data.gross>=amount))
-}
-pub(crate) fn recovery_source(
-    d: &crate::FederalDraft,
-    id: i64,
-    owner: crate::Owner,
-    _amount: i64,
-) -> bool {
-    // The existing recovery may combine this receipt with other same-year
-    // reimbursements; its total is not bounded by one LTC statement.
-
-    d.income.iter().any(|e|e.id==id && e.owner==owner && matches!(&e.income,crate::FederalIncome::OtherIncome { data } if matches!(data.kind,crate::OtherIncomeKind::Recovery { .. }) && data.amount>0))
-}
-pub(crate) fn reference_issue(
-    d: &crate::FederalDraft,
-) -> Option<(i64, crate::validation::ValidationIssue)> {
-    for entry in &d.income {
-        let crate::FederalIncome::LtcBenefits { data } = &entry.income else {
-            continue;
-        };
-        match &data.contract {
-            LtcContract::Nonqualified {
-                treatment: NonqualifiedCareTreatment::LifeAnnuity { source },
-            } => {
-                let gross=d.income.iter().filter_map(|e| match &e.income {
-                    crate::FederalIncome::LtcBenefits { data } if matches!(&data.contract,LtcContract::Nonqualified { treatment:NonqualifiedCareTreatment::LifeAnnuity { source:other } } if source==other) => Some(data.benefits),
-                    _=>None,
-                });
-                let gross = crate::kernel::ratio::checked_sum(gross);
-                if !gross.is_some_and(|gross| annuity_source(d, *source, entry.owner, gross)) {
-                    return Some((
-                        entry.id,
-                        crate::validation::ValidationIssue::new("LTC1099_SOURCE_UNAVAILABLE")
-                            .at_field("source")
-                            .in_field("treatment")
-                            .in_field("contract"),
-                    ));
-                }
-            }
-            LtcContract::Nonqualified {
-                treatment: NonqualifiedCareTreatment::AccidentHealth { recovery: Some(id), .. },
-            } if !recovery_source(d, *id, entry.owner, data.benefits) => {
-                return Some((
-                    entry.id,
-                    crate::validation::ValidationIssue::new("LTC1099_SOURCE_UNAVAILABLE")
-                        .at_field("recovery")
-                        .in_field("treatment")
-                        .in_field("contract"),
-                ));
-            }
-            _ => {}
-        }
-    }
-    native_receipts_issue(d)
-}
-
-// Native receiver admission shared by candidate references and federal collection.
-// The actual existing periodic, clinical-period and accident/health owners compute
-// the amounts; this adapter only checks their required native aggregate carriers.
-pub(crate) fn native_receipts_issue(
-    d: &crate::FederalDraft,
-) -> Option<(i64, crate::validation::ValidationIssue)> {
-    let invalid = |id| {
-        (
-            id,
-            crate::validation::ValidationIssue::new("MEDICAL_REQUIRED_OUTPUT_UNAVAILABLE")
-                .at_record(),
-        )
-    };
-    for entry in &d.income {
-        if let crate::FederalIncome::LtcBenefits { data } = &entry.income
-            && let Some(issue) = data.issue()
-        {
-            return Some((entry.id, issue));
-        }
-    }
-    let mut taxable = alloc::vec::Vec::new();
-    for entry in &d.income {
-        match &entry.income {
-            crate::FederalIncome::LtcBenefits { data } => {
-                if data.character_rule(d, entry.owner).is_some() {
-                    continue;
-                }
-                if let Some((amount, _)) = data.accident_health() {
-                    taxable.push(amount);
-                }
-                if link_of(d, entry) == Some(Link::Missing) {
-                    taxable.push(data.periodic());
-                }
-            }
-            crate::FederalIncome::LtcInsured { data } => {
-                let forms = payments(d, entry.id);
-                let received =
-                    crate::kernel::ratio::checked_sum(forms.iter().map(|(_, amount)| *amount));
-                let Some(received) = received else {
-                    return Some(invalid(entry.id));
-                };
-                if data.valid()
-                    && let Some(periods) = data.rows(received)
-                {
-                    taxable.extend(periods.iter().map(|period| period.amounts().3));
-                }
-            }
-            _ => {}
-        }
-    }
-    let id = d
-        .income
-        .iter()
-        .rev()
-        .find(|e| {
-            matches!(
-                e.income,
-                crate::FederalIncome::LtcBenefits { .. } | crate::FederalIncome::LtcInsured { .. }
-            )
-        })?
-        .id;
-    crate::kernel::ratio::checked_sum(taxable).is_none().then(|| invalid(id))
-}
-
-pub(crate) fn reference_rule(d: &crate::FederalDraft) -> Option<&'static str> {
-    reference_issue(d).map(|(_, issue)| issue.key)
 }
 
 impl From<CareBenefitPeriodInput> for CareBenefitPeriod {

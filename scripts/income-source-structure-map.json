@@ -1,0 +1,1036 @@
+{
+  "version": 1,
+  "variant_paths": {
+    "W2": [
+      {
+        "tag": "Wage",
+        "field": "value"
+      },
+      "W2"
+    ],
+    "Form8919": [
+      {
+        "tag": "Wage",
+        "field": "value"
+      },
+      "Form8919"
+    ],
+    "Int1099": [
+      {
+        "tag": "InterestDividend",
+        "field": "value"
+      },
+      "Form1099IntPaper"
+    ],
+    "Div1099": [
+      {
+        "tag": "InterestDividend",
+        "field": "value"
+      },
+      "Div1099"
+    ],
+    "CapitalReturn1099Div": [
+      {
+        "tag": "InterestDividend",
+        "field": "value"
+      },
+      "CapitalReturn1099Div"
+    ],
+    "Oid1099": [
+      {
+        "tag": "InterestDividend",
+        "field": "value"
+      },
+      "Form1099OidPaper"
+    ],
+    "Form2439": [
+      {
+        "tag": "InterestDividend",
+        "field": "value"
+      },
+      "Form2439"
+    ],
+    "SavingsBonds": [
+      {
+        "tag": "InterestDividend",
+        "field": "value"
+      },
+      "SavingsBonds"
+    ],
+    "Sale1099B": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "Sale1099B"
+    ],
+    "Contracts1099B": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "Contracts1099B"
+    ],
+    "MainHomeSale": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "MainHomeSale"
+    ],
+    "Form3921": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "Form3921"
+    ],
+    "Form3922": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "Form3922"
+    ],
+    "IsoShareSale": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "IsoShareSale"
+    ],
+    "EmployeeShareSale": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "EmployeeShareSale"
+    ],
+    "EsppShareSale": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "EsppShareSale"
+    ],
+    "NuaShareSale": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "NuaShareSale"
+    ],
+    "QsbsSale": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "QsbsSale"
+    ],
+    "OpportunityFund": [
+      {
+        "tag": "InvestmentSale",
+        "field": "value"
+      },
+      "OpportunityFund"
+    ],
+    "R1099": [
+      {
+        "tag": "Retirement",
+        "field": "value"
+      },
+      "R1099"
+    ],
+    "Rrb1099R": [
+      {
+        "tag": "Retirement",
+        "field": "value"
+      },
+      "Rrb1099R"
+    ],
+    "Ssa1099": [
+      {
+        "tag": "Retirement",
+        "field": "value"
+      },
+      "Ssa1099"
+    ],
+    "Rrb1099": [
+      {
+        "tag": "Retirement",
+        "field": "value"
+      },
+      "Rrb1099"
+    ],
+    "Form1099Nec": [
+      {
+        "tag": "SelfEmployment",
+        "field": "value"
+      },
+      "Form1099Nec"
+    ],
+    "Form1099K": [
+      {
+        "tag": "SelfEmployment",
+        "field": "value"
+      },
+      "Form1099K"
+    ],
+    "Patr1099": [
+      "Farming"
+    ],
+    "Form1099G": [
+      {
+        "tag": "GovernmentPayment",
+        "field": "value"
+      },
+      "Form1099G"
+    ],
+    "Refund1099G": [
+      {
+        "tag": "GovernmentPayment",
+        "field": "value"
+      },
+      "Refund1099G"
+    ],
+    "Form1099Misc": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "Form1099Misc"
+    ],
+    "Q1099": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "Q1099"
+    ],
+    "Sa1099": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "Sa1099"
+    ],
+    "Ltc1099": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "Ltc1099"
+    ],
+    "LtcInsured": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "LtcInsured"
+    ],
+    "Qa1099": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "Qa1099"
+    ],
+    "WildfireRelief": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "WildfireRelief"
+    ],
+    "DisasterRelief": [
+      {
+        "tag": "OtherIncome",
+        "field": "value"
+      },
+      "DisasterRelief"
+    ],
+    "W2g": [
+      "Gambling"
+    ],
+    "K1Partnership": [
+      {
+        "tag": "K1",
+        "field": "value"
+      },
+      "K1Partnership"
+    ],
+    "K1PartnershipActivities": [
+      {
+        "tag": "K1",
+        "field": "value"
+      },
+      "K1PartnershipActivities"
+    ],
+    "K1Scorp": [
+      {
+        "tag": "K1",
+        "field": "value"
+      },
+      "K1Scorp"
+    ],
+    "K1ScorpActivities": [
+      {
+        "tag": "K1",
+        "field": "value"
+      },
+      "K1ScorpActivities"
+    ],
+    "K1EstateTrust": [
+      {
+        "tag": "K1",
+        "field": "value"
+      },
+      "K1EstateTrust"
+    ],
+    "Cancel1099C": [
+      {
+        "tag": "CanceledDebt",
+        "field": "value"
+      },
+      "Form1099C"
+    ],
+    "Acquisition1099A": [
+      {
+        "tag": "CanceledDebt",
+        "field": "value"
+      },
+      "Form1099A"
+    ],
+    "SellerMortgageInterest": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "SellerMortgageInterest"
+    ],
+    "Form8606": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Form8606"
+    ],
+    "Qcd": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Qcd"
+    ],
+    "Business": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Business"
+    ],
+    "Rental": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Rental"
+    ],
+    "Royalties": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Royalties"
+    ],
+    "EquipmentRental": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "EquipmentRental"
+    ],
+    "ForeignAccountOrTrust": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "ForeignAccountOrTrust"
+    ],
+    "TaxableBondPremium": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "TaxableBondPremium"
+    ],
+    "CapitalLossCarryover": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "CapitalLossCarryover"
+    ],
+    "QbiLossCarryforward": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "QbiLossCarryforward"
+    ],
+    "BusinessPropertyLosses": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "BusinessPropertyLosses"
+    ],
+    "GamblingLosses": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "GamblingLosses"
+    ],
+    "Farm": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Farm"
+    ],
+    "FarmAveraging": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "FarmAveraging"
+    ],
+    "FarmLoss": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "FarmLoss"
+    ],
+    "Form8915": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Form8915"
+    ],
+    "InstallmentPayments": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "InstallmentPayments"
+    ],
+    "SocialLumpSums": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "SocialLumpSums"
+    ],
+    "MissedRmd": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "MissedRmd"
+    ],
+    "NetOperatingLoss": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "NetOperatingLoss"
+    ],
+    "AlimonyReceived": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "AlimonyReceived"
+    ],
+    "RothHistory": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "RothHistory"
+    ],
+    "Form8814": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Form8814"
+    ],
+    "Section1256Carryback": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Section1256Carryback"
+    ],
+    "RelatedExchange": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "RelatedExchange"
+    ],
+    "EducationAccountExpenses": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "EducationAccountExpenses"
+    ],
+    "FarmRental": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "FarmRental"
+    ],
+    "SmallBusinessStockLoss": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "SmallBusinessStockLoss"
+    ],
+    "WorthlessSecurity": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "WorthlessSecurity"
+    ],
+    "BadDebt": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "BadDebt"
+    ],
+    "HealthLoanRepayment": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "HealthLoanRepayment"
+    ],
+    "Scholarship": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Scholarship"
+    ],
+    "JuryPay": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "JuryPay"
+    ],
+    "HobbySales": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "HobbySales"
+    ],
+    "CasualtyLivingInsurance": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "CasualtyLivingInsurance"
+    ],
+    "DisasterMitigation": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "DisasterMitigation"
+    ],
+    "InheritedIra": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "InheritedIra"
+    ],
+    "Form2555": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Form2555"
+    ],
+    "ForeignPay": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "ForeignPay"
+    ],
+    "AbleContributions": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "AbleContributions"
+    ],
+    "OtherIncome": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "OtherIncome"
+    ],
+    "OpportunityFundDeferral": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "OpportunityFundDeferral"
+    ],
+    "Clergy": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "Clergy"
+    ],
+    "NonfarmOptionalMethod": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "NonfarmOptionalMethod"
+    ],
+    "InstallmentSale": [
+      {
+        "tag": "Record",
+        "field": "value"
+      },
+      "InstallmentSale"
+    ]
+  },
+  "source_fields": [
+    {
+      "type": "IncomeDocumentItem",
+      "field": "document"
+    },
+    {
+      "type": "IncomeDocumentEstimateInput",
+      "field": "document"
+    },
+    {
+      "type": "PreviewDocument",
+      "field": "document"
+    },
+    {
+      "type": "DocumentPropertyOptions",
+      "field": "document"
+    }
+  ],
+  "catalogs": [
+    {
+      "type": "SaveIncomes",
+      "source": "allowed_documents",
+      "target": "source_choices",
+      "tag": "IncomeSourceChoices",
+      "fields": [
+        "sources",
+        "wage",
+        "interestdividend",
+        "investmentsale",
+        "retirement",
+        "selfemployment",
+        "governmentpayment",
+        "otherincome",
+        "k1",
+        "canceleddebt",
+        "record"
+      ],
+      "kinds": {
+        "0": {
+          "sources": 0,
+          "wage": 0
+        },
+        "1": {
+          "sources": 1,
+          "interestdividend": 0
+        },
+        "2": {
+          "sources": 11,
+          "record": 0
+        },
+        "3": {
+          "sources": 1,
+          "interestdividend": 1
+        },
+        "4": {
+          "sources": 1,
+          "interestdividend": 3
+        },
+        "5": {
+          "sources": 2,
+          "investmentsale": 0
+        },
+        "6": {
+          "sources": 3,
+          "retirement": 0
+        },
+        "7": {
+          "sources": 3,
+          "retirement": 2
+        },
+        "8": {
+          "sources": 11,
+          "record": 1
+        },
+        "9": {
+          "sources": 11,
+          "record": 2
+        },
+        "10": {
+          "sources": 11,
+          "record": 3
+        },
+        "11": {
+          "sources": 11,
+          "record": 4
+        },
+        "12": {
+          "sources": 6,
+          "governmentpayment": 0
+        },
+        "13": {
+          "sources": 6,
+          "governmentpayment": 1
+        },
+        "14": {
+          "sources": 11,
+          "record": 5
+        },
+        "15": {
+          "sources": 11,
+          "record": 6
+        },
+        "16": {
+          "sources": 11,
+          "record": 7
+        },
+        "17": {
+          "sources": 11,
+          "record": 8
+        },
+        "18": {
+          "sources": 11,
+          "record": 9
+        },
+        "19": {
+          "sources": 11,
+          "record": 10
+        },
+        "20": {
+          "sources": 11,
+          "record": 11
+        },
+        "21": {
+          "sources": 5
+        },
+        "22": {
+          "sources": 8
+        },
+        "23": {
+          "sources": 11,
+          "record": 12
+        },
+        "24": {
+          "sources": 11,
+          "record": 13
+        },
+        "25": {
+          "sources": 11,
+          "record": 14
+        },
+        "26": {
+          "sources": 11,
+          "record": 15
+        },
+        "27": {
+          "sources": 9,
+          "k1": 4
+        },
+        "28": {
+          "sources": 9,
+          "k1": 2
+        },
+        "29": {
+          "sources": 9,
+          "k1": 0
+        },
+        "30": {
+          "sources": 2,
+          "investmentsale": 3
+        },
+        "31": {
+          "sources": 11,
+          "record": 16
+        },
+        "32": {
+          "sources": 2,
+          "investmentsale": 4
+        },
+        "33": {
+          "sources": 11,
+          "record": 17
+        },
+        "34": {
+          "sources": 10,
+          "canceleddebt": 0
+        },
+        "35": {
+          "sources": 10,
+          "canceleddebt": 1
+        },
+        "36": {
+          "sources": 11,
+          "record": 18
+        },
+        "37": {
+          "sources": 11,
+          "record": 19
+        },
+        "38": {
+          "sources": 11,
+          "record": 20
+        },
+        "39": {
+          "sources": 11,
+          "record": 21
+        },
+        "40": {
+          "sources": 11,
+          "record": 22
+        },
+        "41": {
+          "sources": 2,
+          "investmentsale": 2
+        },
+        "42": {
+          "sources": 1,
+          "interestdividend": 5
+        },
+        "43": {
+          "sources": 11,
+          "record": 23
+        },
+        "44": {
+          "sources": 2,
+          "investmentsale": 1
+        },
+        "45": {
+          "sources": 11,
+          "record": 24
+        },
+        "46": {
+          "sources": 11,
+          "record": 25
+        },
+        "47": {
+          "sources": 7,
+          "otherincome": 1
+        },
+        "48": {
+          "sources": 11,
+          "record": 26
+        },
+        "49": {
+          "sources": 11,
+          "record": 27
+        },
+        "50": {
+          "sources": 2,
+          "investmentsale": 5
+        },
+        "51": {
+          "sources": 2,
+          "investmentsale": 6
+        },
+        "52": {
+          "sources": 2,
+          "investmentsale": 7
+        },
+        "53": {
+          "sources": 2,
+          "investmentsale": 8
+        },
+        "54": {
+          "sources": 11,
+          "record": 28
+        },
+        "55": {
+          "sources": 11,
+          "record": 29
+        },
+        "56": {
+          "sources": 11,
+          "record": 30
+        },
+        "57": {
+          "sources": 1,
+          "interestdividend": 2
+        },
+        "58": {
+          "sources": 1,
+          "interestdividend": 4
+        },
+        "59": {
+          "sources": 0,
+          "wage": 1
+        },
+        "60": {
+          "sources": 11,
+          "record": 31
+        },
+        "61": {
+          "sources": 11,
+          "record": 32
+        },
+        "62": {
+          "sources": 11,
+          "record": 33
+        },
+        "63": {
+          "sources": 11,
+          "record": 34
+        },
+        "64": {
+          "sources": 7,
+          "otherincome": 6
+        },
+        "65": {
+          "sources": 7,
+          "otherincome": 7
+        },
+        "66": {
+          "sources": 11,
+          "record": 35
+        },
+        "67": {
+          "sources": 11,
+          "record": 36
+        },
+        "68": {
+          "sources": 3,
+          "retirement": 1
+        },
+        "69": {
+          "sources": 11,
+          "record": 37
+        },
+        "70": {
+          "sources": 11,
+          "record": 38
+        },
+        "71": {
+          "sources": 11,
+          "record": 39
+        },
+        "72": {
+          "sources": 7,
+          "otherincome": 2
+        },
+        "73": {
+          "sources": 7,
+          "otherincome": 3
+        },
+        "74": {
+          "sources": 7,
+          "otherincome": 4
+        },
+        "75": {
+          "sources": 7,
+          "otherincome": 5
+        },
+        "76": {
+          "sources": 11,
+          "record": 40
+        },
+        "77": {
+          "sources": 11,
+          "record": 41
+        },
+        "78": {
+          "sources": 4,
+          "selfemployment": 0
+        },
+        "79": {
+          "sources": 4,
+          "selfemployment": 1
+        },
+        "80": {
+          "sources": 7,
+          "otherincome": 0
+        },
+        "81": {
+          "sources": 2,
+          "investmentsale": 9
+        },
+        "82": {
+          "sources": 11,
+          "record": 42
+        },
+        "83": {
+          "sources": 11,
+          "record": 43
+        },
+        "84": {
+          "sources": 11,
+          "record": 44
+        },
+        "85": {
+          "sources": 9,
+          "k1": 1
+        },
+        "86": {
+          "sources": 9,
+          "k1": 3
+        },
+        "87": {
+          "sources": 11,
+          "record": 45
+        }
+      }
+    }
+  ],
+  "field_paths": [
+    {
+      "type": "Problem",
+      "field": "field",
+      "prefixes": [
+        [
+          "documents",
+          "documents",
+          "#",
+          "document"
+        ],
+        [
+          "document"
+        ]
+      ],
+      "inserted_field": "value"
+    }
+  ]
+}

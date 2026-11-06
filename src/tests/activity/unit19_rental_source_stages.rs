@@ -43,9 +43,12 @@ fn unit19_rental_stages_actual_client_save_reopen_restart() {
     let mut answers = seed.clone();
     let P::SaveIncomes { documents, .. } = &mut answers else { unreachable!() };
     documents.documents = vec![
-        document(0, IncomeDocument::Rental(first)),
-        document(0, IncomeDocument::Rental(page(49))),
-    ];
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::Rental(first) }),
+        document(0, IncomeSource::Record { value: crate::IncomeRecord::Rental(page(49)) }),
+    ]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     if let Ok(directory) = std::env::var("TAX_UNIT19_RENTAL_STAGE_DIR") {
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(std::path::Path::new(&directory).join("seed.avro"), seed.to_avro()).unwrap();
@@ -119,7 +122,9 @@ fn unit19_rental_stages_actual_client_save_reopen_restart() {
     assert_eq!(supported(&session.draft), result);
     let mut correction = open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, .. } = &mut correction else { unreachable!() };
-    let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { unreachable!() };
+    let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
     page.rent += 2;
     documents.documents.reverse();
     accepted(&send(&mut session, correction));

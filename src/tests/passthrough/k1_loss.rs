@@ -21,8 +21,8 @@ fn separate(
     long: i64,
     cash_charity: i64,
     foreign_taxes: i64,
-) -> PartnerSeparateItems {
-    PartnerSeparateItems {
+) -> PartnerSeparateTotals {
+    PartnerSeparateTotals {
         interest: interest * 100,
         dividends: 0,
         qualified_dividends: 0,
@@ -43,7 +43,7 @@ fn separate(
 // systems, whole dollars.
 fn start(partner: &mut PartnerK1, opening: i64, capacity: i64, loss: i64) {
     for record in core::iter::once(&mut partner.regular).chain(partner.alternative.as_mut()) {
-        record.basis.opening = opening * 100;
+        record.basis.opening = Some(opening * 100);
         record.risk.start =
             ScorpRiskStart::Detailed { capacity: capacity * 100, profit: 0, loss: loss * 100 };
     }
@@ -64,7 +64,12 @@ fn shareholder_draft_of(mut source: ScorpK1) -> (FederalDraft, i64) {
     source.amt = Some(amt_records(&source));
     let mut d = complete(FederalStatus::Single);
     let id = d.next_id;
-    add(&mut d, income(FederalIncome::Scorp { data: source }));
+    add(
+        &mut d,
+        income(FederalIncome::Scorp {
+            data: crate::tests::support::builders::scorp_source(source),
+        }),
+    );
     (d, id)
 }
 
@@ -137,7 +142,7 @@ fn unit19_fully_held_deduction_projection_keeps_unlimited_and_subdollar_inputs()
         start(&mut p, basis, basis, 0);
         mirror_amt(&mut p);
         for record in [&p.regular, p.alternative.as_ref().unwrap()] {
-            assert_eq!(p.outcome(record).0.investment_interest, expected);
+            assert_eq!(p.outcome(record).unwrap().0.investment_interest, expected);
         }
     }
 }
@@ -423,10 +428,10 @@ fn fixture_2a_shareholder() -> ScorpK1 {
     let mut source = complete_ordinary_scorp(0, true);
     source.qbi_statement = None;
     source.loans.clear();
-    source.opening = 1_000_000;
+    source.opening = Some(1_000_000);
     source.ordinary = -1_200_000;
     source.rentals.real_estate = -400_000;
-    source.rental_facts.participation = K1RentalParticipation::Active;
+    source.rental_facts.participation = Some(K1RentalParticipation::Active);
     source.cash_charity = 400_000;
     source.risk.deducted = 0;
     source.risk.start = ScorpRiskStart::Detailed { capacity: 500_000, profit: 0, loss: 0 };
@@ -482,9 +487,9 @@ fn fixture_2b_shareholder() -> ScorpK1 {
     let mut source = complete_ordinary_scorp(0, true);
     source.qbi_statement = None;
     source.loans.clear();
-    source.opening = 0;
+    source.opening = Some(0);
     source.ordinary = 900_000;
-    source.rental_facts.participation = K1RentalParticipation::Active;
+    source.rental_facts.participation = Some(K1RentalParticipation::Active);
     source.prior_loss = 600_000;
     source.carried.real_estate.basis = 200_000;
     source.carried.charity = 200_000;
@@ -528,13 +533,14 @@ fn fixture_2b_shareholder_releases_basis_and_at_risk_carries_together() {
 #[test]
 fn the_three_limits_release_in_order_basis_then_at_risk_then_passive() {
     let mut partner = member(0);
-    partner.participation = PartnerParticipation::Limited {
+    partner.participation = Some(PartnerParticipation::Limited {
         minutes: 0,
         prior_ten: 0,
         personal_service: false,
         service_years: 0,
-    };
+    });
     partner.regular.rentals.real_estate = -3_000_000;
+    partner.rental_facts.participation = Some(crate::K1RentalParticipation::NotActive);
     start(&mut partner, 20_000, 12_000, 0);
     mirror_amt(&mut partner);
     let pool = partner.pool(&partner.regular).unwrap();
@@ -579,7 +585,7 @@ fn an_at_risk_carry_is_never_limited_by_basis_again() {
 fn an_unknown_at_risk_history_needs_nothing_for_a_basis_carry_and_the_form_for_a_risk_carry() {
     let mut partner = member(5_000);
     partner.separate = Some(separate(0, -2_000, 0, 1_000, 0));
-    partner.regular.basis.opening = 100_000;
+    partner.regular.basis.opening = Some(100_000);
     partner.regular.risk.start = ScorpRiskStart::Unknown;
     mirror_amt(&mut partner);
     let ledger = partner.ledger(&partner.regular).unwrap();
@@ -587,7 +593,7 @@ fn an_unknown_at_risk_history_needs_nothing_for_a_basis_carry_and_the_form_for_a
     assert!(!ledger.limited());
     // 1,000 of basis against box 8 and a box 13 gift: carried, and the
     // activity income (box 1, 5,000) absorbs the allowed loss, so no history.
-    partner.regular.basis.opening = 100_000;
+    partner.regular.basis.opening = Some(100_000);
     partner.regular.basis.contributions = 0;
     partner.regular.carried.charity = 500_000;
     mirror_amt(&mut partner);
@@ -624,7 +630,7 @@ fn a_new_activity_with_any_carry_is_refused() {
     source.risk.start = ScorpRiskStart::New;
     assert!(!source.risk.valid(&source));
     let mut clean = fixture_2a_shareholder();
-    clean.opening = 0;
+    clean.opening = Some(0);
     clean.ordinary = 100_000;
     clean.rentals.real_estate = 0;
     clean.cash_charity = 0;
@@ -672,7 +678,7 @@ fn a_different_amt_limit_for_a_gift_or_section_179_is_refused_only_when_it_diffe
     assert!(noted(&r, "cash contributions carried to 2027 — $1000"));
     // The AMT record has 500 of basis: its gift is 500, not 1,000.
     let alternative = partner.alternative.as_mut().unwrap();
-    alternative.basis.opening = 50_000;
+    alternative.basis.opening = Some(50_000);
     let (d, _) = draft_of(partner);
     let r = estimate(&d);
     assert_eq!(r.state, ResultState::Unsupported);

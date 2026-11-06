@@ -109,7 +109,11 @@ impl NativeInterviewCase {
 
     pub(in crate::tests) fn submit(&self, session: &mut Interview, answers: P) {
         let request = self.input("PAYLOAD").unwrap_or(answers);
-        accepted(&send(session, request));
+        accepted(&if matches!(request, P::SaveDocuments { .. }) {
+            super::income_pages::save_source_fixture_request(session, request)
+        } else {
+            send(session, request)
+        });
     }
 
     pub(in crate::tests) fn editor(
@@ -119,8 +123,9 @@ impl NativeInterviewCase {
         output: &str,
     ) -> P {
         let request = crate::tests::cross::interview::navigate(&session.draft, topic);
-        let Reply::Edit(editor) = send(session, request) else {
-            panic!("{}: native editor", self.0)
+        let editor = match send(session, request) {
+            Reply::Edit(editor) => editor,
+            other => panic!("{}: native editor, got {other:?}", self.0),
         };
         self.write(output, &editor);
         editor

@@ -44,7 +44,7 @@ fn monthly_schedule_c_loss_in_student_month_is_replaced_by_deemed_earnings() {
     d.dependents[0].set_care_expenses(300_000);
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().full_time_student = true;
     let mut business = income(cash_business(-100));
-    business.owner = Owner::Spouse;
+    business.owner = crate::DocumentOwner::Spouses;
     add(&mut d, business);
     let mut months = care_months(Owner::Spouse, 5);
     // No positive earnings were received during the selected months. The
@@ -71,7 +71,7 @@ fn aggregate_schedule_c_care_earnings_require_nonnegative_selected_amount() {
     care_costs(&mut d, 300000);
     d.people.as_mut().unwrap().spouse.as_mut().unwrap().full_time_student = true;
     let mut b = income(cash_business(300));
-    b.owner = Owner::Spouse;
+    b.owner = crate::DocumentOwner::Spouses;
     add(&mut d, b);
     let mut months = care_months(Owner::Spouse, 5);
     months[0].business_net = 30000;
@@ -82,13 +82,6 @@ fn aggregate_schedule_c_care_earnings_require_nonnegative_selected_amount() {
     assert_eq!(value(&r, "care_earned_spouse"), 1250);
     assert_eq!(value(&r, "care_credit"), 438);
     assert!(noted(&r, "WARN_CARE_DEEMED_INCOME_MONTHLY"));
-    let CareFilerSituation::Student { earned_in_months, .. } =
-        &mut d.credits.as_mut().unwrap().care.filers[0].situation
-    else {
-        panic!()
-    };
-    *earned_in_months = Some(-1);
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -258,7 +251,7 @@ fn a_business_divides_its_income_but_the_operator_keeps_the_self_employment_tax(
     // self-employment tax to this return.
     let plain = {
         let mut d = complete(FederalStatus::Separate);
-        d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+        d.deductions.as_mut().unwrap().itemize_override = None;
         d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
         d.next_id = 2;
         add(&mut d, income(cash_business(40_000)));

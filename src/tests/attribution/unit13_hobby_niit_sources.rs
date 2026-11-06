@@ -33,7 +33,10 @@ fn hobby_niit_actual_owner_and_correction_after_public_save_restart() {
                 documents.documents.iter_mut().find(|e| e.id == source).unwrap().owner = other;
                 accepted(&send(&mut s, q));
                 let d = persist_hobby_niit_sources(s.draft);
-                assert_eq!(d.income.iter().find(|e| e.id == source).unwrap().owner, other);
+                assert_eq!(
+                    d.income.iter().find(|e| e.id == source).unwrap().owner,
+                    crate::DocumentOwner::from(other)
+                );
                 assert_hobby_owner_columns(&d, other);
             }
         }
@@ -45,15 +48,21 @@ fn hobby_goods_niit_target_excludes_not_for_profit_compensation_in_same_printed_
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut d = hobby_niit_return(owner, Owner::Taxpayer, false);
         let mut e = income(FederalIncome::Nec1099 {
-            data: FederalForm1099Nec {
+            data: nec_source(FederalForm1099Nec {
+                cash_tips: 0,
+                tip_occupation_codes: Default::default(),
+                overtime: 0,
                 compensation: 500000,
                 withholding: 0,
                 golden_parachute: 0,
-                belongs: IncomeUse::NotForProfit,
-                business: None,
-            },
+                belongs: Some(IncomeUse::NotForProfit),
+            }),
         });
-        e.owner = if owner == Owner::Taxpayer { Owner::Spouse } else { Owner::Taxpayer };
+        e.owner = if owner == Owner::Taxpayer {
+            crate::DocumentOwner::Spouses
+        } else {
+            crate::DocumentOwner::Yours
+        };
         add(&mut d, e);
         let mut session = restart(d);
         let q = open_topic(&mut session, TaxSection::OtherIncome);
@@ -82,7 +91,7 @@ fn hobby_fractional_sources_retain_native_joint_rounding_and_niit_footing() {
             let mut e = income(hobby_sales(0, 0, 0));
             let FederalIncome::HobbySales { data } = &mut e.income else { panic!() };
             data.receipts = 49;
-            e.owner = owner;
+            e.owner = crate::DocumentOwner::from(owner);
             add(&mut d, e);
         }
         let mut s = restart(d);

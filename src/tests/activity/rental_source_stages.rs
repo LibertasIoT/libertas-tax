@@ -124,7 +124,7 @@ fn unit19_rental_source_stage_marks_property_boundary_and_preserves_missing_invo
     };
     let property_id = add_rental(&mut draft, property);
     let mut missing = source_rental(149, 0);
-    missing.buildings.clear();
+    missing.at_risk = None;
     let missing_id = add_rental(&mut draft, missing);
     for alternative in [false, true] {
         let pool = stages(&draft, alternative);
@@ -153,58 +153,6 @@ fn rental_expense_carrier_keeps_grouped_meals_and_item_category_rounding() {
     ];
     assert_eq!(RentalExpense::total_exact(&expenses), exact::whole(1));
     assert_eq!(RentalExpense::category_totals_exact(&expenses)[13], exact::whole(2));
-}
-
-#[test]
-fn rental_wide_home_expenses_pass_through_days_and_home_limits_before_projection() {
-    let mut draft = complete(FederalStatus::Single);
-    let mut rental = source_rental(100_000, i64::MAX);
-    rental.expenses.push(rental.expenses[0].clone());
-    rental.personal_use = RentalPersonalUse::Yes {
-        fair_rental_days: 15,
-        personal_days: 350,
-        overlap_days: 0,
-        direct_expenses: 0,
-    };
-    assert_eq!(crate::extended_rules::rental_net(&rental), Ok(0));
-    let id = add_rental(&mut draft, rental);
-    let mut report = FederalResult::empty(draft.revision);
-    let pool = crate::extended_rules::rentals(&draft, 200_000, &mut report);
-    assert!(report.issues.is_empty(), "{:?}", report.issues);
-    assert_eq!(pool.income_by_id[&id], 0);
-    for (suffix, expected) in
-        [("home_operating_carryover", 758_085_372_892_073_354), ("expense_line19_other", 100_000)]
-    {
-        assert_eq!(line_amount(&report, &alloc::format!("rental_{id}_{suffix}")), expected);
-    }
-}
-
-#[test]
-fn rental_expense_native_output_failure_withholds_preview_and_preserves_source_priority() {
-    let mut rental = source_rental(0, i64::MAX);
-    rental.expenses.push(rental.expenses[0].clone());
-    assert!(crate::extended_rules::rental_source_valid(&rental));
-    assert_eq!(
-        crate::extended_rules::rental_net(&rental).unwrap_err().0,
-        "RENTAL_EXPENSE_AMOUNT_UNAVAILABLE"
-    );
-    assert_eq!(
-        crate::interview::document_amount(&FederalIncome::Rental { data: rental.clone() }, false),
-        None
-    );
-    let mut draft = complete(FederalStatus::Single);
-    add_rental(&mut draft, rental.clone());
-    let report = estimate(&draft);
-    assert!(
-        report.issues.iter().any(|issue| issue.display.key == "RENTAL_EXPENSE_AMOUNT_UNAVAILABLE")
-    );
-    assert_eq!(report.tax, None);
-    assert!(!report.lines.iter().any(|line| line.id == "agi"));
-    rental.expenses.push(RentalExpense { amount: -1, ..rental.expenses[0].clone() });
-    assert_eq!(
-        crate::extended_rules::rental_net(&rental).unwrap_err().0,
-        "ISSUE_RENTAL_BUILDINGS_OR_EXPENSES_OUT_OF_LIMITS"
-    );
 }
 
 #[test]

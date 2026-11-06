@@ -1,29 +1,4 @@
-// Fix unit F3 (2026-10-09): tests of the rows that do not belong to a larger test file.
 use super::*;
-
-#[test]
-fn invalid_stored_values_name_the_record_that_holds_them() {
-    // Row 206. A stored record outside its ranges (a negative withholding) makes the estimate
-    // incomplete, and the generic issue carries the record's correction context, not the setup
-    // page: the person is pointed at the document to correct.
-    let mut d = complete(FederalStatus::Single);
-    let id = d.income[0].id;
-    let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.withholding = -1;
-    assert!(!d.valid_stored());
-    let r = estimate(&d);
-    assert_eq!(r.state, ResultState::Incomplete);
-    let issue = r
-        .issues
-        .iter()
-        .find(|i| i.message.contains("Accepted data is invalid"))
-        .expect("the generic issue");
-    assert!(
-        matches!(issue.context, IssueContext::Income { id: record, .. } if record == id),
-        "{:?}",
-        issue.context
-    );
-}
 
 #[test]
 fn long_term_care_pools_by_identity_never_by_equal_names() {
@@ -74,18 +49,15 @@ fn a_code_3_pension_asks_the_minimum_retirement_age_and_the_early_picker_does_no
         },
         false,
     );
-    let FederalIncome::Retirement { data } =
-        crate::interview::document_income(&IncomeDocument::R1099(code_3))
-    else {
-        panic!()
-    };
+    let FederalIncome::Retirement { data } = code_3.into_source().income() else { panic!() };
+    let data = FederalRetirement::from(&data);
     assert_eq!(data.disability_wages, DisabilityWages::Part { amount: 300_000 });
     assert!(matches!(
         data.ordinary_distribution,
-        RetirementTreatment::Exception {
+        Some(RetirementTreatment::Exception {
             facts: RetirementException::Disability { began: 20240301 },
             ..
-        }
+        })
     ));
     assert_eq!(data.disability_wages(1_000_000), 300_000);
     let early = crate::tests::cross::interview::r1099(
@@ -101,11 +73,8 @@ fn a_code_3_pension_asks_the_minimum_retirement_age_and_the_early_picker_does_no
         },
         true,
     );
-    let FederalIncome::Retirement { data } =
-        crate::interview::document_income(&IncomeDocument::R1099(early))
-    else {
-        panic!()
-    };
+    let FederalIncome::Retirement { data } = early.into_source().income() else { panic!() };
+    let data = FederalRetirement::from(&data);
     assert_eq!(data.disability_wages, DisabilityWages::None);
     assert_eq!(data.disability_wages(1_000_000), 0);
 }
@@ -117,15 +86,15 @@ fn a_disability_pension_before_minimum_retirement_age_does_not_demand_a_disabled
     // and claims no Schedule R credit, so the estimate stands.
     let mut d = complete(FederalStatus::Single);
     let mut e = income(disability_pension(17000));
-    let FederalIncome::Retirement { data } = &mut e.income else { panic!() };
-    data.disability = DisabilityIncome::None;
+    let data = e.income.r1099_source_mut().unwrap();
+    data.disability = Some(DisabilityIncome::None);
     add(&mut d, e);
     assert!(!d.people.as_ref().unwrap().taxpayer.disabled);
     let r = supported(&d);
     assert!(!r.issues.iter().any(|i| i.section == "Disability retirement"));
     // The Schedule R amount still needs the People page.
-    let FederalIncome::Retirement { data } = &mut d.income[1].income else { panic!() };
-    data.disability = DisabilityIncome::Qualifying { amount: 1_700_000, eligible: true };
+    let data = d.income[1].income.r1099_source_mut().unwrap();
+    data.disability = Some(DisabilityIncome::Qualifying { amount: 1_700_000, eligible: true });
     unsupported(&d, "Disability retirement");
 }
 
@@ -136,6 +105,8 @@ fn form_8379_allocates_the_amount_on_the_return_not_the_row_preview() {
     // leaves out allocate zero; an unconfirmed payment its amount.
     let relief = |qualified| FederalIncome::WildfireRelief {
         data: FederalWildfireRelief {
+            source_issuer: Default::default(),
+            source_recipient: Default::default(),
             paid: 20260310,
             declared: 20250108,
             reference: "FEMA-FM-5000".into(),
@@ -180,25 +151,29 @@ fn an_inherited_ira_payment_has_its_own_kind_and_is_taxed_as_box_2a_without_a_re
         DistributionCode::Inherited { account: None },
         true,
     );
-    row.taxable = 900_000;
-    let FederalIncome::Retirement { data } =
-        crate::interview::document_income(&IncomeDocument::R1099(row.clone()))
-    else {
-        panic!()
-    };
+    row.source_mut().form.taxable = Some(900_000);
+    let FederalIncome::Retirement { data } = row.clone().into_source().income() else { panic!() };
+    let data = FederalRetirement::from(&data);
     assert_eq!(data.kind, RetirementKind::Inherited);
     assert!(data.kind.ira());
     assert_ne!(data.kind, RetirementKind::Ira);
-    assert_eq!(data.taxable, RetirementTaxable::Inherited { account: None, payer: 900_000 });
+    assert_eq!(
+        (data.taxable.clone(), data.box_2a),
+        (Some(RetirementTaxable::Inherited { account: None }), 900_000)
+    );
     // The page reopens at box 2a as the payer printed it.
-    let entry = income(crate::interview::document_income(&IncomeDocument::R1099(row.clone())));
+    let entry = income(row.clone().into_source().income());
     let Some(item) = crate::interview::document_item(&entry, &[], false) else {
         panic!("the document reopens")
     };
-    let IncomeDocument::R1099(reopened) = item.document else { panic!() };
-    assert_eq!((reopened.gross, reopened.taxable), (1_000_000, 900_000));
+    let IncomeSource::Retirement { value: crate::RetirementDocument::R1099(reopened) } =
+        item.document
+    else {
+        panic!()
+    };
+    assert_eq!((reopened.gross, reopened.taxable), (1_000_000, Some(900_000)));
     let mut d = complete(FederalStatus::Single);
-    add(&mut d, income(crate::interview::document_income(&IncomeDocument::R1099(row))));
+    add(&mut d, income(row.into_source().income()));
     let r = supported(&d);
     assert!(noted(&r, "WARN_INHERITED_IRA_RECORD_MISSING"), "{r:?}");
     assert_eq!(return_line(&r, "4a"), 1_000_000);
@@ -211,7 +186,9 @@ fn the_sole_ira_branches_have_no_property_sale_and_the_general_one_keeps_its_rul
     // SIMPLE IRA, the only tax-free move in the first two years; it keeps the 25% rate.
     assert_eq!(
         crate::tests::retirement::interview::retirement_treatment(
-            DistributionCode::EarlySimple { what_happened: SimpleDisposition::Kept },
+            DistributionCode::EarlySimple {
+                what_happened: SimpleDisposition::Kept { exception: EarlyException::None }
+            },
             true
         ),
         RetirementTreatment::EarlySimple

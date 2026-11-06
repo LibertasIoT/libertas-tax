@@ -1,0 +1,10 @@
+{
+  "rules": [
+    {"order": 117000, "rule": {"select": "^<StudentLoanInterest>.forms", "layout": "summary", "paths": ["value.box_1", "value.box_2"]}},
+    {"order": 192000, "rule": {"select": "^<SaveStudentLoan>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 530000, "rule": {"select": "^<Form1098EPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["lender", "lender_telephone", "borrower", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["calendar_year", "corrected", "box_1", "box_2"]}]}},
+    {"order": 531000, "rule": {"select": "^<Form1098EPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["lender", "lender_telephone", "borrower", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["calendar_year", "corrected", "box_1", "box_2"]}]}},
+    {"order": 580000, "rule": {"select": "^<StudentLoanClaim>", "flatten": true}},
+    {"order": 828000, "rule": {"select": "^<SaveStudentLoan.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}}
+  ]
+}

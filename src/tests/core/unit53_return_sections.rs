@@ -8,15 +8,7 @@ use libertas::data::{KeyCodec, KeyDecode, wire};
 fn setup_checklist_roundtrip_preserves_absence_bytes_and_other_twenty_fields() {
     let mut source = complete(FederalStatus::Joint);
     source.tax_year = 2030;
-    source.checklist = Checklist {
-        income: u32::MAX,
-        adjustments: 3,
-        deductions: 5,
-        credit_topics: 7,
-        other_taxes: 11,
-        payments: 13,
-        whole_return: 17,
-    };
+    source.checklist = Checklist { activities: u32::MAX, paid: 3, carryovers: 5 };
     for label in [None, Some(vec![]), Some(vec![0, 255, 128, 1])] {
         let mut source = source.clone();
         match label {
@@ -74,9 +66,9 @@ fn malformed_complete_record_sets_never_modify_destination() {
         records[1].0 = TaxDataKey::ReturnRecord { user, tax_year, copy, kind, id };
         cases.push(records);
     }
-    let mut legacy_key = valid.clone();
-    legacy_key[1].0 = TaxDataKey::Draft { user: TEST_USER };
-    cases.push(legacy_key);
+    let mut marker_key = valid.clone();
+    marker_key[1].0 = TaxDataKey::StorageFormat { user: TEST_USER };
+    cases.push(marker_key);
     for records in cases {
         let mut destination = complete(FederalStatus::Single);
         let before = destination.clone();

@@ -154,7 +154,7 @@ fn fixture_b_loss_is_limited_by_the_special_allowance_and_the_rest_is_suspended(
     // with a notice; AGI and tax are those of a return without it. The note
     // does not change the result state.
     let mut at_risk = data.clone();
-    // 2026-10-16 dispatcher: retain answered No as typed Limited without
+    // Retain answered No as typed Limited without
     // method facts, preserving these original known-profit/loss oracles.
     at_risk.at_risk = rental_risk_without_method();
     let d3 = rental_return(130_000, vec![rental_income(at_risk)]);
@@ -274,55 +274,44 @@ fn fixture_d_prior_year_loss_beyond_income_prints_pal_and_goes_to_form_8582() {
     assert_eq!(return_line(&r, "16"), 490_300);
 }
 
-fn patr(patronage: i64, farm: Option<i64>) -> FederalIncome {
+fn patr(patronage: i64) -> FederalIncome {
     let mut data = FederalCooperative { patronage: patronage * 100, ..Default::default() };
-    data.allocations.push(crate::cooperative::automatic(&data, farm));
-    FederalIncome::Cooperative { data }
+    data.allocations.push(crate::cooperative::automatic(&data));
+    FederalIncome::Cooperative { data: cooperative_source(data) }
 }
 
-fn government_program(payment: i64, farm: Option<i64>) -> FederalIncome {
-    let FederalIncome::Unemployment { mut data } = government_unemployment(0, &[], 0).income else {
+fn government_program(payment: i64) -> FederalIncome {
+    let FederalIncome::GovernmentPayment { mut data } = government_unemployment(0, &[], 0).income
+    else {
         unreachable!()
     };
-    data.agriculture_payment = payment * 100;
-    data.agriculture_farm = farm;
-    FederalIncome::Unemployment { data }
+    data.form.agriculture_payments = Some(payment * 100);
+    FederalIncome::GovernmentPayment { data }
 }
 fn issue_keys(r: &FederalResult) -> Vec<&str> {
     r.issues.iter().map(|i| i.display.key.as_str()).collect()
 }
 
 #[test]
-fn a_removed_farm_preserves_cooperative_links_for_correction() {
-    // A typed cooperative source retains a stale actual recipient for correction;
-    // it is never rebound to another activity. The existing 1099-G prune is unchanged.
-    let mut d = rental_return(
+fn removing_a_farm_removes_its_relations_and_preserves_printed_documents() {
+    let mut draft = rental_return(
         40_000,
-        vec![
-            rental_income(farm_rental_data(10_000, 0)),
-            patr(2_000, Some(99)),
-            government_program(1_000, Some(99)),
-        ],
+        vec![rental_income(farm_rental_data(10_000, 0)), patr(2_000), government_program(1_000)],
     );
-    let farm = d.income[1].id;
-    add(&mut d, income(patr(500, Some(farm))));
-    all_ticked(&mut d);
-    let pruned = crate::interview::prune(&mut d);
-    let links: Vec<Option<i64>> = d
-        .income
+    let activity = draft.income[1].id;
+    let keys = crate::related_forms::catalog_for(&draft, activity)
         .iter()
-        .filter_map(|e| match &e.income {
-            FederalIncome::Cooperative { data } => Some(data.allocations[0].activity),
-            FederalIncome::Unemployment { data } => Some(data.agriculture_farm),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(links, vec![Some(99), None, Some(farm)]);
-    assert_eq!(
-        pruned.removed.iter().filter(|item| item.key() == "SAVING_KIND_FARM_CHOICE").count(),
-        1,
-        "{pruned:?}"
-    );
+        .map(|source| source.id)
+        .collect::<Vec<_>>();
+    for key in keys {
+        claim_related_component(&mut draft, activity, key);
+    }
+    let printed =
+        draft.income.iter().filter(|entry| entry.id != activity).cloned().collect::<Vec<_>>();
+    draft.income.retain(|entry| entry.id != activity);
+    all_ticked(&mut draft);
+    crate::interview::prune(&mut draft);
+    assert_eq!(draft.income, printed);
 }
 
 #[test]
@@ -334,7 +323,7 @@ fn fixture_e_documents_route_to_the_only_farm_rental_and_to_the_chosen_farm() {
     base.expenses = vec![rental_expense(BusinessExpenseCategory::Repairs, 1_000)];
     let d = rental_return(
         40_000,
-        vec![rental_income(base.clone()), patr(2_000, None), government_program(1_000, None)],
+        vec![rental_income(base.clone()), patr(2_000), government_program(1_000)],
     );
     let id = d.income[1].id;
     let r = supported(&d);
@@ -358,45 +347,57 @@ fn fixture_e_documents_route_to_the_only_farm_rental_and_to_the_chosen_farm() {
     let farm_id = two.income.last().unwrap().id;
     let r = estimate(&two);
     assert_eq!(r.state, ResultState::Unsupported);
-    assert!(
-        issue_keys(&r).contains(&"ISSUE_FORM_1099_G_BOX_7_AGRICULTURE_PAYMENTS_NEED_A_CHOSEN_FARM")
-    );
-    // Choosing the farm sends both documents to it and leaves the rental at
-    // its own fixture values.
-    for entry in &mut two.income {
-        match &mut entry.income {
-            FederalIncome::Cooperative { data } => data.allocations[0].activity = Some(farm_id),
-            FederalIncome::Unemployment { data } => data.agriculture_farm = Some(farm_id),
-            _ => {}
-        }
+    assert!(issue_keys(&r).contains(&"ISSUE_RELATED_FORM_ACTIVITY_NOT_CHOSEN"));
+    // Relating the source components to the farm moves only their tax recipient.
+    let components = crate::related_forms::catalog_for(&two, farm_id)
+        .iter()
+        .map(|source| source.id)
+        .collect::<Vec<_>>();
+    for component in &components {
+        claim_related_component(&mut two, farm_id, *component);
     }
     let r = supported(&two);
     assert_eq!(value(&r, &line_id(id, "gross_income")), 10_000);
     assert_eq!(value(&r, &format!("farm_{farm_id}_cooperative_taxable")), 2_000);
     assert_eq!(value(&r, &format!("farm_{farm_id}_program_payments")), 1_000);
-    // Choosing the rental sends them there although the farm has the lower
-    // identity... here the farm has the higher one, so choose the other way
-    // round to show the choice, not the order, decides.
-    for entry in &mut two.income {
-        match &mut entry.income {
-            FederalIncome::Cooperative { data } => data.allocations[0].activity = Some(id),
-            FederalIncome::Unemployment { data } => data.agriculture_farm = Some(id),
-            _ => {}
-        }
+    let FederalIncome::Business { data } =
+        &mut two.income.iter_mut().find(|e| e.id == farm_id).unwrap().income
+    else {
+        unreachable!()
+    };
+    let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
+    data.related.clear();
+    for component in components {
+        claim_related_component(&mut two, id, component);
     }
     let r = supported(&two);
     assert_eq!(value(&r, &line_id(id, "gross_income")), 13_000);
     assert_eq!(value(&r, &format!("farm_{farm_id}_cooperative_taxable")), 0);
 
-    // A choice that is not one of this owner's farms is a correction note.
-    let mut wrong = d.clone();
-    for entry in &mut wrong.income {
-        if let FederalIncome::Cooperative { data } = &mut entry.income {
-            data.allocations[0].activity = Some(1);
-        }
-    }
-    let r = estimate(&wrong);
-    assert!(issue_keys(&r).contains(&"ISSUE_COOP_ACTIVITY_NEEDED"));
+    // A forged component key cannot mutate the accepted activity or its sources.
+    let mut session = Interview::new(TEST_USER, two);
+    let before = session.draft.clone();
+    let figures = estimate(&before);
+    let editor =
+        crate::tests::support::client::income_pages::open_topic(&mut session, TaxSection::Farming);
+    let mut rows = crate::tests::support::client::income_pages::page_documents(&editor);
+    let row = rows.iter_mut().find(|row| row.id == id).unwrap();
+    let IncomeSource::Record { value: crate::IncomeRecord::FarmRental(page) } = &mut row.document
+    else {
+        unreachable!()
+    };
+    page.related.forms[0].key = i64::MAX;
+    let request = crate::tests::support::client::income_pages::save_topic(
+        &mut session,
+        TaxSection::Farming,
+        rows,
+    );
+    crate::tests::support::assert::rejected_with(
+        send(&mut session, request),
+        "PROBLEM_RELATED_FORM_UNAVAILABLE",
+    );
+    assert_eq!(session.draft, before);
+    assert_eq!(estimate(&session.draft), figures);
 }
 
 #[test]
@@ -405,10 +406,8 @@ fn a_farm_rental_transition_retains_known_routed_documents() {
     // documents, while completed tax waits for the named timing source.
     let mut special = farm_rental_data(10_000, 0);
     special.farm.specials.limitations = vec![3];
-    let d = rental_return(
-        40_000,
-        vec![rental_income(special), patr(2_000, None), government_program(1_000, None)],
-    );
+    let d =
+        rental_return(40_000, vec![rental_income(special), patr(2_000), government_program(1_000)]);
     let r = estimate(&d);
     assert_eq!(r.tax, None);
     assert!(
@@ -648,7 +647,7 @@ fn land_sold_by_a_farm_rental_is_property_income_outside_the_passive_pool() {
     // gain, so the allowance is 25,000 - 50% x 70,000 = 0 and all 14,000 is
     // suspended.
     assert_eq!(value(&r, &line_id(id, "suspended_loss")), 14_000);
-    assert!(noted(&r, "WARN_FARM_RENTAL_GAIN_NOT_PASSIVE"));
+    assert!(noted(&r, "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE"));
     assert_eq!(value(&r, "agi"), 170_000);
     // No land sale: the same return has the fixture B allowance.
     data.farm.land_sales.clear();
@@ -688,8 +687,12 @@ fn zero_expenses() -> FarmExpenses {
 }
 pub(in crate::tests) fn rental_page(production: i64) -> FarmRental {
     FarmRental {
+        improvement_buildings: Vec::new(),
+        interest_limit_election: None,
+        allowed_interest_limit_election: Vec::new(),
+        related: Default::default(),
         state_documents: Default::default(),
-        name: String::new(),
+        name: alloc::string::String::new(),
         production: production * 100,
         program: 0,
         insurance: CropInsurance::None,
@@ -706,7 +709,7 @@ pub(in crate::tests) fn rental_page(production: i64) -> FarmRental {
             active_participation: true,
             suspended: SuspendedLoss { regular: 0, amt: 0, active_in_loss_year: true },
             qbi: RentalBusiness::No,
-            qbi_group: String::new(),
+            qbi_group: alloc::string::String::new(),
             payroll: BusinessPayroll::No,
             at_risk: Some(crate::RentalAtRisk::All),
         },
@@ -720,7 +723,6 @@ fn full_rental_page() -> FarmRental {
     page.insurance = CropInsurance::Payments {
         physical: vec![CropLoss { crop: "Grain".into(), amount: 700_000, year: 2026 }],
         price_only: 100_000,
-        election: CropDeferralChoice::Defer { practice: crop_practice() },
         from_prior_year: 50_000,
         withholding: 10_000,
     };
@@ -743,6 +745,9 @@ fn full_rental_page() -> FarmRental {
         },
     }];
     page.assets = vec![Asset {
+        farm_rental_use: None,
+        allowed_farm_rental_use: alloc::vec::Vec::new(),
+        macrs_source: None,
         id: 0,
         history_details: None,
         amt_section179_income_carry: None,
@@ -750,16 +755,22 @@ fn full_rental_page() -> FarmRental {
         cost: 5_000_000,
         credit_reduction: 0,
         placed: 20150601,
-        class: AssetClass::Seven,
+        recovery: crate::AssetRecoveryPage::Gds {
+            facts: crate::GdsAssetRecovery {
+                macrs_question_context: None,
+                source: None,
+                class: AssetClass::Seven,
+                history: AssetHistory::Continuing {
+                    prior_depreciation: 4_000_000,
+                    first_year_179: 0,
+                    first_year_bonus: 0,
+                    carryforward: 0,
+                    mid_quarter: false,
+                },
+            },
+        },
         business_percent: 100,
         acquired: None,
-        history: AssetHistory::Continuing {
-            prior_depreciation: 4_000_000,
-            first_year_179: 0,
-            first_year_bonus: 0,
-            carryforward: 0,
-            mid_quarter: false,
-        },
         disposal: AssetDisposal::No,
         investment_credit: crate::InvestmentCredit::No,
         earlier_business_percent: None,
@@ -807,7 +818,11 @@ fn full_rental_page() -> FarmRental {
 fn farming_page_documents(session: &mut Interview) -> (Vec<i32>, Vec<IncomeDocumentItem>, P) {
     let page = crate::tests::cross::interview::open_topic(session, TaxSection::Farming);
     let P::SaveIncomes { allowed_documents, documents, .. } = page.clone() else { unreachable!() };
-    (allowed_documents, documents.documents, page)
+    (
+        allowed_documents,
+        documents.documents.into_iter().map(crate::IncomeRecordItem::into_income).collect(),
+        page,
+    )
 }
 
 #[test]
@@ -815,11 +830,24 @@ fn farm_rental_page_maps_every_branch_onto_the_stored_rental_and_back() {
     use crate::tests::cross::interview::{accepted, document, save_topic};
     let original = empty_return(FederalStatus::Single);
     let mut session = Interview::new(TEST_USER, original.clone());
-    let mut documents = vec![document(0, IncomeDocument::FarmRental(full_rental_page()))];
+    let mut documents = vec![document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::FarmRental(full_rental_page()) },
+    )];
     crate::tests::farm::interview::accept_farm_sale_parcels(&mut session, &mut documents);
-    let IncomeDocument::FarmRental(page) = documents[0].document.clone() else { unreachable!() };
-    let before = session.draft.clone();
-    accepted(&send(&mut session, save_topic(&before, TaxSection::Farming, documents)));
+    let IncomeSource::Record { value: crate::IncomeRecord::FarmRental(page) } =
+        documents[0].document.clone()
+    else {
+        unreachable!()
+    };
+    accepted(
+        &({
+            let request = save_topic(&mut session, TaxSection::Farming, documents);
+            send(&mut session, request)
+        }),
+    );
+    accepted(&answer_crop_timing(&mut session, CropPaperTiming::Defer));
+    accepted(&answer_crop_practice(&mut session, "Grain", 750_000));
     let d = session.draft.clone();
     assert_eq!(d.income.len(), 1);
     assert_eq!(d.income[0].label, "North 80 shares");
@@ -871,10 +899,15 @@ fn farm_rental_page_maps_every_branch_onto_the_stored_rental_and_back() {
     // choices and the farm and loan catalogs.
     let (allowed, documents, page_reply) = farming_page_documents(&mut session);
     assert!(
-        allowed.contains(&(libertas_macros::variant_index!(IncomeDocument::FarmRental) as i32))
+        allowed.contains(
+            &(libertas_macros::variant_index!(crate::IncomeSourceKind::FarmRental) as i32)
+        )
     );
     assert_eq!(documents.len(), 1);
-    assert_eq!(documents[0].document, IncomeDocument::FarmRental(page));
+    assert_eq!(
+        documents[0].document,
+        IncomeSource::Record { value: crate::IncomeRecord::FarmRental(page) }
+    );
     let P::SaveIncomes { farms, ccc_lots, .. } = page_reply else { unreachable!() };
     let id = d.income[0].id;
     assert_eq!(farms.len(), 1);
@@ -901,14 +934,19 @@ fn farming_page_row_names_an_unnamed_rental_and_previews_its_line_32() {
     let mut session = Interview::new(TEST_USER, original.clone());
     let mut page = rental_page(24_000);
     page.expenses.repairs = 600_000;
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &original,
-            TaxSection::Farming,
-            vec![document(0, IncomeDocument::FarmRental(page))],
-        ),
-    ));
+    accepted(
+        &({
+            let request = save_topic(
+                &mut session,
+                TaxSection::Farming,
+                vec![document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::FarmRental(page) },
+                )],
+            );
+            send(&mut session, request)
+        }),
+    );
     assert_eq!(session.draft.income[0].label, "");
     let (_, documents, page_reply) = farming_page_documents(&mut session);
     // Line 32 = 24,000 - 6,000 = $18,000 in cents.
@@ -935,49 +973,76 @@ fn documents_name_their_farm_and_their_forfeited_loan_through_the_pages() {
         withholding: 0,
         source: ccc_source_input(&CccMethod::Loan),
     };
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &original,
-            TaxSection::Farming,
-            vec![
-                document(
-                    0,
-                    IncomeDocument::Farm(crate::tests::cross::interview::cash_farm(3_000_000, 0)),
-                ),
-                document(0, IncomeDocument::FarmRental(page)),
-            ],
-        ),
-    ));
+    accepted(
+        &({
+            let request = save_topic(
+                &mut session,
+                TaxSection::Farming,
+                vec![
+                    document(
+                        0,
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::Farm(
+                                crate::tests::cross::interview::cash_farm(3_000_000, 0),
+                            ),
+                        },
+                    ),
+                    document(
+                        0,
+                        IncomeSource::Record { value: crate::IncomeRecord::FarmRental(page) },
+                    ),
+                ],
+            );
+            send(&mut session, request)
+        }),
+    );
     let (farm_id, rental_id) = (session.draft.income[0].id, session.draft.income[1].id);
     // A 1099-PATR naming the rental, a 1099-G naming the farm and a 1099-A
     // naming the rental's forfeited loan.
     let mut patr = Patr1099 {
+        payer: Default::default(),
+        recipient: Default::default(),
         patronage: 200_000,
         nonpatronage: 0,
         per_unit_retains: 0,
         withholding: 0,
         redeemed: 0,
-
         more: PatrMore::default(),
     };
     let raw = FederalCooperative { patronage: 200_000, ..Default::default() };
-    patr.more.allocations.push(crate::cooperative::automatic(&raw, Some(rental_id)).into());
-    let draft = session.draft.clone();
-    accepted(&send(
+    patr.more.allocations.push(crate::cooperative::automatic(&raw).into());
+    accepted(
+        &({
+            let request = save_topic(
+                &mut session,
+                TaxSection::Farming,
+                vec![
+                    document(
+                        farm_id,
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::Farm(
+                                crate::tests::cross::interview::cash_farm(3_000_000, 0),
+                            ),
+                        },
+                    ),
+                    document(
+                        rental_id,
+                        IncomeSource::Record {
+                            value: crate::IncomeRecord::FarmRental(rental_page(24_000)),
+                        },
+                    ),
+                ],
+            );
+            send(&mut session, request)
+        }),
+    );
+    let request = crate::tests::support::client::income_pages::save_documents(
         &mut session,
-        save_topic(
-            &draft,
-            TaxSection::Farming,
-            vec![
-                document(
-                    farm_id,
-                    IncomeDocument::Farm(crate::tests::cross::interview::cash_farm(3_000_000, 0)),
-                ),
-                document(rental_id, IncomeDocument::FarmRental(rental_page(24_000))),
-                document(0, IncomeDocument::Patr1099(patr.clone())),
-            ],
-        ),
+        vec![document(0, IncomeSource::Farming(cooperative_document(patr.clone())))],
+    );
+    accepted(&crate::tests::support::client::income_pages::save_source_fixture_request(
+        &mut session,
+        request,
     ));
     let stored = session
         .draft
@@ -988,10 +1053,23 @@ fn documents_name_their_farm_and_their_forfeited_loan_through_the_pages() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(stored.allocations[0].activity, Some(rental_id));
-    patr.more.allocations[0].id = stored.allocations[0].id;
-    let (_, documents, _) = farming_page_documents(&mut session);
-    assert!(documents.iter().any(|item| item.document == IncomeDocument::Patr1099(patr.clone())));
+    claim_related_component(&mut session.draft, rental_id, stored.more.allocations[0].id);
+    assert_eq!(
+        crate::related_forms::effective_claimants(&session.draft)
+            .get(&stored.more.allocations[0].id),
+        Some(&rental_id)
+    );
+    patr.more.allocations[0].id = stored.more.allocations[0].id;
+    assert_eq!(Patr1099::from(&stored).more, patr.more);
+    let documents = crate::tests::support::client::income_pages::page_documents(
+        &crate::tests::support::client::income_pages::open_documents(&mut session),
+    );
+    assert!(documents.iter().any(|item| item.document
+        == expected_named_source(
+            &session.draft,
+            Owner::Taxpayer,
+            IncomeSource::Farming(cooperative_document(patr.clone()))
+        )));
 }
 
 #[test]
@@ -1078,50 +1156,69 @@ fn the_1099_a_and_1099_g_pages_keep_their_chosen_loan_and_farm() {
         withholding: 0,
         source: ccc_source_input(&CccMethod::Loan),
     };
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &original,
-            TaxSection::Farming,
-            vec![document(0, IncomeDocument::FarmRental(page))],
-        ),
-    ));
+    accepted(
+        &({
+            let request = save_topic(
+                &mut session,
+                TaxSection::Farming,
+                vec![document(
+                    0,
+                    IncomeSource::Record { value: crate::IncomeRecord::FarmRental(page) },
+                )],
+            );
+            send(&mut session, request)
+        }),
+    );
     let rental_id = session.draft.income[0].id;
     // The 1099-G page names the rental for its box 7 payment.
-    let g = Form1099G {
-        state_details: Default::default(),
-        amount: 0,
-        withholding: 0,
-        more: Form1099GMore {
-            agriculture_payment: 100_000,
-            agriculture_farm: Some(rental_id),
-            ..Form1099GMore::default()
-        },
-    };
-    let draft = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &draft,
-            TaxSection::GovernmentBenefits,
-            vec![document(0, IncomeDocument::Form1099G(g.clone()))],
-        ),
-    ));
+    let g = crate::Form1099GPaper { agriculture_payments: Some(100_000), ..Default::default() };
+    accepted(
+        &({
+            let request = crate::tests::support::client::income_pages::save_documents(
+                &mut session,
+                vec![document(
+                    0,
+                    IncomeSource::GovernmentPayment {
+                        refund_state: None,
+                        refund_locality: Default::default(),
+                        value: g.clone(),
+                    },
+                )],
+            );
+            send(&mut session, request)
+        }),
+    );
     let stored = session
         .draft
         .income
         .iter()
         .find_map(|e| match &e.income {
-            FederalIncome::Unemployment { data } => Some(data.clone()),
+            FederalIncome::GovernmentPayment { data } => Some(data.clone()),
             _ => None,
         })
         .unwrap();
-    assert_eq!(stored.agriculture_farm, Some(rental_id));
-    let page =
-        crate::tests::cross::interview::open_topic(&mut session, TaxSection::GovernmentBenefits);
     assert_eq!(
-        crate::tests::cross::interview::page_documents(&page)[0].document,
-        IncomeDocument::Form1099G(g)
+        crate::related_forms::effective_claimants(&session.draft)
+            .get(&stored.component_ids.agriculture),
+        Some(&rental_id)
+    );
+    assert_ne!(stored.component_ids.agriculture, 0);
+    let page = crate::tests::support::client::income_pages::open_documents(&mut session);
+    assert_eq!(
+        crate::tests::cross::interview::page_documents(&page)
+            .into_iter()
+            .find(|row| matches!(row.document, IncomeSource::GovernmentPayment { .. }))
+            .unwrap()
+            .document,
+        expected_named_source(
+            &session.draft,
+            Owner::Taxpayer,
+            IncomeSource::GovernmentPayment {
+                refund_state: None,
+                refund_locality: Default::default(),
+                value: g
+            }
+        )
     );
     // The 1099-A page picks the rental's forfeited loan.
     let FederalIncome::FarmRental { data } = &session.draft.income[0].income else {
@@ -1129,23 +1226,33 @@ fn the_1099_a_and_1099_g_pages_keep_their_chosen_loan_and_farm() {
     };
     let lot = data.farm.ccc.as_ref().unwrap().lots[0].id;
     assert_ne!(lot, 0, "saving the farm assigns the loan its identity");
-    let acquisition = Acquisition1099A {
-        lender: "Commodity Credit Corporation".into(),
+    let acquisition = acquisition_document(property_acquisition_source(Acquisition1099A {
+        lender: crate::PrintedParty::from_name("Commodity Credit Corporation".into()),
+        borrower: Default::default(),
+        description: alloc::string::String::new(),
         date: 20260801,
         balance: 800_000,
         value: 600_000,
         liable: false,
-        property: AcquiredProperty::CccCrop { loan: lot },
-    };
-    let draft = session.draft.clone();
-    accepted(&send(
-        &mut session,
-        save_topic(
-            &draft,
-            TaxSection::CanceledDebt,
-            vec![document(0, IncomeDocument::Acquisition1099A(acquisition.clone()))],
-        ),
-    ));
+        property: Some(AcquiredProperty::CccCrop { loan: lot }),
+    }));
+    accepted(
+        &({
+            let request = crate::tests::support::client::income_pages::save_documents(
+                &mut session,
+                vec![document(
+                    0,
+                    IncomeSource::CanceledDebt {
+                        value: crate::CanceledDebtDocument::Acquisition1099A(acquisition.clone()),
+                    },
+                )],
+            );
+            crate::tests::support::client::income_pages::save_source_fixture_request(
+                &mut session,
+                request,
+            )
+        }),
+    );
     let stored = session
         .draft
         .income
@@ -1155,12 +1262,23 @@ fn the_1099_a_and_1099_g_pages_keep_their_chosen_loan_and_farm() {
             _ => None,
         })
         .unwrap();
+    let stored = crate::PropertyAcquisition::from(&stored);
     assert_eq!(stored.crop, Some(lot));
-    assert_eq!(stored.property, TransferredProperty::Business);
-    let page = crate::tests::cross::interview::open_topic(&mut session, TaxSection::CanceledDebt);
+    assert_eq!(stored.property, Some(TransferredProperty::Business));
+    let page = crate::tests::support::client::income_pages::open_documents(&mut session);
     assert_eq!(
-        crate::tests::cross::interview::page_documents(&page)[0].document,
-        IncomeDocument::Acquisition1099A(acquisition)
+        crate::tests::cross::interview::page_documents(&page)
+            .into_iter()
+            .find(|row| matches!(row.document, IncomeSource::CanceledDebt { .. }))
+            .unwrap()
+            .document,
+        expected_named_source(
+            &session.draft,
+            Owner::Taxpayer,
+            IncomeSource::CanceledDebt {
+                value: crate::CanceledDebtDocument::Acquisition1099A(acquisition)
+            }
+        )
     );
     // The reopened return is supported: the form is the loan's information
     // return, counted once.
@@ -1244,14 +1362,14 @@ fn unit21_farm_rental_income_and_actual_land_sale_use_independent_fractions() {
             set_land_sales(&mut source.farm, vec![sale], &mut d.next_id);
             let parcel = source.farm.land_basis[0].id;
             let mut entry = income(FederalIncome::FarmRental { data: source });
-            entry.owner = Owner::Spouse;
+            entry.owner = crate::DocumentOwner::Spouses;
             entry.community = answer;
             add(&mut d, entry);
             let id = d.income.last().unwrap().id;
             if refund != 0 {
                 let mut cooperative =
                     FederalCooperative { patronage: refund * 100, ..Default::default() };
-                let mut allocation = crate::cooperative::automatic(&cooperative, Some(id));
+                let mut allocation = crate::cooperative::automatic(&cooperative);
                 allocation.properties.push(CoopPropertyRefund {
                     distribution: CoopDistributionBox::Patronage,
                     property: Some(parcel),
@@ -1263,8 +1381,9 @@ fn unit21_farm_rental_income_and_actual_land_sale_use_independent_fractions() {
                     treatment: CoopPropertyTreatment::Purchase,
                 });
                 cooperative.allocations.push(allocation);
-                let mut entry = income(FederalIncome::Cooperative { data: cooperative });
-                entry.owner = Owner::Spouse;
+                let mut entry =
+                    income(FederalIncome::Cooperative { data: cooperative_source(cooperative) });
+                entry.owner = crate::DocumentOwner::Spouses;
                 entry.community = answer;
                 add(&mut d, entry);
             }
@@ -1277,10 +1396,216 @@ fn unit21_farm_rental_income_and_actual_land_sale_use_independent_fractions() {
                 .unwrap()
                 .1;
             assert_eq!(property.gain, this_gain);
+            assert_eq!(
+                crate::section1231::farmer_gross_property(&d, &Default::default()).unwrap(),
+                Some(this_gain),
+            );
             assert_eq!(value(&r, "agi"), 30_000 + this_rent + this_gain);
             assert_eq!(value(&r, &format!("form8958_gain_{id}_total")), 50_000 + refund);
             assert_eq!(value(&r, &format!("form8958_gain_{id}_this_return")), this_gain);
             crate::tests::federal::schedules_1_3::assert_form_8958_divided_sources_conserve(&d, &r);
         }
     }
+}
+
+#[test]
+fn current_property_gain_and_operating_loss_share_one_passive_source_in_each_system() {
+    let d = farm_rental_passive_property_return();
+    let entry = d
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::FarmRental { .. }))
+        .unwrap();
+    let id = entry.id;
+    let result = supported(&d);
+    assert_eq!(value(&result, "agi"), 130_000);
+    assert_eq!(value(&result, "schedule_e_farm_rental_total"), -10_000);
+    assert!(!noted(&result, "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE"));
+    assert_eq!(form_row(&result, TaxForm::Form4835, "34c"), Some(-1_000_000));
+    for (amt, gain, operating, suspended) in
+        [(false, 10_000, -10_000, 4_000), (true, 12_000, -12_000, 4_000)]
+    {
+        let mut report = FederalResult::empty(d.revision);
+        let pool = crate::extended_rules::rentals_for(&d, 130_000, &mut report, amt);
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
+        assert_eq!(pool.farm_rental_property[&id].gain, gain);
+        assert_eq!(pool.farm_rental, operating);
+        assert_eq!(pool.post_pal.as_ref().unwrap().suspended_cents, suspended * 100);
+    }
+}
+
+#[test]
+fn property_use_unknown_other_tenant_and_development_facts_never_release_operating_pal() {
+    for answer in [
+        None,
+        Some(FarmRentalPropertyUse::NoneOfThese),
+        Some(FarmRentalPropertyUse::OnlyThisRental {
+            tenant_connection: None,
+            value_enhancement: Some(FarmRentalValueEnhancement::NoParticipation),
+        }),
+        Some(FarmRentalPropertyUse::OnlyThisRental {
+            tenant_connection: Some(FarmRentalTenantConnection::NoOwnershipOrServices),
+            value_enhancement: None,
+        }),
+        Some(FarmRentalPropertyUse::OnlyThisRental {
+            tenant_connection: Some(FarmRentalTenantConnection::OwnershipOrServices),
+            value_enhancement: Some(FarmRentalValueEnhancement::NoParticipation),
+        }),
+        Some(FarmRentalPropertyUse::OnlyThisRental {
+            tenant_connection: Some(FarmRentalTenantConnection::NoOwnershipOrServices),
+            value_enhancement: Some(FarmRentalValueEnhancement::Participation),
+        }),
+    ] {
+        let mut d = farm_rental_passive_property_return();
+        let FederalIncome::FarmRental { data } = &mut d.income.last_mut().unwrap().income else {
+            unreachable!()
+        };
+        data.farm.land_sales[0].farm_rental_use = answer;
+        let result = supported(&d);
+        assert_eq!(value(&result, "agi"), 140_000);
+        assert_eq!(value(&result, "schedule_e_farm_rental_total"), 0);
+        assert_eq!(
+            result
+                .review_notes
+                .iter()
+                .filter(|note| note.display.key == "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn property_gain_correction_zero_and_positive_net_preserve_named_cohort_boundaries() {
+    for (proceeds, agi, operating, notice) in [
+        (10_000_000, 130_000, 0, false),
+        (11_500_000, 145_000, 0, true),
+        (10_500_000, 130_000, -5_000, false),
+    ] {
+        let mut d = farm_rental_passive_property_return();
+        let FederalIncome::FarmRental { data } = &mut d.income.last_mut().unwrap().income else {
+            unreachable!()
+        };
+        data.farm.land_sales[0].proceeds = proceeds;
+        // Both tax systems use the actual corrected basis for the zero-gain boundary.
+        data.farm.land_basis[0].amt = data.farm.land_basis[0].regular;
+        let result = supported(&d);
+        assert_eq!(value(&result, "agi"), agi);
+        assert_eq!(value(&result, "schedule_e_farm_rental_total"), operating);
+        assert_eq!(noted(&result, "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE"), notice);
+    }
+}
+
+#[test]
+fn newly_linked_sold_property_returns_an_unaccepted_complete_editor_with_questions() {
+    use crate::tests::support::client::income_pages::open_topic;
+    let d = farm_rental_passive_property_editor_return();
+    let entry = d.income.last().unwrap();
+    let FederalIncome::FarmRental { data } = &entry.income else { unreachable!() };
+    let mut page = crate::farm_page::farm_rental_item(&entry.label, data).unwrap();
+    let mut accepted_draft = d.clone();
+    let FederalIncome::FarmRental { data } = &mut accepted_draft.income.last_mut().unwrap().income
+    else {
+        unreachable!()
+    };
+    data.farm.land_sales.clear();
+    let mut session = Interview::new(TEST_USER, accepted_draft.clone());
+    page.more.land_sales[0].id = 0;
+    page.more.land_sales[0].farm_rental_use = None;
+    page.more.land_sales[0].allowed_farm_rental_use.clear();
+    // Edit the actual complete Farming request, retaining its separately owned
+    // Business-property losses answer from the accepted lookback records.
+    let mut request = open_topic(&mut session, TaxSection::Farming);
+    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
+    let row = documents.documents.iter_mut().find(|row| row.id == entry.id).unwrap();
+    row.document = crate::IncomeRecord::FarmRental(page);
+    let Reply::Edit(corrected) = send(&mut session, request) else {
+        panic!("new source questions must return the complete editor");
+    };
+    let P::SaveIncomes { documents, warnings, .. } = &corrected else { unreachable!() };
+    assert_eq!(session.draft, accepted_draft);
+    assert!(!warnings.is_empty());
+    let row = documents.documents.iter().find(|row| row.id == entry.id).unwrap();
+    let crate::IncomeRecord::FarmRental(page) = &row.document else { unreachable!() };
+    assert_eq!(page.more.land_sales[0].allowed_farm_rental_use, vec![0, 1]);
+    assert!(page.more.land_sales[0].farm_rental_use.is_none());
+    // Explicit unavailable is optional: the complete corrective editor can save
+    // with null, and the recorded unknown cannot unlock passive gain.
+    crate::tests::cross::interview::accepted(&send(&mut session, corrected));
+    assert!(noted(&supported(&session.draft), "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE"));
+}
+
+#[test]
+fn admitted_property_uses_regular_passive_magi_before_the_special_allowance() {
+    let mut d = farm_rental_passive_property_return();
+    let FederalIncome::FarmRental { data } = &mut d.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    data.active_participation = true;
+    let result = supported(&d);
+    assert_eq!(value(&result, "rental_magi"), 130_000);
+    assert_eq!(value(&result, "schedule_e_farm_rental_total"), -14_000);
+    assert_eq!(value(&result, "agi"), 126_000);
+}
+
+#[test]
+fn a_whole_asset_sale_offsets_current_loss_without_releasing_the_activity_remainder() {
+    let d = farm_rental_passive_asset_return();
+    let result = supported(&d);
+    assert_eq!(value(&result, "schedule_e_farm_rental_total"), -10_000);
+    assert_eq!(value(&result, "agi"), 130_000);
+    let id = d.income.last().unwrap().id;
+    assert_eq!(value(&result, &line_id(id, "suspended_loss")), 4_000);
+}
+
+#[test]
+fn inapplicable_property_projection_hides_the_question_and_retains_accepted_use_records() {
+    let d = farm_rental_passive_asset_return();
+    let entry = d.income.last().unwrap();
+    let FederalIncome::FarmRental { data } = &entry.income else { unreachable!() };
+    let sold =
+        data.assets.iter().position(|asset| !matches!(asset.disposal, AssetDisposal::No)).unwrap();
+    let canonical: crate::CanonicalAssetPage = data.assets[sold].clone().into();
+    let round_trip: BusinessAsset = canonical.into();
+    assert_eq!(round_trip.farm_rental_use, data.assets[sold].farm_rental_use);
+    let mut page = crate::farm_page::farm_rental_item(&entry.label, data).unwrap();
+    page.assets[sold].disposal = AssetDisposal::No;
+    let mut record = crate::IncomeRecord::FarmRental(page);
+    assert!(!crate::farm_rental::refresh_property_questions(&mut record));
+    let crate::IncomeRecord::FarmRental(page) = record else { unreachable!() };
+    assert!(page.assets[sold].allowed_farm_rental_use.is_empty());
+    assert!(page.assets[sold].farm_rental_use.is_none());
+    let mut next = entry.clone();
+    next.income = FederalIncome::FarmRental { data: crate::farm_page::farm_rental_record(&page) };
+    crate::farm_rental::retain_inapplicable_property_facts(&mut next, &d.income);
+    let FederalIncome::FarmRental { data: after } = next.income else { unreachable!() };
+    assert_eq!(after.assets[sold].farm_rental_use, data.assets[sold].farm_rental_use);
+}
+
+#[test]
+fn positive_amt_net_or_retained_passive_loss_keeps_both_systems_outside_current_gain_cohort() {
+    for prior in [false, true] {
+        let mut d = farm_rental_passive_property_return();
+        let FederalIncome::FarmRental { data } = &mut d.income.last_mut().unwrap().income else {
+            unreachable!()
+        };
+        if prior {
+            data.history.regular = 100;
+        } else {
+            data.farm.land_basis[0].amt = 9_000_000;
+        }
+        let result = supported(&d);
+        assert_eq!(value(&result, "agi"), 140_000);
+        assert_eq!(value(&result, "schedule_e_farm_rental_total"), 0);
+        assert!(noted(&result, "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE"));
+    }
+    let mut d = farm_rental_passive_property_return();
+    let FederalIncome::FarmRental { data } = &mut d.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    data.farm.land_sales.clear();
+    let result = supported(&d);
+    assert_eq!(value(&result, "agi"), 130_000);
+    assert_eq!(value(&result, "schedule_e_farm_rental_total"), 0);
+    assert!(!noted(&result, "WARN_FARM_RENTAL_PROPERTY_PAL_SOURCE"));
 }

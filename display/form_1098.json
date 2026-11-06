@@ -1,0 +1,18 @@
+{
+  "rules": [
+    {"order": 116000, "rule": {"select": "^<Mortgages>.loans", "layout": "summary", "paths": ["property", "value.box_1"]}},
+    {"order": 197000, "rule": {"select": "^<SaveMortgages>", "button_labels": {"go_back": "DISPLAY_PREVIOUS_STEP", "next": "DISPLAY_SAVE_AND_CONTINUE", "close": "DISPLAY_CLOSE_EDITOR"}}},
+    {"order": 381000, "rule": {"select": "^<MortgageReissueFacts>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["refinanced_on", "original_interest_method", "first_reissue", "original_number", "confirmed"]}, {"ratio": 1, "fields": ["original_rate", "original_scheduled_interest", "original_certified_balance", "reissued_certified_debt"]}]}},
+    {"order": 534000, "rule": {"select": "^<AverageBalance>", "flatten": true}},
+    {"order": 535000, "rule": {"select": "^<MortgageDetails>", "flatten": true}},
+    {"order": 536000, "rule": {"select": "^<MortgageDetailsView>", "flatten": true}},
+    {"order": 537000, "rule": {"select": "^<MortgageFirstLender>", "flatten": true}},
+    {"order": 577000, "rule": {"select": "^<MortgageInterestSource>", "flatten": true}},
+    {"order": 578000, "rule": {"select": "^<MortgageOriginalInterestMethod>", "flatten": true}},
+    {"order": 758000, "rule": {"select": "^<Form1098>.lender", "promote": true}},
+    {"order": 833000, "rule": {"select": "^<SaveMortgages.estimate>", "suppress_label": true, "style": {"emphasis": "primary"}}},
+    {"order": 958000, "rule": {"select": "^<MortgageReissueFacts>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_REISSUE_ORIGINAL", "fields": ["refinanced_on", "original_interest_method", "first_reissue", "original_number"]}, {"title": "DISPLAY_REISSUE_RATE", "fields": ["original_rate", "original_scheduled_interest", "original_certified_balance", "reissued_certified_debt", "confirmed"]}]}},
+    {"order": 959000, "rule": {"select": "^<MortgageReissueFacts>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_REISSUE_ORIGINAL", "fields": ["refinanced_on", "original_interest_method", "first_reissue", "original_number"]}, {"title": "DISPLAY_REISSUE_RATE", "fields": ["original_rate", "original_scheduled_interest", "original_certified_balance", "reissued_certified_debt", "confirmed"]}]}},
+    {"order": 1004000, "rule": {"select": "^<Form1098>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "lender", "lender_telephone", "borrower", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_1", "box_2", "box_3", "box_4", "box_5", "box_6", "box_7", "box_8", "box_9", "box_10", "box_11"]}]}}
+  ]
+}

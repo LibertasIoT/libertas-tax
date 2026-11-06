@@ -12,9 +12,22 @@
 // Partnership components with documented zero current source parts and no
 // passive carry also release original-year qualified basis/risk histories
 // through the existing FIFO owner when their groups are nonpassive.
+// Fully allowed positive farm or nonfarm SE with explicit no-statement qualification
+// joins the existing owner-wide SE/optional-method and QBI gross allocation.
+// Nonfarm SE also supports current component qualification: actual block gross
+// shares reduce current QBI before the existing eligibility owner.
+// Explicit component portfolio ST/LT sources and their actual basis/risk
+// histories share entity basis and their bound risk group with operating losses.
+// Their separate class outputs never enter the ordinary PAL or QBI inputs.
 // Regular/AMT facts and their availability remain independent. Other characters,
 // Component-bound current partnership and S-corp statements with explicit positive gross
 // operating controls and no competing retained losses use current eligibility.
+// Positive partnership components can also release their reconciled basis/risk
+// histories; those releases retain original-year qualification separately.
+// Known passive participation supports the same retained cohort when each
+// affected group's own net absorbs every released loss; it earns no active minimum.
+// Pure current ordinary losses also use that path when native basis and risk
+// outputs fully allow each component; qualified releases reuse the FIFO owner.
 // PTPs, dispositions, other qualified amounts, benefit claims and unavailable facts
 // retain the existing named unavailable-output boundary. Native Avro Save,
 // Estimate, correction, reopen and restart checks are not live client acceptance.
@@ -23,6 +36,12 @@
 // Scorp stock/debt basis and restoration reuse Form7203; actual loan advances
 // use their assigned risk groups. Repayments use the same source parts when
 // Form7203 establishes no gain; repayment and distribution gains remain unavailable.
+// Explicit entity-only taxable portfolio interest increases partner outside
+// basis or Scorp stock basis once;
+// its outside-all-activities source stays outside group at-risk income and PAL.
+// It composes with other entity-only income/expenses, current component QBI
+// and actual debt records. Independent AMT interest enters the existing
+// federal investment-income, AMTI and nonbusiness NOL owners (IRS i6251/i4952).
 // Explicit entity-only tax-exempt income increases outside/stock basis
 // once, without becoming activity income, at-risk income or taxable income.
 // Regular exempt interest enters the existing federal line 2a owner once;
@@ -31,15 +50,25 @@
 // and only its explicitly named risk group's investment. It is not activity
 // income, passive income, SE or QBI. Entity-only exemptions stay outside risk.
 // Scorp excluded cancellation-of-debt income is not eligible tax-exempt income.
+// Positive entity-only short/long portfolio gains increase basis once and flow
+// to Schedule D through the existing capital owners, outside activity risk/PAL.
+// Entity-only capital losses, special-rate amounts and unavailable capital carries
+// retain the named source boundary; their activity association is not inferred.
+// Explicit entity-only ordinary dividends increase whole-entity basis once;
+// their qualified subset only supplies return-level preferential character.
+// Separate REG/AMT sources remain independent and outside group risk and PAL.
+// Entity-only current nondeductible expenses reduce basis through the native
+// partner/stock owners, independently by tax system; they never enter a group.
 // Evidence: src/tests/passthrough/k1res/{ordinary_multi,scorp_ordinary_multi,
-// component_exempt_other}.rs.
+// component_exempt_other,entity_capital_gains,entity_nondeductible,
+// entity_interest_composition}.rs.
 // IRS source owners reviewed 2026-10-17:
 // https://www.irs.gov/instructions/i1065sk1 (basis worksheet)
 // https://www.irs.gov/instructions/i7203
 // https://www.irs.gov/instructions/i6198
 // https://www.irs.gov/instructions/i8582
 use super::*;
-use crate::k1_loss::{ClassInput, K1LossClass};
+use crate::k1_loss::{ClassInput, K1LossClass, LossAmounts};
 use crate::kernel::carry::{Amount, Cents};
 use crate::kernel::loss_limits::risk::{self, RecaptureHistory, RiskEntry, RiskInput};
 use crate::kernel::ratio::{allocate_remaining, dollars, positive};
@@ -80,6 +109,18 @@ fn basis_range_error(alternative: bool) -> SourceError {
     )
 }
 
+const SOURCE_CLASSES: [K1LossClass; 3] =
+    [K1LossClass::Ordinary, K1LossClass::ShortTerm, K1LossClass::LongTerm];
+
+#[derive(Debug, Default)]
+pub(crate) struct Capital {
+    pub income: Amount<Cents>,
+    pub basis_allowed: Amount<Cents>,
+    pub basis_suspended: Amount<Cents>,
+    pub risk_allowed: Amount<Cents>,
+    pub risk_suspended: Amount<Cents>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Component {
     pub id: i64,
@@ -95,6 +136,7 @@ pub(crate) struct Component {
     pub section179_basis_suspended: i64,
     pub section179_allowed: i64,
     pub section179_carry: i64,
+    pub capital: [Capital; 2],
 }
 
 #[derive(Debug)]
@@ -108,15 +150,79 @@ pub(crate) struct PassiveGroup {
     pub prior_released: i64,
 }
 
+impl PassiveGroup {
+    pub(crate) fn material(&self) -> bool {
+        self.material
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Output {
     pub basis: EntityBasis,
     pub entity_exempt_interest: i64,
+    pub entity_interest: i64,
     section179_risk: Vec<(i64, i64)>,
+    pub entity_capital: [i64; 2],
+    pub entity_dividends: i64,
+    pub entity_qualified_dividends: i64,
     pub components: Vec<Component>,
     pub groups: Vec<PassiveGroup>,
     pub qualified: Vec<QualifiedRelease>,
-    pub current_qualified: Vec<crate::business_rules::QbiActivity>,
+    pub current_qualified: Vec<CurrentQualified>,
+    pub self_employment: Option<CurrentSe>,
+}
+
+impl Output {
+    pub(crate) fn capital_income(&self) -> impl Iterator<Item = [i64; 2]> + '_ {
+        core::iter::once(self.entity_capital).chain(
+            self.components
+                .iter()
+                .map(|component| core::array::from_fn(|term| component.capital[term].income.get())),
+        )
+    }
+
+    // Each source retains its signed character until the annual category owner.
+    pub(crate) fn capital_sources(&self) -> impl Iterator<Item = [i64; 2]> + '_ {
+        core::iter::once(self.entity_capital).chain(self.components.iter().map(|component| {
+            core::array::from_fn(|term| {
+                component.capital[term].income.get() - component.capital[term].risk_allowed.get()
+            })
+        }))
+    }
+}
+
+// The actual block/component association survives until its global half-SE
+// share is deducted, before the existing current-year QBI eligibility owner.
+#[derive(Debug)]
+pub(crate) struct CurrentQualified {
+    pub block: i64,
+    pub component: i64,
+    pub qualified_se_gross: i64,
+    pub activity: crate::business_rules::QbiActivity,
+}
+
+#[derive(Debug)]
+pub(crate) struct CurrentSeGross {
+    pub component: i64,
+    pub gross: i64,
+}
+
+// Selected tax-system earnings projection. Gross is independently reported;
+// neither taxable box 1 nor net SE earnings establishes it.
+#[derive(Debug)]
+pub(crate) struct CurrentSe {
+    pub net: crate::partnership::PartnerSeResult,
+    pub gross: i64,
+    // PartnerSeGross::source category: farm = 0, nonfarm = 1.
+    pub category: usize,
+    pub components: Vec<CurrentSeGross>,
+}
+struct CurrentSeSource {
+    reported: i64,
+    passive: i64,
+    gross: i64,
+    category: usize,
+    components: Vec<CurrentSeGross>,
 }
 
 #[derive(Debug)]
@@ -130,8 +236,10 @@ pub(crate) struct QualifiedRelease {
 #[derive(Debug)]
 pub(crate) struct EntityBasis {
     pub ending: Amount<Cents>,
+    pub nondeductible_used: Amount<Cents>,
+    pub nondeductible_carry: Amount<Cents>,
     pub scorp: Option<crate::scorp_basis::BasisResult>,
-    allowed: Amount<Cents>,
+    allowed: LossAmounts,
     section179: Amount<Cents>,
 }
 
@@ -149,9 +257,6 @@ fn amount(value: i64) -> Result<Amount<Cents>, SourceError> {
 }
 fn known_zero(value: Option<i64>) -> bool {
     value == Some(0)
-}
-fn portfolio_empty(source: &K1StatementPortfolio) -> bool {
-    source.values().into_iter().all(|v| v == 0)
 }
 fn items_empty(source: &K1StatementItems) -> bool {
     match source {
@@ -181,12 +286,17 @@ fn capital_empty(source: &K1StatementCapitalCarry) -> bool {
         K1StatementCapitalCarry::Unavailable => false,
     }
 }
-fn ordinary_only(source: &K1StatementAmounts, section179: bool) -> bool {
+fn component_supported(source: &K1StatementAmounts, section179: bool) -> bool {
     [source.exempt_interest, source.nondeductible, source.cash_charity, source.foreign_taxes]
         .into_iter()
         .all(|v| v == 0)
         && (section179 || source.section179 == 0)
-        && portfolio_empty(&source.portfolio)
+        && source
+            .portfolio
+            .values()
+            .into_iter()
+            .enumerate()
+            .all(|(index, value)| matches!(index, 4 | 5) || value == 0)
         && source.property.is_none()
         && [
             source.section179_basis_carry,
@@ -198,16 +308,36 @@ fn ordinary_only(source: &K1StatementAmounts, section179: bool) -> bool {
         .into_iter()
         .all(known_zero)
         && items_empty(&source.items)
-        && capital_empty(&source.capital_carry)
+}
+// These are actual stage-specific source facts, never inferred from a parent
+// balance or another tax system. Collectibles retain their existing boundary.
+fn capital_carries(source: &K1StatementCapitalCarry) -> Result<([i64; 2], [i64; 2]), SourceError> {
+    match source {
+        K1StatementCapitalCarry::Partnership { amounts } => Ok((
+            [amounts.short.basis.ok_or(UNAVAILABLE)?, amounts.long.basis.ok_or(UNAVAILABLE)?],
+            [amounts.short.risk.ok_or(UNAVAILABLE)?, amounts.long.risk.ok_or(UNAVAILABLE)?],
+        )),
+        K1StatementCapitalCarry::Scorp { amounts }
+            if known_zero(amounts.basis_collectibles) && known_zero(amounts.risk_collectibles) =>
+        {
+            Ok((
+                [amounts.basis_short.ok_or(UNAVAILABLE)?, amounts.basis_long.ok_or(UNAVAILABLE)?],
+                [amounts.risk_short.ok_or(UNAVAILABLE)?, amounts.risk_long.ok_or(UNAVAILABLE)?],
+            ))
+        }
+        _ => Err(UNAVAILABLE),
+    }
 }
 fn entity_basis_only(source: &K1EntityOnlyAmounts) -> bool {
-    [source.nondeductible, source.cash_charity, source.foreign_taxes].into_iter().all(|v| v == 0)
-        && portfolio_empty(&source.portfolio)
+    [source.cash_charity, source.foreign_taxes].into_iter().all(|v| v == 0)
+        && source.portfolio.values().into_iter().enumerate().all(|(index, value)| {
+            if matches!(index, 4 | 5) { value >= 0 } else { value == 0 || matches!(index, 0..=2) }
+        })
         && [source.charity_basis_carry, source.foreign_basis_carry].into_iter().all(known_zero)
         && items_empty(&source.items)
         && capital_empty(&source.capital_carry)
 }
-fn personal_empty(source: &PartnerPersonSource) -> bool {
+fn personal_payments_empty(source: &PartnerPersonSource) -> bool {
     [
         source.guaranteed_services,
         source.guaranteed_capital,
@@ -216,17 +346,130 @@ fn personal_empty(source: &PartnerPersonSource) -> bool {
         source.health_distributions,
         source.deferred_compensation_tax,
         source.crp_payments,
-        source.reported_se,
-        source.se_history.basis,
-        source.se_history.risk,
-        source.se_history.passive,
     ]
     .into_iter()
     .all(known_zero)
-        && source.limited_for_se == Some(true)
-        && source.se_gross.as_ref().is_some_and(Vec::is_empty)
         && matches!(source.fuel_tax_credit, Some(K1CurrentFuelSource::NotReported))
         && matches!(source.prior_fuel_credit, Some(K1PriorFuelSource::NotReported))
+}
+
+fn personal_empty(source: &PartnerPersonSource) -> bool {
+    personal_payments_empty(source)
+        && source.reported_se == Some(0)
+        && se_history_empty(&source.se_history)
+        && source.limited_for_se == Some(true)
+        && source.se_gross.as_ref().is_some_and(Vec::is_empty)
+}
+fn se_history_empty(source: &K1RetainedSeHistory) -> bool {
+    [source.basis, source.risk, source.passive].into_iter().all(known_zero)
+}
+
+impl PartnerActivityK1 {
+    // Availability, not a second Save validator: the actual source controls
+    // must establish this fully allowed uniform-category cohort and its existing current QBI projection.
+    fn current_se_source(&self) -> Result<CurrentSeSource, SourceError> {
+        let person = self.person.as_ref().ok_or(UNAVAILABLE)?;
+        let source = self.activities.source().ok_or(UNAVAILABLE)?;
+        if !personal_payments_empty(person)
+            || person.limited_for_se != Some(false)
+            || !se_history_empty(&person.se_history)
+            || !(zero_qualified_sources(source)
+                || current_qualified_sources(source, None).is_some())
+        {
+            return Err(UNAVAILABLE);
+        }
+        let mut reported = Vec::new();
+        let mut passive = Vec::new();
+        let mut gross = Vec::new();
+        let mut components = Vec::new();
+        let mut category = None;
+        for component in &source.components {
+            let values = component.regular.as_ref().ok_or(UNAVAILABLE)?;
+            if values.operating < 0
+                || [
+                    values.operating_carry.basis,
+                    values.operating_carry.risk,
+                    values.passive_operating,
+                ]
+                .into_iter()
+                .any(|v| v != Some(0))
+            {
+                return Err(UNAVAILABLE);
+            }
+            let group = source
+                .passive_groups
+                .iter()
+                .find(|g| Some(g.id) == component.passive_group)
+                .ok_or(UNAVAILABLE)?;
+            let K1ActivityParticipation::Partnership {
+                facts,
+                trade_kind: crate::ScorpTradeKind::Ordinary,
+            } = &group.participation
+            else {
+                return Err(UNAVAILABLE);
+            };
+            let material = facts.material();
+            if material == crate::participation::Participation::Unavailable {
+                return Err(UNAVAILABLE);
+            }
+            match &component.self_employment {
+                K1StatementSe::NotApplicable => {}
+                K1StatementSe::Partnership { source } => {
+                    let net = source.reported.ok_or(UNAVAILABLE)?;
+                    let (actual_category, actual_gross) =
+                        source.gross.as_ref().ok_or(UNAVAILABLE)?.source();
+                    if category.is_some_and(|category| category != actual_category) {
+                        return Err(UNAVAILABLE);
+                    }
+                    category = Some(actual_category);
+                    if net < 0
+                        || !se_history_empty(&source.history)
+                        || source.guaranteed_services != 0
+                        || source.guaranteed_capital != 0
+                    {
+                        return Err(UNAVAILABLE);
+                    }
+                    reported.push(net);
+                    gross.push(actual_gross);
+                    components
+                        .push(CurrentSeGross { component: component.id, gross: actual_gross });
+                    if material == crate::participation::Participation::No {
+                        passive.push(net);
+                    }
+                }
+                K1StatementSe::Unavailable => return Err(UNAVAILABLE),
+            }
+        }
+        let reported = sum(reported)?;
+        let gross = sum(gross)?;
+        let category = category.ok_or(UNAVAILABLE)?;
+        if (category == 0 && !zero_qualified_sources(source))
+            || reported <= 0
+            || person.reported_se != Some(reported)
+            || !matches!(person.se_gross.as_deref(), Some([control]) if control.source() == (category, gross))
+        {
+            return Err(UNAVAILABLE);
+        }
+        dollars(reported).checked_mul(100).ok_or_else(|| {
+            let (issue, message) = range_error();
+            (issue.at_field("reported_se").in_field("person"), message)
+        })?;
+        Ok(CurrentSeSource { reported, passive: sum(passive)?, gross, category, components })
+    }
+
+    // Explicit zero SE facts do not depend on the later section 179 allowance.
+    // Positive or unavailable SE still requires the final ordinary projection.
+    pub(crate) fn ordinary_se_source(&self) -> Result<Output, SourceError> {
+        if self.person.as_ref().is_some_and(personal_empty) {
+            self.before_section179(false)
+        } else {
+            self.ordinary_source(false)
+        }
+    }
+
+    pub(crate) fn ordinary_self_employment(&self) -> Result<Option<CurrentSe>, SourceError> {
+        self.ordinary_se_source().map(|output| output.self_employment)
+    }
 }
 
 // The source validator owns row validity, shared-row consistency and balance
@@ -343,11 +586,14 @@ fn retained_qualified_sources(source: &K1ActivitySources) -> bool {
 }
 
 // A source-bound current statement needs no allocation policy when its one
-// component has gross operating income, no gross loss and no retained losses.
+// component has pure gross operating income or loss. Losses require computed
+// native allowances before emitting qualified QBI. Partnership retained
+// basis/risk qualification follows the existing component allowances separately.
 // The statement supplies qualified income; it never replaces taxable income.
 fn current_qualified_sources(
     source: &K1ActivitySources,
-) -> Option<Vec<crate::business_rules::QbiActivity>> {
+    computed: Option<&[Component]>,
+) -> Option<Vec<CurrentQualified>> {
     let mut seen = alloc::collections::BTreeSet::new();
     let mut statements = Vec::new();
     for block in &source.qbi_blocks {
@@ -363,17 +609,15 @@ fn current_qualified_sources(
         if !seen.insert(allocation.component) {
             return None;
         }
+        let qualified_se_gross = match &allocation.qualified {
+            K1ComponentQualified::Partnership { records, .. } => records.qualified_se_gross,
+            _ => 0,
+        };
         let (current_income, statement) = match (&block.statement, &allocation.qualified) {
             (
                 K1ReportedQbiStatement::Partnership { statement },
                 K1ComponentQualified::Partnership { current_income, current_property: 0, records },
-            ) if records.qualified_se_gross == 0
-                && !records.history.as_ref().is_some_and(|history| {
-                    !history.basis.is_empty()
-                        || !history.risk.is_empty()
-                        || !history.passive.is_empty()
-                }) =>
-            {
+            ) if records.history.as_ref().is_none_or(|history| history.passive.is_empty()) => {
                 let statement = match statement {
                     Some(value)
                         if value.income == *current_income
@@ -383,7 +627,7 @@ fn current_qualified_sources(
                     {
                         Some((value.income, value.wages, value.property, value.service))
                     }
-                    None if *current_income == 0 => None,
+                    None if *current_income == 0 && qualified_se_gross == 0 => None,
                     _ => return None,
                 };
                 (*current_income, statement)
@@ -391,7 +635,7 @@ fn current_qualified_sources(
             (
                 K1ReportedQbiStatement::Scorp { statement },
                 K1ComponentQualified::Scorp { current_income, ordinary, property },
-            ) if ordinary.current == 0
+            ) if (*current_income == 0 || ordinary.current == 0)
                 && property.gain == 0
                 && property.qualified_1250 == Some(0)
                 && property.losses.current == 0
@@ -404,59 +648,138 @@ fn current_qualified_sources(
             {
                 let statement = match statement {
                     Some(value)
-                        if value.income == *current_income
+                        if value.income == current_income.checked_sub(ordinary.current)?
                             && value.section1231_qbi == 0
                             && value.reit_dividends == 0
                             && value.ptp_income == 0 =>
                     {
                         Some((value.income, value.wages, value.property, value.service))
                     }
-                    None if *current_income == 0 => None,
+                    None if *current_income == 0 && ordinary.current == 0 => None,
                     _ => return None,
                 };
-                (*current_income, statement)
+                (current_income.checked_sub(ordinary.current)?, statement)
             }
             _ => return None,
         };
         let component = source.components.iter().find(|v| v.id == allocation.component)?;
         let values = component.regular.as_ref()?;
         let controls = component.qualified_current_controls.ordinary.as_ref()?;
-        if values.operating <= 0
-            || controls.income != values.operating
-            || controls.loss != 0
-            || !(0..=controls.income).contains(&current_income)
-            || [values.operating_carry.basis, values.operating_carry.risk, values.passive_operating]
-                .into_iter()
-                .any(|v| v != Some(0))
-            || !source.passive_groups.iter().any(|group| {
-                Some(group.id) == component.passive_group
-                    && match &group.participation {
-                        K1ActivityParticipation::Partnership {
-                            facts,
-                            trade_kind: crate::ScorpTradeKind::Ordinary,
-                        } => facts.material() == crate::participation::Participation::Yes,
-                        K1ActivityParticipation::Scorp {
-                            facts,
-                            trade_kind: crate::ScorpTradeKind::Ordinary,
-                        } => facts.material() == crate::participation::Participation::Yes,
-                        _ => false,
-                    }
-            })
+        if qualified_se_gross > 0
+            && !matches!(&component.self_employment,
+                K1StatementSe::Partnership { source }
+                if matches!(&source.gross, Some(crate::PartnerSeGross::Nonfarm { .. })))
         {
             return None;
         }
+        let carries = [values.operating_carry.basis, values.operating_carry.risk];
+        let carries_available = match &allocation.qualified {
+            K1ComponentQualified::Partnership { records, .. } => {
+                carries.iter().all(Option::is_some)
+                    && (carries == [Some(0); 2] || records.history.is_some())
+            }
+            _ => carries == [Some(0); 2],
+        };
+        let positive_source = values.operating > 0
+            && controls.income == values.operating
+            && controls.loss == 0
+            && (0..=controls.income).contains(&current_income);
+        let loss_source = values.operating < 0
+            && controls.income == 0
+            && controls.loss == values.operating.checked_neg()?
+            && (values.operating..=0).contains(&current_income)
+            && carries == [Some(0); 2]
+            && allocation.qualified.histories().into_iter().all(|(_, _, rows)| rows.is_empty());
+        if !(positive_source || loss_source)
+            || !carries_available
+            || values.passive_operating != Some(0)
+        {
+            return None;
+        }
+        let group =
+            source.passive_groups.iter().find(|group| Some(group.id) == component.passive_group)?;
+        let material = match &group.participation {
+            K1ActivityParticipation::Partnership {
+                facts,
+                trade_kind: crate::ScorpTradeKind::Ordinary,
+            } => {
+                if matches!(facts, crate::PartnerParticipation::General { facts } if facts.left_out())
+                {
+                    return None;
+                }
+                facts.material()
+            }
+            K1ActivityParticipation::Scorp {
+                facts,
+                trade_kind: crate::ScorpTradeKind::Ordinary,
+            } => {
+                if facts.left_out() {
+                    return None;
+                }
+                facts.material()
+            }
+            _ => return None,
+        };
+        let active = match material {
+            crate::participation::Participation::Yes => true,
+            crate::participation::Participation::No => false,
+            crate::participation::Participation::Unavailable => return None,
+        };
+        if loss_source && !active {
+            return None;
+        }
+        let released_loss = if loss_source {
+            if let Some(computed) = computed {
+                let output = computed.iter().find(|value| value.id == component.id)?;
+                let current = Amount::<Cents>::new(controls.loss).ok()?;
+                if output.basis_suspended.get() != 0
+                    || output.risk_suspended.get() != 0
+                    || output.basis_allowed != current
+                    || output.risk_allowed != current
+                {
+                    return None;
+                }
+                // Native component outputs must reconcile exactly; qualification
+                // follows the same basis and at-risk FIFO stages as retained losses.
+                let basis = crate::partnership_qbi::stage(
+                    &[],
+                    current,
+                    Amount::<Cents>::new(current_income.checked_neg()?).ok()?,
+                    output.basis_allowed,
+                )
+                .ok()?;
+                let risk = crate::partnership_qbi::stage(
+                    &[],
+                    basis.amount,
+                    basis.qbi,
+                    output.risk_allowed,
+                )
+                .ok()?;
+                Some(risk.qbi)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if let Some((income, wages, property, service)) = statement {
-            statements.push(crate::business_rules::QbiActivity {
-                source_wages_cents: Some(wages),
-                source_property_cents: Some(property),
-                source_income_cents: Some(income),
-                owner: None,
-                income: dollars(income),
-                wages: dollars(wages),
-                property: dollars(property),
-                active: true,
-                service: Some(service),
-                group: block.qbi_aggregation_group.clone(),
+            statements.push(CurrentQualified {
+                block: block.id,
+                component: component.id,
+                qualified_se_gross,
+                activity: crate::business_rules::QbiActivity {
+                    source_wages_cents: Some(wages),
+                    source_property_cents: Some(property),
+                    source_income_cents: Some(income),
+                    owner: None,
+                    income: released_loss
+                        .map_or_else(|| dollars(income), |loss| -dollars(loss.get())),
+                    wages: dollars(wages),
+                    property: dollars(property),
+                    active,
+                    service: Some(service),
+                    group: block.qbi_aggregation_group.clone(),
+                },
             });
         }
     }
@@ -472,10 +795,23 @@ fn retained_releases(
         let K1ComponentQualified::Partnership { records, .. } = &allocation.qualified else {
             return Err(UNAVAILABLE);
         };
-        let history = records.history.as_ref().ok_or(UNAVAILABLE)?;
         let component =
             components.iter().find(|v| v.id == allocation.component).ok_or(UNAVAILABLE)?;
         let native = source.components.iter().find(|v| v.id == component.id).ok_or(UNAVAILABLE)?;
+        let values = native.regular.as_ref().ok_or(UNAVAILABLE)?;
+        // A current-only allocation needs no historical worksheet or release
+        // note when its actual retained balances are explicitly zero.
+        if values.operating > 0
+            && values.operating_carry.basis == Some(0)
+            && values.operating_carry.risk == Some(0)
+            && values.passive_operating == Some(0)
+            && records.history.as_ref().is_none_or(|history| {
+                history.basis.is_empty() && history.risk.is_empty() && history.passive.is_empty()
+            })
+        {
+            continue;
+        }
+        let history = records.history.as_ref().ok_or(UNAVAILABLE)?;
         let basis = crate::partnership_qbi::stage(
             &history.basis,
             Amount::default(),
@@ -529,12 +865,18 @@ impl Owner<'_> {
     // Availability is checked before calculations. An unsupported mandatory
     // source never becomes zero or a partly calculated complete estimate.
     fn ordinary_source(&self, alternative: bool, section179: bool) -> Result<Output, SourceError> {
+        let current_se = match self {
+            Self::Partnership(owner) if !owner.person.as_ref().is_some_and(personal_empty) => {
+                Some(owner.current_se_source()?)
+            }
+            _ => None,
+        };
         let source = match self {
             Self::Partnership(owner) => {
                 if owner.issue().is_some()
                     || owner.entity.publicly_traded
                     || owner.entity.final_k1
-                    || !matches!(owner.entity.disposition, crate::K1Disposition::Kept)
+                    || !matches!(owner.entity.disposition, Some(crate::K1Disposition::Kept))
                     || owner.entity.sale != crate::PartnerSaleParts::default()
                     || owner
                         .entity
@@ -548,7 +890,7 @@ impl Owner<'_> {
                     || !owner.special.is_empty()
                     || !matches!(owner.health_insurance, Some(crate::BusinessHealthInsurance::None))
                     || !matches!(owner.retirement, Some(crate::PartnerRetirement::None))
-                    || !owner.person.as_ref().is_some_and(personal_empty)
+                    || !(owner.person.as_ref().is_some_and(personal_empty) || current_se.is_some())
                 {
                     return Err(UNAVAILABLE);
                 }
@@ -557,7 +899,7 @@ impl Owner<'_> {
             Self::Scorp(owner) => {
                 if owner.issue().is_some()
                     || owner.entity.final_k1
-                    || !matches!(owner.entity.disposition, crate::K1Disposition::Kept)
+                    || !matches!(owner.entity.disposition, Some(crate::K1Disposition::Kept))
                     || owner
                         .entity
                         .amt_section179_income_carry
@@ -578,11 +920,14 @@ impl Owner<'_> {
                 owner.activities.source().ok_or(UNAVAILABLE)?
             }
         };
+        let zero_qualified = zero_qualified_sources(source);
+        let current_qualified =
+            if zero_qualified { None } else { current_qualified_sources(source, None) };
         if source.identity_issue(Some(source)).is_some()
             || source.components.is_empty()
-            || !(zero_qualified_sources(source)
+            || !(zero_qualified
                 || matches!(self, Self::Partnership(_)) && retained_qualified_sources(source)
-                || current_qualified_sources(source).is_some())
+                || current_qualified.is_some())
         {
             return Err(UNAVAILABLE);
         }
@@ -597,9 +942,16 @@ impl Owner<'_> {
             ),
         };
         let entity_only = entity_only.ok_or(UNAVAILABLE)?;
+        let entity_interest = entity_only.portfolio.interest;
         if !current_available || !entity_basis_only(entity_only) {
             return Err(UNAVAILABLE);
         }
+        // Outside-all-activities interest increases whole-interest basis, but
+        // never an activity's at-risk income, passive income or qualified income.
+        // Each tax system uses its own documented source (IRS i1065sk1,
+        // i1120ssk, i6198 and i8995).
+        let entity_dividends = entity_only.portfolio.dividends;
+        let entity_qualified_dividends = entity_only.portfolio.qualified_dividends;
         let properties = self.properties();
         let confirmed = match self {
             Self::Partnership(owner) => owner.entity.investment_confirmed,
@@ -615,16 +967,27 @@ impl Owner<'_> {
         let credit_reduction = sum(investment.iter().map(|(_, decrease)| *decrease))?;
         let mut components = Vec::new();
         let mut losses = Vec::new();
-        let mut retained_risk = Vec::new();
-        let mut retained_basis = Vec::new();
+        let mut inputs = Vec::new();
         let mut income_cents = Vec::new();
         let mut exempt_cents = Vec::new();
         let mut passive_cents = Vec::new();
         let mut section179_cents = Vec::new();
-        for component in &source.components {
+        for (component_index, component) in source.components.iter().enumerate() {
+            let locate = |(issue, message): SourceError| {
+                (
+                    issue
+                        .at_field(if alternative { "alternative" } else { "regular" })
+                        .in_list("components", component_index)
+                        .in_field("source")
+                        .in_field("statement")
+                        .in_field("activities"),
+                    message,
+                )
+            };
             if component.id <= 0
                 || component.kind != K1StatementKind::TradeBusiness
-                || !matches!(component.self_employment, K1StatementSe::NotApplicable)
+                || (current_se.is_none()
+                    && !matches!(component.self_employment, K1StatementSe::NotApplicable))
                 || !matches!(component.personal_services, K1ActivityPersonalSource::NotApplicable)
             {
                 return Err(UNAVAILABLE);
@@ -639,7 +1002,31 @@ impl Owner<'_> {
             } else {
                 regular
             };
-            if !ordinary_only(values, section179) {
+            // The same-record choice supplies the baseline before printed
+            // depletion adjustments. Independent AMT records already include
+            // them. Project before the common basis, risk and passive owners.
+            let depletion =
+                if alternative && matches!(component.alternative, K1StatementAmt::SameAsRegular) {
+                    match self {
+                        Self::Partnership(owner) => owner.depletion_adjustment(component.id),
+                        Self::Scorp(owner) => owner.depletion_adjustment(component.id),
+                    }
+                    .ok_or(UNAVAILABLE)?
+                } else {
+                    0
+                };
+            let operating = values.operating.checked_add(depletion).ok_or_else(range_error)?;
+            if !component_supported(values, section179)
+                || (current_se.is_some()
+                    && (operating < 0
+                        || [
+                            values.operating_carry.basis,
+                            values.operating_carry.risk,
+                            values.passive_operating,
+                        ]
+                        .into_iter()
+                        .any(|v| v != Some(0))))
+            {
                 return Err(UNAVAILABLE);
             }
             if values.section179 != 0 && (!zero_qualified_sources(source) || !properties.is_empty())
@@ -650,18 +1037,24 @@ impl Owner<'_> {
             let basis_carry = values.operating_carry.basis.ok_or(UNAVAILABLE)?;
             let risk_carry = values.operating_carry.risk.ok_or(UNAVAILABLE)?;
             let prior = values.passive_operating.ok_or(UNAVAILABLE)?;
-            // Keep source cents through aggregation at each native owner.
-            losses.push(sum([
-                if values.operating < 0 {
-                    values.operating.checked_neg().ok_or_else(range_error)?
+            let (capital_basis, capital_risk) = capital_carries(&values.capital_carry)?;
+            let signed = [operating, values.portfolio.short, values.portfolio.long];
+            let basis = [basis_carry, capital_basis[0], capital_basis[1]];
+            let risk = [risk_carry, capital_risk[0], capital_risk[1]];
+            let mut input = ClassInput::default();
+            for (index, class) in SOURCE_CLASSES.into_iter().enumerate() {
+                input.current[class] = amount(if signed[index] < 0 {
+                    signed[index].checked_neg().ok_or_else(range_error).map_err(locate)?
                 } else {
                     0
-                },
-                basis_carry,
-            ])?);
-            retained_risk.push(risk_carry);
-            retained_basis.push(basis_carry);
-            income_cents.push(positive(values.operating));
+                })?;
+                input.basis_carry[class] = amount(basis[index])?;
+                input.risk_carry[class] = amount(risk[index])?;
+                sum([input.current[class].get(), basis[index]]).map_err(locate)?;
+            }
+            losses.push(input.basis());
+            inputs.push(input);
+            income_cents.push(signed.map(positive));
             exempt_cents.push(values.exempt_other);
             passive_cents.push(prior);
             components.push(Component {
@@ -678,17 +1071,21 @@ impl Owner<'_> {
                 section179_basis_suspended: 0,
                 section179_allowed: 0,
                 section179_carry: 0,
+                capital: core::array::from_fn(|_| Capital::default()),
             });
         }
         // The native ClassInput owners keep distinct current/prior annual
         // columns. Aggregate their actual source cents independently first.
         let mut input = ClassInput::default();
-        input.current[K1LossClass::Ordinary] =
-            amount(sum(losses.iter().zip(&retained_basis).map(|(loss, prior)| loss - prior))?)?;
-        input.basis_carry[K1LossClass::Ordinary] = amount(sum(retained_basis.iter().copied())?)?;
+        for class in SOURCE_CLASSES {
+            input.current[class] = amount(sum(inputs.iter().map(|v| v.current[class].get()))?)?;
+            input.basis_carry[class] =
+                amount(sum(inputs.iter().map(|v| v.basis_carry[class].get()))?)?;
+            sum([input.current[class].get(), input.basis_carry[class].get()])?;
+        }
         input.current[K1LossClass::Section179] = amount(sum(section179_cents.iter().copied())?)?;
         let loss_classes = input.basis();
-        let total_losses = loss_classes[K1LossClass::Ordinary];
+        sum(loss_classes.as_slice().iter().map(Amount::get))?;
         let basis = self.basis(
             alternative,
             &loss_classes,
@@ -697,26 +1094,42 @@ impl Owner<'_> {
             amount(
                 sum(income_cents
                     .iter()
+                    .flatten()
                     .copied()
                     .chain(exempt_cents.iter().copied())
-                    .chain([entity_only.exempt_interest, entity_only.exempt_other]))
+                    .chain([
+                        entity_only.exempt_interest,
+                        entity_only.exempt_other,
+                        entity_interest,
+                        entity_only.portfolio.short,
+                        entity_only.portfolio.long,
+                        entity_dividends,
+                    ]))
                 .map_err(|(issue, message)| {
                     (issue.at_field("source").in_field("statement").in_field("activities"), message)
                 })?,
             )?,
             amount(credit_reduction)?,
+            amount(entity_only.nondeductible)?,
         )?;
-        let allowed = basis.allowed;
-        // allocate_remaining's actual weight-sum receiver is native i64.
-        sum(losses.iter().copied())?;
-        let basis_losses = allocate_remaining(total_losses.get(), &losses);
-        for ((component, loss), allowed) in components
-            .iter_mut()
-            .zip(&basis_losses)
-            .zip(allocate_remaining(allowed.get(), &basis_losses))
-        {
-            component.basis_allowed = amount(allowed)?;
-            component.basis_suspended = amount(loss - allowed)?;
+        for (index, class) in SOURCE_CLASSES.into_iter().enumerate() {
+            let weights: Vec<_> = losses.iter().map(|v| v[class].get()).collect();
+            // The existing allocator's weight receiver is native i64.
+            sum(weights.iter().copied())?;
+            for ((component, loss), allowed) in components
+                .iter_mut()
+                .zip(&weights)
+                .zip(allocate_remaining(basis.allowed[class].get(), &weights))
+            {
+                if index == 0 {
+                    component.basis_allowed = amount(allowed)?;
+                    component.basis_suspended = amount(loss - allowed)?;
+                } else {
+                    let capital = &mut component.capital[index - 1];
+                    capital.basis_allowed = amount(allowed)?;
+                    capital.basis_suspended = amount(loss - allowed)?;
+                }
+            }
         }
         for ((component, source), allowed) in components
             .iter_mut()
@@ -742,7 +1155,7 @@ impl Owner<'_> {
             if indices.is_empty() {
                 return Err(UNAVAILABLE);
             }
-            let (investment, prior_loss, deducted, recaptured) = self
+            let (investment, _prior_loss, deducted, recaptured) = self
                 .investment(
                     alternative,
                     group,
@@ -756,10 +1169,10 @@ impl Owner<'_> {
                             message,
                         )
                     })?,
-                    sum(indices.iter().map(|&i| retained_risk[i]))?,
-                    indices.iter().any(|&i| {
-                        retained_basis[i] != 0 || retained_risk[i] != 0 || passive_cents[i] != 0
-                    }),
+                    sum(indices.iter().flat_map(|&i| {
+                        SOURCE_CLASSES.map(|class| inputs[i].risk_carry[class].get())
+                    }))?,
+                    indices.iter().any(|&i| inputs[i].carries() || passive_cents[i] != 0),
                 )
                 .map_err(|(issue, message)| {
                     if issue.key != RANGE_KEY || issue.field.is_some() {
@@ -782,24 +1195,32 @@ impl Owner<'_> {
             distribution_parts.push(parts.distributions);
             loan_advances.push(parts.loan_advances);
             loan_repayments.push(parts.loan_repayments);
-            let group_income: Vec<_> = indices.iter().map(|&i| income_cents[i]).collect();
-            let income = sum(group_income.iter().copied())?;
-            for (&index, share) in indices.iter().zip(allocate_remaining(income, &group_income)) {
-                components[index].income = amount(share)?;
+            let income = sum(indices.iter().flat_map(|&i| income_cents[i]))?;
+            for &index in &indices {
+                components[index].income = amount(income_cents[index][0])?;
+                for (capital, value) in
+                    components[index].capital.iter_mut().zip(&income_cents[index][1..])
+                {
+                    capital.income = amount(*value)?;
+                }
             }
-            let group_carry: Vec<_> = indices.iter().map(|&i| retained_risk[i]).collect();
-            let carry_shares = allocate_remaining(prior_loss, &group_carry);
-            let entries = indices
-                .iter()
-                .zip(carry_shares)
-                .map(|(&i, prior)| {
-                    Ok(RiskEntry {
-                        key: components[i].id,
-                        basis_allowed: components[i].basis_allowed,
-                        prior_risk: amount(prior)?,
-                    })
-                })
-                .collect::<Result<Vec<_>, SourceError>>()?;
+            // One settlement shares this actual group's income and capacity
+            // across every component and admitted character. Class order is
+            // the existing catalog order, then durable component source order.
+            let mut entries = Vec::new();
+            for (class_index, class) in SOURCE_CLASSES.into_iter().enumerate() {
+                for &index in &indices {
+                    entries.push(RiskEntry {
+                        key: (components[index].id, class),
+                        basis_allowed: if class_index == 0 {
+                            components[index].basis_allowed
+                        } else {
+                            components[index].capital[class_index - 1].basis_allowed
+                        },
+                        prior_risk: inputs[index].risk_carry[class],
+                    });
+                }
+            }
             let SourceFact::Reported(settlement) =
                 risk::settle_at_risk(SourceFact::Reported(RiskInput {
                     entries: &entries,
@@ -825,9 +1246,18 @@ impl Owner<'_> {
                 return Err(UNAVAILABLE);
             }
             section179_risk.push((group.id, positive(account.ending)));
-            for (&index, class) in indices.iter().zip(&settlement.classes) {
-                components[index].risk_allowed = class.allowed;
-                components[index].risk_suspended = class.suspended;
+            for class in &settlement.classes {
+                let &(id, kind) = class.key;
+                let component = components.iter_mut().find(|c| c.id == id).ok_or(UNAVAILABLE)?;
+                if kind == K1LossClass::Ordinary {
+                    component.risk_allowed = class.allowed;
+                    component.risk_suspended = class.suspended;
+                } else {
+                    let capital =
+                        &mut component.capital[usize::from(kind == K1LossClass::LongTerm)];
+                    capital.risk_allowed = class.allowed;
+                    capital.risk_suspended = class.suspended;
+                }
             }
         }
         self.reconcile_investment(
@@ -923,27 +1353,132 @@ impl Owner<'_> {
         if components.iter().any(|c| !groups.iter().any(|g| g.id == c.passive_group)) {
             return Err(UNAVAILABLE);
         }
-        let current_qualified = if !alternative {
-            current_qualified_sources(source).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let current_retained = matches!(self, Self::Partnership(_))
+            && current_qualified.is_some()
+            && source.components.iter().any(|component| {
+                component.regular.as_ref().is_some_and(|values| {
+                    values.operating_carry.basis.is_some_and(|v| v > 0)
+                        || values.operating_carry.risk.is_some_and(|v| v > 0)
+                })
+            });
+        // A nonnegative passive group has absorbed all its losses locally,
+        // including when several components share it. A different group's
+        // profit cannot establish a qualified share of a negative group's PAL.
+        // Use the already computed owner net before exposing either QBI output.
+        if !alternative
+            && !zero_qualified_sources(source)
+            && current_retained
+            && source.passive_groups.iter().any(|source_group| {
+                matches!(&source_group.participation,
+                K1ActivityParticipation::Partnership { facts, .. }
+                if facts.material() == crate::participation::Participation::No)
+                    && groups
+                        .iter()
+                        .find(|group| group.id == source_group.id)
+                        .is_none_or(|group| group.passive < 0)
+            })
+        {
+            return Err(UNAVAILABLE);
+        }
         let qualified = if !alternative
             && !zero_qualified_sources(source)
-            && retained_qualified_sources(source)
+            && (retained_qualified_sources(source) || current_retained)
         {
             retained_releases(source, &components)?
         } else {
             Vec::new()
         };
+        let current_qualified = if !alternative && current_qualified.is_some() {
+            current_qualified_sources(source, Some(&components)).ok_or(UNAVAILABLE)?
+        } else {
+            Vec::new()
+        };
+        let self_employment = if let Some(mut current) = current_se {
+            if alternative {
+                let mut reported = Vec::new();
+                let mut passive = Vec::new();
+                for (source_component, component) in source.components.iter().zip(&components) {
+                    let K1StatementSe::Partnership { source: se } =
+                        &source_component.self_employment
+                    else {
+                        continue;
+                    };
+                    let regular = source_component.regular.as_ref().ok_or(UNAVAILABLE)?;
+                    let net = se.reported.ok_or(UNAVAILABLE)?;
+                    let delta = component
+                        .income
+                        .get()
+                        .checked_sub(regular.operating)
+                        .ok_or_else(range_error)?;
+                    // The statement identifies SE character independently of
+                    // taxable income. A mixed current source needs its own AMT
+                    // character facts; a taxable-income change cannot supply them.
+                    if delta != 0 && net != regular.operating {
+                        return Err(UNAVAILABLE);
+                    }
+                    let adjusted = net.checked_add(delta).ok_or_else(range_error)?;
+                    if adjusted < 0 {
+                        return Err(UNAVAILABLE);
+                    }
+                    reported.push(adjusted);
+                    let group = groups
+                        .iter()
+                        .find(|group| group.id == component.passive_group)
+                        .ok_or(UNAVAILABLE)?;
+                    if !group.material {
+                        passive.push(adjusted);
+                    }
+                }
+                current.reported = sum(reported)?;
+                current.passive = sum(passive)?;
+            }
+            // These are the actual stage outputs, not a reconstructed ledger.
+            if components.iter().any(|c| {
+                c.basis_allowed.get() != 0
+                    || c.basis_suspended.get() != 0
+                    || c.risk_allowed.get() != 0
+                    || c.risk_suspended.get() != 0
+                    || c.prior_passive.get() != 0
+            }) || groups.iter().any(|g| g.prior != 0 || g.prior_released != 0)
+            {
+                return Err(UNAVAILABLE);
+            }
+            Some(CurrentSe {
+                gross: current.gross,
+                category: current.category,
+                components: current.components,
+                net: crate::partnership::PartnerSeResult::from_resolved(
+                    crate::partnership::ResolvedPartnerSe {
+                        reported: current.reported,
+                        guaranteed_services: 0,
+                        guaranteed_capital: 0,
+                        limited_for_se: false,
+                        section179: 0,
+                        allowed_se: 0,
+                        unmatched_loss: 0,
+                        passive_earnings: current.passive,
+                        basis_suspended: 0,
+                        risk_suspended: 0,
+                        passive_suspended: 0,
+                    },
+                ),
+            })
+        } else {
+            None
+        };
         Ok(Output {
             basis,
             entity_exempt_interest: entity_only.exempt_interest,
+            entity_interest,
             section179_risk,
+            entity_capital: [entity_only.portfolio.short, entity_only.portfolio.long],
+            entity_dividends,
+            entity_qualified_dividends,
             components,
             groups,
             qualified,
             current_qualified,
+            self_employment,
         })
     }
 }
@@ -976,6 +1511,7 @@ impl<'a> Owner<'a> {
         losses: &crate::k1_loss::LossAmounts,
         income: Amount<Cents>,
         credit_reduction: Amount<Cents>,
+        nondeductible: Amount<Cents>,
     ) -> Result<EntityBasis, SourceError> {
         match self {
             Self::Partnership(owner) => {
@@ -1009,7 +1545,7 @@ impl<'a> Owner<'a> {
                         .expect("bounded basis result"),
                     distributed_property_basis: Amount::<Cents>::new(0)
                         .expect("bounded basis result"),
-                    nondeductible: Amount::<Cents>::new(0).expect("bounded basis result"),
+                    nondeductible,
                     credit_reduction,
                     depletion: Amount::<Cents>::new(0).expect("bounded basis result"),
                     losses,
@@ -1025,7 +1561,9 @@ impl<'a> Owner<'a> {
                 }
                 Ok(EntityBasis {
                     ending: basis.ending,
-                    allowed: basis.allowed[K1LossClass::Ordinary],
+                    nondeductible_used: basis.nondeductible_used,
+                    nondeductible_carry: basis.nondeductible_carry,
+                    allowed: basis.allowed,
                     section179: basis.allowed[K1LossClass::Section179],
                     scorp: None,
                 })
@@ -1080,7 +1618,7 @@ impl<'a> Owner<'a> {
                     income,
                     distributions: Amount::<Cents>::new(entity.distributions)
                         .expect("bounded basis result"),
-                    nondeductible: Amount::<Cents>::new(0).expect("bounded basis result"),
+                    nondeductible,
                     credit_reduction,
                     prior_nondeductible: Amount::<Cents>::new(0).expect("bounded basis result"),
                     losses_first: entity.losses_first,
@@ -1106,7 +1644,9 @@ impl<'a> Owner<'a> {
                 }
                 Ok(EntityBasis {
                     ending: basis.stock,
-                    allowed: basis.allowed[K1LossClass::Ordinary],
+                    nondeductible_used: basis.nondeductible_used,
+                    nondeductible_carry: basis.nondeductible_carry,
+                    allowed: basis.allowed,
                     section179: basis.allowed[K1LossClass::Section179],
                     scorp: Some(basis),
                 })

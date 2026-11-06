@@ -28,9 +28,18 @@ cargo build --locked
 cargo test --locked
 ```
 
+Display rules are authored in `display/<form>.json`; `display.json` is assembled
+by `tools/assemble-display`. Each source entry has an explicit integer `order`
+and a normal Display Template `rule`. Keep existing order values stable; use
+an unused value between neighboring rules when inserting one. Assembly sorts
+by this order across all fragments, preserving override precedence. Run the
+assembler after editing a fragment and regenerate the output when merging
+fragment changes.
+
 Before submitting a change, also run:
 
 ```sh
+tools/assemble-display --check
 cargo fmt -p libertas-tax -- --check
 cargo clippy --locked --all-targets -- -D warnings
 ```
@@ -48,5 +57,5 @@ advice.
 
 This repository starts from a source snapshot of the App's development
 history, which was itself extracted from `libertas-samples` without importing
-other Apps. Commit IDs cited in COVERAGE.md and CODE-METRICS.md refer to that
-earlier history and remain as provenance.
+other Apps. Coverage references can cite that earlier development history;
+CODE-METRICS.md identifies its measured source revision.

@@ -1,6 +1,7 @@
+use crate::tests::support::assert::payroll::form8919_base;
 use crate::tests::support::assert::{accepted, rejected_with};
 use crate::tests::support::builders::survey::survey_uncatalogued_document as unanswered_document;
-// Relief payments and other income (unit B6b, 2026-10-09): the nine document
+// Relief payments and other income: the nine document
 // kinds the Wages, Canceled debt and Other income topics offer (Form 8919,
 // health-service loan repayment, scholarship, jury duty, hobby sales, wildfire
 // relief, disaster relief, living-expense insurance and hazard mitigation),
@@ -14,6 +15,9 @@ use crate::tests::support::builders::survey::survey_uncatalogued_document as una
 // `complete(Joint)` one of $100,000.
 use super::*;
 use crate::tests::cross::interview::{business, business_details, from_review, r1099, save_topic};
+use crate::tests::support::client::income_pages::{
+    open_documents, page_documents, save_documents, topic_for,
+};
 use alloc::string::String;
 
 fn single() -> Interview {
@@ -25,32 +29,94 @@ fn joint() -> Interview {
 // A topic page as the review opens it, with the documents it shows.
 fn page(s: &mut Interview, topic: TaxSection) -> P {
     match from_review(s, topic) {
-        Reply::Edit(request @ P::SaveIncomes { .. }) => request,
+        Reply::Edit(request @ (P::SaveIncomes { .. } | P::SaveWagesAnswers { .. })) => request,
         other => panic!("expected the {topic:?} topic, got {other:?}"),
     }
 }
-// Saves the topic with its shown documents and these added.
-fn save_with(s: &mut Interview, topic: TaxSection, added: Vec<IncomeDocument>) -> Reply {
+// Saves added sources in their center category and records in their owning topic.
+fn save_with(s: &mut Interview, topic: TaxSection, added: Vec<IncomeSource>) -> Reply {
+    if topic == TaxSection::Retirement {
+        return crate::tests::support::client::save_retirement_fixture(
+            s,
+            added
+                .into_iter()
+                .map(|document| unanswered_document(Owner::Taxpayer, 0, document))
+                .collect(),
+        );
+    }
+
+    let (records, sources): (Vec<_>, Vec<_>) = added
+        .into_iter()
+        .map(|document| unanswered_document(Owner::Taxpayer, 0, document))
+        .partition(|row| matches!(row.document, IncomeSource::Record { .. }));
+    if !sources.is_empty() {
+        let center = open_documents(s);
+        let mut rows = page_documents(&center)
+            .into_iter()
+            .filter(|row| {
+                sources.iter().any(|source| {
+                    core::mem::discriminant(&source.document)
+                        == core::mem::discriminant(&row.document)
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.extend(sources);
+        let request = save_documents(s, rows);
+        let reply = send(s, request);
+        if records.is_empty() || matches!(&reply, Reply::Response(P::Problem { .. })) {
+            return reply;
+        }
+    }
     let mut request = page(s, topic);
-    let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    for document in added {
-        documents.documents.push(unanswered_document(Owner::Taxpayer, 0, document));
+    match &mut request {
+        P::SaveWagesAnswers { records: target, .. } => {
+            target.documents.extend(records.into_iter().map(|row| {
+                crate::IncomeRecordItem::from_income(row)
+                    .and_then(crate::WagesRecordItem::from_income)
+                    .unwrap()
+            }))
+        }
+        P::SaveIncomes { documents, .. } => documents.documents.extend(
+            records.into_iter().map(|row| crate::IncomeRecordItem::from_income(row).unwrap()),
+        ),
+        _ => unreachable!(),
     }
     send(s, request)
 }
-// Saves the topic with only these documents (the page is walk-owned).
-fn save_only(s: &mut Interview, topic: TaxSection, only: Vec<IncomeDocument>) -> Reply {
-    let items = only
+// Replaces source categories through the center and record rows through their topic.
+fn save_only(s: &mut Interview, topic: TaxSection, only: Vec<IncomeSource>) -> Reply {
+    if topic == TaxSection::Retirement {
+        return crate::tests::support::client::save_retirement_fixture(
+            s,
+            only.into_iter()
+                .map(|document| unanswered_document(Owner::Taxpayer, 0, document))
+                .collect(),
+        );
+    }
+
+    let (records, sources): (Vec<_>, Vec<_>) = only
         .into_iter()
         .map(|document| unanswered_document(Owner::Taxpayer, 0, document))
-        .collect();
-    let request = save_topic(&s.draft.clone(), topic, items);
+        .partition(|row| matches!(row.document, IncomeSource::Record { .. }));
+    if !sources.is_empty() {
+        let request = save_documents(s, sources);
+        let reply = send(s, request);
+        if records.is_empty() || matches!(&reply, Reply::Response(P::Problem { .. })) {
+            return reply;
+        }
+    }
+    let request = save_topic(s, topic, records);
     send(s, request)
 }
 fn shown(s: &mut Interview, topic: TaxSection) -> Vec<IncomeDocumentItem> {
-    let P::SaveIncomes { documents, .. } = page(s, topic) else { unreachable!() };
-    documents.documents
+    let mut rows = page_documents(&open_documents(s))
+        .into_iter()
+        .filter(|row| topic_for(&row.document) == topic)
+        .collect::<Vec<_>>();
+    rows.extend(page_documents(&page(s, topic)));
+    rows
 }
+
 fn agi(s: &Interview) -> i64 {
     return_line(&supported(&s.draft), "11a / 11b")
 }
@@ -62,13 +128,27 @@ fn line16(s: &Interview) -> i64 {
 fn assert_round_trip(s: &Interview, topic: TaxSection) {
     let saved = s.draft.clone();
     let mut again = restart(saved.clone());
+    let center = open_documents(&mut again);
+    let has_sources = page_documents(&center).iter().any(|row| topic_for(&row.document) == topic);
+    if has_sources {
+        accepted(&send(&mut again, center));
+    }
     let request = page(&mut again, topic);
-    accepted(&send(&mut again, request));
+    if !has_sources || !page_documents(&request).is_empty() {
+        accepted(&send(&mut again, request));
+    }
     assert_eq!(again.draft, saved);
 }
 
 fn pay(wages: i64, reason: EmployeeWageReason, form1099: bool) -> EmployeeWages {
-    EmployeeWages { wages, withholding: 0, form1099, reason, complete: true }
+    EmployeeWages {
+        source_issuer: Default::default(),
+        source_recipient: Default::default(),
+        wages,
+        withholding: 0,
+        form1099,
+        payroll: crate::EmployeePayrollSource::Form8919 { reason },
+    }
 }
 fn code_a() -> EmployeeWageReason {
     EmployeeWageReason::Ss8Determination { date: 20260501 }
@@ -90,7 +170,9 @@ fn a_form_8919_pay_reaches_line_1g_and_the_uncollected_tax_by_hand() {
     accepted(&save_with(
         &mut s,
         TaxSection::Wages,
-        vec![IncomeDocument::Form8919(pay(500_000, code_a(), true))],
+        vec![IncomeSource::Wage {
+            value: crate::WageDocument::Form8919(pay(500_000, code_a(), true)),
+        }],
     ));
     let stored: Vec<_> = s
         .draft
@@ -99,7 +181,7 @@ fn a_form_8919_pay_reaches_line_1g_and_the_uncollected_tax_by_hand() {
         .filter(|e| matches!(e.income, FederalIncome::EmployeeWages { .. }))
         .collect();
     assert_eq!(stored.len(), 1);
-    // An unnamed entry stores no name (the Labels unit); it displays by kind and id.
+    // An unnamed entry stores no name; it displays by kind and id.
     assert_eq!(stored[0].label, "");
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "1g"), 500_000);
@@ -112,7 +194,8 @@ fn a_form_8919_pay_reaches_line_1g_and_the_uncollected_tax_by_hand() {
     assert_eq!(return_line(&r, "11a / 11b"), 6_500_000);
     assert_eq!(return_line(&r, "15"), 4_890_000);
     assert_eq!(return_line(&r, "16"), 562_300);
-    // The lines print on Form 8919 (6, 10, 11, 12 and 13).
+    form8919_base(&r, 0, 60_000, 124_500);
+    // The other lines complete the same printed Form 8919.
     for (id, line) in [
         ("employee_wages_0_pay", "6"),
         ("employee_wages_0_social_base", "10"),
@@ -128,6 +211,7 @@ fn a_form_8919_pay_reaches_line_1g_and_the_uncollected_tax_by_hand() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[1].preview, Some(500_000));
     assert_round_trip(&s, TaxSection::Wages);
+    assert_eq!(supported(&restart(s.draft).draft), r);
 }
 
 #[test]
@@ -135,40 +219,86 @@ fn a_form_8919_social_base_stops_at_the_wage_base() {
     // The W-2 box 3 wages are $180,000: line 9 = 184,500 - 180,000 = 4,500;
     // line 10 = min(5,000, 4,500) = 4,500; line 11 = 6.2% x 4,500 = 279;
     // line 12 = 1.45% x 5,000 = 73 (72.50); line 13 = 352.
-    let mut d = complete(FederalStatus::Single);
-    d.income[0] = wage(1, Owner::Taxpayer, 18_000_000, 0);
-    let mut s = Interview::new(TEST_USER, d);
-    accepted(&save_with(
-        &mut s,
-        TaxSection::Wages,
-        vec![IncomeDocument::Form8919(pay(500_000, code_a(), true))],
-    ));
-    let r = supported(&s.draft);
-    assert_eq!(value(&r, "employee_wages_0_social_base"), 4500);
+    for (wages, used, left, ss_tax) in [
+        (0, 0, 184_500, 310),
+        (18_000_000, 180_000, 4_500, 279),
+        (18_000_049, 180_000, 4_500, 279),
+        (18_000_050, 180_001, 4_499, 279),
+        (18_450_000, 184_500, 0, 0),
+    ] {
+        let mut d = complete(FederalStatus::Single);
+        d.income[0] = wage(1, Owner::Taxpayer, wages, 0);
+        if wages == 0 {
+            d.income.clear();
+        }
+        let mut s = Interview::new(TEST_USER, d);
+        accepted(&save_with(
+            &mut s,
+            TaxSection::Wages,
+            vec![IncomeSource::Wage {
+                value: crate::WageDocument::Form8919(pay(500_000, code_a(), true)),
+            }],
+        ));
+        let r = supported(&s.draft);
+        form8919_base(&r, 0, used, left);
+        assert_eq!(value(&r, "employee_wages_0_social_base"), left.min(5_000));
+        assert_eq!(value(&r, "employee_wages_0_social_tax"), ss_tax);
+        assert_eq!(value(&r, "employee_wages_0_medicare_tax"), 73);
+        assert_eq!(value(&r, "employee_wages_0_tax"), ss_tax + 73);
+    }
+}
+
+#[test]
+fn a_form_8919_community_income_keeps_the_physical_employees_base() {
+    let mut d = community_w2_draft(18_000_000, 6_000_000, 0, 0);
+    for owner in [Owner::Taxpayer, Owner::Spouse] {
+        let mut source = income(omitted_employee_wages(5_000));
+        source.owner = crate::DocumentOwner::from(owner);
+        source.community = CommunityShare::Community;
+        add(&mut d, source);
+    }
+    let r = supported(&d);
+    // Income is divided; only this filer's own $180,000 exhausts their base.
+    assert_eq!(return_line(&r, "1a"), 12_000_000);
+    assert_eq!(return_line(&r, "1g"), 500_000);
+    form8919_base(&r, 0, 180_000, 4_500);
+    assert_eq!(value(&r, "employee_wages_0_social_base"), 4_500);
     assert_eq!(value(&r, "employee_wages_0_social_tax"), 279);
     assert_eq!(value(&r, "employee_wages_0_medicare_tax"), 73);
-    assert_eq!(value(&r, "employee_wages_0_tax"), 352);
+    assert!(
+        !r.lines
+            .iter()
+            .any(|row| { row.id.starts_with("employee_wages_1_") && row.form_line.is_some() })
+    );
+    assert_eq!(supported(&restart(d).draft), r);
 }
 
 #[test]
 fn a_form_8919_firm_outside_ordinary_coverage_retains_pay_with_a_notice() {
-    // Railroad, section 218, totalization or an earlier year's correction
-    // (complete No): the firm's pay is left out; the estimate is still
-    // supported and AGI is the W-2's $60,000.
+    // 2026-10-19 actual-source split: unavailable payroll coverage is not zero tax.
     let mut s = single();
     let mut firm = pay(500_000, code_a(), true);
-    firm.complete = false;
-    accepted(&save_with(&mut s, TaxSection::Wages, vec![IncomeDocument::Form8919(firm)]));
-    let r = supported(&s.draft);
-    assert!(noted(&r, "WARN_EMPLOYEE_WAGES_PAYROLL_TAX_LEFT_OUT"), "{r:?}");
-    assert_eq!(agi(&s), 6_500_000);
-    assert_eq!(return_line(&r, "1g"), 0);
-    assert_eq!(return_line(&r, "1h"), 500_000);
-    // A left-out firm previews nothing.
+    firm.payroll = crate::EmployeePayrollSource::Unavailable;
+    accepted(&save_with(
+        &mut s,
+        TaxSection::Wages,
+        vec![IncomeSource::Wage { value: crate::WageDocument::Form8919(firm) }],
+    ));
+    let r = estimate(&s.draft);
+    assert!(noted(&r, "WARN_EMPLOYEE_WAGES_PAYROLL_TAX_LEFT_OUT"));
+    assert_eq!(value(&r, "agi"), 65_000);
+    assert_eq!(r.state, ResultState::Incomplete);
+    assert_eq!(r.tax, None);
+    let source = s.draft.income.last().unwrap();
+    assert!(
+        r.issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE"
+                && issue.context == crate::interview::income_issue_context(source))
+    );
     let rows = shown(&mut s, TaxSection::Wages);
     assert_eq!(rows[1].preview, Some(500_000));
-    // The old refusal is gone.
-    assert!(!r.issues.iter().any(|i| i.display.key == "ISSUE_EMPLOYEE_WAGES_RECORDS"));
+    assert_round_trip(&s, TaxSection::Wages);
 }
 
 #[test]
@@ -179,14 +309,24 @@ fn a_form_8919_code_h_needs_the_form_1099_and_withholding_stays_within_the_pay()
         save_with(
             &mut s,
             TaxSection::Wages,
-            vec![IncomeDocument::Form8919(pay(500_000, EmployeeWageReason::SameFirmForms, false))],
+            vec![IncomeSource::Wage {
+                value: crate::WageDocument::Form8919(pay(
+                    500_000,
+                    EmployeeWageReason::SameFirmForms,
+                    false,
+                )),
+            }],
         ),
         "FORM_8919_CODE_H_NEEDS_1099",
     );
     let mut firm = pay(500_000, code_a(), true);
     firm.withholding = 500_001;
     rejected_with(
-        save_with(&mut s, TaxSection::Wages, vec![IncomeDocument::Form8919(firm)]),
+        save_with(
+            &mut s,
+            TaxSection::Wages,
+            vec![IncomeSource::Wage { value: crate::WageDocument::Form8919(firm) }],
+        ),
         "FORM_8919_WITHHOLDING_ABOVE_PAY",
     );
     assert_eq!(s.draft, before);
@@ -194,7 +334,11 @@ fn a_form_8919_code_h_needs_the_form_1099_and_withholding_stays_within_the_pay()
     // Form 1040 line 25b credit.
     let mut firm = pay(500_000, EmployeeWageReason::SameFirmForms, true);
     firm.withholding = 50_000;
-    accepted(&save_with(&mut s, TaxSection::Wages, vec![IncomeDocument::Form8919(firm)]));
+    accepted(&save_with(
+        &mut s,
+        TaxSection::Wages,
+        vec![IncomeSource::Wage { value: crate::WageDocument::Form8919(firm) }],
+    ));
     assert_eq!(return_line(&supported(&s.draft), "25b"), 50_000);
 }
 
@@ -203,18 +347,34 @@ fn a_form_8919_import_reads_the_1099_nec_and_1099_misc_boxes_only() {
     let source = include_str!("../../income/employee_wages.rs");
     let head = &source[..source.find("pub struct EmployeeWages {").unwrap()];
     let action = &head[head.rfind("#[libertas_llm_doc_trans(").unwrap()..];
-    assert!(action.contains("Form 1099-NEC or Form 1099-MISC"));
-    assert!(action.contains("box 1 nonemployee compensation"));
-    assert!(action.contains("box 3 other income"));
-    assert!(action.contains("box 4 federal income tax withheld"));
-    assert!(action.contains("Return true for form1099"));
-    assert!(action.contains("Do not choose the reason code"));
+    // 2026-10-27: EmployeeWages imports established payroll facts alongside
+    // printed amounts, and leaves facts the supplied documents cannot settle unavailable.
+    assert!(action.contains("For a supplied Form 1099-NEC read box 1 as wages"));
+    assert!(action.contains("for Form 1099-MISC read box 3 as wages"));
+    assert!(action.contains("a blank required amount is an error"));
+    assert!(action.contains("Read box 4 federal income tax withholding"));
+    assert!(action.contains("a clearly blank withholding box is zero"));
+    assert!(action.contains("Set form1099 true for either 1099"));
+    assert!(action.contains(
+        "A 1099 alone does not establish employee status, payroll coverage or a Form 8919 reason"
+    ));
+    assert!(action.contains(
+        "Fill payroll from the actual reason in column (c) and its required date only when the supplied records establish both"
+    ));
+    assert!(action.contains("do not invent a filing or determination date"));
+    assert!(action.contains(
+        "Fill payroll only from the payroll system and coverage established by the supplied document; use Unavailable when those facts are not settled"
+    ));
+    assert!(action.contains("Do not infer exemption from foreign work or a government employer"));
     assert!(action.contains("validation = \"$.document_facts\""));
     let page = &source[source.find("pub struct EmployeeWages {").unwrap()..];
     let page = &page[..page.find("\n}").unwrap()];
     let imported: Vec<&str> = marked_fields(page);
-    // The reason, its date and the ordinary-coverage answer are the filer's.
-    assert_eq!(imported, vec!["wages", "withholding", "form1099"]);
+    // These are the same typed fields a person can fill from the documents.
+    assert_eq!(
+        imported,
+        vec!["source_issuer", "source_recipient", "wages", "withholding", "form1099", "payroll"]
+    );
 }
 
 // The fields a struct body marks for AI import.
@@ -226,7 +386,7 @@ fn marked_fields(body: &str) -> Vec<&str> {
                 *marked = true;
                 return Some(None);
             }
-            if *marked && !text.starts_with("#[") {
+            if *marked && text.starts_with("pub ") {
                 *marked = false;
                 return Some(text.trim_start_matches("pub ").split_once(':').map(|(n, _)| n));
             }
@@ -238,7 +398,7 @@ fn marked_fields(body: &str) -> Vec<&str> {
 
 #[test]
 fn the_w2_and_1099_r_pages_take_a_form_4852_substitute() {
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     // The W-2 import reads a Form 4852 line 7 as the W-2 boxes and nothing else.
     let w2 = &model[..model.find("pub struct W2 {").unwrap()];
     let action = &w2[w2.rfind("#[libertas_llm_doc_trans(").unwrap()..];
@@ -286,7 +446,9 @@ fn b_health_service_loan_repayment_is_excluded_and_its_interest_is_not_deducted_
     accepted(&save_with(
         &mut s,
         TaxSection::CanceledDebt,
-        vec![IncomeDocument::HealthLoanRepayment(health_loan(2_000_000, 90_000, true))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::HealthLoanRepayment(health_loan(2_000_000, 90_000, true)),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(agi(&s), 5_940_000);
@@ -326,7 +488,11 @@ fn b_health_loan_interest_above_the_assistance_or_the_1098_e_total_is_refused() 
         save_with(
             &mut s,
             TaxSection::CanceledDebt,
-            vec![IncomeDocument::HealthLoanRepayment(health_loan(100_000, 100_001, true))],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::HealthLoanRepayment(health_loan(
+                    100_000, 100_001, true,
+                )),
+            }],
         ),
         "HEALTH_LOAN_INTEREST_ABOVE_ASSISTANCE",
     );
@@ -335,7 +501,9 @@ fn b_health_loan_interest_above_the_assistance_or_the_1098_e_total_is_refused() 
     accepted(&save_with(
         &mut s,
         TaxSection::CanceledDebt,
-        vec![IncomeDocument::HealthLoanRepayment(health_loan(2_000_000, 160_000, true))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::HealthLoanRepayment(health_loan(2_000_000, 160_000, true)),
+        }],
     ));
     unsupported(&s.draft, "Health-service");
 }
@@ -344,6 +512,8 @@ fn b_health_loan_interest_above_the_assistance_or_the_1098_e_total_is_refused() 
 
 fn wildfire(declared: u32, qualified: bool) -> crate::FederalWildfireRelief {
     crate::FederalWildfireRelief {
+        source_issuer: Default::default(),
+        source_recipient: Default::default(),
         paid: 20260310,
         declared,
         reference: "FEMA-FM-5000".into(),
@@ -367,7 +537,9 @@ fn c_wildfire_relief_is_excluded_when_confirmed_and_income_otherwise() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::WildfireRelief(wildfire(20250108, true))],
+        vec![IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::WildfireRelief(wildfire(20250108, true)),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(agi(&s), 10_000_000);
@@ -407,7 +579,9 @@ fn c_wildfire_declaration_must_be_from_2015_through_2026() {
             save_with(
                 &mut s,
                 TaxSection::OtherIncome,
-                vec![IncomeDocument::WildfireRelief(wildfire(declared, true))],
+                vec![IncomeSource::OtherIncome {
+                    value: crate::OtherIncomeDocument::WildfireRelief(wildfire(declared, true)),
+                }],
             ),
             "WILDFIRE_DECLARED_OUTSIDE_2015_2026",
         );
@@ -416,13 +590,25 @@ fn c_wildfire_declaration_must_be_from_2015_through_2026() {
     let mut late = wildfire(20250108, true);
     late.paid = 20251231;
     rejected_with(
-        save_with(&mut s, TaxSection::OtherIncome, vec![IncomeDocument::WildfireRelief(late)]),
+        save_with(
+            &mut s,
+            TaxSection::OtherIncome,
+            vec![IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::WildfireRelief(late),
+            }],
+        ),
         "RELIEF_RECEIVED_OUTSIDE_2026",
     );
     let mut over = wildfire(20250108, true);
     over.withholding = over.amount + 1;
     rejected_with(
-        save_with(&mut s, TaxSection::OtherIncome, vec![IncomeDocument::WildfireRelief(over)]),
+        save_with(
+            &mut s,
+            TaxSection::OtherIncome,
+            vec![IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::WildfireRelief(over),
+            }],
+        ),
         "RELIEF_WITHHOLDING_ABOVE_PAYMENT",
     );
     assert_eq!(s.draft, before);
@@ -431,14 +617,16 @@ fn c_wildfire_declaration_must_be_from_2015_through_2026() {
         accepted(&save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::WildfireRelief(wildfire(declared, true))],
+            vec![IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::WildfireRelief(wildfire(declared, true)),
+            }],
         ));
     }
 }
 
 #[test]
 fn c_wildfire_and_disaster_imports_read_boxes_3_4_and_6_only() {
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     for (name, boxes) in [
         (
             "pub struct FederalWildfireRelief {",
@@ -463,9 +651,13 @@ fn c_wildfire_and_disaster_imports_read_boxes_3_4_and_6_only() {
         assert!(action.contains("validation = \"$.document_facts\""));
         let body = &model[start..];
         let body = &body[..body.find("\n}").unwrap()];
-        // The amount and the withholding only: dates, references, bases,
+        // Printed identity, amount and withholding: dates, references, bases,
         // purposes and the qualification are the filer's.
-        assert_eq!(marked_fields(body), vec!["amount", "withholding"], "{name}");
+        assert_eq!(
+            marked_fields(body),
+            vec!["source_issuer", "source_recipient", "amount", "withholding"],
+            "{name}"
+        );
     }
     // The 1099-G page sends a qualified grant here.
     assert!(
@@ -482,6 +674,8 @@ fn disaster(
     qualified: bool,
 ) -> crate::FederalDisasterRelief {
     crate::FederalDisasterRelief {
+        source_issuer: Default::default(),
+        source_recipient: Default::default(),
         received: 20260612,
         qualification,
         purpose,
@@ -504,11 +698,13 @@ fn d_disaster_relief_is_excluded_when_confirmed_and_income_otherwise() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::DisasterRelief(disaster(
-            declared(),
-            DisasterReliefPurpose::GovernmentWelfare,
-            true,
-        ))],
+        vec![IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::DisasterRelief(disaster(
+                declared(),
+                DisasterReliefPurpose::GovernmentWelfare,
+                true,
+            )),
+        }],
     ));
     assert_eq!(line16(&s), 764_300);
     let rows = shown(&mut s, TaxSection::OtherIncome);
@@ -537,11 +733,13 @@ fn d_a_carrier_accident_or_government_assistance_needs_the_matching_purpose() {
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::DisasterRelief(disaster(
-                DisasterQualification::CarrierAccident { event: "Rail accident".into() },
-                DisasterReliefPurpose::PersonalExpense,
-                true,
-            ))],
+            vec![IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::DisasterRelief(disaster(
+                    DisasterQualification::CarrierAccident { event: "Rail accident".into() },
+                    DisasterReliefPurpose::PersonalExpense,
+                    true,
+                )),
+            }],
         ),
         "DISASTER_CARRIER_ACCIDENT_NEEDS_CARRIER_PAYMENT",
     );
@@ -549,15 +747,17 @@ fn d_a_carrier_accident_or_government_assistance_needs_the_matching_purpose() {
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::DisasterRelief(disaster(
-                DisasterQualification::GovernmentAssistance {
-                    event: "Flood".into(),
-                    authority: "State".into(),
-                    payer: "County".into(),
-                },
-                DisasterReliefPurpose::PersonalExpense,
-                true,
-            ))],
+            vec![IncomeSource::OtherIncome {
+                value: crate::OtherIncomeDocument::DisasterRelief(disaster(
+                    DisasterQualification::GovernmentAssistance {
+                        event: "Flood".into(),
+                        authority: "State".into(),
+                        payer: "County".into(),
+                    },
+                    DisasterReliefPurpose::PersonalExpense,
+                    true,
+                )),
+            }],
         ),
         "DISASTER_ASSISTANCE_NEEDS_GOVERNMENT_PAYMENT",
     );
@@ -566,14 +766,16 @@ fn d_a_carrier_accident_or_government_assistance_needs_the_matching_purpose() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::DisasterRelief(disaster(
-            DisasterQualification::CarrierAccident { event: "Rail accident".into() },
-            DisasterReliefPurpose::CommonCarrier {
-                carrier: "Rail Co".into(),
-                loss: DisasterCarrierLoss::PhysicalInjury,
-            },
-            true,
-        ))],
+        vec![IncomeSource::OtherIncome {
+            value: crate::OtherIncomeDocument::DisasterRelief(disaster(
+                DisasterQualification::CarrierAccident { event: "Rail accident".into() },
+                DisasterReliefPurpose::CommonCarrier {
+                    carrier: "Rail Co".into(),
+                    loss: DisasterCarrierLoss::PhysicalInjury,
+                },
+                true,
+            )),
+        }],
     ));
 }
 
@@ -618,7 +820,13 @@ fn e_living_expense_insurance_taxes_only_the_excess_over_the_temporary_increase(
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::CasualtyLivingInsurance(living(false, Some(20260701), true))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::CasualtyLivingInsurance(living(
+                false,
+                Some(20260701),
+                true,
+            )),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(agi(&s), 10_025_000);
@@ -660,7 +868,7 @@ fn e_the_fema_reference_goes_with_a_disaster_area_and_use_is_regained_after_it_w
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::CasualtyLivingInsurance(v)],
+            vec![IncomeSource::Record { value: crate::IncomeRecord::CasualtyLivingInsurance(v) }],
         ),
         "CASUALTY_LIVING_DISASTER_NEEDS_REFERENCE",
     );
@@ -670,7 +878,7 @@ fn e_the_fema_reference_goes_with_a_disaster_area_and_use_is_regained_after_it_w
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::CasualtyLivingInsurance(v)],
+            vec![IncomeSource::Record { value: crate::IncomeRecord::CasualtyLivingInsurance(v) }],
         ),
         "CASUALTY_LIVING_REFERENCE_WITHOUT_DISASTER",
     );
@@ -678,7 +886,13 @@ fn e_the_fema_reference_goes_with_a_disaster_area_and_use_is_regained_after_it_w
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::CasualtyLivingInsurance(living(false, Some(20260531), true))],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::CasualtyLivingInsurance(living(
+                    false,
+                    Some(20260531),
+                    true,
+                )),
+            }],
         ),
         "CASUALTY_LIVING_REGAINED_BEFORE_LOST",
     );
@@ -707,7 +921,9 @@ fn f_a_hazard_mitigation_grant_is_excluded_or_left_out_and_previews_zero() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::DisasterMitigation(mitigation(true))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::DisasterMitigation(mitigation(true)),
+        }],
     ));
     assert_eq!(line16(&s), 764_300);
     assert!(!noted(&supported(&s.draft), "WARN_DISASTER_MITIGATION_LEFT_OUT"));
@@ -725,10 +941,12 @@ fn f_a_hazard_mitigation_grant_is_excluded_or_left_out_and_previews_zero() {
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::DisasterMitigation(crate::FederalDisasterMitigation {
-                received: 20270101,
-                ..mitigation(true)
-            })],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::DisasterMitigation(crate::FederalDisasterMitigation {
+                    received: 20270101,
+                    ..mitigation(true)
+                }),
+            }],
         ),
         "RELIEF_RECEIVED_OUTSIDE_2026",
     );
@@ -767,12 +985,14 @@ fn g_scholarship_follows_pub_970_worksheet_1_1() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::Scholarship(award(
-            1_000_000,
-            200_000,
-            500_000,
-            ScholarshipService::PaidServices { amount: 300_000 },
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Scholarship(award(
+                1_000_000,
+                200_000,
+                500_000,
+                ScholarshipService::PaidServices { amount: 300_000 },
+            )),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "taxable_scholarships"), 5000);
@@ -791,12 +1011,14 @@ fn g_scholarship_follows_pub_970_worksheet_1_1() {
     accepted(&save_only(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::Scholarship(award(
-            1_000_000,
-            200_000,
-            700_000,
-            ScholarshipService::None,
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Scholarship(award(
+                1_000_000,
+                200_000,
+                700_000,
+                ScholarshipService::None,
+            )),
+        }],
     ));
     assert_eq!(agi(&s), 6_300_000);
     assert_eq!(line16(&s), 538_300);
@@ -807,7 +1029,11 @@ fn g_scholarship_follows_pub_970_worksheet_1_1() {
     {
         *degree_candidate = false;
     }
-    accepted(&save_only(&mut s, TaxSection::OtherIncome, vec![IncomeDocument::Scholarship(grant)]));
+    accepted(&save_only(
+        &mut s,
+        TaxSection::OtherIncome,
+        vec![IncomeSource::Record { value: crate::IncomeRecord::Scholarship(grant) }],
+    ));
     assert_eq!(agi(&s), 7_000_000);
 }
 
@@ -820,12 +1046,14 @@ fn g_scholarship_spending_services_and_restriction_stay_within_the_award() {
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::Scholarship(award(
-                1_000_000,
-                200_000,
-                600_000,
-                ScholarshipService::PaidServices { amount: 300_000 },
-            ))],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::Scholarship(award(
+                    1_000_000,
+                    200_000,
+                    600_000,
+                    ScholarshipService::PaidServices { amount: 300_000 },
+                )),
+            }],
         ),
         "SCHOLARSHIP_SPENDING_ABOVE_AWARD",
     );
@@ -834,12 +1062,14 @@ fn g_scholarship_spending_services_and_restriction_stay_within_the_award() {
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::Scholarship(award(
-                1_000_000,
-                200_000,
-                800_001,
-                ScholarshipService::None,
-            ))],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::Scholarship(award(
+                    1_000_000,
+                    200_000,
+                    800_001,
+                    ScholarshipService::None,
+                )),
+            }],
         ),
         "SCHOLARSHIP_SPENDING_ABOVE_AWARD",
     );
@@ -848,12 +1078,14 @@ fn g_scholarship_spending_services_and_restriction_stay_within_the_award() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::Scholarship(award(
-            1_000_000,
-            200_000,
-            500_000,
-            ScholarshipService::PaidServices { amount: 300_000 },
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Scholarship(award(
+                1_000_000,
+                200_000,
+                500_000,
+                ScholarshipService::PaidServices { amount: 300_000 },
+            )),
+        }],
     ));
 }
 
@@ -870,10 +1102,12 @@ fn g_a_graduate_stipend_is_ira_compensation() {
         accepted(&save_only(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::Scholarship(Scholarship::GraduateStipend {
-                received: 3_000_000,
-                eligible,
-            })],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::Scholarship(Scholarship::GraduateStipend {
+                    received: 3_000_000,
+                    eligible,
+                }),
+            }],
         ));
         if eligible {
             let r = supported(&s.draft);
@@ -893,19 +1127,29 @@ fn g_a_scholarship_row_is_missing_note_follows_the_1098_t_box_5() {
     // with no scholarship row: one review note, offered with Other income.
     let mut d = complete(FederalStatus::Single);
     let sid0_1032 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education = vec![FederalEducation {
-        student: sid0_1032,
-        method: EducationChoice::AmericanOpportunity,
-        expenses: FederalEducationExpenses {
-            tuition: 600_000,
-            school_materials: 0,
-            other_materials: 0,
-            assistance: 900_000,
-            refunds: 0,
-            other_benefits: 0,
-            scholarship_in_income: crate::ScholarshipInclusion::None,
-        },
-    }];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![{
+            let mut pair = native_education(
+                sid0_1032,
+                FederalEducationExpenses {
+                    tuition: 600_000,
+                    school_materials: 0,
+                    other_materials: 0,
+                    assistance: 900_000,
+                    refunds: 0,
+                    other_benefits: 0,
+                    scholarship_in_income: crate::ScholarshipInclusion::None,
+                },
+                EducationChoice::AmericanOpportunity,
+            );
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
+        }],
+    );
     let mut s = Interview::new(TEST_USER, d);
     let r = supported(&s.draft);
     assert!(noted(&r, "NOTE_SCHOLARSHIP_MAY_BE_TAXABLE"), "{r:?}");
@@ -916,25 +1160,42 @@ fn g_a_scholarship_row_is_missing_note_follows_the_1098_t_box_5() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::Scholarship(award(900_000, 0, 600_000, ScholarshipService::None))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Scholarship(award(
+                900_000,
+                0,
+                600_000,
+                ScholarshipService::None,
+            )),
+        }],
     ));
     assert!(!noted(&supported(&s.draft), "NOTE_SCHOLARSHIP_MAY_BE_TAXABLE"));
     // Box 5 within the tuition raises no note.
     let mut d = complete(FederalStatus::Single);
     let sid0_1078 = -1; // You, the first person of the catalog
-    d.credits.as_mut().unwrap().education = vec![FederalEducation {
-        student: sid0_1078,
-        method: EducationChoice::AmericanOpportunity,
-        expenses: FederalEducationExpenses {
-            tuition: 600_000,
-            school_materials: 0,
-            other_materials: 0,
-            assistance: 600_000,
-            refunds: 0,
-            other_benefits: 0,
-            scholarship_in_income: crate::ScholarshipInclusion::None,
-        },
-    }];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![{
+            let mut pair = native_education(
+                sid0_1078,
+                FederalEducationExpenses {
+                    tuition: 600_000,
+                    school_materials: 0,
+                    other_materials: 0,
+                    assistance: 600_000,
+                    refunds: 0,
+                    other_benefits: 0,
+                    scholarship_in_income: crate::ScholarshipInclusion::None,
+                },
+                EducationChoice::AmericanOpportunity,
+            );
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
+        }],
+    );
     assert!(!noted(&supported(&d), "NOTE_SCHOLARSHIP_MAY_BE_TAXABLE"));
 }
 
@@ -950,7 +1211,9 @@ fn h_jury_pay_is_income_and_the_remitted_part_is_an_adjustment() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::JuryPay(JuryPay { received: 100_000, remitted: 60_000 })],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::JuryPay(JuryPay { received: 100_000, remitted: 60_000 }),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "jury_pay"), 1000);
@@ -972,7 +1235,12 @@ fn h_jury_pay_is_income_and_the_remitted_part_is_an_adjustment() {
         save_with(
             &mut s,
             TaxSection::OtherIncome,
-            vec![IncomeDocument::JuryPay(JuryPay { received: 100_000, remitted: 120_000 })],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::JuryPay(JuryPay {
+                    received: 100_000,
+                    remitted: 120_000,
+                }),
+            }],
         ),
         "JURY_REMITTED_ABOVE_RECEIVED",
     );
@@ -983,6 +1251,7 @@ fn h_jury_pay_is_income_and_the_remitted_part_is_an_adjustment() {
 
 fn hobby(receipts: i64, ordinary: bool) -> HobbySales {
     HobbySales {
+        related: crate::RelatedForms::default(),
         receipts,
         inventory: BusinessInventory::Cost {
             method: crate::InventoryMethod::Cost,
@@ -1009,7 +1278,9 @@ fn i_hobby_sales_are_receipts_less_cost_of_goods_sold_without_a_loss() {
     accepted(&save_with(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::HobbySales(hobby(1_000_000, true))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::HobbySales(hobby(1_000_000, true)),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "hobby_sales_income"), 4000);
@@ -1028,14 +1299,16 @@ fn i_hobby_sales_are_receipts_less_cost_of_goods_sold_without_a_loss() {
     accepted(&save_only(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::HobbySales(hobby(100_000, true))],
+        vec![IncomeSource::Record { value: crate::IncomeRecord::HobbySales(hobby(100_000, true)) }],
     ));
     assert_eq!(agi(&s), 6_000_000);
     // Not an ordinary hobby: left out with a notice and previews nothing.
     accepted(&save_only(
         &mut s,
         TaxSection::OtherIncome,
-        vec![IncomeDocument::HobbySales(hobby(1_000_000, false))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::HobbySales(hobby(1_000_000, false)),
+        }],
     ));
     let r = supported(&s.draft);
     assert!(noted(&r, "WARN_HOBBY_SALES_LEFT_OUT"));
@@ -1055,6 +1328,8 @@ fn gambling_business(
     let mut b = business(winnings);
     b.expenses.travel = travel;
     b.more = BusinessDetails {
+        tips_amount_kinds: alloc::vec![1],
+        overtime_amount_kinds: alloc::vec![1],
         ministerial: false,
         notary_profit: 0,
         notary_gross: None,
@@ -1077,14 +1352,17 @@ fn j_professional_gambling_is_a_business_record_with_the_90_percent_limit() {
     accepted(&save_only(
         &mut s,
         TaxSection::SelfEmployment,
-        vec![IncomeDocument::Business(gambling_business(
-            10_000_000, 9_000_000, 24_000, 1_000_000, true,
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Business(gambling_business(
+                10_000_000, 9_000_000, 24_000, 1_000_000, true,
+            )),
+        }],
     ));
     assert!(matches!(
         s.draft.income[0].income,
         FederalIncome::Business {
             data: FederalBusiness {
+                interest_limit_election: None,
                 ministerial: false,
                 notary_profit: 0,
                 notary_gross: None,
@@ -1101,7 +1379,8 @@ fn j_professional_gambling_is_a_business_record_with_the_90_percent_limit() {
     assert_round_trip(&s, TaxSection::SelfEmployment);
     // The business reopens as the gambling record, not as ordinary.
     let rows = shown(&mut s, TaxSection::SelfEmployment);
-    let IncomeDocument::Business(reopened) = &rows[0].document else {
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(reopened) } = &rows[0].document
+    else {
         panic!("expected the business")
     };
     assert_eq!(
@@ -1119,9 +1398,11 @@ fn j_professional_gambling_losses_never_make_a_schedule_c_loss() {
     accepted(&save_only(
         &mut s,
         TaxSection::SelfEmployment,
-        vec![IncomeDocument::Business(gambling_business(
-            10_000_000, 12_000_000, 24_000, 1_000_000, true,
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Business(gambling_business(
+                10_000_000, 12_000_000, 24_000, 1_000_000, true,
+            )),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(value(&r, "self_employment_tax"), 0);
@@ -1137,10 +1418,11 @@ fn j_the_accounting_method_round_trips_and_a_not_eligible_business_is_left_out()
     accepted(&save_only(
         &mut s,
         TaxSection::SelfEmployment,
-        vec![IncomeDocument::Business(accrual)],
+        vec![IncomeSource::Record { value: crate::IncomeRecord::Business(accrual) }],
     ));
     let rows = shown(&mut s, TaxSection::SelfEmployment);
-    let IncomeDocument::Business(reopened) = &rows[0].document else {
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(reopened) } = &rows[0].document
+    else {
         panic!("expected the business")
     };
     assert_eq!(reopened.accounting, BusinessAccounting::Accrual);
@@ -1149,9 +1431,11 @@ fn j_the_accounting_method_round_trips_and_a_not_eligible_business_is_left_out()
     accepted(&save_only(
         &mut s,
         TaxSection::SelfEmployment,
-        vec![IncomeDocument::Business(gambling_business(
-            10_000_000, 9_000_000, 24_000, 1_000_000, false,
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Business(gambling_business(
+                10_000_000, 9_000_000, 24_000, 1_000_000, false,
+            )),
+        }],
     ));
     let r = supported(&s.draft);
     assert!(noted(&r, "WARN_GAMBLING_BUSINESS_LEFT_OUT"), "{r:?}");
@@ -1166,9 +1450,11 @@ fn j_w2g_withholding_stays_within_the_winnings() {
         save_only(
             &mut s,
             TaxSection::SelfEmployment,
-            vec![IncomeDocument::Business(gambling_business(
-                10_000_000, 9_000_000, 12_000_000, 1_000_000, true,
-            ))],
+            vec![IncomeSource::Record {
+                value: crate::IncomeRecord::Business(gambling_business(
+                    10_000_000, 9_000_000, 12_000_000, 1_000_000, true,
+                )),
+            }],
         ),
         "GAMBLING_BUSINESS_WITHHOLDING_ABOVE_WINNINGS",
     );
@@ -1176,27 +1462,29 @@ fn j_w2g_withholding_stays_within_the_winnings() {
     accepted(&save_only(
         &mut s,
         TaxSection::SelfEmployment,
-        vec![IncomeDocument::Business(gambling_business(
-            10_000_000, 9_000_000, 10_000_000, 1_000_000, true,
-        ))],
+        vec![IncomeSource::Record {
+            value: crate::IncomeRecord::Business(gambling_business(
+                10_000_000, 9_000_000, 10_000_000, 1_000_000, true,
+            )),
+        }],
     ));
 }
 
 #[test]
 fn j_a_casual_w2g_left_out_sends_the_person_to_self_employment() {
-    let model = include_str!("../../lib.rs");
+    let model = crate::interview::resource_text("WARN_GAMBLING_LEFT_OUT");
     assert!(
         model.contains("enter a gambling business on Self-employment, or your tax may be higher.")
     );
     // The Business page's special question no longer names gambling.
-    let federal = include_str!("../../federal/federal_model.rs");
+    let federal = include_str!("../../business/schedule_c_model.rs");
     assert!(federal.contains("/// Timber depletion (Form T), a Form 7205 deduction or another unlisted special treatment applies"));
     assert!(!federal.contains("Professional gambling, a foreign business"));
 }
 
 // ---- K: disability pension in the 1099-R ------------------------------------
 
-fn disability_1099r(gross: i64, wages: DisabilityWages, ira: bool) -> R1099 {
+fn disability_1099r(gross: i64, wages: DisabilityWages, ira: bool) -> R1099Answered {
     r1099(gross, DistributionCode::Disability { began: 20240301, wages }, ira)
 }
 fn disabled_single() -> Interview {
@@ -1217,7 +1505,13 @@ fn k_a_code_3_pension_before_minimum_retirement_age_is_wages_on_line_1h() {
     accepted(&save_only(
         &mut s,
         TaxSection::Retirement,
-        vec![IncomeDocument::R1099(disability_1099r(3_000_000, DisabilityWages::All, false))],
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                3_000_000,
+                DisabilityWages::All,
+                false,
+            ))),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "1h"), 3_000_000);
@@ -1231,11 +1525,13 @@ fn k_a_code_3_pension_before_minimum_retirement_age_is_wages_on_line_1h() {
     accepted(&save_only(
         &mut s,
         TaxSection::Retirement,
-        vec![IncomeDocument::R1099(disability_1099r(
-            3_000_000,
-            DisabilityWages::Part { amount: 1_800_000 },
-            false,
-        ))],
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                3_000_000,
+                DisabilityWages::Part { amount: 1_800_000 },
+                false,
+            ))),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "1h"), 1_800_000);
@@ -1249,7 +1545,13 @@ fn k_a_code_3_pension_before_minimum_retirement_age_is_wages_on_line_1h() {
     accepted(&save_only(
         &mut s,
         TaxSection::Retirement,
-        vec![IncomeDocument::R1099(disability_1099r(3_000_000, DisabilityWages::None, false))],
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                3_000_000,
+                DisabilityWages::None,
+                false,
+            ))),
+        }],
     ));
     let r = supported(&s.draft);
     assert_eq!(return_line(&r, "1h"), 0);
@@ -1273,10 +1575,15 @@ fn k_the_wages_part_is_earned_income_but_not_ira_compensation() {
             d.adjustments.as_mut().unwrap().iras = ira_facts(200_000, 0, Answer::No);
         }
         let mut s = Interview::new(TEST_USER, d);
+        crate::tests::support::client::admit_native_fixture_facts(&mut s);
         accepted(&save_only(
             &mut s,
             TaxSection::Retirement,
-            vec![IncomeDocument::R1099(disability_1099r(1_700_000, wages, false))],
+            vec![IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                    1_700_000, wages, false,
+                ))),
+            }],
         ));
         s.draft
     };
@@ -1307,7 +1614,11 @@ fn k_the_wages_part_counts_as_earned_income_for_a_dependent_standard_deduction()
         accepted(&save_only(
             &mut s,
             TaxSection::Retirement,
-            vec![IncomeDocument::R1099(disability_1099r(3_000_000, wages, false))],
+            vec![IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                    3_000_000, wages, false,
+                ))),
+            }],
         ));
         value(&supported(&s.draft), "deduction")
     };
@@ -1323,7 +1634,13 @@ fn k_an_ira_carries_no_wages_and_the_part_stays_within_the_taxable_amount() {
         save_only(
             &mut s,
             TaxSection::Retirement,
-            vec![IncomeDocument::R1099(disability_1099r(3_000_000, DisabilityWages::All, true))],
+            vec![IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                    3_000_000,
+                    DisabilityWages::All,
+                    true,
+                ))),
+            }],
         ),
         "R_IRA_DISABILITY_NOT_WAGES",
     );
@@ -1331,11 +1648,13 @@ fn k_an_ira_carries_no_wages_and_the_part_stays_within_the_taxable_amount() {
         save_only(
             &mut s,
             TaxSection::Retirement,
-            vec![IncomeDocument::R1099(disability_1099r(
-                3_000_000,
-                DisabilityWages::Part { amount: 3_100_000 },
-                false,
-            ))],
+            vec![IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                    3_000_000,
+                    DisabilityWages::Part { amount: 3_100_000 },
+                    false,
+                ))),
+            }],
         ),
         "R_DISABILITY_WAGES_ABOVE_TAXABLE",
     );
@@ -1344,22 +1663,30 @@ fn k_an_ira_carries_no_wages_and_the_part_stays_within_the_taxable_amount() {
     accepted(&save_only(
         &mut s,
         TaxSection::Retirement,
-        vec![IncomeDocument::R1099(disability_1099r(3_000_000, DisabilityWages::None, true))],
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                3_000_000,
+                DisabilityWages::None,
+                true,
+            ))),
+        }],
     ));
     accepted(&save_only(
         &mut s,
         TaxSection::Retirement,
-        vec![IncomeDocument::R1099(disability_1099r(
-            3_000_000,
-            DisabilityWages::Part { amount: 3_000_000 },
-            false,
-        ))],
+        vec![IncomeSource::Retirement {
+            value: crate::RetirementDocument::R1099(retirement_document(disability_1099r(
+                3_000_000,
+                DisabilityWages::Part { amount: 3_000_000 },
+                false,
+            ))),
+        }],
     ));
 }
 
 #[test]
 fn k_the_separate_disability_pension_kind_is_gone() {
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     assert!(!model.contains("DisabilityPension"));
     assert!(!include_str!("../../core/unknowns.rs").contains("DisabilityPension"));
 }
@@ -1394,9 +1721,12 @@ fn l_foreign_services_boundary_figures_for_the_form_2555_unit() {
 #[test]
 fn less_common_income_no_longer_names_relief_payments_or_the_nine_kinds() {
     assert!(
-        RareSituation::ForeignCorporation.refused().lines.contains("Schedule 1 lines 8n and 8o")
+        Unprepared::from(RareSituation::ForeignCorporation)
+            .refused()
+            .lines
+            .contains("Schedule 1 lines 8n and 8o")
     );
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     assert!(!model.contains("ReliefPayments"));
     // Other income that no page owns became the Other income page's own kind.
     assert!(!model.contains("/// Other income not listed elsewhere (Schedule 1 line 8z)"));
@@ -1406,35 +1736,45 @@ fn less_common_income_no_longer_names_relief_payments_or_the_nine_kinds() {
 fn the_topics_offer_the_new_kinds_and_east_palestine_is_page_text_only() {
     let kinds = |topic: TaxSection| {
         let mut s = single();
-        let P::SaveIncomes { allowed_documents, .. } = page(&mut s, topic) else { unreachable!() };
-        allowed_documents
+        let allowed_documents = match page(&mut s, topic) {
+            P::SaveIncomes { allowed_documents, .. } => allowed_documents,
+            // The Wages topic's record kinds are its typed Union; printed
+            // wage forms are offered by the Document center below.
+            P::SaveWagesAnswers { .. } => Vec::new(),
+            _ => unreachable!(),
+        };
+        let P::SaveDocuments { allowed_documents: source_kinds, .. } = open_documents(&mut s)
+        else {
+            unreachable!()
+        };
+        let mut kinds = allowed_documents;
+        kinds.extend(source_kinds);
+        kinds
     };
     let index = |name: i32| name;
     let wages = kinds(TaxSection::Wages);
-    assert!(
-        wages.contains(&index(libertas_macros::variant_index!(IncomeDocument::Form8919) as i32))
-    );
+    assert!(wages.contains(&index(
+        libertas_macros::variant_index!(crate::IncomeSourceKind::Form8919) as i32
+    )));
     let debt = kinds(TaxSection::CanceledDebt);
-    assert!(
-        debt.contains(
-            &(libertas_macros::variant_index!(IncomeDocument::HealthLoanRepayment) as i32)
-        )
-    );
+    assert!(debt.contains(
+        &(libertas_macros::variant_index!(crate::IncomeSourceKind::HealthLoanRepayment) as i32)
+    ));
     let other = kinds(TaxSection::OtherIncome);
     for kind in [
-        libertas_macros::variant_index!(IncomeDocument::Scholarship) as i32,
-        libertas_macros::variant_index!(IncomeDocument::JuryPay) as i32,
-        libertas_macros::variant_index!(IncomeDocument::HobbySales) as i32,
-        libertas_macros::variant_index!(IncomeDocument::WildfireRelief) as i32,
-        libertas_macros::variant_index!(IncomeDocument::DisasterRelief) as i32,
-        libertas_macros::variant_index!(IncomeDocument::CasualtyLivingInsurance) as i32,
-        libertas_macros::variant_index!(IncomeDocument::DisasterMitigation) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::Scholarship) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::JuryPay) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::HobbySales) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::WildfireRelief) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::DisasterRelief) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::CasualtyLivingInsurance) as i32,
+        libertas_macros::variant_index!(crate::IncomeSourceKind::DisasterMitigation) as i32,
     ] {
         assert!(other.contains(&kind), "{kind}");
     }
     // No kind for the East Palestine payments: the disaster relief text says
     // they need not be entered.
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = include_str!("../../federal/income_editor.rs");
     assert!(model.contains(
         "East Palestine train derailment payments are not taxable and need not be entered."
     ));
@@ -1442,16 +1782,526 @@ fn the_topics_offer_the_new_kinds_and_east_palestine_is_page_text_only() {
 }
 
 #[test]
-fn the_new_kinds_leave_with_their_topics_and_the_removed_summary_names_them() {
+fn actual_state_local_coverage_calculates_each_independent_employee_tax() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    // IRC3101 imposes SS and Medicare independently. $5,000: $310 SS,
+    // $72.50 -> $73 Medicare; ordinary income tax on $65,000 is $5,623.
+    for (social, medicare, ss_tax, med_tax) in [
+        (C::Covered, C::Covered, 310, 73),
+        (C::Covered, C::NotCovered, 310, 0),
+        (C::NotCovered, C::Covered, 0, 73),
+        (C::NotCovered, C::NotCovered, 0, 0),
+    ] {
+        let mut d = complete(FederalStatus::Single);
+        let FederalIncome::EmployeeWages { mut data } = omitted_employee_wages(5_000) else {
+            unreachable!()
+        };
+        data.payroll = S::Government { social, medicare, reason: None };
+        add(&mut d, income(FederalIncome::EmployeeWages { data }));
+        let r = estimate(&d);
+        assert_eq!(
+            r.state,
+            ResultState::EstimatedForSupportedScope,
+            "{social:?}/{medicare:?}: {:?}",
+            r.issues
+        );
+        assert_eq!(value(&r, "employee_coverage_0_social_tax"), ss_tax);
+        assert_eq!(value(&r, "employee_coverage_0_medicare_tax"), med_tax);
+        assert_eq!(r.tax, Some((5_623 + ss_tax + med_tax) * 100));
+        assert_eq!(return_line(&r, "1h"), 500_000);
+        assert_eq!(return_line(&r, "1g"), 0);
+        assert!(!r.lines.iter().any(|line| {
+            line.form_line.as_ref().is_some_and(|form| form.form == TaxForm::Form8919)
+        }));
+        assert_eq!(estimate(&restart(d.clone()).draft), r);
+    }
+}
+
+#[test]
+fn government_both_with_real_reason_uses_existing_8919_and_common_ss_base_once() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 18_000_000, 0);
+    let mut ordinary = pay(300_000, code_a(), true);
+    ordinary.payroll =
+        S::Government { social: C::Covered, medicare: C::Covered, reason: Some(code_a()) };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: ordinary }));
+    let mut partial = pay(500_000, code_a(), false);
+    partial.payroll = S::Government { social: C::Covered, medicare: C::NotCovered, reason: None };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: partial }));
+    let r = estimate(&d);
+    // Form8919 first: $3,000 at6.2%=$186,Medicare=$44.
+    // Other actualSS pay then consumes only the remaining$1,500: $93.
+    assert_eq!(value(&r, "employee_wages_0_social_tax"), 186);
+    assert_eq!(value(&r, "employee_wages_0_medicare_tax"), 44);
+    assert_eq!(value(&r, "employee_coverage_0_social_tax"), 93);
+    assert_eq!(value(&r, "employee_coverage_0_medicare_tax"), 0);
+    assert_eq!(return_line(&r, "1g"), 300_000);
+    assert_eq!(return_line(&r, "1h"), 500_000);
+    assert_eq!(value(&r, "schedule_2_uncollected_wage_tax"), 230);
+    assert!(
+        r.lines
+            .iter()
+            .find(|line| line.id == "schedule_2_total_additional_taxes")
+            .unwrap()
+            .form_line
+            .is_none()
+    );
+}
+
+#[test]
+fn independent_unknown_coverage_preserves_known_medicare_and_saturated_ss_endpoints() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 20_000_000, 0);
+    if let FederalIncome::Wage { data } = &mut d.income[0].income {
+        let mut data = edit_wage(data);
+        data.social_wages = 10_000_000;
+        data.social_tax = 620_000;
+    }
+    let mut employee = pay(1_000_000, code_a(), false);
+    employee.payroll = S::Government { social: C::Unavailable, medicare: C::Covered, reason: None };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let r = estimate(&d);
+    assert_eq!(r.tax, None);
+    assert_eq!(r.state, ResultState::Incomplete);
+    assert_eq!(value(&r, "employee_coverage_0_medicare_tax"), 145);
+    assert_eq!(value(&r, "additional_medicare_employee_wages"), 0);
+    assert_eq!(value(&r, "additional_medicare_other_employee_wages"), 10_000);
+    assert_eq!(value(&r, "additional_medicare_payroll_wages"), 90);
+    let source = d.income.last().unwrap();
+    assert!(
+        r.issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE"
+                && issue.context == crate::interview::income_issue_context(source))
+    );
+    // The same missing SS answer is immaterial once reportedSS reaches itscap.
+    if let FederalIncome::Wage { data } = &mut d.income[0].income {
+        let mut data = edit_wage(data);
+        data.social_wages = 18_450_000;
+        data.social_tax = 1_143_900;
+    }
+    let complete = estimate(&d);
+    assert_eq!(complete.state, ResultState::EstimatedForSupportedScope, "{:?}", complete.issues);
+    assert_eq!(value(&complete, "employee_coverage_0_medicare_tax"), 145);
+    assert_eq!(value(&complete, "additional_medicare_payroll_wages"), 90);
+    // Zero actual pay requires no missing payroll answer.
+    if let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income {
+        data.wages = 0;
+        data.payroll = S::Unavailable;
+    }
+    assert_eq!(estimate(&d).state, ResultState::EstimatedForSupportedScope);
+}
+
+#[test]
+fn actual_totalization_certificate_differs_from_foreign_employment_label() {
+    use crate::EmployeePayrollSource as S;
+    let mut d = complete(FederalStatus::Single);
+    let mut employee = pay(500_000, code_a(), false);
+    employee.payroll = S::TotalizationCertificate;
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let exempt = estimate(&d);
+    assert_eq!(exempt.state, ResultState::EstimatedForSupportedScope);
+    assert_eq!(exempt.tax, Some(562_300));
+    assert_eq!(return_line(&exempt, "1h"), 500_000);
+    if let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income {
+        data.payroll = S::ForeignGovernment;
+    }
+    let foreign = estimate(&d);
+    assert_eq!(foreign.tax, None);
+    assert_eq!(foreign.state, ResultState::Unsupported);
+    assert!(!foreign.lines.iter().any(|line| line.id == "agi"));
+    assert!(
+        foreign
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_FOREIGN_GOVERNMENT_PAYROLL")
+    );
+}
+
+#[test]
+fn actual_rrta_uses_independent_8959_threshold_actual_withholding_and_ss_coordination() {
+    use crate::EmployeePayrollSource as S;
+    for representative in [false, true] {
+        let mut d = complete(FederalStatus::Single);
+        d.income[0] = wage(1, Owner::Taxpayer, 21_000_000, 0);
+        let mut employee = pay(if representative { 0 } else { 21_000_000 }, code_a(), false);
+        let reported = employee_railroad_source(
+            [21_000_000, 1_143_900, 0, 304_500, 12_300]
+                .map(|amount| SourceCents::Reported { amount }),
+        );
+        employee.payroll = if representative {
+            S::RailroadRepresentative { reported }
+        } else {
+            S::Railroad { reported }
+        };
+        add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+        add(&mut d, income(omitted_employee_wages(5_000)));
+        let r = estimate(&d);
+        // Separate $200,000 thresholds: ordinary$215,000 ->$135;
+        // RRTA$210,000 ->$90, actual Additional withholding$123.
+        assert_eq!(value(&r, "additional_medicare_payroll_wages"), 135);
+        assert_eq!(value(&r, "additional_medicare_rrta_tax"), 90);
+        assert_eq!(value(&r, "additional_medicare_rrta_withheld"), 123);
+        // Both actual payroll sources consume the physical employee's base.
+        form8919_base(&r, 0, 369_000, 0);
+        assert_eq!(value(&r, "employee_wages_0_social_base"), 0);
+        assert_eq!(value(&r, "employee_wages_0_social_tax"), 0);
+        assert_eq!(value(&r, "employee_wages_0_medicare_tax"), 73);
+        assert_eq!(r.tax, None);
+        assert_eq!(r.state, ResultState::Unsupported);
+        if representative {
+            assert!(!r.lines.iter().any(|line| line.id == "agi"));
+        }
+        assert!(
+            r.issues
+                .iter()
+                .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_RAILROAD_ORDINARY_TAX")
+        );
+        assert_eq!(estimate(&restart(d.clone()).draft), r);
+
+        // Missing RRTA compensation withholds dependent bases, while the
+        // annual statutory wage base and ordinary Medicare remain known.
+        let FederalIncome::EmployeeWages { data } = &mut d.income[1].income else { unreachable!() };
+        let (S::Railroad { reported } | S::RailroadRepresentative { reported }) = &mut data.payroll
+        else {
+            unreachable!()
+        };
+        reported.compensation = SourceCents::Unavailable;
+        let unknown = estimate(&d);
+        assert_eq!(value(&unknown, "employee_wages_0_wage_base"), 184_500);
+        assert_eq!(
+            printed_line(&unknown, "employee_wages_0_wage_base"),
+            (TaxForm::Form8919, "7".into())
+        );
+        assert_eq!(value(&unknown, "employee_wages_0_medicare_tax"), 73);
+        assert_eq!(
+            crate::tests::support::assert::displayed_line_amount(
+                &unknown,
+                "employee_wages_0_wage_base"
+            ),
+            18_450_000
+        );
+        assert!(!crate::draft_return(&unknown).iter().any(|row| {
+            row.form_line.as_ref().is_some_and(|line| {
+                line.form == TaxForm::Form8919 && matches!(line.line.as_str(), "8" | "9")
+            })
+        }));
+        for suffix in ["used_base", "remaining_base", "social_base", "social_tax", "tax"] {
+            let id = alloc::format!("employee_wages_0_{suffix}");
+            assert!(!unknown.lines.iter().any(|row| row.id == id), "{id}");
+        }
+        assert_eq!(unknown.tax, None);
+        assert_eq!(estimate(&restart(d).draft), unknown);
+    }
+}
+
+#[test]
+fn actual_payroll_physical_owner_survives_community_income_sharing_and_spouse_swap() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    for owner in [Owner::Taxpayer, Owner::Spouse] {
+        let mut d = complete(FederalStatus::Separate);
+        d.setup.as_mut().unwrap().community_property = CommunityProperty::Yes {
+            state: CommunityState::California,
+            rule: CommunityRule::Halves,
+        };
+        d.income.clear();
+        let mut employee = pay(1_000_000, code_a(), false);
+        employee.payroll = S::Government { social: C::Covered, medicare: C::Covered, reason: None };
+        let mut source = income(FederalIncome::EmployeeWages { data: employee });
+        source.owner = crate::DocumentOwner::from(owner);
+        source.community = CommunityShare::Community;
+        add(&mut d, source);
+        let r = estimate(&d);
+        assert_eq!(r.state, ResultState::EstimatedForSupportedScope, "{:?}", r.issues);
+        assert_eq!(return_line(&r, "1h"), 500_000);
+        assert_eq!(
+            value(&r, "employee_coverage_0_tax"),
+            if owner == Owner::Taxpayer { 765 } else { 0 }
+        );
+        assert_eq!(value(&r, "employee_coverage_1_tax"), 0);
+        assert_eq!(estimate(&restart(d.clone()).draft), r);
+    }
+}
+
+#[test]
+fn actual_payroll_source_native_save_reopen_keyed_restart_and_located_correction() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
     let mut s = single();
+    let mut employee = pay(500_000, code_a(), false);
+    employee.payroll = S::Government { social: C::NotCovered, medicare: C::Covered, reason: None };
     accepted(&save_with(
         &mut s,
-        TaxSection::OtherIncome,
-        vec![IncomeDocument::JuryPay(JuryPay { received: 100_000, remitted: 0 })],
+        TaxSection::Wages,
+        vec![IncomeSource::Wage { value: crate::WageDocument::Form8919(employee) }],
     ));
-    let mut d = s.draft.clone();
-    d.checklist.income &= !IncomeTopics::OTHER_INCOME.0;
-    let pruned = crate::interview::prune(&mut d);
-    assert!(!d.income.iter().any(|e| matches!(e.income, FederalIncome::JuryDuty { .. })));
-    assert!(pruned.removed.iter().any(|item| item.key() == "SAVING_KIND_JURY_PAY"), "{pruned:?}");
+    let saved = s.draft.clone();
+    let id = saved.income.last().unwrap().id;
+    assert_eq!(estimate(&saved).tax, Some(569_600));
+    s = restart(saved.clone()); // shared client performs actual keyed record encoding/decoding.
+    assert_eq!(s.draft, saved);
+    let mut request = open_documents(&mut s);
+    let P::SaveDocuments { documents, .. } = &mut request else { unreachable!() };
+    let item = documents.common.wages.documents.iter_mut().find(|item| item.id == id).unwrap();
+    let crate::WageDocument::Form8919(employee) = &mut item.document else { unreachable!() };
+    employee.payroll = S::Government { social: C::Covered, medicare: C::NotCovered, reason: None };
+    accepted(&send(&mut s, request));
+    assert_eq!(s.draft.income.last().unwrap().id, id);
+    assert_eq!(estimate(&s.draft).tax, Some(593_300));
+    assert_round_trip(&s, TaxSection::Wages);
+}
+
+#[test]
+fn unknown_medicare_compares_final_8959_self_employment_offset() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    // IRS8959 single threshold$200,000; actual SE net rounds565*.9235=$522.
+    // UnknownMed$34 ordinarytax rounds.493 to0. WagePartI0 in bothcases,
+    // but SE remainingthreshold500 vs466 makes22*.009=0 vs56*.009=1.
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 19_950_000, 0);
+    add(&mut d, income(cash_business(565)));
+    let mut employee = pay(3_400, code_a(), false);
+    employee.payroll =
+        S::Government { social: C::NotCovered, medicare: C::Unavailable, reason: None };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let unknown = estimate(&d);
+    assert_eq!(unknown.tax, None);
+    assert_eq!(unknown.state, ResultState::Incomplete);
+    assert_eq!(value(&unknown, "agi"), 200_091);
+    assert!(!unknown.lines.iter().any(|line| line.id == "regular_income_tax"));
+    assert_eq!(value(&unknown, "employee_coverage_0_medicare_tax"), 0);
+    assert!(
+        unknown
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE")
+    );
+    for (medicare, tax) in [(C::NotCovered, 0), (C::Covered, 1)] {
+        if let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income {
+            data.payroll = S::Government { social: C::NotCovered, medicare, reason: None };
+        }
+        let known = estimate(&d);
+        assert_eq!(known.state, ResultState::EstimatedForSupportedScope, "{:?}", known.issues);
+        assert_eq!(value(&known, "additional_medicare_payroll_wages"), 0);
+        assert_eq!(value(&known, "additional_medicare_se_tax"), tax);
+        assert_eq!(value(&known, "employee_coverage_0_medicare_tax"), 0);
+    }
+}
+
+#[test]
+fn unknown_social_security_compares_actual_church_self_employment_owner() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 18_400_000, 0);
+    let mut church = wage(2, Owner::Taxpayer, 56_500, 0);
+    if let FederalIncome::Wage { data } = &mut church.income {
+        let mut data = edit_wage(data);
+        data.coverage = W2Coverage::ChurchEmployee;
+        data.social_wages = 0;
+        data.social_tax = 0;
+        data.medicare_wages = 0;
+        data.medicare_tax = 0;
+    }
+    add(&mut d, church);
+    let mut employee = pay(800, code_a(), false);
+    employee.payroll =
+        S::Government { social: C::Unavailable, medicare: C::NotCovered, reason: None };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let unknown = estimate(&d);
+    assert_eq!(unknown.tax, None);
+    assert_eq!(unknown.state, ResultState::Incomplete);
+    assert!(!unknown.lines.iter().any(|line| line.id == "agi"));
+    assert!(!unknown.lines.iter().any(|line| line.id == "regular_income_tax"));
+    assert_eq!(value(&unknown, "employee_coverage_0_social_tax"), 0);
+    assert!(
+        unknown
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE")
+    );
+    // Actual church565 yieldsnet522: SSremaining500→tax77; remaining492→76.
+    for (social, tax) in [(C::NotCovered, 77), (C::Covered, 76)] {
+        if let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income {
+            data.payroll = S::Government { social, medicare: C::NotCovered, reason: None };
+        }
+        let known = estimate(&d);
+        assert_eq!(known.state, ResultState::EstimatedForSupportedScope, "{:?}", known.issues);
+        assert_eq!(value(&known, "self_employment_tax"), tax);
+        assert_eq!(value(&known, "employee_coverage_0_social_tax"), 0);
+    }
+}
+
+#[test]
+fn railroad_source_components_stay_independently_available() {
+    use crate::EmployeePayrollSource as S;
+    let mut d = complete(FederalStatus::Single);
+    d.income[0] = wage(1, Owner::Taxpayer, 21_000_000, 0);
+    let mut employee = pay(21_000_000, code_a(), false);
+    employee.payroll = S::Railroad {
+        reported: employee_railroad_source([
+            SourceCents::Reported { amount: 21_000_000 },
+            SourceCents::Unavailable,
+            SourceCents::NotReported,
+            SourceCents::Unavailable,
+            SourceCents::Unavailable,
+        ]),
+    };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let known_compensation = estimate(&d);
+    assert_eq!(value(&known_compensation, "additional_medicare_payroll_wages"), 90);
+    assert_eq!(value(&known_compensation, "additional_medicare_rrta_tax"), 90);
+    assert!(noted(&known_compensation, "WARN_EMPLOYEE_RAILROAD_WITHHOLDING_UNAVAILABLE"));
+    let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income else {
+        unreachable!()
+    };
+    let S::Railroad { reported } = &mut data.payroll else { unreachable!() };
+    reported.compensation = SourceCents::Unavailable;
+    reported.additional_medicare = SourceCents::Reported { amount: 12_300 };
+    let unknown_compensation = estimate(&d);
+    assert_eq!(value(&unknown_compensation, "additional_medicare_payroll_wages"), 90);
+    assert_eq!(value(&unknown_compensation, "additional_medicare_rrta_withheld"), 123);
+    assert!(
+        unknown_compensation
+            .issues
+            .iter()
+            .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_RRTA_COMPENSATION_UNAVAILABLE")
+    );
+    assert_eq!(unknown_compensation.tax, None);
+    assert_eq!(estimate(&restart(d.clone()).draft), unknown_compensation);
+}
+
+#[test]
+fn unknown_coverage_compares_combined_native_component_rounding_boundaries() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    // Neither missing operand alone rounds to tax. Full same-owner bases do:
+    // SS(4+5)*.062=.558→1; Medicare(1+34)*.0145=.5075→1.
+    for (social_axis, known_pay, unknown_pay, component) in [
+        (true, 400, 500, "employee_coverage_0_social_tax"),
+        (false, 100, 3_400, "employee_coverage_0_medicare_tax"),
+    ] {
+        let mut d = complete(FederalStatus::Single);
+        for (wages, coverage) in [(known_pay, C::Covered), (unknown_pay, C::Unavailable)] {
+            let mut employee = pay(wages, code_a(), false);
+            employee.payroll = S::Government {
+                social: if social_axis { coverage } else { C::NotCovered },
+                medicare: if social_axis { C::NotCovered } else { coverage },
+                reason: None,
+            };
+            add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+        }
+        let unknown = estimate(&d);
+        assert_eq!(unknown.state, ResultState::Incomplete);
+        assert_eq!(unknown.tax, None);
+        assert!(!unknown.lines.iter().any(|line| line.id == component));
+        assert!(
+            unknown
+                .issues
+                .iter()
+                .any(|issue| issue.display.key == "ISSUE_EMPLOYEE_PAYROLL_COVERAGE_UNAVAILABLE")
+        );
+        for (coverage, expected) in [(C::NotCovered, 0), (C::Covered, 1)] {
+            if let FederalIncome::EmployeeWages { data } = &mut d.income.last_mut().unwrap().income
+            {
+                data.payroll = S::Government {
+                    social: if social_axis { coverage } else { C::NotCovered },
+                    medicare: if social_axis { C::NotCovered } else { coverage },
+                    reason: None,
+                };
+            }
+            let known = estimate(&d);
+            assert_eq!(known.state, ResultState::EstimatedForSupportedScope);
+            assert_eq!(value(&known, component), expected);
+        }
+    }
+}
+
+#[test]
+fn other_spouse_rrta_unknown_withholding_does_not_remove_this_filers_capacity() {
+    use crate::EmployeePayrollSource as S;
+    let mut d = complete(FederalStatus::Separate);
+    d.setup.as_mut().unwrap().community_property =
+        CommunityProperty::Yes { state: CommunityState::California, rule: CommunityRule::Halves };
+    for entry in &mut d.income {
+        entry.community = CommunityShare::Community;
+    }
+    let mut employee = pay(1_000_000, code_a(), false);
+    employee.payroll = S::Railroad {
+        reported: employee_railroad_source([
+            SourceCents::Reported { amount: 21_000_000 },
+            SourceCents::Unavailable,
+            SourceCents::Unavailable,
+            SourceCents::Unavailable,
+            SourceCents::Unavailable,
+        ]),
+    };
+    let mut source = income(FederalIncome::EmployeeWages { data: employee });
+    source.owner = crate::DocumentOwner::Spouses;
+    source.community = CommunityShare::Community;
+    add(&mut d, source);
+    let result = estimate(&d);
+    assert_eq!(result.state, ResultState::EstimatedForSupportedScope, "{:?}", result.issues);
+    assert!(result.financial_source_scope_complete);
+    assert!(result.credit_capacity.is_some());
+    assert!(!result.issues.iter().any(|issue| issue.display.key.starts_with("ISSUE_EMPLOYEE_")));
+    assert_eq!(value(&result, "employee_coverage_0_medicare_tax"), 0);
+}
+
+#[test]
+fn payroll_partial_does_not_present_provisional_nol_agi() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    let mut d = complete(FederalStatus::Single);
+    let mut employee = pay(500_000, code_a(), false);
+    employee.payroll = S::Government { social: C::Unavailable, medicare: C::Covered, reason: None };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let ordinary = estimate(&d);
+    assert_eq!(value(&ordinary, "agi"), 65_000);
+    d.screening.as_mut().unwrap().nol =
+        crate::tests::support::builders::prior_nol(&[(2025, 1_000)]);
+    let provisional = estimate(&d);
+    assert_eq!(provisional.state, ResultState::Incomplete);
+    assert!(!provisional.lines.iter().any(|line| line.id == "agi"));
+    assert_eq!(value(&provisional, "employee_coverage_0_medicare_tax"), 73);
+    assert!(provisional.tax.is_none());
+    assert!(provisional.return_lines.is_empty());
+}
+
+#[test]
+fn unrelated_mandatory_failure_keeps_full_required_source_cleanup() {
+    use crate::{EmployeeCoverage as C, EmployeePayrollSource as S};
+    let mut d = complete(FederalStatus::Single);
+    let mut employee = pay(500_000, code_a(), false);
+    employee.payroll = S::Government { social: C::Unavailable, medicare: C::Covered, reason: None };
+    add(&mut d, income(FederalIncome::EmployeeWages { data: employee }));
+    let scoped = estimate(&d);
+    assert_eq!(scoped.state, ResultState::Incomplete);
+    assert_eq!(value(&scoped, "employee_coverage_0_medicare_tax"), 73);
+    let mut bond_failure = d.clone();
+    let mut bond = crate::tests::support::builders::direct_tax_credit_bond(
+        "PARTIAL",
+        crate::FederalTaxCreditBondKind::QualifiedSchoolConstruction,
+        10_000,
+    );
+    bond.direct_scope_mut().unwrap().ordinary_investment_interest = false;
+    bond_failure.credits.as_mut().unwrap().tax_credit_bonds.push(bond);
+    if let FederalIncome::Wage { data } = &mut d.income[0].income {
+        let mut data = edit_wage(data);
+        data.medicare_tax = 0;
+    }
+    for (draft, key) in [
+        (d, "ISSUE_MEDICARE_WITHHOLDING_BELOW_ORDINARY_PAYROLL_TAX_REQUIRES_SPECIAL_PA_3993480B"),
+        (bond_failure, "ISSUE_TAX_CREDIT_BOND_INCOME_UNKNOWN"),
+    ] {
+        let unrelated = estimate(&draft);
+        assert_eq!(unrelated.state, ResultState::Unsupported);
+        assert_eq!(unrelated.tax, None);
+        assert!(
+            !unrelated
+                .lines
+                .iter()
+                .any(|line| line.id == "employee_coverage_0_medicare_tax" || line.id == "agi")
+        );
+        assert!(unrelated.return_lines.is_empty());
+        assert!(unrelated.issues.iter().any(|issue| issue.display.key == key));
+    }
 }

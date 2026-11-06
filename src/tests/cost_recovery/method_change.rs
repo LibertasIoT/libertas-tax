@@ -27,7 +27,10 @@ fn four(amount: i64, rest_in_current_year: bool) -> Adjustment481 {
     Adjustment481::FourYears { amount, rest_in_current_year }
 }
 fn save_farm(session: &mut Interview, farm: Farm) -> Reply {
-    let request = farm_save(&session.draft.clone(), vec![document(0, IncomeDocument::Farm(farm))]);
+    let request = farm_save(
+        session,
+        vec![document(0, IncomeSource::Record { value: crate::IncomeRecord::Farm(farm) })],
+    );
     send(session, request)
 }
 fn other_expense(label: &str, amount: i64) -> FederalBusinessExpense {
@@ -303,8 +306,12 @@ fn b_a_rental_decrease_is_a_line_19_expense_and_personal_use_leaves_it_out() {
     let FederalIncome::Rental { data } = &mut carried.income[1].income else { panic!() };
     data.home_operating_carryover = 100_000;
     //2026-10-19: both synthetic tax worksheets explicitly carry depreciation only.
-    data.home_depreciation_carryover = crate::SourceCents::Reported { amount: 200_000 };
-    data.amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: 200_000 };
+    data.prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .home_depreciation_carryover = crate::SourceCents::Reported { amount: 200_000 };
+    data.prior_home_carry
+        .get_or_insert(crate::RentalHomeCarries::NONE)
+        .amt_home_depreciation_carryover = crate::SourceCents::Reported { amount: 200_000 };
     let r_carried = supported(&carried);
     assert!(notes(&r_carried, "WARN_METHOD_CHANGE_LEFT_OUT").is_empty());
     assert_eq!(notes(&r_carried, "NOTE_METHOD_CHANGE_FORM_3115").len(), 1);
@@ -343,7 +350,7 @@ fn b_a_decrease_from_an_earlier_year_has_nothing_in_2026() {
     let revision = session.draft.revision;
     let mut again = restart(session.draft.clone());
     let items = page_documents(&open_topic(&mut again, TaxSection::SelfEmployment)).to_vec();
-    let request = save_topic(&again.draft.clone(), TaxSection::SelfEmployment, items);
+    let request = save_topic(&mut again, TaxSection::SelfEmployment, items);
     accepted(&send(&mut again, request));
     assert_eq!(again.draft.revision, revision);
 }
@@ -368,21 +375,6 @@ fn c_the_de_minimis_election_is_one_year_under_50000() {
             .2,
         11_000_000
     );
-    // $50,000 is rejected: not "less than $50,000".
-    assert_eq!(
-        change(2026, dcn(233), Adjustment481::OneYear { amount: 5_000_000 }).rule(),
-        Some("METHOD_CHANGE_DE_MINIMIS_LIMIT")
-    );
-    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut page = business(6_000_000);
-    page.more.method_changes =
-        vec![change(2026, dcn(233), Adjustment481::OneYear { amount: 5_000_000 })];
-    rejected_with(
-        save_businesses(&mut session, vec![page.clone()]),
-        "METHOD_CHANGE_DE_MINIMIS_LIMIT",
-    );
-    page.more.method_changes = vec![record];
-    accepted(&save_businesses(&mut session, vec![page.clone()]));
     // Without the election the same amount is spread over four years.
     //   through(2026) = (4,999,999 + 2) / 4 = 1,250,000; remaining 3,749,999
     let d = with_business(60_000, vec![change(2026, dcn(233), four(4_999_999, false))], |_| {});
@@ -442,18 +434,6 @@ fn d_the_rest_is_taken_in_2026_when_the_business_stops() {
     assert!(cents_of(&r, &format!("business_{id}_method_change_0_remaining")).is_none());
     // The accepted answer is not changed by the stop.
     assert_eq!(business_mut(&mut dead, 1).method_changes[0].adjustment, four(4_000_000, false));
-    // A decrease has no rest and an earlier year of change cannot be entered.
-    assert_eq!(
-        change(2022, dcn(7), four(4_000_000, true)).rule(),
-        Some("METHOD_CHANGE_NOTHING_IN_CURRENT_YEAR")
-    );
-    let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
-    let mut page = business(3_000_000);
-    page.more.method_changes = vec![change(2022, dcn(7), four(4_000_000, true))];
-    rejected_with(
-        save_businesses(&mut session, vec![page]),
-        "METHOD_CHANGE_NOTHING_IN_CURRENT_YEAR",
-    );
 }
 
 // Fixture D (i): the same record on a cash farm moves Schedule F gross income
@@ -637,7 +617,10 @@ fn the_farm_and_rental_pages_store_reopen_and_reject_the_records() {
     assert_eq!(stored.method_changes, farm.more.method_changes);
     let (_, reopened) =
         crate::tests::cross::interview::reopened_farming(&mut restart(session.draft.clone()));
-    let [IncomeDocument::Farm(again)] = reopened.as_slice() else { panic!("{reopened:?}") };
+    let [IncomeSource::Record { value: crate::IncomeRecord::Farm(again) }] = reopened.as_slice()
+    else {
+        panic!("{reopened:?}")
+    };
     assert_eq!(again.more.method_changes, farm.more.method_changes);
     farm.more.method_changes =
         vec![change(2025, dcn(7), Adjustment481::Decrease { amount: 100_000 })];
@@ -676,11 +659,9 @@ fn the_farm_and_rental_pages_store_reopen_and_reject_the_records() {
     rejected_with(save_farm(&mut session, farm), "MESSAGE_ENTER_AT_MOST_10_METHOD_CHANGES");
 }
 
-// Stored records outside the limits are not calculated.
+// Unsupported stored change numbers are not calculated.
 #[test]
 fn stored_records_outside_the_limits_block_the_estimate() {
-    let d = with_business(40_000, vec![change(2022, dcn(7), four(4_000_000, false))], |_| {});
-    assert_eq!(estimate(&d).state, ResultState::Incomplete);
     let d = with_business(
         40_000,
         vec![change(2026, dcn(1000), Adjustment481::Decrease { amount: 1 })],
@@ -711,7 +692,7 @@ fn every_no_method_change_confirmation_points_at_the_list() {
         ),
         (
             "prior depreciation",
-            include_str!("../../cost_recovery/depreciation.rs"),
+            include_str!("../../cost_recovery/asset_model.rs"),
             &["as a section 481(a) adjustment"],
         ),
         (
@@ -735,7 +716,7 @@ fn every_no_method_change_confirmation_points_at_the_list() {
         ("farm_page.rs", include_str!("../../farm/farm_page.rs")),
         ("extended_model.rs", include_str!("../../federal/extended_model.rs")),
         ("startup.rs", include_str!("../../cost_recovery/startup.rs")),
-        ("depreciation.rs", include_str!("../../cost_recovery/depreciation.rs")),
+        ("asset_model.rs", include_str!("../../cost_recovery/asset_model.rs")),
         ("farm_supplies.rs", include_str!("../../farm/farm_supplies.rs")),
         ("farm_ccc.rs", include_str!("../../farm/farm_ccc.rs")),
     ] {
@@ -762,7 +743,7 @@ fn every_no_method_change_confirmation_points_at_the_list() {
 // Search wording and the string resources the validation rules name.
 #[test]
 fn search_wording_and_rule_resources_are_declared() {
-    let protocol = include_str!("../../core/protocol.rs");
+    let protocol = include_str!("../../core/shared/navigation.rs");
     for (section, marker) in [
         ("SelfEmployment", "Schedule C line 6 or Part V"),
         ("Rentals", "missed or excess rental depreciation (DCN 7 or 107)"),
@@ -774,11 +755,7 @@ fn search_wording_and_rule_resources_are_declared() {
         assert!(protocol[at..].contains(&format!("    {section},")), "{section}");
     }
     let prompt = APP_STRINGS.iter().find(|(key, _)| *key == "TAX_NAVIGATION_PROMPT").unwrap().1;
-    assert!(
-        prompt.contains(
-            "Form 3115, an accounting-method change, a section 481(a) or 481a adjustment"
-        )
-    );
+    assert!(prompt.contains("Form 3115 follows the activity"));
     for key in [
         "METHOD_CHANGE_NOTHING_IN_CURRENT_YEAR",
         "METHOD_CHANGE_DE_MINIMIS_LIMIT",

@@ -3,6 +3,8 @@ use crate::forms::form_2441::care_rate;
 use crate::forms::schedule_eic::eic_amount;
 use crate::interview::{Interview, Reply};
 use crate::k1_loss::{K1LossClass, LossAmounts};
+use crate::k1_page::K1Partnership as K1PartnershipPaper;
+use crate::k1_page::K1Scorp as K1ScorpPaper;
 use crate::tests::federal::schedules_1_3::schedule_1_line;
 use crate::*;
 use TaxInterviewProtocol as P;
@@ -22,6 +24,8 @@ mod farm;
 mod federal;
 mod foreign;
 mod health;
+#[path = "support/heap.rs"]
+mod heap;
 mod home;
 mod income;
 mod investment;

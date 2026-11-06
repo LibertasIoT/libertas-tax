@@ -41,10 +41,11 @@ fn roth(code: W2Code) -> bool {
 // One owner's excess over every W-2 of that owner; `birth_date` fixes the catch-up.
 pub(crate) fn excess(d: &FederalDraft, owner: Owner, birth_date: u32) -> Excess {
     let (mut total, mut roth_total, mut simple_only, mut forms) = (0, 0, true, 0);
-    for entry in d.income.iter().filter(|e| e.owner == owner) {
+    for entry in d.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(owner)) {
         let FederalIncome::Wage { data } = &entry.income else {
             continue;
         };
+        let data = crate::FederalWage::from(data);
         let mut counted = false;
         for c in &data.other_box12 {
             if c.amount <= 0 || !(regular(c.code) || roth(c.code)) {
@@ -94,13 +95,15 @@ pub(crate) fn excess(d: &FederalDraft, owner: Owner, birth_date: u32) -> Excess 
 pub(crate) fn total(d: &FederalDraft, owner: Owner) -> i64 {
     d.income
         .iter()
-        .filter(|e| e.owner == owner)
-        .filter_map(
-            |e| {
-                if let FederalIncome::Wage { data } = &e.income { Some(data) } else { None }
-            },
-        )
-        .flat_map(|w| w.other_box12.iter())
+        .filter(|e| e.owner == crate::DocumentOwner::from(owner))
+        .filter_map(|e| {
+            if let FederalIncome::Wage { data } = &e.income {
+                Some(crate::FederalWage::from(data))
+            } else {
+                None
+            }
+        })
+        .flat_map(|w| w.other_box12)
         .filter(|c| regular(c.code) || roth(c.code))
         .map(|c| c.amount)
         .sum()

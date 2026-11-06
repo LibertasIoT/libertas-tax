@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 257000, "rule": {"select": "^<Ltc1099Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_LTC_AMOUNTS", "fields": ["calendar_year", "corrected", "payer", "payer_phone", "recipient", "account_number", "benefits", "accelerated"]}, {"title": "DISPLAY_LTC_CHARACTER", "fields": ["paid", "box4_qualified"]}, {"title": "DISPLAY_LTC_INSURED", "fields": ["insured_party", "illness", "date_certified"]}]}},
+    {"order": 258000, "rule": {"select": "^<Ltc1099Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_LTC_AMOUNTS", "fields": ["calendar_year", "corrected", "payer", "payer_phone", "recipient", "account_number", "benefits", "accelerated"]}, {"title": "DISPLAY_LTC_CHARACTER", "fields": ["paid", "box4_qualified"]}, {"title": "DISPLAY_LTC_INSURED", "fields": ["insured_party", "illness", "date_certified"]}]}},
+    {"order": 857000, "rule": {"select": "^<CareBenefitPeriodInput>.injured_payees", "when_single_choice": "hide"}}
+  ]
+}

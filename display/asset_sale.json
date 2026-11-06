@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 404000, "rule": {"select": "^<AssetDisposal>", "flatten": true}},
+    {"order": 405000, "rule": {"select": "^<DisposalKind>", "flatten": true}},
+    {"order": 406000, "rule": {"select": "^<RentalSale>", "flatten": true}}
+  ]
+}

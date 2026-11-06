@@ -118,15 +118,22 @@ pub(crate) fn evaluate_with_money(
     }
     // Actual recipient policy assignment consumes each retained form once.
     // A form covering both spouses is not divided by a guessed head count.
-    if context.facts.forms.iter().filter(|p| p.status != MarketplaceStatementStatus::Void).any(
-        |p| {
+    if context
+        .facts
+        .forms
+        .iter()
+        .filter(|p| {
+            crate::MarketplacePolicyRecordPage::from(&p.form).status
+                != MarketplaceStatementStatus::Void
+        })
+        .any(|p| {
             p.coverage.iter().any(|c| {
                 c.month <= last_month
                     && c.people.iter().any(|id| context.people.family.contains(id))
             }) && !you.premarriage_policies.contains(&p.id)
                 && !spouse.premarriage_policies.contains(&p.id)
-        },
-    ) {
+        })
+    {
         return Err("PTC_MARRIAGE_SOURCE_REQUIRED");
     }
     let you = worksheet(&context, you, -1, income, last_month, money)?;
@@ -195,9 +202,9 @@ impl Alternative {
                     i64::from(family.stop),
                 ]) {
                     let write = if money {
-                        crate::kernel::lines::form_line
+                        crate::line_emission::form_line
                     } else {
-                        crate::kernel::lines::form_count
+                        crate::line_emission::form_count
                     };
                     write(
                         result,
@@ -221,20 +228,26 @@ mod tests {
 
     fn policy(id: i64, person: i64) -> MarketplacePolicyRecord {
         MarketplacePolicyRecord {
+            printed: None,
             id,
-            issuer: "Actual source".into(),
-            policy_number: String::new(),
-            amounts: PolicyAmounts::ByMonth {
-                months: vec![PolicyMonth {
-                    month: 1,
-                    premium: 120_000,
-                    benchmark: Some(120_000),
-                    advance: 110_000,
-                }],
-            },
+            form: crate::MarketplacePolicyRecordPage {
+                recipient: Default::default(),
+                id,
+                issuer: "Actual source".into(),
+                policy_number: String::new(),
+                amounts: PolicyAmounts::ByMonth {
+                    months: vec![PolicyMonth {
+                        month: 1,
+                        premium: 120_000,
+                        benchmark: Some(120_000),
+                        advance: 110_000,
+                    }],
+                },
+                status: MarketplaceStatementStatus::Original,
+            }
+            .into(),
             lawful_premiums: vec![],
             enrolling: MarketplaceFamilyRef::ThisReturn,
-            status: MarketplaceStatementStatus::Original,
             coverage: vec![MarketplacePolicyCoverage {
                 month: 1,
                 people: vec![person],
@@ -307,9 +320,9 @@ mod tests {
     #[test]
     fn iterative_marriage_preserves_explicit_contribution_rounding() {
         let mut facts = facts();
-        let PolicyAmounts::ByMonth { months } = &mut facts.forms[0].amounts else { unreachable!() };
-        months[0].premium = 120_049;
-        months[0].benchmark = Some(120_049);
+        let paper = &mut facts.forms[0].form;
+        paper.month_mut(1).premium = Some(120_049);
+        paper.month_mut(1).benchmark = Some(120_049);
         let ids = [-1, -2];
         let people = SourcePeople { family: &ids, current: &ids, births: &[] };
         let context = Context { facts: &facts, people: &people, joint: true };
@@ -382,8 +395,8 @@ mod tests {
     #[test]
     fn marriage_missing_optional_benchmark_preserves_regular_mandatory_reconciliation() {
         let mut facts = facts();
-        let PolicyAmounts::ByMonth { months } = &mut facts.forms[0].amounts else { unreachable!() };
-        months[0].benchmark = None; // Regular joint correction remains known.
+        let paper = &mut facts.forms[0].form;
+        paper.month_mut(1).benchmark = None; // Regular joint correction remains known.
         let (outcome, result) = calculate(&facts, 48_000);
         assert_eq!((outcome.credit, outcome.repayment), (2098, 102));
         assert!(result.issues.is_empty());

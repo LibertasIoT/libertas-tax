@@ -1,0 +1,7 @@
+{
+  "rules": [
+    {"order": 462000, "rule": {"select": "^<FarmSupplyException>", "flatten": true}},
+    {"order": 691000, "rule": {"select": "^<FarmPoultryResale>.label", "promote": true}},
+    {"order": 692000, "rule": {"select": "^<FarmProductionPoultryCarry>.label", "promote": true}}
+  ]
+}

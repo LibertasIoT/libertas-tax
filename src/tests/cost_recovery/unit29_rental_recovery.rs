@@ -24,7 +24,7 @@ fn unit29_rental_historical_315_annual_amt_and_gds_ubia_share_original_clock() {
             crate::extended_rules::depreciation_for_year(
                 b,
                 false,
-                &v.property_type,
+                (&v.property_type, &crate::RentalLocation::UnitedStates),
                 2026,
                 v.sale.date(),
                 crate::kernel::source_fact::SourceFact::NotReported
@@ -35,7 +35,7 @@ fn unit29_rental_historical_315_annual_amt_and_gds_ubia_share_original_clock() {
             crate::extended_rules::depreciation_for_year(
                 b,
                 true,
-                &v.property_type,
+                (&v.property_type, &crate::RentalLocation::UnitedStates),
                 2026,
                 v.sale.date(),
                 crate::kernel::source_fact::SourceFact::NotReported
@@ -67,7 +67,7 @@ fn unit29_rental_historical_315_annual_amt_and_gds_ubia_share_original_clock() {
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             v.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -79,7 +79,7 @@ fn unit29_rental_historical_315_annual_amt_and_gds_ubia_share_original_clock() {
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             v.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -98,7 +98,7 @@ fn unit29_rental_315_accumulated_and_final_cents_never_exceed_original_basis() {
                 crate::extended_rules::depreciation_for_year(
                     b,
                     false,
-                    &v.property_type,
+                    (&v.property_type, &crate::RentalLocation::UnitedStates),
                     year,
                     None,
                     crate::kernel::source_fact::SourceFact::NotReported,
@@ -122,7 +122,7 @@ fn unit29_rental_315_accumulated_and_final_cents_never_exceed_original_basis() {
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             2021,
             None,
             crate::kernel::source_fact::SourceFact::NotReported
@@ -134,7 +134,7 @@ fn unit29_rental_315_accumulated_and_final_cents_never_exceed_original_basis() {
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             1990,
             None,
             crate::kernel::source_fact::SourceFact::NotReported
@@ -145,7 +145,7 @@ fn unit29_rental_315_accumulated_and_final_cents_never_exceed_original_basis() {
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             1991,
             None,
             crate::kernel::source_fact::SourceFact::NotReported
@@ -197,13 +197,14 @@ fn unit29_rental_315_exchanged_basis_and_ubia_do_not_restart_exhausted_clock() {
 
 #[test]
 fn unit29_rental_historical_source_dates_and_land_keep_named_native_boundaries() {
-    for placed in [19861231, 19900001, 19901301, 19900230] {
+    {
+        let placed = 19861231;
         let v = commercial(placed);
         assert_eq!(
             crate::extended_rules::depreciation_for_year(
                 &v.buildings[0],
                 false,
-                &v.property_type,
+                (&v.property_type, &crate::RentalLocation::UnitedStates),
                 2026,
                 v.sale.date(),
                 crate::kernel::source_fact::SourceFact::NotReported
@@ -219,7 +220,7 @@ fn unit29_rental_historical_source_dates_and_land_keep_named_native_boundaries()
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             v.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -255,7 +256,7 @@ fn unit29_rental_315_normal_save_reopen_resave_restart_and_reject_atomicity() {
         crate::extended_rules::depreciation_for_year(
             &rows[0].2.buildings[0],
             false,
-            &rows[0].2.property_type,
+            (&rows[0].2.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             rows[0].2.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -276,7 +277,7 @@ fn unit29_rental_315_normal_save_reopen_resave_restart_and_reject_atomicity() {
     let mut corrected =
         crate::tests::cross::interview::open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, .. } = &mut corrected else { unreachable!() };
-    let IncomeDocument::Rental(edited) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::Rental(edited) = &mut documents.documents[0].document else {
         unreachable!()
     };
     edited.building.in_service = 20200101;
@@ -288,7 +289,7 @@ fn unit29_rental_315_normal_save_reopen_resave_restart_and_reject_atomicity() {
         crate::extended_rules::depreciation_for_year(
             &after[0].2.buildings[0],
             false,
-            &after[0].2.property_type,
+            (&after[0].2.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             after[0].2.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -343,7 +344,13 @@ fn unit29_rental_315_actual_client_save_reopen_resave_restart() {
     rental.building.in_service = placed;
     let mut page = seed.clone();
     let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    documents.documents = vec![document(0, IncomeDocument::Rental(rental.clone()))];
+    documents.documents = vec![document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::Rental(rental.clone()) },
+    )]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     for (key, request) in [("TAX_UNIT29_RENTAL_SEED", &seed), ("TAX_UNIT29_RENTAL_ANSWERS", &page)]
     {
         if let Ok(path) = std::env::var(key) {
@@ -376,7 +383,7 @@ fn unit29_rental_315_actual_client_save_reopen_resave_restart() {
         crate::extended_rules::depreciation_for_year(
             &rows[0].2.buildings[0],
             false,
-            &rows[0].2.property_type,
+            (&rows[0].2.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             rows[0].2.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -432,7 +439,7 @@ fn unit29_rental_shared_recovery_propagates_canonical_operand_errors_without_pan
         crate::extended_rules::depreciation_for_year(
             &v.buildings[0],
             false,
-            &v.property_type,
+            (&v.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             v.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -459,7 +466,7 @@ fn unit29_rental_shared_recovery_propagates_canonical_operand_errors_without_pan
             crate::extended_rules::depreciation_for_year(
                 &v.buildings[0],
                 false,
-                &v.property_type,
+                (&v.property_type, &crate::RentalLocation::UnitedStates),
                 year,
                 None,
                 crate::kernel::source_fact::SourceFact::NotReported

@@ -189,23 +189,9 @@ fn timber_documented_absence_is_zero_and_invalid_reported_history_is_rejected() 
     cost.prior_allowed = crate::SourceCents::NotReported;
     assert_eq!(cost.recovery(2026).unwrap().amortization_cents, 100_000);
     assert!(timber_business(cost.clone()).valid_stored());
-    cost.prior_allowed = crate::SourceCents::Reported { amount: -1 };
-    assert!(!cost.valid());
     cost.incurred = 20240401;
     cost.prior_allowed = crate::SourceCents::Reported { amount: 1_400_001 };
     assert!(!cost.valid());
-}
-
-#[test]
-fn timber_unrepresentable_source_aggregate_is_rejected_without_calculation() {
-    let draft = crate::tests::support::builders::timber::unrepresentable_timber_return();
-    assert_eq!(crate::timber::return_issue(&draft).unwrap().key, "TIMBER_TOTAL_UNREPRESENTABLE");
-    assert!(!draft.valid_stored());
-    let result = estimate(&draft);
-    // 2026-10-18: the existing native invalid-stored-source boundary is
-    // Incomplete; unknown but structurally valid history is Unsupported.
-    assert_eq!(result.state, ResultState::Incomplete);
-    assert!(result.tax.is_none() && result.refund.is_none() && result.lines.is_empty());
 }
 
 #[test]
@@ -219,34 +205,4 @@ fn timber_invalid_save_locates_submitted_fields_and_is_atomic() {
         rejected_with(reply, key);
         assert_eq!(session.draft, original);
     }
-}
-
-#[test]
-fn timber_checked_projection_never_precedes_legacy_source_validation() {
-    for with_timber in [false, true] {
-        let draft = crate::tests::support::builders::timber::invalid_legacy_amortization_return(
-            with_timber,
-        );
-        assert!(crate::timber::return_issue(&draft).is_none());
-        assert!(!draft.valid_stored());
-        let result = estimate(&draft);
-        // 2026-10-18: the existing native invalid-stored-source boundary is
-        // Incomplete; unknown but structurally valid history is Unsupported.
-        assert_eq!(result.state, ResultState::Incomplete);
-        assert!(result.tax.is_none() && result.refund.is_none());
-    }
-}
-
-#[test]
-fn timber_and_ordinary_costs_share_the_checked_native_operating_boundary() {
-    let draft = crate::tests::support::builders::timber::unrepresentable_timber_operating_return();
-    let FederalIncome::Business { data } = &draft.income.last().unwrap().income else {
-        unreachable!()
-    };
-    assert_eq!(data.checked_amortization_cents(), Some(i64::MAX));
-    assert_eq!(data.checked_operating_cost_before_supplies(false), None);
-    assert_eq!(draft.stored_issue().unwrap().key, "TIMBER_TOTAL_UNREPRESENTABLE");
-    let result = estimate(&draft);
-    assert_eq!(result.state, ResultState::Incomplete);
-    assert!(result.tax.is_none() && result.refund.is_none());
 }

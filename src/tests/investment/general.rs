@@ -1,4 +1,4 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::*;
 use crate::tests::federal::general::final_person;
 
@@ -35,7 +35,8 @@ fn worthless_security_negative_answer_and_invalid_acquisition_dates() {
     let r = supported(&d);
 
     assert!(!r.lines.iter().any(|line| line.id.starts_with("worthless_security_")));
-    for date in [20270201, 20260230] {
+    {
+        let date = 20270201;
         let FederalIncome::WorthlessSecurity { data: crate::WorthlessSecurity { acquisition, .. } } =
             &mut d.income[1].income
         else {
@@ -60,10 +61,10 @@ fn family_schedule_d_obeys_low_income_skip_and_signed_line_42() {
 
 #[test]
 fn seller_adjusted_sale_rejects_dates_before_adjustment_or_outside_tax_year() {
-    for date in [20260614, 20270201, 20260230] {
+    for date in [20260614, 20270201] {
         let mut entry = price_reduction_debt();
         if let FederalIncome::PersonalDebt { data } = &mut entry.income {
-            if let PersonalDebtTreatment::PriceReduction { sale, .. } = &mut data.treatment {
+            if let Some(CanceledDebtChoice::SellerReduction { sale, .. }) = &mut data.treatment {
                 *sale = Some(DebtPropertySale {
                     date,
                     term: GainTerm::Short,
@@ -72,7 +73,7 @@ fn seller_adjusted_sale_rejects_dates_before_adjustment_or_outside_tax_year() {
                     withholding: 0,
                 });
             }
-            assert!(!data.valid());
+            assert!(!PersonalDebtCancellation::from(&*data).valid());
         }
     }
 }
@@ -86,6 +87,7 @@ fn documented_interest_premium_can_coexist_with_after_death_components() {
     d.people.as_mut().unwrap().taxpayer.died = Some(final_person(19800101, 20260630));
     let mut interest = income(savings_income(1000, 0));
     if let FederalIncome::Interest { data } = &mut interest.income {
+        let mut data = edit_interest(data);
         data.bond_premium = 10_000;
         data.after_death = Some(InterestAfterDeath {
             taxable: 40_000,

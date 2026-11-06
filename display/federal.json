@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"order": 162000, "rule": {"select": "^<IncomeRecords>.documents", "layout": "summary", "paths": [{"path": "document", "show": "variant"}, "owner", "preview"]}},
+    {"order": 213000, "rule": {"select": "^<IncomeRecordItem>", "when": {"form": "phone"}, "layout": "card"}},
+    {"order": 393000, "rule": {"select": "^<FederalEstimate>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_RESULT_ESTIMATE", "fields": ["tax", "refundable_credits", "payments", "refund", "balance", "farmland_installments"]}, {"title": "DISPLAY_RESULT_RETURN", "fields": ["return_lines", "breakdown"]}, {"title": "DISPLAY_RESULT_NOTES", "fields": ["state", "review_notes", "method", "revision"]}]}},
+    {"order": 394000, "rule": {"select": "^<FederalEstimate>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_RESULT_ESTIMATE", "fields": ["tax", "refundable_credits", "payments", "refund", "balance", "farmland_installments"]}, {"title": "DISPLAY_RESULT_RETURN", "fields": ["return_lines", "breakdown"]}, {"title": "DISPLAY_RESULT_NOTES", "fields": ["state", "review_notes", "method", "revision"]}]}},
+    {"order": 395000, "rule": {"select": "^<FederalEstimate>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["tax", "refundable_credits", "payments", "refund", "balance", "farmland_installments", "state", "review_notes", "method", "revision"]}, {"ratio": 2, "min_width": "medium", "fields": ["return_lines", "breakdown"]}]}},
+    {"order": 482000, "rule": {"select": "^<libertas-tax::OtherIncomeDocument>", "flatten": true}},
+    {"order": 483000, "rule": {"select": "^<libertas-tax::K1Document>", "flatten": true}},
+    {"order": 484000, "rule": {"select": "^<libertas-tax::CanceledDebtDocument>", "flatten": true}},
+    {"order": 485000, "rule": {"select": "^<libertas-tax::IncomeRecord>", "flatten": true}},
+    {"order": 699000, "rule": {"select": "^<FederalIncomeEntry>.label", "promote": true}},
+    {"order": 700000, "rule": {"select": "^<IncomeRecords>.documents", "promote": true}},
+    {"order": 734000, "rule": {"select": "^<IncomeRecordItem>.document", "promote": true, "lock": "variant"}},
+    {"order": 806000, "rule": {"select": "^<FederalAmount>.money", "promote": true}},
+    {"order": 808000, "rule": {"select": "^<FederalAmount>", "label": {"field": "label"}}},
+    {"order": 852000, "rule": {"select": "^<IncomeRecordItem>.refund_management", "when_single_choice": "hide"}},
+    {"order": 856000, "rule": {"select": "^<QbiLossCarryforward>.injured_owners", "when_single_choice": "hide"}},
+    {"order": 894000, "rule": {"select": "^<IncomeRecordItem>.owner", "when_single_choice": "hide"}},
+    {"order": 895000, "rule": {"select": "^<IncomeRecordItem>.community", "when_single_choice": "hide"}}
+  ]
+}

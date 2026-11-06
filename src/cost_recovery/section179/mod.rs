@@ -1,15 +1,33 @@
+pub(crate) mod care_compensation;
 mod direct_sources;
+mod foreign_employee;
+pub(crate) mod owner_deductions;
+mod source;
 pub use direct_sources::{Section179DirectIncomeSource, section179_direct_income_sources};
+pub(crate) use foreign_employee::income_adjustment as foreign_employee_income_adjustment;
+pub use source::{Section179Share, Section179Spouse, SpouseSection179};
 
+// Coverage: direct line11 income requires established current conduct under
+// Reg. 1.179-2(c)(6), independently of historical/deemed section469 results.
+// Ordinary/farm sources also retain their native nonpassive prerequisite;
+// meaningful work with passive income needs a certified PAL taxable source.
+// Raw operating operands and no-election Form6198 do not certify line11.
+// Evidence: src/tests/cost_recovery/unit17/wagering_income.rs and
+// src/tests/business/current_risk.rs; https://www.ecfr.gov/current/title-26/section-1.179-2
 // Coverage update: Form 4562 line 10 removes carryover restored to sold K-1
 // property basis; active business income includes allowed activity sale
-// amounts. This is an owner checkpoint, not completed R9 return support.
+// amounts. Other sale coordination retains its named unsupported boundaries.
 // Evidence: src/tests/passthrough/k1_sale_return.rs; i4562/i4797 (2025 final).
 // Active non-PTP partners' documented services payments also supply their own
 // line11 compensation, separately from entity income. Capital payments and
 // owner-deduction coordination retain their named boundaries. Reg.1.179-2(c);
 // src/tests/cost_recovery/unit17/partner_services.rs.
-// Assigned PTP/PAL source seam: the sole return179 allocator exposes current
+// Foreign employee compensation uses the Form2555 owner's current/prior
+// exclusions and housing amounts once, independently for each person.
+// Rental and foreign-business exclusion coordination retain their source
+// boundaries. Evidence: src/tests/cost_recovery/unit17/foreign_employee.rs;
+// Reg.1.179-2(c), Reg.1.911-6 and IRS instructions for Form2555.
+// The sole return179 allocator exposes current
 // and retained-income-carry components without a second allocation/limit.
 // The checked transient supplier preserves source identity, tax-system basis,
 // income carry and the named risk cycle. Existing whole-return PTP/PAL routing
@@ -17,96 +35,63 @@ pub use direct_sources::{Section179DirectIncomeSource, section179_direct_income_
 // src/tests/cost_recovery/passthrough.rs unit17_ptp179_*; src/tests/cost_recovery/interview.rs
 // unit17_ptp179_actual_two_rows_complete_save_reopen_restart.
 use crate::k1_loss::K1LossClass;
-use crate::kernel::lines::line_cents;
-use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+use crate::kernel::lines::{LineValue, row as calculation_row};
 use crate::kernel::phase;
 use crate::kernel::ratio::{fraction, positive};
+use crate::line_emission::emit as emit_lines;
+use crate::line_emission::line_cents;
 use crate::{FederalBusiness, FederalDraft, FederalIncome, FederalResult};
-use alloc::{collections::BTreeMap, format, vec::Vec};
-use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    format,
+    vec::Vec,
+};
 
-/// Section 179 facts for a separate return
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum Section179Spouse {
-    /// Spouse's records not entered
-    /// With a section 179 claim on this return, treated as No below: no section 179 deduction on this return, with a note.
-    NotSupplied,
-    /// Spouse's purchase records and allocation
-    Records {
-        /// Spouse's eligible 2026 section 179 business cost
-        /// Include all qualifying property placed in service, even when the spouse elects zero deduction. Use the spouse's purchase and business-use records; exclude purchases already included on this return. This cost affects only the shared dollar-limit phaseout, not your income or MACRS convention. Enter zero only when the spouse had no eligible purchases.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        cost: i64,
-        /// Allocation of the shared dollar limit after phaseout
-        allocation: Section179Share,
-        /// Complete separate-return purchase and election records
-        /// Confirm both spouses' property totals and any elected percentages, with no amended separate-to-joint election or unresolved ownership/community-property allocation. Each spouse applies their own business-income limit. The spouse's 2026 Form 4562 Part I and the written allocation election show it. No takes no section 179 deduction on this return: your 2026 elections are depreciated normally and earlier carryforwards wait for 2027. A partnership or S corporation section 179 amount still needs these records.
-        eligible: bool,
-    },
-}
-/// Couple's section 179 dollar-limit allocation
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport,
-)]
-pub enum Section179Share {
-    /// Equal shares; no different allocation elected
-    Equal,
-    /// Each spouse elected a percentage
-    /// Enter each actual elected percentage. If they do not total 100%, the required allocation is 50% each; the App does not normalize mismatched elections.
-    Elected {
-        /// Your elected share in hundredths of one percent
-        /// Enter 9500 for 95.00%, 5000 for 50.00%, or 10000 for 100.00%.
-        // Percentage encoding: 10,000 ten-thousandths is 100 percent.
-        #[libertas_number(min = 0, max = 10000)]
-        yours: u32,
-        /// Spouse's elected share in hundredths of one percent
-        // Percentage encoding: 10,000 ten-thousandths is 100 percent.
-        #[libertas_number(min = 0, max = 10000)]
-        spouse: u32,
-    },
-}
-impl Section179Spouse {
-    pub(crate) fn valid(self) -> bool {
-        match self {
-            Self::NotSupplied => true,
-            Self::Records { cost, allocation, .. } => {
-                (0..=100000000000).contains(&cost)
-                    && match allocation {
-                        Section179Share::Equal => true,
-                        Section179Share::Elected { yours, spouse } => {
-                            yours <= 10000 && spouse <= 10000
-                        }
-                    }
-            }
-        }
-    }
-    fn facts(self) -> (i64, i64, bool) {
-        match self {
-            // Records not entered or unconfirmed: no share of the dollar
-            // limit is assumed.
-            Self::NotSupplied => (0, 0, false),
-            Self::Records { eligible: false, cost, .. } => (cost, 0, false),
-            Self::Records { cost, allocation, eligible: true } => (
-                cost,
-                match allocation {
-                    Section179Share::Elected { yours, spouse } if yours + spouse == 10000 => {
-                        i64::from(yours)
-                    }
-                    _ => 5000,
-                },
-                true,
-            ),
-        }
-    }
-}
 fn spouse(d: &FederalDraft) -> Option<Section179Spouse> {
     match d.setup.as_ref()?.status {
         crate::FilingChoice::Separate { section179, .. } => Some(section179),
         _ => None,
     }
+}
+
+// A rental's part of the line 11 business income limit (Reg. 1.179-2(c)):
+// its Schedule E net when the person actively conducts it as a trade or
+// business, nothing when held otherwise. None while unanswered, and for the
+// foreign, personal-use, linked-form, energy-building, sold, community-split
+// or loss rentals this limit does not yet classify.
+fn rental_income(d: &FederalDraft, e: &crate::FederalIncomeEntry, mq: bool) -> Option<i64> {
+    let FederalIncome::Rental { data } = &e.income else { return None };
+    if !data.section179_business? {
+        return Some(0);
+    }
+    let plain = !data.location.foreign()
+        && matches!(data.personal_use, crate::RentalPersonalUse::No)
+        && data.related.is_empty()
+        && data.energy_buildings.is_empty()
+        && matches!(data.sale, crate::RentalSale::No)
+        && data.payroll.rule().is_none()
+        && d.setup.as_ref().is_none_or(|setup| {
+            crate::community::share(setup, e.owner.owned(), e.community, &e.income).is_none()
+        });
+    if !plain {
+        return None;
+    }
+    let net = crate::extended_rules::rental_use_with(data, false, mq, true, None).ok()?.net;
+    (net >= 0).then_some(net)
+}
+
+// Whether each rental is asked if it is actively conducted as a trade or
+// business (Reg. 1.179-2(c)): only while the return has section 179.
+pub(crate) fn rental_business_asked(d: &FederalDraft) -> bool {
+    let claims = crate::related_forms::effective_claimants(d);
+    crate::section179_return::needed(crate::related_forms::RelatedFormContext::original(d, &claims))
+        .unwrap_or(true)
+}
+
+// Whether a separate return uses section 179 and so needs its spouse's
+// purchases for the shared dollar limit (Pub. 946, Married Individuals).
+pub(crate) fn spouse_records_asked(d: &FederalDraft) -> bool {
+    spouse(d).is_some() && calculate(d).available != 0
 }
 
 // New elections first; then carryforward vintage, oldest first. Within one
@@ -174,7 +159,10 @@ pub(crate) struct PassThrough {
 // partner's own compensation. PTP payment coordination remains separate.
 fn partner_service_compensation(data: &crate::PartnerK1) -> i64 {
     if !data.publicly_traded
-        && data.participation.material() == crate::participation::Participation::Yes
+        && data.participation.as_ref().map_or(
+            crate::participation::Participation::Unavailable,
+            crate::PartnerParticipation::material,
+        ) == crate::participation::Participation::Yes
     {
         data.guaranteed_services
     } else {
@@ -193,8 +181,10 @@ fn pass_throughs(d: &FederalDraft) -> Result<Vec<PassThrough>, Section179Prepare
                 let Ok(pool) = crate::community::partner_pool(d, e.id, data, &data.regular) else {
                     continue;
                 };
-                let material =
-                    data.participation.material() == crate::participation::Participation::Yes;
+                let material = data.participation.as_ref().map_or(
+                    crate::participation::Participation::Unavailable,
+                    crate::PartnerParticipation::material,
+                ) == crate::participation::Participation::Yes;
                 let services = partner_service_compensation(data);
                 let income = if material {
                     pool.combined
@@ -235,6 +225,7 @@ fn pass_throughs(d: &FederalDraft) -> Result<Vec<PassThrough>, Section179Prepare
                 });
             }
             FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
                 let (Ok(basis), Ok(activity)) =
                     (data.basis_result(), crate::community::scorp_pool(d, e.id, data, false))
                 else {
@@ -322,6 +313,26 @@ pub struct Section179IncomeAllocation {
 // The box 12 / box 11 amount of one K-1 allowed on Form 4562 line 12 after
 // the dollar and business-income limits, in cents (Schedule E line 28
 // column (j)); zero for any other entry.
+// i4562 line 12 and i8582 (worksheets 5 and 6): the section 179 deduction of
+// a passive K-1 activity is one of that activity's losses on Form 8582. The
+// same material-participation test as pass_throughs; PTPs keep their own pool.
+pub(crate) fn passive_pass_through(d: &FederalDraft, id: i64) -> bool {
+    d.income.iter().find(|e| e.id == id).is_some_and(|e| match &e.income {
+        FederalIncome::Partnership { data } => {
+            !data.publicly_traded
+                && data.participation.as_ref().map_or(
+                    crate::participation::Participation::Unavailable,
+                    crate::PartnerParticipation::material,
+                ) != crate::participation::Participation::Yes
+        }
+        FederalIncome::Scorp { data } => !crate::ScorpK1::from(data)
+            .participation
+            .as_ref()
+            .is_some_and(|facts| facts.material() == crate::participation::Participation::Yes),
+        _ => false,
+    })
+}
+
 pub(crate) fn pass_through_allowed(d: &FederalDraft, id: i64) -> i64 {
     calculate(d).pass_through.get(&id).copied().unwrap_or(0)
 }
@@ -375,10 +386,12 @@ pub struct Section179DirectBusinessIncomeSource {
     pub section1231_net_cents: Option<i64>,
 }
 /// Actual other income-limited deduction for the selected tax system.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section179OtherLimitedDeduction {
     pub system: Section179IncomeSystem,
     pub amount_cents: i64,
+    /// Actual source IDs resolved by the owner deduction suppliers.
+    pub coordinated_owner_sources: BTreeSet<i64>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Section179PreparedIssue {
@@ -413,6 +426,8 @@ pub enum Section179PreparedIssue {
 /// native allocation remains bound to its report; no PAL ordering is selected.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Section179PreparedAllocation {
+    participation: alloc::sync::Arc<crate::direct_participation::DirectParticipationView>,
+    source_claims: BTreeMap<i64, i64>,
     pub income: Section179IncomeAllocation,
     pub assets: BTreeMap<(i64, i64), i64>,
     // Bound to this exact selected allocation, never reconstructed by the reader.
@@ -422,24 +437,35 @@ pub struct Section179PreparedAllocation {
         BTreeMap<i64, Result<direct_sources::DirectOperatingOperands, Section179PreparedIssue>>,
     owner_issues: Vec<crate::FederalIssue>,
     // Already-built selected projection, bound to the allocation/report.
-    report_context: FederalDraft,
+    report_context: alloc::sync::Arc<FederalDraft>,
+    macrs: alloc::sync::Arc<crate::macrs_source::MacrsElectionView>,
     pub(crate) home_context: crate::home_office::HomeContext,
     pub(crate) final_ordinary: BTreeMap<i64, crate::business_risk::FinalOrdinarySource>,
+    pub(crate) direct_property: BTreeMap<i64, Vec<crate::business_risk::PropertySource>>,
+    pub(crate) passive_ordinary: BTreeMap<i64, crate::business_risk::PassiveOrdinarySource>,
 }
 
 /// Borrowed office-profit operands from this invocation's selected projection.
 /// The hypothetical allowance enters the same checked recipe as final reads.
 pub(crate) struct Section179PreparedDirectOperands<'a> {
+    source_claims: &'a BTreeMap<i64, i64>,
     draft: &'a FederalDraft,
     operating:
         &'a BTreeMap<i64, Result<direct_sources::DirectOperatingOperands, Section179PreparedIssue>>,
+    displaced: &'a BTreeMap<i64, i64>,
+    selected: &'a Section179PreparedAllocation,
 }
 impl Section179PreparedDirectOperands<'_> {
+    pub(crate) fn selected(&self) -> &Section179PreparedAllocation {
+        self.selected
+    }
+
     pub(crate) fn home_income(
         &self,
         source: i64,
         allowed: i64,
     ) -> Result<crate::home_office::HomeIncome, Section179PreparedIssue> {
+        let source_claims = self.source_claims;
         let operands = self
             .operating
             .get(&source)
@@ -455,14 +481,30 @@ impl Section179PreparedDirectOperands<'_> {
         let FederalIncome::Business { data } = &entry.income else {
             return Err(Section179PreparedIssue::WrongSourceKind(source));
         };
-        crate::home_office::HomeIncome::from_source(
+        let rounding = crate::nonmacrs::asset_depreciation_amounts_for(
+            self.draft,
+            source,
+            &data.assets,
+            crate::depreciation::mid_quarter_with_macrs(
+                self.draft,
+                Some(self.selected.macrs.as_ref()),
+            ),
+            false,
+            Some(self.selected.macrs.as_ref()),
+        )?
+        .adjustment(allowed)
+        .ok_or(Section179PreparedIssue::AmountOverflow(source))?;
+        crate::home_office::HomeIncome::from_source_with_claims(
             self.draft,
             source,
             data,
             operands
                 .cost_cents
-                .checked_add(allowed)
+                .checked_sub(self.displaced.get(&source).copied().unwrap_or(0))
+                .and_then(|cost| cost.checked_add(allowed))
+                .and_then(|value| value.checked_add(rounding))
                 .ok_or(Section179PreparedIssue::AmountOverflow(source))?,
+            source_claims,
         )
     }
 }
@@ -478,7 +520,7 @@ impl Section179PtpReportContext<'_> {
     /// Emit the bound native result once, retaining every other owner boundary.
     pub fn report(&self, result: &mut FederalResult) {
         report_allocated_with_consumed(
-            &self.allocation.report_context,
+            self.allocation.source_context(),
             result,
             &self.allocation.native,
             |id| self.consumed.iter().any(|source| source.k1 == id),
@@ -487,6 +529,35 @@ impl Section179PtpReportContext<'_> {
 }
 
 impl Section179PreparedAllocation {
+    pub(crate) fn employee_equipment(
+        &self,
+        position: usize,
+    ) -> Result<&[crate::BusinessAsset], Section179PreparedIssue> {
+        if !self.owner_issues.is_empty() {
+            return Err(Section179PreparedIssue::OwnerIssues(self.owner_issues.clone()));
+        }
+        let source = crate::asset_sale::employee_source_id(position);
+        crate::employee_expenses::equipment_source(&self.report_context, source)
+            .ok_or(Section179PreparedIssue::UnknownSource(source))
+    }
+
+    pub(crate) fn employee_allowed(&self, position: usize) -> Result<i64, Section179PreparedIssue> {
+        let source = crate::asset_sale::employee_source_id(position);
+        self.employee_equipment(position)?.iter().try_fold(0i64, |total, asset| {
+            total
+                .checked_add(self.assets.get(&(source, asset.id)).copied().unwrap_or(0))
+                .ok_or(Section179PreparedIssue::AmountOverflow(source))
+        })
+    }
+
+    fn source_context(&self) -> crate::related_forms::RelatedFormContext<'_> {
+        crate::related_forms::RelatedFormContext::bound(
+            &self.report_context,
+            &self.source_claims,
+            &self.participation,
+        )
+        .with_macrs(&self.macrs)
+    }
     pub(crate) fn native_allowed(&self, activity: i64) -> i64 {
         self.native.pass_through.get(&activity).copied().unwrap_or(0)
     }
@@ -518,10 +589,19 @@ impl Section179PreparedAllocation {
             .map_err(Clone::clone)
     }
 
-    /// Final physical Schedule C source after its current at-risk stage.
+    pub(crate) fn participation(
+        &self,
+    ) -> alloc::sync::Arc<crate::direct_participation::DirectParticipationView> {
+        self.participation.clone()
+    }
+
+    /// Final physical Schedule C source after its current at-risk and passive stages.
     /// No community-income allocation is applied to these source cents.
     pub(crate) fn final_ordinary_profit(&self, source: i64) -> Option<i64> {
-        self.final_ordinary.get(&source).map(|source| source.profit_cents)
+        self.passive_ordinary
+            .get(&source)
+            .map(|source| source.allowed_cents.unwrap_or(source.before_pal_cents))
+            .or_else(|| self.final_ordinary.get(&source).map(|source| source.profit_cents))
     }
 
     // Gross native election/carry availability precedes the income cap.
@@ -529,18 +609,62 @@ impl Section179PreparedAllocation {
         self.native.available
     }
 
-    // Absence means this bound source has no current ordinary at-risk stage.
+    // Absence means this bound source has no current ordinary limiting stage.
     // Unknown sources fail preparation before an allocation reaches a consumer.
-    pub(crate) fn ordinary_risk_adjustment(&self, source: i64) -> i64 {
+    pub(crate) fn ordinary_limit_adjustment(&self, source: i64) -> i64 {
         self.final_ordinary.get(&source).map_or(0, |source| source.adjustment_cents)
+            + self.passive_ordinary.get(&source).map_or(0, |source| {
+                source.allowed_cents.map_or(0, |allowed| allowed - source.before_pal_cents)
+            })
+    }
+
+    pub(crate) fn asset_recovery(
+        &self,
+        source: i64,
+        asset: i64,
+    ) -> Option<crate::kernel::cost_recovery::annual::Amounts> {
+        self.direct_business(source).ok()?;
+        let entries = crate::community::entries(&self.report_context);
+        let entry = entries.iter().find(|entry| entry.id == source)?;
+        let FederalIncome::Business { data: business } = &entry.income else {
+            return None;
+        };
+        let asset_record = business.assets.iter().find(|record| record.id == asset)?;
+        crate::auto_recovery::recovery(
+            asset_record,
+            2026,
+            self.assets.get(&(source, asset)).copied().unwrap_or(0),
+        )
+    }
+
+    pub(crate) fn auto_displaced(&self, source: i64) -> Result<i64, Section179PreparedIssue> {
+        Ok(auto_displacement(&self.report_context, &self.native.assets)
+            .ok_or(Section179PreparedIssue::AmountOverflow(source))?
+            .get(&source)
+            .copied()
+            .unwrap_or(0))
     }
 
     /// Selected operating expense cents, including this allocation's allowed179.
     /// The actual source ID resolves only in this allocation's prepared view.
     pub fn operating(&self, source: i64) -> Result<i64, Section179PreparedIssue> {
+        let allowed = self.allowed(source)?;
+        let business = self.direct_business(source)?;
+        let amounts = crate::nonmacrs::asset_depreciation_amounts_for(
+            &self.report_context,
+            source,
+            &business.assets,
+            crate::depreciation::mid_quarter_with_macrs(
+                &self.report_context,
+                Some(self.macrs.as_ref()),
+            ),
+            false,
+            Some(self.macrs.as_ref()),
+        )?;
         self.direct_operands(source)?
             .cost_cents
-            .checked_add(self.allowed(source)?)
+            .checked_add(allowed)
+            .and_then(|value| value.checked_add(amounts.adjustment(allowed)?))
             .ok_or(Section179PreparedIssue::AmountOverflow(source))
     }
 
@@ -560,18 +684,23 @@ impl Section179PreparedAllocation {
     /// The existing business-receipt stage less selected operating costs.
     /// Routed receipts and other income adjustments keep their existing owners.
     pub fn tentative_profit(&self, source: i64) -> Result<i64, Section179PreparedIssue> {
-        self.direct_operands(source)?.tentative_profit(source, self.allowed(source)?)
+        self.direct_operands(source)?
+            .receipts_cents
+            .checked_sub(self.operating(source)?)
+            .ok_or(Section179PreparedIssue::AmountOverflow(source))
     }
 
     pub(crate) fn home_income(
         &self,
         source: i64,
     ) -> Result<crate::home_office::HomeIncome, Section179PreparedIssue> {
-        crate::home_office::HomeIncome::from_source(
+        let source_claims = &self.source_claims;
+        crate::home_office::HomeIncome::from_source_with_claims(
             &self.report_context,
             source,
             self.direct_business(source)?,
             self.operating(source)?,
+            source_claims,
         )
     }
 
@@ -585,8 +714,8 @@ impl Section179PreparedAllocation {
             .filter(|entry| matches!(entry.income, FederalIncome::Business { .. }))
             .map(|entry| self.home_income(entry.id).map(|income| (entry.id, income)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        crate::home_office::deduction_with_context(
-            &self.report_context,
+        crate::home_office::deduction_with_context_with_claims(
+            self.source_context(),
             source,
             &profits,
             &self.home_context,
@@ -627,10 +756,12 @@ impl Section179PreparedAllocation {
 // activity's before179 income certification. Every actual expense source stays
 // in the same selected view. K-1 sources use their owner's actual selected
 // basis allowance and retained income carry before any income source is needed.
-pub(crate) fn no_section179_context(
+
+pub(crate) fn no_section179_context_with_claims(
     draft: &FederalDraft,
     system: Section179IncomeSystem,
     home: &crate::home_office::HomeContext,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<Option<Section179PreparedAllocation>, Section179PreparedIssue> {
     for entry in &draft.income {
         let relevant = match &entry.income {
@@ -643,6 +774,7 @@ pub(crate) fn no_section179_context(
                         .is_some_and(|carry| carry.gross != 0)
             }
             FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
                 data.section179 != 0
                     || data.section179_carryover != 0
                     || data
@@ -683,7 +815,18 @@ pub(crate) fn no_section179_context(
             }
         }
     }
-    let collected = collect_section179_items::<true>(&selected, pass_throughs(&selected)?);
+    prepare_employee_equipment(
+        &mut selected,
+        system == Section179IncomeSystem::Alternative,
+        &mut alloc::collections::BTreeSet::new(),
+        home.macrs.as_deref(),
+    )?;
+    let collected = collect_section179_items_with_claims::<true>(
+        &selected,
+        pass_throughs(&selected)?,
+        source_claims,
+        home.macrs.as_deref(),
+    );
     if let Some(issue) = &collected.result.source_issue {
         return Err(issue.clone());
     }
@@ -693,22 +836,32 @@ pub(crate) fn no_section179_context(
     if collected.result.available != 0 {
         return Ok(None);
     }
-    let native = calculate_with_home(&selected, home)?;
+    let native = calculate_with_home_with_claims(&selected, home, source_claims)?;
     let income = income_allocation(&native, system);
     // The native available==0 branch does not need line11 income. Its report
     // returns before line11, and no certified before179 income is substituted.
-    let direct_operating =
-        direct_sources::selected_operating_operands(draft, &selected, system, Some(home));
+    let direct_operating = direct_sources::selected_operating_operands_with_claims(
+        draft,
+        &selected,
+        system,
+        Some(home),
+        source_claims,
+    );
     Ok(Some(Section179PreparedAllocation {
+        participation: home.source_context(draft, source_claims).participation(),
+        source_claims: source_claims.clone(),
         income,
         assets: BTreeMap::new(),
         ptp: BTreeMap::new(),
         native,
         direct_operating,
         owner_issues: Vec::new(),
-        report_context: selected,
+        report_context: selected.into(),
+        macrs: home.source_context(draft, source_claims).macrs(),
         home_context: home.clone(),
         final_ordinary: BTreeMap::new(),
+        passive_ordinary: BTreeMap::new(),
+        direct_property: BTreeMap::new(),
     }))
 }
 
@@ -742,10 +895,69 @@ fn prepare_direct_business<'a>(
                 .map_err(|()| E::AlternativeAssetCarryUnavailable(id, index))?;
             // Null means the actual selected method/history/carry agree,
             // only after the independently sourced carry check above.
-            *asset = asset.amt_projection_or_self();
+            if asset.history_details.as_ref().is_some_and(|h| h.auto_history.is_some())
+                && !asset.documented_179_reserve()
+            {
+                *asset = crate::auto_recovery::amt_projection(asset)
+                    .filter(|projected| crate::auto_recovery::amount(projected, 2026).is_some())
+                    .ok_or(E::AlternativeAssetCarryUnavailable(id, index))?;
+            } else {
+                *asset = asset.amt_projection_or_self();
+            }
         }
     }
     Ok(data)
+}
+
+// Employee equipment uses the same actual AMT carry source and asset projection
+// as direct property. Its existing Form2106 source owner validates eligibility;
+// a positive election is admitted only through this return-wide allocation.
+fn prepare_employee_equipment(
+    draft: &mut FederalDraft,
+    alternative: bool,
+    asset_ids: &mut alloc::collections::BTreeSet<i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
+) -> Result<(), Section179PreparedIssue> {
+    use Section179PreparedIssue as E;
+    let fallback = macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(draft));
+    let view = macrs.or(fallback.as_ref()).unwrap();
+    let mid_quarter = crate::depreciation::mid_quarter_with_macrs(draft, Some(view));
+    for (position, claim) in
+        draft.adjustments.iter_mut().flat_map(|a| &mut a.employee_expenses).enumerate()
+    {
+        let source = crate::asset_sale::employee_source_id(position);
+        let in_pool = claim
+            .equipment_assets
+            .iter()
+            .any(|asset| asset.available179() > 0 || asset.amt_section179_carry() != Ok(0));
+        // Unrelated unavailable recovery cannot supply an election or a
+        // compensation dependency. Its normal Form2106 owner still reports it.
+        if in_pool {
+            if let Some(issue) = claim.admission_issue() {
+                return Err(E::InvalidSource(source, issue.key));
+            }
+            if let Some((_, key)) = claim.equipment_issue(mid_quarter, Some(view)) {
+                return Err(E::SourceBoundaryUnavailable(source, key));
+            }
+        }
+        for (index, asset) in claim.equipment_assets.iter_mut().enumerate() {
+            if in_pool {
+                if asset.id <= 0 {
+                    return Err(E::AssetIdentityUnavailable(source));
+                }
+                if !asset_ids.insert(asset.id) {
+                    return Err(E::DuplicateAsset(asset.id));
+                }
+            }
+            if alternative {
+                asset
+                    .amt_section179_carry()
+                    .map_err(|()| E::AlternativeAssetCarryUnavailable(source, index))?;
+                *asset = asset.amt_projection_or_self();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Allocate actual selected-system sources with each K-1's native before179
@@ -762,7 +974,31 @@ pub(crate) fn section179_with_native_prepared_income_and_operating_context(
         &Section179PreparedDirectOperands<'_>,
     ) -> Option<Section179OtherLimitedDeduction>,
 ) -> Result<Section179PreparedAllocation, Section179PreparedIssue> {
-    section179_with_pass_through_context(
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    section179_with_native_prepared_income_and_operating_context_with_claims(
+        draft,
+        system,
+        businesses,
+        k1s,
+        other_limited_deduction,
+        &source_claims,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn section179_with_native_prepared_income_and_operating_context_with_claims(
+    draft: &FederalDraft,
+    system: Section179IncomeSystem,
+    businesses: &[Section179DirectBusinessIncomeSource],
+    k1s: &[Section179BusinessIncomeSource],
+    other_limited_deduction: impl FnOnce(
+        &FederalDraft,
+        &BTreeMap<i64, i64>,
+        &Section179PreparedDirectOperands<'_>,
+    ) -> Option<Section179OtherLimitedDeduction>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Section179PreparedAllocation, Section179PreparedIssue> {
+    section179_with_pass_through_context_with_claims(
         draft,
         system,
         businesses,
@@ -770,6 +1006,7 @@ pub(crate) fn section179_with_native_prepared_income_and_operating_context(
         None,
         &[],
         other_limited_deduction,
+        source_claims,
     )
 }
 
@@ -779,6 +1016,7 @@ pub(crate) struct Section179PassThrough {
     pub amount_cents: i64,
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn section179_with_pass_through_context(
     draft: &FederalDraft,
@@ -793,16 +1031,88 @@ pub(crate) fn section179_with_pass_through_context(
         &Section179PreparedDirectOperands<'_>,
     ) -> Option<Section179OtherLimitedDeduction>,
 ) -> Result<Section179PreparedAllocation, Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(draft);
+    section179_with_pass_through_context_with_claims(
+        draft,
+        system,
+        businesses,
+        k1s,
+        home,
+        pass_through,
+        other_limited_deduction,
+        &source_claims,
+    )
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn section179_with_pass_through_context_with_claims(
+    draft: &FederalDraft,
+    system: Section179IncomeSystem,
+    businesses: &[Section179DirectBusinessIncomeSource],
+    k1s: &[Section179BusinessIncomeSource],
+    home: Option<&crate::home_office::HomeContext>,
+    pass_through: &[Section179PassThrough],
+    other_limited_deduction: impl FnOnce(
+        &FederalDraft,
+        &BTreeMap<i64, i64>,
+        &Section179PreparedDirectOperands<'_>,
+    ) -> Option<Section179OtherLimitedDeduction>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Section179PreparedAllocation, Section179PreparedIssue> {
+    section179_with_pass_through_context_and_compensation_with_claims(
+        draft,
+        system,
+        businesses,
+        k1s,
+        home,
+        pass_through,
+        |_, _, _| Ok(None),
+        other_limited_deduction,
+        source_claims,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn section179_with_pass_through_context_and_compensation_with_claims(
+    draft: &FederalDraft,
+    system: Section179IncomeSystem,
+    businesses: &[Section179DirectBusinessIncomeSource],
+    k1s: &[Section179BusinessIncomeSource],
+    home: Option<&crate::home_office::HomeContext>,
+    pass_through: &[Section179PassThrough],
+    starting_compensation: impl FnOnce(
+        &FederalDraft,
+        Option<&Section179PreparedAllocation>,
+        &crate::employee_expenses::Before179Compensation,
+    ) -> Result<
+        Option<care_compensation::CareCompensation>,
+        Section179PreparedIssue,
+    >,
+    other_limited_deduction: impl FnOnce(
+        &FederalDraft,
+        &BTreeMap<i64, i64>,
+        &Section179PreparedDirectOperands<'_>,
+    ) -> Option<Section179OtherLimitedDeduction>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Section179PreparedAllocation, Section179PreparedIssue> {
     use Section179PreparedIssue as E;
+    if let Some((id, key)) = crate::nonmacrs::financial_issue(draft) {
+        return Err(E::SourceBoundaryUnavailable(id, key));
+    }
     if !draft.home_sites.is_empty() && home.is_none() {
         return Err(E::SourceBoundaryUnavailable(0, "HOME_CONTEXT_REQUIRED"));
     }
     if draft.setup.is_none() {
         return Err(E::MissingReturnContext);
     }
+    let original_participation = home.map_or_else(
+        || draft.direct_participation_view(),
+        |home| home.source_context(draft, source_claims).participation(),
+    );
     let associations = crate::source_associations::SourceAssociations::new(draft);
     let alternative = system == Section179IncomeSystem::Alternative;
-    let mut prepared_draft = draft.clone();
+    let mut prepared_draft = crate::federal_rules::boxed(|| draft.clone());
     let mut seen = alloc::collections::BTreeSet::new();
     let mut asset_ids = alloc::collections::BTreeSet::new();
     let mut contributions = BTreeMap::new();
@@ -826,6 +1136,12 @@ pub(crate) fn section179_with_pass_through_context(
         let property = source.section1231_net_cents.ok_or(E::SourceIncomeUnavailable(id))?;
         contributions.insert(id, operating.checked_add(property).ok_or(E::AmountOverflow(id))?);
     }
+    prepare_employee_equipment(
+        &mut prepared_draft,
+        alternative,
+        &mut asset_ids,
+        home.and_then(|home| home.macrs.as_deref()),
+    )?;
     let mut pass_throughs = Vec::new();
     let mut risk_remaining = BTreeMap::new();
     let mut ptp_sources = BTreeMap::new();
@@ -886,8 +1202,10 @@ pub(crate) fn section179_with_pass_through_context(
         let entry = crate::community::entry(draft, original);
         let (material, publicly_traded, owner_deductions, guarantees) = match &entry.income {
             FederalIncome::Partnership { data } => {
-                let material =
-                    data.participation.material() == crate::participation::Participation::Yes;
+                let material = data.participation.as_ref().map_or(
+                    crate::participation::Participation::Unavailable,
+                    crate::PartnerParticipation::material,
+                ) == crate::participation::Participation::Yes;
                 // Entity ordinary/property classes exclude personal payments.
                 // Add actual service cents once after their selected-system
                 // net; retain capital and PTP payments in the boundary guard.
@@ -910,14 +1228,17 @@ pub(crate) fn section179_with_pass_through_context(
                     guarantees,
                 )
             }
-            FederalIncome::Scorp { data } => (
-                data.participation
-                    .as_ref()
-                    .is_some_and(|p| p.material() == crate::participation::Participation::Yes),
-                false,
-                false,
-                0,
-            ),
+            FederalIncome::Scorp { data } => {
+                let data = &crate::ScorpK1::from(data);
+                (
+                    data.participation
+                        .as_ref()
+                        .is_some_and(|p| p.material() == crate::participation::Participation::Yes),
+                    false,
+                    false,
+                    0,
+                )
+            }
             _ => unreachable!(),
         };
         contributions.insert(id, income);
@@ -963,27 +1284,53 @@ pub(crate) fn section179_with_pass_through_context(
             | FederalIncome::ScorpActivities { .. } => {
                 *contributions.get(&entry.id).ok_or(E::MissingSource(entry.id))?
             }
-            FederalIncome::Wage { data } => data
-                .total_income()
-                .map(|value| {
-                    value
-                        - if data.statutory_employee && data.statutory_business.is_some() {
-                            data.wages
-                        } else {
-                            0
-                        }
-                        - data.disability.amount()
-                })
-                .map_err(|_| E::WageIncomeUnavailable)?,
+            FederalIncome::Wage { data } => {
+                let data = crate::FederalWage::from(data);
+                data.total_income()
+                    .map(|value| {
+                        value
+                            - if data.statutory_employee && data.statutory_business.is_some() {
+                                data.wages
+                            } else {
+                                0
+                            }
+                            - data.disability.amount()
+                    })
+                    .map_err(|_| E::WageIncomeUnavailable)?
+            }
             FederalIncome::EmployeeWages { data } => {
                 data.income().map_err(|_| E::WageIncomeUnavailable)?
             }
+            // Form 1040 line 1h employee compensation (Reg.1.179-2(c)(6)(iv)).
+            income @ (FederalIncome::EsppSale { .. } | FederalIncome::IsoSale { .. }) => {
+                care_compensation::unreported_compensation(income)
+            }
+            // An unclassified rental is refused by the return report.
+            FederalIncome::Rental { .. } => rental_income(
+                draft,
+                entry,
+                crate::depreciation::mid_quarter_with_macrs(
+                    draft,
+                    home.and_then(|home| home.macrs.as_deref()),
+                ),
+            )
+            .unwrap_or(0),
             _ => 0,
         };
         income = income.checked_add(amount).ok_or(E::AggregateAmountOverflow)?;
     }
+    let employee_compensation = crate::employee_expenses::before179_compensation_sources(
+        &prepared_draft,
+        home.and_then(|home| home.macrs.as_deref()),
+    )?;
+    income = income.checked_add(employee_compensation.total).ok_or(E::AggregateAmountOverflow)?;
     let Collected179 { mut result, mut items, mut allocatable } =
-        collect_section179_items::<true>(&prepared_draft, pass_throughs);
+        collect_section179_items_with_claims::<true>(
+            &prepared_draft,
+            pass_throughs,
+            source_claims,
+            home.and_then(|home| home.macrs.as_deref()),
+        );
     if let Some(issue) = &result.source_issue {
         return Err(issue.clone());
     }
@@ -1021,29 +1368,110 @@ pub(crate) fn section179_with_pass_through_context(
     if result.prepared_income_overflow {
         return Err(E::AggregateAmountOverflow);
     }
-    let direct_operating =
-        direct_sources::selected_operating_operands(draft, &prepared_draft, system, home);
+    let direct_operating = direct_sources::selected_operating_operands_with_claims(
+        draft,
+        &prepared_draft,
+        system,
+        home,
+        source_claims,
+    );
+    let prepared_draft: alloc::sync::Arc<FederalDraft> = prepared_draft.into();
+    let care_needed = care_compensation::needed(draft)?;
+    let zero = if !alternative && care_needed {
+        let mut zero = result.clone();
+        zero.income = positive(income);
+        populate_allowances(&mut zero, &items, 0, &prepared_draft)
+            .ok_or(E::AggregateAmountOverflow)?;
+        Some(bind_prepared_allocation(
+            prepared_draft.clone(),
+            original_participation.clone(),
+            system,
+            home,
+            source_claims,
+            zero,
+            direct_operating.clone(),
+            BTreeMap::new(),
+            Vec::new(),
+        )?)
+    } else {
+        None
+    };
+    if let Some(compensation) =
+        starting_compensation(&prepared_draft, zero.as_ref(), &employee_compensation)?
+    {
+        income = income.checked_add(compensation.cents()?).ok_or(E::AggregateAmountOverflow)?;
+        result.coordinated_care = true;
+    }
     if result.available == 0 {
         result.income_known = true;
     } else {
+        // Only an actual line11 allocation needs current-conduct and taxable
+        // source certification. No-election operating/recovery paths do not.
+        for entry in &draft.income {
+            if let FederalIncome::Business { data } = &entry.income {
+                direct_sources::income_source_supported(
+                    draft,
+                    entry.id,
+                    data,
+                    &original_participation,
+                )?;
+            }
+        }
+        income = income
+            .checked_add(foreign_employee_income_adjustment(draft)?)
+            .ok_or(E::AggregateAmountOverflow)?;
+        if let Some(issue) = foreign_employee::business_exclusion_issue(draft) {
+            return Err(issue);
+        }
         result.income_known = true;
         let mut other_issue = None;
-        result = allocate_income_stage::<true>(result, &items, allocatable, income, |allocation| {
-            let operands = Section179PreparedDirectOperands {
-                draft: &prepared_draft,
-                operating: &direct_operating,
-            };
-            let source = other_limited_deduction(&prepared_draft, allocation, &operands)?;
-            if source.system != system {
-                other_issue = Some(E::OtherDeductionWrongSystem);
-                None
-            } else if source.amount_cents < 0 {
-                other_issue = Some(E::NegativeOtherDeduction);
-                None
-            } else {
-                Some(source.amount_cents)
-            }
-        });
+        let mut coordinated_owner_sources = BTreeSet::new();
+        result = allocate_income_stage::<true>(
+            result,
+            &items,
+            allocatable,
+            income,
+            &prepared_draft,
+            |allocation, displaced| {
+                let selected = match bind_prepared_allocation(
+                    prepared_draft.clone(),
+                    original_participation.clone(),
+                    system,
+                    home,
+                    source_claims,
+                    allocation.clone(),
+                    direct_operating.clone(),
+                    BTreeMap::new(),
+                    Vec::new(),
+                ) {
+                    Ok(selected) => selected,
+                    Err(issue) => {
+                        other_issue = Some(issue);
+                        return None;
+                    }
+                };
+                let operands = Section179PreparedDirectOperands {
+                    source_claims,
+                    draft: &prepared_draft,
+                    operating: &direct_operating,
+                    displaced,
+                    selected: &selected,
+                };
+                let source =
+                    other_limited_deduction(&prepared_draft, &allocation.businesses, &operands)?;
+                if source.system != system {
+                    other_issue = Some(E::OtherDeductionWrongSystem);
+                    None
+                } else if source.amount_cents < 0 {
+                    other_issue = Some(E::NegativeOtherDeduction);
+                    None
+                } else {
+                    coordinated_owner_sources = source.coordinated_owner_sources;
+                    Some(source.amount_cents)
+                }
+            },
+        );
+        result.coordinated_owner_sources = coordinated_owner_sources;
         if let Some(issue) = other_issue {
             return Err(issue);
         }
@@ -1063,13 +1491,19 @@ pub(crate) fn section179_with_pass_through_context(
     // allocation. Only the two notices belonging to the receiving PAL owner
     // are excluded from the source getter; report() still emits them.
     let mut checked = FederalResult::empty(prepared_draft.revision);
-    report_allocated(&prepared_draft, &mut checked, &result);
-    checked.issues.retain(|issue| {
-        !matches!(
-            issue.display.key.as_str(),
-            "ISSUE_SECTION179_PUBLICLY_TRADED" | "ISSUE_SECTION179_PASSIVE_ACTIVITY"
-        )
-    });
+    report_allocated_with_consumed(
+        crate::related_forms::RelatedFormContext::bound(
+            &prepared_draft,
+            source_claims,
+            &original_participation,
+        ),
+        &mut checked,
+        &result,
+        |_| false,
+    );
+    checked
+        .issues
+        .retain(|issue| !matches!(issue.display.key.as_str(), "ISSUE_SECTION179_PUBLICLY_TRADED"));
     let income = income_allocation(&result, system);
     let ptp = ptp_sources
         .into_iter()
@@ -1101,32 +1535,91 @@ pub(crate) fn section179_with_pass_through_context(
             },
         )
         .collect();
+    bind_prepared_allocation(
+        prepared_draft,
+        original_participation,
+        system,
+        home,
+        source_claims,
+        result,
+        direct_operating,
+        ptp,
+        checked.issues,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bind_prepared_allocation(
+    prepared_draft: alloc::sync::Arc<FederalDraft>,
+    participation: alloc::sync::Arc<crate::direct_participation::DirectParticipationView>,
+    system: Section179IncomeSystem,
+    home: Option<&crate::home_office::HomeContext>,
+    source_claims: &BTreeMap<i64, i64>,
+    result: Deduction,
+    mut direct_operating: BTreeMap<
+        i64,
+        Result<direct_sources::DirectOperatingOperands, Section179PreparedIssue>,
+    >,
+    ptp: BTreeMap<i64, Result<Ptp179PalInput, Ptp179SourceIssue>>,
+    owner_issues: Vec<crate::FederalIssue>,
+) -> Result<Section179PreparedAllocation, Section179PreparedIssue> {
+    let displaced = auto_displacement(&prepared_draft, &result.assets)
+        .ok_or(Section179PreparedIssue::AggregateAmountOverflow)?;
+    for (id, amount) in displaced {
+        let operands = direct_operating
+            .get_mut(&id)
+            .ok_or(Section179PreparedIssue::MissingSource(id))?
+            .as_mut()
+            .map_err(|issue| issue.clone())?;
+        operands.cost_cents = operands
+            .cost_cents
+            .checked_sub(amount)
+            .ok_or(Section179PreparedIssue::AmountOverflow(id))?;
+    }
+    let income = income_allocation(&result, system);
     let assets = result
         .assets
         .iter()
         .map(|(&(id, index), &allowed)| {
-            let FederalIncome::Business { data } = &prepared_draft
-                .income
-                .iter()
-                .find(|entry| entry.id == id)
-                .expect("collected accepted direct source")
-                .income
-            else {
-                unreachable!()
+            let assets = if let Some(assets) =
+                crate::employee_expenses::equipment_source(&prepared_draft, id)
+            {
+                assets
+            } else {
+                let FederalIncome::Business { data } = &prepared_draft
+                    .income
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .expect("collected accepted direct source")
+                    .income
+                else {
+                    unreachable!()
+                };
+                &data.assets
             };
-            ((id, data.assets[index].id), allowed)
+            ((id, assets[index].id), allowed)
         })
         .collect();
+    let macrs = home
+        .map(|home| home.source_context(&prepared_draft, source_claims).macrs())
+        .unwrap_or_else(|| {
+            alloc::sync::Arc::new(crate::macrs_source::MacrsElectionView::new(&prepared_draft))
+        });
     Ok(Section179PreparedAllocation {
+        participation,
+        source_claims: source_claims.clone(),
         income,
         assets,
         ptp,
         native: result,
         direct_operating,
-        owner_issues: checked.issues,
+        owner_issues,
         report_context: prepared_draft,
+        macrs,
         home_context: home.cloned().unwrap_or_default(),
         final_ordinary: BTreeMap::new(),
+        passive_ordinary: BTreeMap::new(),
+        direct_property: BTreeMap::new(),
     })
 }
 
@@ -1168,13 +1661,16 @@ pub fn k1_section179_availability_source(
         FederalIncome::Partnership { data } => (
             data.section179_carryover,
             data.section179_carryover_sold,
-            data.amt_section179_income_carry.as_ref(),
+            data.amt_section179_income_carry.clone(),
         ),
-        FederalIncome::Scorp { data } => (
-            data.section179_carryover,
-            data.section179_carryover_sold,
-            data.amt_section179_income_carry.as_ref(),
-        ),
+        FederalIncome::Scorp { data } => {
+            let data = crate::ScorpK1::from(data);
+            (
+                data.section179_carryover,
+                data.section179_carryover_sold,
+                data.amt_section179_income_carry,
+            )
+        }
         _ => return Err(E::NotK1),
     };
     let (gross, sold, vintages) = if alternative {
@@ -1246,6 +1742,8 @@ pub enum Ptp179SourceIssue {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Deduction {
     pub income_known: bool,
+    coordinated_owner_sources: BTreeSet<i64>,
+    coordinated_care: bool,
     prepared_income_overflow: bool,
     source_issue: Option<Section179PreparedIssue>,
     pub cost: i64,
@@ -1269,8 +1767,22 @@ pub(crate) struct Deduction {
 }
 
 pub(crate) fn calculate(d: &FederalDraft) -> Deduction {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_claims(d, &source_claims)
+}
+
+pub(crate) fn calculate_with_claims(
+    d: &FederalDraft,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Deduction {
     match pass_throughs(d) {
-        Ok(sources) => calculate_with_pass_throughs::<false>(d, sources, None, &mut None),
+        Ok(sources) => calculate_with_pass_throughs_with_claims::<false>(
+            d,
+            sources,
+            None,
+            &mut None,
+            source_claims,
+        ),
         Err(_) => Deduction {
             income_known: false,
             prepared_income_overflow: true,
@@ -1283,9 +1795,26 @@ pub(crate) fn calculate_with_home(
     d: &FederalDraft,
     home: &crate::home_office::HomeContext,
 ) -> Result<Deduction, Section179PreparedIssue> {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_home_with_claims(d, home, &source_claims)
+}
+
+pub(crate) fn calculate_with_home_with_claims(
+    d: &FederalDraft,
+    home: &crate::home_office::HomeContext,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<Deduction, Section179PreparedIssue> {
+    if let Some((id, key)) = crate::nonmacrs::financial_issue(d) {
+        return Err(Section179PreparedIssue::SourceBoundaryUnavailable(id, key));
+    }
     let mut issue = None;
-    let result =
-        calculate_with_pass_throughs::<false>(d, pass_throughs(d)?, Some(home), &mut issue);
+    let result = calculate_with_pass_throughs_with_claims::<false>(
+        d,
+        pass_throughs(d)?,
+        Some(home),
+        &mut issue,
+        source_claims,
+    );
     if let Some(issue) = &result.source_issue {
         return Err(issue.clone());
     }
@@ -1311,10 +1840,15 @@ struct Collected179 {
 
 // The source collector retains the native tuple/index and aggregate carry
 // buckets. Selected-system preparation reuses it without changing allocation.
-fn collect_section179_items<const PREPARED: bool>(
+
+fn collect_section179_items_with_claims<const PREPARED: bool>(
     d: &FederalDraft,
     sources: Vec<PassThrough>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: Option<&crate::macrs_source::MacrsElectionView>,
 ) -> Collected179 {
+    let fallback = macrs.is_none().then(|| crate::macrs_source::MacrsElectionView::new(d));
+    let macrs = macrs.or(fallback.as_ref()).unwrap();
     let mut result = Deduction::default();
     let mut items = Vec::new();
     let mut allocatable = 0i64;
@@ -1355,7 +1889,13 @@ fn collect_section179_items<const PREPARED: bool>(
     for e in &projected_entries {
         if let FederalIncome::Business { data } = &e.income {
             for (index, a) in data.assets.iter().enumerate() {
-                let cost = match crate::cooperative_basis::qualified179_cost(d, e.id, a) {
+                let cost = match crate::cooperative_basis::qualified179_cost_with_claims(
+                    d,
+                    e.id,
+                    a,
+                    source_claims,
+                    Some(macrs),
+                ) {
                     Ok(cost) => cost,
                     Err(issue) => {
                         result.source_issue = Some(issue);
@@ -1372,6 +1912,26 @@ fn collect_section179_items<const PREPARED: bool>(
                         if a.placed / 10000 == 2026 { 0 } else { a.placed / 10000 },
                     ));
                 }
+            }
+        }
+    }
+    // Employee purchases, including an eligible zero election, share the same
+    // phaseout, current election and prior-vintage allocation as other property.
+    for (position, claim) in d.adjustments.iter().flat_map(|a| &a.employee_expenses).enumerate() {
+        let source = crate::asset_sale::employee_source_id(position);
+        for (index, asset) in claim.equipment_assets.iter().enumerate() {
+            add!(
+                result.cost,
+                asset.qualified179_cost_in_context(macrs.context(claim.owner, None, asset))
+            );
+            add!(result.elected, asset.elected179());
+            if asset.available179() > 0 {
+                items.push((
+                    source,
+                    index,
+                    asset.available179(),
+                    if asset.placed / 10000 == 2026 { 0 } else { asset.placed / 10000 },
+                ));
             }
         }
     }
@@ -1414,14 +1974,20 @@ fn collect_section179_items<const PREPARED: bool>(
     Collected179 { result, items, allocatable }
 }
 
-fn calculate_with_pass_throughs<const PREPARED: bool>(
+fn calculate_with_pass_throughs_with_claims<const PREPARED: bool>(
     d: &FederalDraft,
     sources: Vec<PassThrough>,
     home: Option<&crate::home_office::HomeContext>,
     home_issue: &mut Option<Section179PreparedIssue>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Deduction {
     let Collected179 { mut result, items, allocatable } =
-        collect_section179_items::<PREPARED>(d, sources);
+        collect_section179_items_with_claims::<PREPARED>(
+            d,
+            sources,
+            source_claims,
+            home.and_then(|home| home.macrs.as_deref()),
+        );
     if result.source_issue.is_some() {
         return result;
     }
@@ -1429,30 +1995,50 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
         result.income_known = true;
         return result;
     }
-    let mq = crate::depreciation::mid_quarter(d);
+    let mq =
+        crate::depreciation::mid_quarter_with_macrs(d, home.and_then(|home| home.macrs.as_deref()));
     // Before section 179 and the income-limited home-office deduction.
     let mut source_issue = None;
     let mut income = d.income.iter().map(|e| match &e.income {
-        FederalIncome::Wage { data } => data.total_income().map(|value| {
-            // Linked statutory box 1 already supplies this Schedule C's
-            // receipts below; count that job's net active income once.
-            value
-                - if data.statutory_employee && data.statutory_business.is_some() {
-                    data.wages
-                } else {
-                    0
-                }
-                - data.disability.amount()
-        }),
+        FederalIncome::Wage { data } => {
+            let data = crate::FederalWage::from(data);
+            data.total_income().map(|value| {
+                // Linked statutory box 1 already supplies this Schedule C's
+                // receipts below; count that job's net active income once.
+                value
+                    - if data.statutory_employee && data.statutory_business.is_some() {
+                        data.wages
+                    } else {
+                        0
+                    }
+                    - data.disability.amount()
+            })
+        }
         FederalIncome::EmployeeWages { data } => data.income(),
         FederalIncome::Business { data } => {
             let source = (|| {
-                let receipts = crate::federal_rules::farm_receipts(d, e.id, data)?;
-                let cost = crate::cooperative_basis::operating_cost(d, e.id, data, mq, false)?
-                    .checked_add(crate::farm_conservation::expense_adjustment(d, e.id, data))
-                    .ok_or(Section179PreparedIssue::AmountOverflow(e.id))?;
+                let receipts =
+                    crate::federal_rules::farm_receipts_with_claims(d, e.id, data, source_claims)?;
+                let cost = crate::cooperative_basis::operating_cost_with_claims(
+                    d,
+                    e.id,
+                    data,
+                    mq,
+                    false,
+                    source_claims,
+                    home.and_then(|home| home.macrs.as_deref()),
+                )?
+                .checked_add(crate::farm_conservation::expense_adjustment_with_claims(
+                    d,
+                    e.id,
+                    data,
+                    source_claims,
+                ))
+                .ok_or(Section179PreparedIssue::AmountOverflow(e.id))?;
                 receipts
-                    .checked_sub(data.operating_cost_with_supplies(cost))
+                    .checked_sub(
+                        data.expense_from_operating(data.operating_cost_with_supplies(cost)),
+                    )
                     .ok_or(Section179PreparedIssue::AmountOverflow(e.id))
             })();
             match source {
@@ -1468,6 +2054,8 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
         FederalIncome::Partnership { .. } | FederalIncome::Scorp { .. } => {
             Ok(result.pass_throughs.iter().find(|k1| k1.id == e.id).map_or(0, |k1| k1.income))
         }
+        // An unclassified rental is refused in the report below.
+        FederalIncome::Rental { .. } => Ok(rental_income(d, e, mq).unwrap_or(0)),
         _ => Ok(0),
     });
     const INPUT_OVERFLOW: &str = "prepared section179 income overflow";
@@ -1485,11 +2073,23 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
         result.prepared_income_overflow = income == Err(INPUT_OVERFLOW);
         return result;
     };
+    let income = match foreign_employee_income_adjustment(d).and_then(|adjustment| {
+        if let Some(issue) = foreign_employee::business_exclusion_issue(d) {
+            return Err(issue);
+        }
+        income.checked_add(adjustment).ok_or(Section179PreparedIssue::AggregateAmountOverflow)
+    }) {
+        Ok(income) => income,
+        Err(issue) => {
+            result.source_issue = Some(issue);
+            return result;
+        }
+    };
     result.income_known = true;
     // Pub. 946 includes active-business section 1231 gains/losses in this
     // limit, regardless of their later ordinary/capital characterization.
     // Disposition proceeds remain outside operating receipts and SE income.
-    let property_income = crate::asset_sale::direct_sources(d, false)
+    let property_income = crate::asset_sale::direct_sources_with_claims(d, false, source_claims)
         .iter()
         // A farm rental takes no section 179, and its gain is not
         // active-business income.
@@ -1500,6 +2100,17 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
         })
         .map(|(_, v)| v.gain * 100)
         .sum::<i64>();
+    let compensation = match crate::employee_expenses::before179_compensation(d) {
+        Ok(value) => value,
+        Err(issue) => {
+            result.source_issue = Some(issue);
+            return result;
+        }
+    };
+    let Some(income) = income.checked_add(compensation) else {
+        result.prepared_income_overflow = true;
+        return result;
+    };
     let income = if PREPARED {
         let Some(value) = income.checked_add(property_income) else {
             result.prepared_income_overflow = true;
@@ -1514,7 +2125,9 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
         &items,
         allocatable,
         income,
-        |hypothetical_by_business| {
+        d,
+        |hypothetical, displaced| {
+            let hypothetical_by_business = &hypothetical.businesses;
             if d.home_sites.is_empty() {
                 return Some(0);
             }
@@ -1530,21 +2143,26 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
                         let FederalIncome::Business { data } = &entry.income else {
                             return None;
                         };
-                        let conservation =
-                            crate::farm_conservation::expense_adjustment(d, entry.id, data);
+                        let conservation = crate::farm_conservation::expense_adjustment_with_claims(
+                            d,
+                            entry.id,
+                            data,
+                            source_claims,
+                        );
                         Some(
-                            crate::home_office::HomeIncome::from_source(
+                            crate::home_office::HomeIncome::from_source_with_claims(
                                 d,
                                 entry.id,
                                 data,
                                 data.operating_cost_with_adjustment(
                                     mq,
-                                    conservation
+                                    conservation - displaced.get(&entry.id).copied().unwrap_or(0)
                                         + hypothetical_by_business
                                             .get(&entry.id)
                                             .copied()
                                             .unwrap_or(0),
                                 ),
+                                source_claims,
                             )
                             .map(|income| (entry.id, income)),
                         )
@@ -1552,8 +2170,12 @@ fn calculate_with_pass_throughs<const PREPARED: bool>(
                     .collect::<Result<BTreeMap<_, _>, _>>()?;
                 let mut total = 0i64;
                 for source in inputs.keys() {
-                    let deduction =
-                        crate::home_office::deduction_with_context(d, *source, &inputs, home)?;
+                    let deduction = crate::home_office::deduction_with_context_with_claims(
+                        home.source_context(d, source_claims),
+                        *source,
+                        &inputs,
+                        home,
+                    )?;
                     total = total
                         .checked_add(deduction)
                         .ok_or(Section179PreparedIssue::AggregateAmountOverflow)?;
@@ -1578,19 +2200,25 @@ fn allocate_income_stage<const PREPARED: bool>(
     items: &[Election179Item],
     allocatable: i64,
     income: i64,
-    other_limited_deduction: impl FnOnce(&BTreeMap<i64, i64>) -> Option<i64>,
+    draft: &FederalDraft,
+    other_limited_deduction: impl FnOnce(&Deduction, &BTreeMap<i64, i64>) -> Option<i64>,
 ) -> Deduction {
-    let hypothetical =
-        allocate(phase::cap(phase::cap(allocatable, [result.limit]), [positive(income)]), items);
-    let mut hypothetical_by_business = BTreeMap::<i64, i64>::new();
-    for ((id, index, _, _), allowed) in items.iter().zip(hypothetical) {
-        if *index != PASS_THROUGH {
-            *hypothetical_by_business.entry(*id).or_default() += allowed;
-        }
-    }
+    let bound = phase::cap(allocatable, [result.limit]);
+    let Some(hypothetical_total) = auto_income_capacity(draft, items, bound, income) else {
+        result.income_known = false;
+        return result;
+    };
+    let mut hypothetical = result.clone();
+    hypothetical.income = positive(income);
+    let Some(displaced) = populate_allowances(&mut hypothetical, items, hypothetical_total, draft)
+    else {
+        result.income_known = false;
+        result.prepared_income_overflow = hypothetical.prepared_income_overflow;
+        return result;
+    };
     // Pub. 946's two-taxable-income-limit ordering: hypothetical section 179,
     // hypothetical other deduction, actual section 179, actual other deduction.
-    let Some(office) = other_limited_deduction(&hypothetical_by_business) else {
+    let Some(office) = other_limited_deduction(&hypothetical, &displaced) else {
         result.income_known = false;
         return result;
     };
@@ -1603,9 +2231,28 @@ fn allocate_income_stage<const PREPARED: bool>(
     } else {
         income - office
     });
-    result.allowed = phase::cap(phase::cap(allocatable, [result.limit]), [result.income]);
-    for ((id, index, available, year), allowed) in items.iter().zip(allocate(result.allowed, items))
-    {
+    let Some(allowed) = auto_income_capacity(draft, items, bound, income - office) else {
+        result.income_known = false;
+        return result;
+    };
+    if populate_allowances(&mut result, items, allowed, draft).is_none() {
+        result.income_known = false;
+    }
+    result
+}
+
+fn populate_allowances(
+    result: &mut Deduction,
+    items: &[Election179Item],
+    allowed: i64,
+    draft: &FederalDraft,
+) -> Option<BTreeMap<i64, i64>> {
+    result.allowed = allowed;
+    result.assets.clear();
+    result.businesses.clear();
+    result.pass_through.clear();
+    result.pass_through_components.clear();
+    for ((id, index, available, year), allowed) in items.iter().zip(allocate(allowed, items)) {
         if *index == PASS_THROUGH {
             *result.pass_through.entry(*id).or_default() += allowed;
             result.pass_through_components.entry(*id).or_default().push(
@@ -1630,20 +2277,131 @@ fn allocate_income_stage<const PREPARED: bool>(
             );
         } else {
             result.assets.insert((*id, *index), allowed);
-            *result.businesses.entry(*id).or_default() += allowed;
+            if *id > 0 {
+                *result.businesses.entry(*id).or_default() += allowed;
+            }
         }
     }
-    result
+    let displaced = auto_displacement(draft, &result.assets)?;
+    result.income = match crate::kernel::ratio::checked_sum(displaced.values().copied())
+        .and_then(|amount| result.income.checked_add(amount))
+    {
+        Some(income) => income,
+        None => {
+            result.prepared_income_overflow = true;
+            return None;
+        }
+    };
+    Some(displaced)
 }
 
-pub(crate) fn operating(d: &FederalDraft, id: i64, business: &FederalBusiness) -> i64 {
+// Current179 replaces MACRS under280F; it does not add a second cap. Keep
+// allocation and cost composition in the same native source/asset identities.
+pub(crate) fn auto_displacement(
+    d: &FederalDraft,
+    selected: &BTreeMap<(i64, usize), i64>,
+) -> Option<BTreeMap<i64, i64>> {
+    let mut result = BTreeMap::new();
+    for entry in crate::community::entries(d) {
+        let FederalIncome::Business { data } = &entry.income else {
+            continue;
+        };
+        for (index, asset) in data.assets.iter().enumerate() {
+            let Some(opening) = crate::auto_recovery::recovery(asset, 2026, 0) else {
+                continue;
+            };
+            let allowed = selected.get(&(entry.id, index)).copied().unwrap_or(0);
+            let closing = crate::auto_recovery::recovery(asset, 2026, allowed)?;
+            let amount = opening.allowance.get().checked_sub(closing.allowance.get())?;
+            let total = result.entry(entry.id).or_insert(0i64);
+            *total = total.checked_add(amount)?;
+        }
+    }
+    Some(result)
+}
+
+fn auto_income_capacity(
+    d: &FederalDraft,
+    items: &[Election179Item],
+    bound: i64,
+    income: i64,
+) -> Option<i64> {
+    let displacement = |amount| {
+        let selected = items
+            .iter()
+            .zip(allocate(amount, items))
+            .filter(|(item, _)| item.1 != PASS_THROUGH)
+            .map(|(item, value)| ((item.0, item.1), value))
+            .collect();
+        crate::kernel::ratio::checked_sum(auto_displacement(d, &selected)?.into_values())
+    };
+    // Ordered remaining/total allocation adds exactly one source cent per
+    // additional total cent. Each capped annual depreciation loses at most
+    // that same cent: D is monotone and1-Lipschitz. Thus q-D(q) is monotone.
+    // Search the greatest legal priority allocation, in exact native cents.
+    // The closed interval strictly halves; no iteration limit or convergence
+    // assumption is involved. Zero remains available even for negative income.
+    if displacement(bound)? == 0 {
+        return Some(phase::cap(bound, [positive(income)]));
+    }
+    let (mut low, mut high) = (0i64, bound);
+    while low < high {
+        let middle = low + (high - low) / 2 + (high - low) % 2;
+        if middle.checked_sub(displacement(middle)?)? <= income {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    Some(low)
+}
+
+pub(crate) fn operating_with_claims(
+    d: &FederalDraft,
+    id: i64,
+    business: &FederalBusiness,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> i64 {
     let mq = crate::depreciation::mid_quarter(d);
-    let additional = calculate(d).businesses.get(&id).copied().unwrap_or(0)
-        + crate::farm_conservation::expense_adjustment(d, id, business);
-    match crate::farm_supplies::shared_amounts(d, id) {
+    let result = calculate_with_claims(d, source_claims);
+    let displaced = auto_displacement(d, &result.assets)
+        .and_then(|values| values.get(&id).copied())
+        .unwrap_or(0);
+    let additional = result.businesses.get(&id).copied().unwrap_or(0) - displaced
+        + crate::farm_conservation::expense_adjustment_with_claims(d, id, business, source_claims);
+    let allowed = result.businesses.get(&id).copied().unwrap_or(0);
+    let native = match crate::farm_supplies::shared_amounts_with_claims(d, id, source_claims) {
         Some(amounts) => business.operating_cost_before_supplies(mq) + additional + amounts[2],
         None => business.operating_cost_with_adjustment(mq, additional),
+    };
+    native
+        + crate::nonmacrs::asset_depreciation_amounts(&business.assets, mq, false)
+            .adjustment(allowed)
+            .expect("non-MACRS financial availability checked before legacy consumers")
+}
+// Use the existing return operating-cost owner with the original source view.
+pub(crate) fn operating_in_context(
+    d: &FederalDraft,
+    id: i64,
+    business: &FederalBusiness,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+    macrs: &alloc::sync::Arc<crate::macrs_source::MacrsElectionView>,
+) -> Result<i64, Section179PreparedIssue> {
+    if !d.income.iter().find(|entry| entry.id == id).is_some_and(|entry| {
+        business.assets.iter().any(|asset| macrs.affects(entry.owner.owned(), Some(id), asset))
+    }) {
+        return Ok(operating_with_claims(d, id, business, source_claims));
     }
+    let mut home = crate::home_office::HomeContext::default();
+    home.bind_macrs(macrs);
+    crate::section179_return::operating_with_claims(
+        d,
+        id,
+        business,
+        None,
+        Some(&home),
+        source_claims,
+    )
 }
 // The section 179 deduction allowed to one business after the dollar and
 // income limits (its share of Form 4562 line 12).
@@ -1654,7 +2412,15 @@ pub(crate) fn allowed(d: &FederalDraft, id: i64) -> i64 {
 
 #[cfg(test)]
 pub(crate) fn report(d: &FederalDraft, r: &mut FederalResult) {
-    report_allocated(d, r, &calculate(d));
+    report_allocated_with_consumed(
+        crate::related_forms::RelatedFormContext::original(
+            d,
+            &crate::related_forms::effective_claimants(d),
+        ),
+        r,
+        &calculate(d),
+        |_| false,
+    );
 }
 
 pub(crate) fn report_with_home(
@@ -1663,20 +2429,23 @@ pub(crate) fn report_with_home(
     home: &crate::home_office::HomeContext,
 ) -> Result<(), Section179PreparedIssue> {
     let allocation = calculate_with_home(d, home)?;
-    report_allocated(d, result, &allocation);
+    report_allocated_with_consumed(
+        home.source_context(d, &crate::related_forms::effective_claimants(d)),
+        result,
+        &allocation,
+        |_| false,
+    );
     Ok(())
 }
 
-fn report_allocated(d: &FederalDraft, r: &mut FederalResult, result: &Deduction) {
-    report_allocated_with_consumed(d, r, result, |_| false);
-}
-
 fn report_allocated_with_consumed(
-    d: &FederalDraft,
+    form_context: crate::related_forms::RelatedFormContext<'_>,
     r: &mut FederalResult,
     result: &Deduction,
     consumed: impl Fn(i64) -> bool,
 ) {
+    let d = form_context.draft;
+    let direct_participation = form_context.participation();
     if let Some(issue) = &result.source_issue {
         crate::section179_return::Issue::Prepared(issue.clone()).report(r);
         return;
@@ -1692,9 +2461,15 @@ fn report_allocated_with_consumed(
                 _ => None,
             })
             .flat_map(|data| &data.assets)
+            .chain(
+                d.adjustments
+                    .iter()
+                    .flat_map(|a| &a.employee_expenses)
+                    .flat_map(|claim| &claim.equipment_assets),
+            )
             .map(|asset| asset.available179() - asset.elected179())
             .sum::<i64>();
-        crate::kernel::lines::push_line(
+        crate::line_emission::push_line(
             r,
             Some(crate::FormLine::new(crate::TaxForm::Form4562, "10")),
             "section179_prior_carryover_total",
@@ -1728,14 +2503,11 @@ fn report_allocated_with_consumed(
     if result.available == 0 {
         return;
     }
-    // Records answered No take a zero share of the dollar limit: 2026
+    // Missing records establish no share of the dollar limit: 2026
     // elections become ordinary depreciation (unknowns::supported) and
     // carryforwards wait for 2027. A K-1 amount above that limit is lost while
     // still reducing basis, which this App does not calculate.
-    let unconfirmed = matches!(
-        spouse(d),
-        Some(Section179Spouse::NotSupplied | Section179Spouse::Records { eligible: false, .. })
-    );
+    let unconfirmed = matches!(spouse(d), Some(Section179Spouse::NotSupplied));
     let k1_current = result.pass_throughs.iter().any(|source| source.amount > 0)
         || result.pass_through_components.values().flatten().any(|component| {
             component.component == Ptp179Component::Current && component.available_cents > 0
@@ -1800,21 +2572,6 @@ fn report_allocated_with_consumed(
             continue;
         }
         let allowed = result.pass_through.get(&k1.id).copied().unwrap_or(0);
-        crate::federal_rules::require_message(
-            r,
-            k1.material || consumed(k1.id),
-            &crate::IssueContext::Section(crate::TaxSection::PassThrough),
-            #[cfg(test)]
-            section,
-            #[cfg(test)]
-            format!(
-                "{form} section 179 from an activity without established material participation is a passive activity deduction allocated on Form 8582 from Form 4562 line 12, which this App does not calculate."
-            ),
-            crate::Message::new(
-                "ISSUE_SECTION179_PASSIVE_ACTIVITY",
-                alloc::vec![crate::MessageArg::Text(form.into())],
-            ),
-        );
         crate::federal_rules::require_message(
             r,
             !k1.publicly_traded || consumed(k1.id),
@@ -1898,7 +2655,8 @@ fn report_allocated_with_consumed(
         crate::require_localized!(
             r,
             d.credits.as_ref().is_none_or(|c| {
-                !crate::adoption::has_benefits(&c.adoptions) && !c.care.has_benefits(d)
+                !crate::adoption::has_benefits(&c.adoptions)
+                    && (!c.care.has_benefits(d) || result.coordinated_care)
             }),
             &crate::IssueContext::Business,
             "Section 179",
@@ -1909,23 +2667,16 @@ fn report_allocated_with_consumed(
     for e in &d.income {
         match &e.income {
             FederalIncome::Business { data } => {
+                if let Err(issue) =
+                    direct_sources::income_source_supported(d, e.id, data, &direct_participation)
+                {
+                    crate::section179_return::Issue::Prepared(issue).report(r);
+                }
                 crate::require_localized!(
                     r,
-                    data.material_participation
-                        && matches!(
-                            data.activity,
-                            crate::BusinessActivity::Ordinary { .. }
-                                | crate::BusinessActivity::Farming { .. }
-                        ),
-                    &crate::IssueContext::Business,
-                    "Section 179",
-                    "ISSUE_SECTION_179_INCOME_COORDINATION_CURRENTLY_REQUIRES_ORDINARY_ACTIVE_F5FE33AB",
-                    "Section 179 income coordination currently requires ordinary active businesses; passive activity and professional wagering need separate treatment.",
-                );
-                crate::require_localized!(
-                    r,
-                    matches!(data.health_insurance, crate::BusinessHealthInsurance::None)
-                        && matches!(data.retirement, crate::BusinessRetirement::None),
+                    result.coordinated_owner_sources.contains(&e.id)
+                        || (matches!(data.health_insurance, crate::BusinessHealthInsurance::None)
+                            && matches!(data.retirement, crate::BusinessRetirement::None)),
                     &crate::interview::income_issue_context(e).manual(),
                     "Section 179",
                     "ISSUE_SECTION_179_COMBINED_WITH_OWNER_HEALTH_INSURANCE_OR_RETIREMENT_DEDU_0C0CC3A2",
@@ -1943,7 +2694,9 @@ fn report_allocated_with_consumed(
                         crate::require_localized!(
                             r,
                             asset.elected179() <= cap
-                                && (asset.documented_179_reserve() || allowed == available),
+                                && (asset.documented_179_reserve()
+                                    || crate::auto_recovery::amount(asset, 2026).is_some()
+                                    || allowed == available),
                             &crate::IssueContext::Business,
                             "Section 179",
                             "ISSUE_A_PASSENGER_AUTOMOBILE_S_SECTION_179_ELECTION_CANNOT_EXCEED_ITS_FIR_581FCDA1",
@@ -1978,17 +2731,49 @@ fn report_allocated_with_consumed(
                     );
                 }
             }
-            FederalIncome::Rental { .. } | FederalIncome::ForeignEmployment { .. } => {
+            FederalIncome::Rental { .. } => {
                 crate::require_localized!(
                     r,
-                    false,
-                    &crate::IssueContext::Business,
+                    rental_income(d, e, crate::depreciation::mid_quarter_with_macrs(d, None))
+                        .is_some(),
+                    &crate::interview::income_issue_context(e).manual(),
                     "Section 179",
                     "ISSUE_RENTAL_FOREIGN_OR_OTHER_PROPERTY_INCOME_WITH_SECTION_179_NEEDS_ACTI_F72A67AD",
                     "Rental, foreign or other property income with section 179 needs active-business income classification and coordination.",
                 )
             }
             _ => {}
+        }
+    }
+    for (position, claim) in d.adjustments.iter().flat_map(|a| &a.employee_expenses).enumerate() {
+        let source = crate::asset_sale::employee_source_id(position);
+        for (index, asset) in claim.equipment_assets.iter().enumerate() {
+            if asset.available179() == 0 {
+                continue;
+            }
+            let allowed = result.assets.get(&(source, index)).copied().unwrap_or(0);
+            for (suffix, amount, message) in [
+                ("section179", allowed, msg!("EXPLAIN_EMPLOYEE_EQUIPMENT_SECTION179")),
+                (
+                    "section179_carryforward",
+                    asset.available179() - allowed,
+                    msg!("EXPLAIN_BUSINESS_N_ASSET_N_N_SECTION179_CARRYFORWARD"),
+                ),
+            ] {
+                line_cents(
+                    r,
+                    &format!(
+                        "employee_expenses_{}_equipment_{}_{}",
+                        position + 1,
+                        index + 1,
+                        suffix
+                    ),
+                    amount,
+                    &["adjustments.employee_expenses.equipment_assets"],
+                    "https://www.irs.gov/instructions/i4562",
+                    message,
+                );
+            }
         }
     }
     emit_lines(
@@ -2021,7 +2806,15 @@ fn report_allocated_with_consumed(
         ],
         |(name, amount, note), _, _| {
             Some(calculation_row(
-                None,
+                match name {
+                    "section179_business_income_limit" => {
+                        Some(crate::FormLine::new(crate::TaxForm::Form4562, "11"))
+                    }
+                    "section179_carryforward" => {
+                        Some(crate::FormLine::new(crate::TaxForm::Form4562, "13"))
+                    }
+                    _ => None,
+                },
                 name,
                 LineValue::MoneyCents(amount),
                 &["income.business.assets"],
@@ -2096,6 +2889,7 @@ pub fn k1_section179_current_source(
             (true, data.section179, risk.ledger, risk.risk_end)
         }
         FederalIncome::Scorp { data } => {
+            let data = &crate::ScorpK1::from(data);
             let source = if alternative {
                 let record = data
                     .amt
@@ -2129,4 +2923,4 @@ pub fn k1_section179_current_source(
     })
 }
 
-pub(crate) use direct_sources::direct_income_sources_with_home;
+pub(crate) use direct_sources::direct_income_parts_with_home_with_claims;

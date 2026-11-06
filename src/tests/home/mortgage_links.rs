@@ -2,6 +2,7 @@ use super::*;
 
 fn root(id: i64, home: MortgageHome, principal: i64, interest: i64) -> MortgageLoan {
     MortgageLoan {
+        printed: None,
         id,
         property: "Synthetic home".into(),
         lender: MortgageLender::Institution,
@@ -60,8 +61,8 @@ fn transferred_lenders_use_the_same_monthly_mixed_use_allocation_once() {
     assert!(projections.iter().all(|p| p.canonical_id == 10));
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
-    ded.mortgage = loans;
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
+    ded.mortgage = mortgage_loan_sources(loans);
     let result = supported(&d);
     assert_eq!(value(&result, "mortgage_average_balance"), 12_500);
     assert_eq!(value(&result, "mortgage_interest_8a"), 6_000);
@@ -97,8 +98,7 @@ fn transferred_family_shares_combined_and_separate_return_debt_limits() {
 #[test]
 fn interest_over_rate_uses_all_lenders_interest_for_one_ledger() {
     let mut original = root(10, MortgageHome::Main, 100_000_000, 3_000_000);
-    ledger(&mut original).average =
-        MortgageAverageBalance::InterestOverRate { rate_thousandths_percent: 6000 };
+    ledger(&mut original).average = MortgageAverageBalance::InterestOverRate { rate: 6.0 };
     let second = transferred(11, &original, 3_000_000);
     let allowances = crate::mortgage_limit::loan_allowances(&[original, second], false);
     assert_eq!(allowances.iter().map(|a| a.regular_interest_cents).sum::<i64>(), 4_500_000);
@@ -202,8 +202,8 @@ fn unreported_purchase_points_remain_on_schedule_a_8c() {
     assert!(!p.points_reported_on_1098);
     let mut d = complete(FederalStatus::Single);
     let ded = d.deductions.as_mut().unwrap();
-    ded.choice = DeductionSelection::Itemized { facts: itemized(ded).clone() };
-    ded.mortgage = vec![original];
+    ded.itemize_override = Some(ItemizeOverride::Itemize);
+    ded.mortgage = vec![mortgage_loan_source(original)];
     let result = supported(&d);
     assert_eq!(value(&result, "mortgage_interest_8a"), 0);
     assert_eq!(value(&result, "mortgage_interest_8b"), 6_000);

@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 997000, "rule": {"select": "^<Form1099SaPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["calendar_year", "corrected", "trustee_payer", "recipient", "account_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["gross_distribution", "earnings_on_excess_contributions", "distribution_code", "fmv_on_date_of_death", "account"]}]}}
+  ]
+}

@@ -5,7 +5,7 @@ fn approved_d4_reserves_line_6l_once_and_only_absorbs_chapter_one_tax() {
     // Approved D4: $1,000 decrease; line18 $600; Chapter1 PartII $300;
     // payroll $500. AOTC recapture: $2,500 - ($7,000-$5,100) = $600.
     let mut draft = uncollected_wage(10_000, 500, 0, true);
-    draft.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    draft.deductions.as_mut().unwrap().itemize_override = None;
     draft.credits.as_mut().unwrap().education_recapture = Some(PriorYearEducationCreditRecapture {
         method: EducationMethod::AmericanOpportunity,
         filed_qualified_expenses: 700_000,
@@ -18,7 +18,8 @@ fn approved_d4_reserves_line_6l_once_and_only_absorbs_chapter_one_tax() {
     add(&mut draft, income(archer_msa(1500))); // §220: 20% x $1,500.
     draft.credits.as_mut().unwrap().minimum_tax =
         Some(crate::MinimumTaxHistories::from_current_unit(minimum_tax_history()));
-    draft.credits.as_mut().unwrap().bba_audit_interest = Some(bba_thousand_dollar_reduction());
+    draft.credits.as_mut().unwrap().bba_audit_interest =
+        Some(crate::tests::support::builders::added_bba(bba_thousand_dollar_reduction()));
     let result = supported(&draft);
     assert_eq!(value(&result, "form_8978_line_14"), -1000);
     assert_eq!(return_line(&result, "18"), 60_000);

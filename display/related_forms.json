@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"order": 62000, "rule": {"select": "^<RelatedFormChoice>", "title": {"field": "summary.label"}}},
+    {"order": 63000, "rule": {"select": "^<RelatedForms>.forms", "layout": "summary", "paths": ["key", "summary.label", "summary.payer", "summary.amount"]}},
+    {"order": 64000, "rule": {"select": "^<ActivityRelatedForms>.forms", "layout": "summary", "paths": ["summary.label", "summary.payer", "summary.amount"]}},
+    {"order": 1006000, "rule": {"select": "^<RelatedForm>.Form1099Nec", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["payer", "recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["document", "state_details"]}]}},
+    {"order": 1007000, "rule": {"select": "^<RelatedForm>.Form1099K", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["payer", "recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["document", "state_details"]}]}}
+  ]
+}

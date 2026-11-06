@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 803000, "rule": {"select": "^<ReservistRepayment>.distributed", "promote": true}}
+  ]
+}

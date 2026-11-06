@@ -14,21 +14,28 @@ fn bare(birth: u32) -> FederalDraft {
     d
 }
 // The election's conditions met: entire balance paid from 2026-03-01, no earlier payment.
-fn election(participant: Form4972Participant, method: LumpSumMethod) -> Form4972Election {
-    Form4972Election {
-        participant,
-        method,
-        capital_gain: 0,
-        nua: 0,
-        include_nua: false,
-        annuity_value: 0,
-        annuity_percent: None,
-        percent: None,
-        first_payment: 20260301,
-        last_prior_payment: None,
-        entire_balance: true,
-        confirmed: true,
-    }
+fn election(
+    participant: Form4972Participant,
+    method: LumpSumMethod,
+) -> (Form4972Election, crate::R1099) {
+    (
+        Form4972Election {
+            participant,
+            method,
+            include_nua: false,
+            first_payment: 20260301,
+            last_prior_payment: None,
+            entire_balance: true,
+            confirmed: true,
+        },
+        crate::tests::cross::interview::r1099(
+            0,
+            DistributionCode::Normal { what_happened: Disposition::Kept },
+            false,
+        )
+        .into_source()
+        .form,
+    )
 }
 fn own() -> Form4972Participant {
     Form4972Participant::Own { event: LumpSumEvent::Age }
@@ -37,26 +44,43 @@ fn decedent(born: u32, died: u32, estate_tax: i64) -> Form4972Participant {
     Form4972Participant::Decedent { death_benefit: 0, born, died, estate_tax }
 }
 // One 1099-R in dollars: box 1 gross, box 2a taxable, box 4 withholding.
-fn record(gross: i64, taxable: i64, withheld: i64, data: Form4972Election) -> FederalIncomeEntry {
+fn record(
+    gross: i64,
+    taxable: i64,
+    withheld: i64,
+    data: (Form4972Election, crate::R1099),
+) -> FederalIncomeEntry {
+    let (data, boxes) = data;
     let box7 = match data.participant {
         Form4972Participant::Own { .. } => SEVEN_A,
         Form4972Participant::Decedent { .. } => FOUR_A,
     };
     income(FederalIncome::Retirement {
-        data: FederalRetirement {
+        data: retirement_source(FederalRetirement {
+            form_boxes: Default::default(),
+            trump: false,
+            box_2a: taxable * 100,
+            box_3: boxes.box_3.unwrap_or(0),
+            box_6: boxes.box_6.unwrap_or(0),
+            box_8a: boxes.box_8a.unwrap_or(0),
+            box_8b_percent: boxes.box_8b_percent,
+            box_9a_percent: boxes.box_9a_percent,
+            ira: (RetirementKind::Pension).ira()
+                && (box7) & crate::DistributionCodes::CODE_N.0 == 0,
             box_9b: None,
             box_10: 0,
+            box_10_basis: None,
             disability: DisabilityIncome::None,
             disability_wages: crate::DisabilityWages::None,
             kind: RetirementKind::Pension,
             gross: gross * 100,
-            taxable: RetirementTaxable::Payer { amount: taxable * 100 },
+            taxable: Some(RetirementTaxable::Payer),
             withholding: withheld * 100,
             box7,
-            ordinary_distribution: RetirementTreatment::LumpSum { data },
+            ordinary_distribution: Some(RetirementTreatment::LumpSum { data }),
             disaster: DisasterDistribution::No,
             after_death: None,
-        },
+        }),
     })
 }
 // A line of the first record's Form 4972, in dollars.
@@ -84,7 +108,7 @@ fn lump_sum_pub_575_example_1_parts_ii_and_iii() {
     //   30 = 2,000 + 22,270 = 24,270     (Publication 575: "includes the tax of $24,270")
     let mut d = bare(19350601);
     let mut e = election(own(), LumpSumMethod::Both);
-    e.capital_gain = 10_000 * 100;
+    e.1.box_3 = Some(10_000 * 100);
     let id = added(&mut d, record(175_000, 150_000, 30_000, e));
     let r = supported(&d);
     assert_eq!(form(&r, id, 6), 10_000);
@@ -124,7 +148,7 @@ fn lump_sum_pub_575_example_2_annuity_contract() {
     // 160,000 here.
     let mut d = bare(19350601);
     let mut e = election(own(), LumpSumMethod::TenYear);
-    e.annuity_value = 10_000 * 100;
+    e.1.box_8a = Some(10_000 * 100);
     let id = added(&mut d, record(160_000, 160_000, 0, e));
     let r = supported(&d);
     assert_eq!(form(&r, id, 8), 160_000);
@@ -154,8 +178,8 @@ fn lump_sum_beneficiary_minimum_allowance_with_an_annuity_share() {
     // 2,907.00, inside "at least three places".
     let mut d = bare(19620404);
     let mut e = election(decedent(19340310, 20260201, 0), LumpSumMethod::TenYear);
-    e.first_payment = 20260401;
-    e.annuity_value = 5_000 * 100;
+    e.0.first_payment = 20260401;
+    e.1.box_8a = Some(5_000 * 100);
     let id = added(&mut d, record(30_000, 30_000, 0, e));
     let r = supported(&d);
     assert_eq!(form(&r, id, 12), 35_000);
@@ -178,7 +202,7 @@ fn lump_sum_part_ii_only_leaves_the_ordinary_part_on_line_5b() {
     //   Line 16 = the regular tax on the 42,000 (the unchanged tax machinery) + 1,600.
     let mut d = bare(19350601);
     let mut e = election(own(), LumpSumMethod::CapitalGain);
-    e.capital_gain = 8_000 * 100;
+    e.1.box_3 = Some(8_000 * 100);
     let id = added(&mut d, record(50_000, 50_000, 0, e));
     let r = supported(&d);
     assert_eq!(form(&r, id, 6), 8_000);
@@ -198,13 +222,14 @@ fn lump_sum_tax_stays_out_of_the_alternative_minimum_tax_comparison() {
     // does too). Private-activity bond interest of 200,000 makes the tentative minimum tax far
     // exceed the regular tax; the amount added to the regular tax by Form 4972 must not reduce
     // the alternative minimum tax. The same return without the lump sum has the same AMT.
-    let interest =
-        income(FederalIncome::Interest { data: native_exempt_interest(20_000_000, 20_000_000) });
+    let interest = income(FederalIncome::Interest {
+        data: interest_source(native_exempt_interest(20_000_000, 20_000_000)),
+    });
     let mut without = bare(19350601);
     add(&mut without, interest.clone());
     let mut with = without.clone();
     let mut e = election(own(), LumpSumMethod::Both);
-    e.capital_gain = 10_000 * 100;
+    e.1.box_3 = Some(10_000 * 100);
     add(&mut with, record(175_000, 150_000, 0, e));
     let (plain, lump) = (supported(&without), supported(&with));
     assert!(value(&plain, "alternative_minimum_tax") > 10_000);
@@ -220,7 +245,7 @@ fn lump_sum_multiple_recipients_scale_by_box_9a() {
     //   29 = 14,471 x 40% = 5,788.40   30 = 5,788
     let mut d = bare(19620404);
     let mut e = election(decedent(19330505, 20260301, 0), LumpSumMethod::TenYear);
-    e.percent = Some(4_000);
+    e.1.box_9a_percent = Some(40.0);
     let id = added(&mut d, record(40_000, 40_000, 0, e.clone()));
     let r = supported(&d);
     assert_eq!(form(&r, id, 8), 100_000);
@@ -232,7 +257,7 @@ fn lump_sum_multiple_recipients_scale_by_box_9a() {
     // 97,500, line 25 = 10 x (1,297.70 + 18% x (9,750 - 9,170)) = 10 x 1,402.10 = 14,021, line 29 =
     // 14,021 x 40% = 5,608.40, line 30 = 5,608.
     let mut d = bare(19620404);
-    e.participant = decedent(19330505, 20260301, 1_000 * 100);
+    e.0.participant = decedent(19330505, 20260301, 1_000 * 100);
     let id = added(&mut d, record(40_000, 40_000, 0, e));
     let r = supported(&d);
     assert_eq!(form(&r, id, 18), 2_500);
@@ -255,9 +280,9 @@ fn lump_sum_fractional_box_8b_share_converts_to_exact_hundredths() {
     //   x 33.33% = 2,775.41   30 = 2,775   (exact fractions give 2,775.41 as well)
     let mut d = bare(19620404);
     let mut e = election(decedent(19330505, 20260301, 0), LumpSumMethod::TenYear);
-    e.percent = Some(3_333);
-    e.annuity_percent = Some(3_333);
-    e.annuity_value = 3_000 * 100;
+    e.1.box_9a_percent = Some(33.33);
+    e.1.box_8b_percent = Some(33.33);
+    e.1.box_8a = Some(3_000 * 100);
     let id = added(&mut d, record(23_000, 20_000, 0, e));
     let r = supported(&d);
     let cents = |line: u32| line_amount(&r, &alloc::format!("lump_sum_{id}_line_{line}"));
@@ -275,7 +300,6 @@ fn lump_sum_fractional_box_8b_share_converts_to_exact_hundredths() {
     assert_eq!(crate::lump_sum::hundredths(Some(33.33)), Some(3_333));
     assert_eq!(crate::lump_sum::hundredths(Some(0.07)), Some(7));
     assert_eq!(crate::lump_sum::hundredths(Some(99.99)), Some(9_999));
-    assert_eq!(crate::lump_sum::percent_of(Some(3_333)), Some(33.33));
     assert_eq!(crate::lump_sum::hundredths(None), None);
 }
 
@@ -291,9 +315,9 @@ fn lump_sum_net_unrealized_appreciation_worksheet() {
     let build = |method, include_nua| {
         let mut d = bare(19350601);
         let mut e = election(own(), method);
-        e.capital_gain = 20_000 * 100;
-        e.nua = 30_000 * 100;
-        e.include_nua = include_nua;
+        e.1.box_3 = Some(20_000 * 100);
+        e.1.box_6 = Some(30_000 * 100);
+        e.0.include_nua = include_nua;
         let id = added(&mut d, record(100_000, 100_000, 0, e));
         (supported(&d), id)
     };
@@ -334,8 +358,8 @@ fn lump_sum_estate_tax_capital_share_and_no_exclusion_without_an_answer() {
     let build = |died: u32| {
         let mut d = bare(19620404);
         let mut e = election(decedent(19350101, died, 4_000 * 100), LumpSumMethod::Both);
-        e.first_payment = 20260601;
-        e.capital_gain = 15_000 * 100;
+        e.0.first_payment = 20260601;
+        e.1.box_3 = Some(15_000 * 100);
         let id = added(&mut d, record(60_000, 60_000, 0, e));
         (supported(&d), id)
     };
@@ -403,8 +427,8 @@ fn lump_sum_birth_date_boundary_is_day_exact() {
     let beneficiary = |born: u32| {
         let mut d = bare(19620404);
         let mut e = election(decedent(born, 20260201, 0), LumpSumMethod::TenYear);
-        e.first_payment = 20260401;
-        e.annuity_value = 5_000 * 100;
+        e.0.first_payment = 20260401;
+        e.1.box_8a = Some(5_000 * 100);
         added(&mut d, record(30_000, 30_000, 0, e));
         supported(&d)
     };
@@ -423,8 +447,8 @@ fn lump_sum_left_out_when_the_conditions_are_not_met() {
     // 5b 150,000) and one notice names it; no Form 4972 lines.
     let mut d = bare(19350601);
     let mut e = election(own(), LumpSumMethod::Both);
-    e.capital_gain = 10_000 * 100;
-    e.confirmed = false;
+    e.1.box_3 = Some(10_000 * 100);
+    e.0.confirmed = false;
     let id = added(&mut d, record(175_000, 150_000, 30_000, e.clone()));
     let r = supported(&d);
     assert_eq!(return_line(&r, "5a"), 17_500_000);
@@ -435,19 +459,19 @@ fn lump_sum_left_out_when_the_conditions_are_not_met() {
         1
     );
     // The entire balance not paid in 2026 leaves it out as well.
-    e.confirmed = true;
-    e.entire_balance = false;
+    e.0.confirmed = true;
+    e.0.entire_balance = false;
     let mut d = bare(19350601);
     added(&mut d, record(175_000, 150_000, 30_000, e.clone()));
     assert!(noted(&supported(&d), "WARN_LUMP_SUM_LEFT_OUT"));
     // An earlier-year payment after the event (a required distribution in 2023, after age 59 1/2)
     // prevents the Age event; a separation after it starts a new eligibility period.
-    e.entire_balance = true;
-    e.last_prior_payment = Some(20230601);
+    e.0.entire_balance = true;
+    e.0.last_prior_payment = Some(20230601);
     let mut d = bare(19350601);
     added(&mut d, record(175_000, 150_000, 30_000, e.clone()));
     assert!(noted(&supported(&d), "WARN_LUMP_SUM_LEFT_OUT"));
-    e.participant = Form4972Participant::Own {
+    e.0.participant = Form4972Participant::Own {
         event: LumpSumEvent::Separation { date: 20240101, employee: true },
     };
     let mut d = bare(19350601);
@@ -456,11 +480,11 @@ fn lump_sum_left_out_when_the_conditions_are_not_met() {
     assert!(!noted(&r, "WARN_LUMP_SUM_LEFT_OUT"));
     assert!(has_line(&r, id, 30));
     // The first payment before the separation does not follow the event.
-    e.first_payment = 20260101;
-    e.participant = Form4972Participant::Own {
+    e.0.first_payment = 20260101;
+    e.0.participant = Form4972Participant::Own {
         event: LumpSumEvent::Separation { date: 20260201, employee: true },
     };
-    e.last_prior_payment = None;
+    e.0.last_prior_payment = None;
     let mut d = bare(19350601);
     added(&mut d, record(175_000, 150_000, 30_000, e));
     assert!(noted(&supported(&d), "WARN_LUMP_SUM_LEFT_OUT"));
@@ -482,28 +506,30 @@ fn lump_sum_records_of_one_participant_combine_or_are_refused() {
     // Different methods: blocking.
     let mut d2 = d.clone();
     let FederalIncome::Retirement { data } = &mut d2.income[1].income else { unreachable!() };
-    let RetirementTreatment::LumpSum { data } = &mut data.ordinary_distribution else {
-        unreachable!()
-    };
-    data.method = LumpSumMethod::Both;
-    data.capital_gain = 1_000 * 100;
+    edit_retirement(data).box_3 = 1_000 * 100;
+    {
+        let mut retirement_edit = edit_retirement(data);
+        let Some(RetirementTreatment::LumpSum { data }) =
+            &mut retirement_edit.ordinary_distribution
+        else {
+            unreachable!()
+        };
+        data.method = LumpSumMethod::Both;
+    }
     let r = estimate(&d2);
     assert_eq!(r.state, ResultState::Unsupported);
     assert_eq!(issues(&r, "ISSUE_LUMP_SUM_TREATED_DIFFERENTLY"), 1);
     // One elected and one taxed with the other income: blocking.
     let mut d3 = d.clone();
     let FederalIncome::Retirement { data } = &mut d3.income[1].income else { unreachable!() };
-    data.ordinary_distribution = RetirementTreatment::Ordinary;
+    edit_retirement(data).ordinary_distribution = Some(RetirementTreatment::Ordinary);
     let r = estimate(&d3);
     assert_eq!(r.state, ResultState::Unsupported);
     assert_eq!(issues(&r, "ISSUE_LUMP_SUM_TREATED_DIFFERENTLY"), 1);
     // A combined group with a box 9a share: blocking.
     let mut d4 = d.clone();
     let FederalIncome::Retirement { data } = &mut d4.income[1].income else { unreachable!() };
-    let RetirementTreatment::LumpSum { data } = &mut data.ordinary_distribution else {
-        unreachable!()
-    };
-    data.percent = Some(5_000);
+    edit_retirement(data).box_9a_percent = Some(50.0);
     let r = estimate(&d4);
     assert_eq!(r.state, ResultState::Unsupported);
     assert_eq!(issues(&r, "ISSUE_LUMP_SUM_SHARED_AND_COMBINED"), 1);
@@ -516,7 +542,7 @@ fn lump_sum_stored_shapes_are_checked() {
     let ok = {
         let mut d = bare(19350601);
         let mut e = election(own(), LumpSumMethod::Both);
-        e.capital_gain = 10_000 * 100;
+        e.1.box_3 = Some(10_000 * 100);
         add(&mut d, record(175_000, 150_000, 0, e));
         d
     };
@@ -524,30 +550,21 @@ fn lump_sum_stored_shapes_are_checked() {
     let wrong = |change: &dyn Fn(&mut FederalRetirement)| {
         let mut d = ok.clone();
         let FederalIncome::Retirement { data } = &mut d.income[0].income else { unreachable!() };
-        change(data);
+        change(&mut edit_retirement(data));
         assert_ne!(estimate(&d).state, ResultState::EstimatedForSupportedScope, "{d:?}");
     };
     wrong(&|v| v.box7 = crate::DistributionCodes::CODE_7.0);
     wrong(&|v| v.box7 = FOUR_A);
     wrong(&|v| v.kind = RetirementKind::Ira);
-    wrong(&|v| v.taxable = RetirementTaxable::IraBasis);
+    wrong(&|v| v.taxable = Some(RetirementTaxable::IraBasis));
     wrong(&|v| {
-        let RetirementTreatment::LumpSum { data } = &mut v.ordinary_distribution else {
-            unreachable!()
-        };
-        data.capital_gain = 200_000 * 100;
+        v.box_3 = 200_000 * 100;
     });
     wrong(&|v| {
-        let RetirementTreatment::LumpSum { data } = &mut v.ordinary_distribution else {
+        let Some(RetirementTreatment::LumpSum { data }) = &mut v.ordinary_distribution else {
             unreachable!()
         };
         data.first_payment = 20250101;
-    });
-    wrong(&|v| {
-        let RetirementTreatment::LumpSum { data } = &mut v.ordinary_distribution else {
-            unreachable!()
-        };
-        data.percent = Some(10_000);
     });
 }
 
@@ -557,10 +574,10 @@ fn lump_sum_stored_shapes_are_checked() {
 #[test]
 fn lump_sum_age_event_reads_the_people_birth_date_day_exact() {
     let mut e = election(own(), LumpSumMethod::TenYear);
-    e.first_payment = 20260701;
-    assert!(e.qualifies(Some(19670101)));
-    assert!(!e.qualifies(Some(19670102)));
-    assert!(!e.qualifies(None));
+    e.0.first_payment = 20260701;
+    assert!(e.0.qualifies(Some(19670101)));
+    assert!(!e.0.qualifies(Some(19670102)));
+    assert!(!e.0.qualifies(None));
     // The spouse's record reads the spouse's birth date, not the taxpayer's: the spouse born
     // 1935-06-01 keeps the election (Form 4972 line 30), the taxpayer born 1970 does not.
     let mut d = empty_return(FederalStatus::Joint);
@@ -568,7 +585,7 @@ fn lump_sum_age_event_reads_the_people_birth_date_day_exact() {
     people.taxpayer.birth_date = 19700101;
     people.spouse.as_mut().unwrap().birth_date = 19350601;
     let mut entry = record(100_000, 100_000, 0, election(own(), LumpSumMethod::TenYear));
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     let spouse = added(&mut d, entry);
     let taxpayer =
         added(&mut d, record(100_000, 100_000, 0, election(own(), LumpSumMethod::TenYear)));
@@ -584,12 +601,12 @@ fn lump_sum_age_event_reads_the_people_birth_date_day_exact() {
 fn lump_sum_election_states_its_event_and_payment_facts_once() {
     use crate::NuaEvent;
     let e = election(own(), LumpSumMethod::TenYear);
-    assert_eq!(e.nua_facts(), (NuaEvent::Age, 20260301, None, true));
+    assert_eq!(e.0.nua_facts(), (NuaEvent::Age, 20260301, None, true));
     let mut e = election(decedent(19300101, 20250601, 0), LumpSumMethod::TenYear);
-    e.last_prior_payment = Some(20250701);
-    e.entire_balance = false;
+    e.0.last_prior_payment = Some(20250701);
+    e.0.entire_balance = false;
     assert_eq!(
-        e.nua_facts(),
+        e.0.nua_facts(),
         (NuaEvent::Death { date: 20250601 }, 20260301, Some(20250701), false)
     );
 }
@@ -613,8 +630,8 @@ fn lump_sum_death_benefit_exclusion_shares_the_capital_gain_with_part_ii() {
         },
         LumpSumMethod::Both,
     );
-    e.first_payment = 20260601;
-    e.capital_gain = 15_000 * 100;
+    e.0.first_payment = 20260601;
+    e.1.box_3 = Some(15_000 * 100);
     let id = added(&mut d, record(60_000, 60_000, 0, e));
     let r = supported(&d);
     assert_eq!(form(&r, id, 6), 12_750);
@@ -624,4 +641,141 @@ fn lump_sum_death_benefit_exclusion_shares_the_capital_gain_with_part_ii() {
     assert_eq!(form(&r, id, 19), 32_500);
     assert_eq!(form(&r, id, 25), 3_977);
     assert_eq!(form(&r, id, 30), 6_527);
+}
+
+#[test]
+fn printed_retirement_boxes_survive_pending_election_and_source_correction() {
+    use crate::tests::cross::interview::{accepted, document, normal_kept, r1099};
+    use crate::tests::support::client::income_pages::{
+        information_return_answers, save_documents, save_information_return_answers,
+    };
+    let mut draft = complete(FederalStatus::Single);
+    draft.people.as_mut().unwrap().taxpayer.birth_date = 19350601;
+    let mut session = Interview::new(TEST_USER, draft);
+    let mut source = r1099(17_500_000, normal_kept(), false);
+    source.source_mut().form.box7 = SEVEN_A;
+    source.source_mut().form.taxable = Some(15_000_000);
+    source.source_mut().form.box_3 = Some(1_000_000);
+    source.source_mut().form.box_6 = Some(3_000_000);
+    source.source_mut().form.box_8a = Some(500_000);
+    source.source_mut().form.box_8b_percent = Some(33.33);
+    source.source_mut().form.box_9a_percent = Some(50.0);
+    source.source_mut().form.box_9b = Some(456);
+    source.source_mut().form.box_10 = Some(123);
+    let rows = |id, source| {
+        vec![document(
+            id,
+            IncomeSource::Retirement {
+                value: crate::RetirementDocument::R1099(retirement_document(source)),
+            },
+        )]
+    };
+    let request = save_documents(&mut session, rows(0, source.clone()));
+    accepted(&send(&mut session, request));
+    let id = session
+        .draft
+        .income
+        .iter()
+        .find(|entry| matches!(entry.income, FederalIncome::Retirement { .. }))
+        .unwrap()
+        .id;
+    let read = |session: &Interview| match &session
+        .draft
+        .income
+        .iter()
+        .find(|entry| entry.id == id)
+        .unwrap()
+        .income
+    {
+        FederalIncome::Retirement { data } => data.clone(),
+        _ => unreachable!(),
+    };
+    let saved = read(&session);
+    // Printed determined box 2a supplies Payer; the independent distribution
+    // treatment and optional Form 4972 election remain unanswered.
+    assert!(matches!(
+        crate::FederalRetirement::from(&saved).taxable,
+        Some(RetirementTaxable::Payer)
+    ));
+    assert!(crate::FederalRetirement::from(&saved).ordinary_distribution.is_none());
+    assert_eq!(
+        (
+            crate::FederalRetirement::from(&saved).box_2a,
+            crate::FederalRetirement::from(&saved).box_3,
+            crate::FederalRetirement::from(&saved).box_6,
+            crate::FederalRetirement::from(&saved).box_8a
+        ),
+        (15_000_000, 1_000_000, 3_000_000, 500_000)
+    );
+    assert_eq!(
+        (
+            crate::FederalRetirement::from(&saved).box_8b_percent,
+            crate::FederalRetirement::from(&saved).box_9a_percent,
+            crate::FederalRetirement::from(&saved).box_9b,
+            crate::FederalRetirement::from(&saved).box_10,
+            crate::FederalRetirement::from(&saved).ira
+        ),
+        (Some(33.33), Some(50.0), Some(456), 123, false)
+    );
+    session = restart(session.draft);
+    assert_eq!(read(&session), saved);
+    let Reply::Response(P::Review { remaining_items, .. }) =
+        send(&mut session, P::ReviewAccepted { user: TEST_USER })
+    else {
+        unreachable!()
+    };
+    assert!(remaining_items.iter().any(|row| row.section == TaxSection::Retirement));
+    source.source_mut().form.box_10 = Some(0);
+    let request = save_documents(&mut session, rows(id, source.clone()));
+    accepted(&send(&mut session, request));
+    source.source_mut().code = Some(DistributionCode::NormalLumpSum {
+        tax: LumpSumTax::Form4972 {
+            method: LumpSumMethod::Both,
+            include_nua: false,
+            event: LumpSumEvent::Age,
+            first_payment: 20260301,
+            last_prior_payment: None,
+            entire_balance: true,
+            confirmed: true,
+        },
+    });
+    save_information_return_answers(&mut session, &rows(id, source.clone()));
+    let established = read(&session);
+    assert!(matches!(
+        crate::FederalRetirement::from(&established).taxable,
+        Some(RetirementTaxable::Payer)
+    ));
+    assert!(matches!(
+        crate::FederalRetirement::from(&established).ordinary_distribution,
+        Some(RetirementTreatment::LumpSum { .. })
+    ));
+    let mut result = supported(&session.draft);
+    let request = save_documents(&mut session, rows(id, source.clone()));
+    accepted(&send(&mut session, request));
+    assert_eq!(read(&session), established);
+    result.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), result);
+    source.source_mut().form.box_3 = Some(0);
+    let request = save_documents(&mut session, rows(id, source.clone()));
+    accepted(&send(&mut session, request));
+    assert!(session.draft.valid_stored());
+    assert_eq!(
+        crate::FederalRetirement::from(&read(&session)).ordinary_distribution,
+        crate::FederalRetirement::from(&established).ordinary_distribution
+    );
+    let before = session.draft.clone();
+    let request = information_return_answers(&mut session, &rows(id, source.clone()));
+    let Reply::Response(P::Problem { message, .. }) = send(&mut session, request) else {
+        unreachable!()
+    };
+    assert_eq!(
+        message,
+        libertas::libertas_formatted_text("LUMP_SUM_CAPITAL_GAIN_WITHOUT_BOX_3", &[])
+    );
+    assert_eq!(session.draft, before);
+    source.source_mut().form.box_3 = Some(1_000_000);
+    let request = save_documents(&mut session, rows(id, source));
+    accepted(&send(&mut session, request));
+    result.revision = session.draft.revision;
+    assert_eq!(supported(&session.draft), result);
 }

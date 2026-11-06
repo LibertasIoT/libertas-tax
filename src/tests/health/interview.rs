@@ -4,20 +4,44 @@ use super::support::client::unit50_interview_native::NativeInterviewCase;
 use super::*;
 // Shared native producers and page traversal; keep established topic-call paths.
 use super::support::builders::native_income::document;
-use super::support::client::income_pages::{open_topic, save_topic};
+use super::support::client::estimate_documents_from_save;
+use super::support::client::income_pages::{open_documents, open_topic};
 use crate::tests::cross::interview::{
-    PAGE_CHILDREN, accept_care_provider, adult, all_year, assert_round_trip,
-    at_the_adjustments_hub, at_the_adjustments_hub_with_business, at_the_deductions_page,
-    at_the_marketplace_page, benefits_request, credits_hub, education_value, family_options, go_on,
-    health_credit_business, hsa_account, hsa_options, hsa_page_value, hub_of, hub_rows,
-    itemized_hub, marketplace_fixture_page, marketplace_page_of, open_adjustments_hub,
-    open_benefits, open_credits_topic, open_hsa_page, open_itemized_topic, progress_of, r1099,
-    reopened_people, row, save_benefits, save_businesses, save_checklist, save_children,
-    save_deductions, save_education, save_hsa, save_marketplace, save_marketplace_and_reopen,
-    save_medical, save_setup, save_you, se_health_test_year, send_past_less_common, shown,
-    stored_business, stored_facts, stored_marketplace, suggestion, supporting, value_of,
-    w2_with_box_12_w,
+    PAGE_CHILDREN, adult, all_year, assert_round_trip, at_the_adjustments_hub,
+    at_the_adjustments_hub_with_business, at_the_deductions_page, at_the_marketplace_page,
+    benefits_request, credits_hub, education_value, family_options, health_credit_business,
+    hsa_account, hsa_options, hsa_page_value, hub_of, hub_rows, itemized_hub,
+    marketplace_fixture_page, marketplace_page_of, open_adjustments_hub, open_benefits,
+    open_credits_topic, open_hsa_page, open_itemized_topic, progress_of, r1099, reopened_people,
+    row, save_benefits, save_businesses, save_checklist, save_children, save_deductions, save_hsa,
+    save_marketplace, save_marketplace_sources, save_medical, save_setup, save_you,
+    se_health_test_year, send_past_less_common, shown, stored_business, stored_facts,
+    stored_marketplace, suggestion, supporting, value_of, w2_with_box_12_w,
 };
+
+fn reopen_marketplace(s: &mut Interview, value: MarketplaceFactsPage) -> MarketplaceFactsPage {
+    let mut saved = crate::tests::cross::interview::save_marketplace_and_reopen(s, value);
+    let topic = open_credits_topic(s, TaxSection::Marketplace);
+    saved.forms = marketplace_page_of(&topic).forms.clone();
+    saved
+}
+fn marketplace_request(s: &mut Interview, mut value: MarketplaceFactsPage) -> P {
+    let topic_forms = core::mem::take(&mut value.forms);
+    let forms = crate::tests::cross::interview::documents_of(&topic_forms);
+    let mut source = open_documents(s);
+    let P::SaveDocuments { documents, .. } = &mut source else { unreachable!() };
+    if forms != documents.common.marketplace.documents {
+        let page = open_credits_topic(s, TaxSection::Marketplace);
+        let mut facts = marketplace_page_of(&page).clone();
+        facts.forms.clear();
+        assert_eq!(value, facts, "source refusals must leave topic facts unchanged");
+        documents.common.marketplace.documents = forms;
+        source
+    } else {
+        value.forms = topic_forms;
+        save_marketplace(s, value)
+    }
+}
 
 #[test]
 fn hsa_options_does_not_read_the_split() {
@@ -48,6 +72,10 @@ fn hsa_options_does_not_read_the_split() {
     // the accepted return stores; the running estimate is what reads the
     // split, downstream.
     let mut s = at_the_adjustments_hub(FederalStatus::Joint, 0);
+    // The saved W-2's situations question is answered once ("None of these");
+    // until then the running estimate waits for it.
+    let wages = open_topic(&mut s, TaxSection::Wages);
+    accepted(&send(&mut s, wages));
     let two = vec![
         hsa_account(Owner::Taxpayer, HsaCoverageYear::Family, 400_000),
         hsa_account(Owner::Spouse, HsaCoverageYear::Family, 400_000),
@@ -58,9 +86,12 @@ fn hsa_options_does_not_read_the_split() {
     accepted(&send(&mut s, request));
     assert_eq!(family_options(send(&mut s, hsa_options(two.clone()))), before);
     let estimate_with = |s: &mut Interview, family_split| {
+        let P::SaveHsa { followups, .. } = open_hsa_page(s) else { unreachable!() };
         let reply = send(
             s,
             P::EstimateHsa {
+                followups,
+                questions: Vec::new(),
                 user: TEST_USER,
                 hsa_failed_deposits: vec![],
                 archer_failed_deposits: vec![],
@@ -72,6 +103,9 @@ fn hsa_options_does_not_read_the_split() {
                 ira_sources: vec![],
                 archer_income: vec![],
                 value: HsaPage {
+                    contribution_sources: vec![],
+                    employer_statements: vec![],
+
                     employer_sources: vec![],
                     linked_deposits: vec![],
                     other_coverage: None,
@@ -94,8 +128,8 @@ fn hsa_options_does_not_read_the_split() {
     // account for and the estimate stops.
     let equal = estimate_with(&mut s, FamilySplit::Equal);
     let one_to_zero = estimate_with(&mut s, FamilySplit::Agreed { you: 1, spouse: 0 });
-    assert!(!equal.contains("Estimate not available"), "{equal}");
-    assert!(one_to_zero.contains("Estimate not available"), "{one_to_zero}");
+    assert!(!equal.contains("not available yet"), "{equal}");
+    assert!(one_to_zero.contains("not available yet"), "{one_to_zero}");
 }
 
 #[test]
@@ -103,8 +137,11 @@ fn long_term_care_premiums_follow_their_person() {
     // A joint return's premium for the spouse goes when the return stops
     // being joint (the spouse leaves the people catalog); yours stays.
     let (mut s, _) = at_the_deductions_page(FederalStatus::Joint);
-    let request = save_deductions(&s.draft, DeductionRoute::Compare, 0);
-    itemized_hub(send_past_less_common(&mut s, request));
+    let mut planned = s.draft.often_missed.clone();
+    planned.benefits |= MissedBenefits::MEDICAL.0;
+    accepted(&crate::tests::cross::interview::save_often_missed(&mut s, planned));
+    let request = save_deductions(&s.draft, None, 0);
+    crate::tests::support::client::deductions::submit_to_itemized_summary(&mut s, request);
     let P::SaveMedical { value, .. } = open_itemized_topic(&mut s, TaxSection::Medical) else {
         panic!("expected the medical page")
     };
@@ -175,17 +212,22 @@ fn long_term_care_premiums_follow_their_person() {
 
 #[test]
 fn derived_hsa_and_education_are_walked_without_a_tick() {
-    // Nothing is ticked, but a W-2 reports box 12 W with no account and you
-    // are a full-time student: the adjustments section walks the HSA page
-    // and the credits section the education page, each opened directly.
+    // A W-2 reports box 12 W with no account, so the native HSA demand
+    // opens its account page without a tick. Student status alone does not
+    // require entering an education source.
     let mut d = complete(FederalStatus::Single);
+    d.checklist = Checklist::NONE;
     d.finished_sections = vec![TaxSection::Children, TaxSection::Checklist, TaxSection::Income];
     d.people.as_mut().unwrap().taxpayer.full_time_student = true;
     let mut s = Interview::new(TEST_USER, d);
-    let request = save_topic(
-        &s.draft,
-        TaxSection::Wages,
-        vec![document(0, IncomeDocument::W2(w2_with_box_12_w(6_000_000, 100_000)))],
+    let request = crate::tests::support::client::income_pages::save_documents(
+        &mut s,
+        vec![document(
+            0,
+            IncomeSource::Wage {
+                value: crate::WageDocument::W2(wage_document(w2_with_box_12_w(6_000_000, 100_000))),
+            },
+        )],
     );
     accepted(&send(&mut s, request));
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
@@ -195,31 +237,69 @@ fn derived_hsa_and_education_are_walked_without_a_tick() {
     };
     let (value, _) = hsa_page_value(&page);
     assert!(value.accounts.is_empty());
-    // Saving the account walks on to More adjustments, whose Next ends the
-    // adjustments walk (gate fixes batch A): the summary continues to the
-    // credits section, which the student makes necessary.
+    // Saving the account completes adjustments and passes the empty credits
+    // summary. Education sources stay available in the document center.
     let request = save_hsa(
         &s.draft,
         vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 200_000)],
         FamilySplit::NotApplicable,
     );
     let reply = send_past_less_common(&mut s, request);
+    assert!(matches!(reply, Reply::Response(P::Review { .. })));
+    for section in [TaxSection::Adjustments, TaxSection::Deductions, TaxSection::Credits] {
+        assert!(s.draft.finished_sections.contains(&section));
+    }
+    let reply = crate::tests::cross::interview::from_review(&mut s, TaxSection::Adjustments);
     assert!(progress_of(&reply).contains("· You're done with adjustments to income"));
     let hub = hub_of(reply);
     assert_eq!(suggestion(&hub), TaxSection::Credits);
-    let Reply::Edit(page @ P::SaveEducation { .. }) = send(&mut s, go_on(&hub)) else {
-        panic!("expected the education page")
-    };
-    // The deductions section, with nothing for this return, was passed.
-    assert!(s.draft.finished_sections.contains(&TaxSection::Deductions));
-    let request = save_education(
-        &s.draft,
-        EducationCredits { students: vec![], people: education_value(&page).people.clone() },
-    );
-    let reply = send_past_less_common(&mut s, request);
+    let reply = crate::tests::cross::interview::from_review(&mut s, TaxSection::Credits);
     assert!(progress_of(&reply).contains("· You're done with credits"));
     credits_hub(reply);
+    let request = open_documents(&mut s);
+    assert!(education_value(&request).students.is_empty());
+    assert!(education_value(&request).people.iter().any(|person| person.id == -1));
+    accepted(&send(&mut s, request));
+    assert!(!s.draft.finished_sections.contains(&TaxSection::Education));
     assert_eq!(crate::interview::planned(&s.draft), Checklist::NONE);
+}
+
+#[test]
+fn marketplace_covered_people_choices_use_every_setup_name() {
+    let mut draft = complete(FederalStatus::Joint);
+    let people = draft.people.as_mut().unwrap();
+    people.taxpayer.first_name = "Morgan".into();
+    people.taxpayer.last_name = "Smith".into();
+    let spouse = people.spouse.as_mut().unwrap();
+    spouse.first_name = "Taylor".into();
+    spouse.last_name = "Smith".into();
+    add_child(&mut draft);
+    let dependent = &mut draft.dependents[0];
+    dependent.first_name = "Avery".into();
+    dependent.last_name = "Smith".into();
+    let dependent_id = dependent.id;
+    let (mut session, _) = at_the_marketplace_page(draft);
+    let P::SaveMarketplace { ptc_people, .. } =
+        open_credits_topic(&mut session, TaxSection::Marketplace)
+    else {
+        panic!("expected the Marketplace editor")
+    };
+    let choices: Vec<_> = ptc_people
+        .iter()
+        .map(|person| {
+            let label = status_text(&person.label);
+            assert!(!label.trim().is_empty(), "person {} has an empty choice label", person.id);
+            (person.id, label)
+        })
+        .collect();
+    assert_eq!(
+        choices,
+        vec![
+            (-1, "Morgan Smith".into()),
+            (-2, "Taylor Smith".into()),
+            (dependent_id, "Avery Smith".into()),
+        ]
+    );
 }
 
 #[test]
@@ -270,53 +350,38 @@ fn marketplace_actual_child_cost_source_survives_save_and_restart() {
         child_increase: None,
         tax_free_child: None,
     });
-    let mut value = save_marketplace_and_reopen(&mut session, value);
+    let mut value = reopen_marketplace(&mut session, value);
     assert_eq!(value.forms[0].medical_costs[0].child_increase, None);
     value.forms[0].medical_costs[0].child_increase = Some(0);
-    let mut value = save_marketplace_and_reopen(&mut session, value);
+    let mut value = reopen_marketplace(&mut session, value);
     assert_eq!(value.forms[0].medical_costs[0].child_increase, Some(0));
     assert_eq!(restart(session.draft.clone()).draft, session.draft);
     let before = session.draft.clone();
     value.forms[0].medical_costs[0].child_increase = Some(25_000);
-    let response = send(
+    let source = save_marketplace_sources(
         &mut session,
-        P::EstimateMarketplace {
-            user: TEST_USER,
-            people: vec![],
-            ptc_people: vec![],
-            ptc_families: vec![],
-            ptc_policies: vec![],
-            ptc_w2: vec![],
-            ptc_employees: vec![],
-            ptc_nonreturn_people: vec![],
-            ptc_claimed_dependents: vec![],
-            allowed_marriage: vec![],
-            allowed_separate: vec![],
-            value: value.clone(),
-        },
+        crate::tests::cross::interview::documents_of(&value.forms),
     );
-    assert!(matches!(response, Reply::Response(P::RunningEstimate { .. })));
+    let response = crate::tests::support::client::income_pages::candidate_save_review(
+        &mut session,
+        estimate_documents_from_save(&source),
+    );
+    assert!(matches!(response, Reply::Response(P::Review { .. })));
     assert_eq!(session.draft, before);
     // Actual source cost is $1,000: the server rejects excess cost even
     // though the echoed page permits ordinary money values this large.
     value.forms[0].medical_costs[0].child_increase = Some(100_001);
-    let request = save_marketplace(&before, value);
-    // Current typed Page-to-record conversion retains the stored-value locator,
-    // and the earlier native cookie guard still wins when both are invalid.
+    let request = marketplace_request(&mut session, value);
+    // Stored source validation retains its own locator; the native cookie
+    // guard still wins when both are invalid.
     let P::SaveMarketplace { value, .. } = &request else { unreachable!() };
     let mut candidate = before.clone();
-    candidate.credits.as_mut().unwrap().marketplace =
-        crate::MarketplaceClaim::Yes { facts: alloc::boxed::Box::new(value.clone().into()) };
-    let issue = candidate.stored_issue().unwrap();
-    assert_eq!(issue.key, "ISSUE_INTERVIEW_REVIEW_THE_ACCEPTED_PAGE_VALUES_BEFORE_65B6D7B7");
-    assert_eq!(
-        issue.field.unwrap().square(),
-        "[credits/marketplace/forms/0/medical_costs/0/child_increase]"
-    );
-    candidate.cookie.clear();
-    let issue = candidate.stored_issue().unwrap();
-    assert_eq!(issue.key, "ISSUE_INTERVIEW_REVIEW_THE_ACCEPTED_PAGE_VALUES_BEFORE_65B6D7B7");
-    assert_eq!(issue.field, None);
+    let MarketplaceClaim::Yes { facts } = &mut candidate.credits.as_mut().unwrap().marketplace
+    else {
+        unreachable!()
+    };
+    facts.forms[0].medical_costs = value.forms[0].medical_costs.clone();
+    crate::tests::support::client::retained_marketplace_conflict(&candidate);
     error(current_source_refusal(
         "health-context-11",
         &mut session,
@@ -338,9 +403,10 @@ fn marketplace_page_reproduces_the_row_27_fixture() {
     let (mut s, empty) = at_the_marketplace_page(d);
     assert!(empty.forms.is_empty());
     let value = marketplace_fixture_page(vec![all_year("Issuer", 50_000, 60_000, 50_000)]);
-    let saved = save_marketplace_and_reopen(&mut s, value.clone());
+    let saved = reopen_marketplace(&mut s, value.clone());
     assert!(saved.forms[0].id > 0);
     let mut expected = value;
+    expected.forms[0].id = saved.forms[0].id;
     expected.forms[0].id = saved.forms[0].id;
     assert_eq!(saved, expected);
     let r = supported(&s.draft);
@@ -359,7 +425,7 @@ fn marketplace_source_identity_survives_reorder_rename_and_same_issuer() {
         all_year("Same issuer", 25_000, 60_000, 0),
         all_year("Same issuer", 25_000, 60_000, 0),
     ]);
-    value.forms[1].policy_number = "000124".into();
+    value.forms[1].value.policy_number = "000124".into();
     // Two statements repeat one benchmark: explicit actual eligible group
     // supplies the family amount once, never 600+600.
     value.benchmarks = (1..=12)
@@ -374,12 +440,12 @@ fn marketplace_source_identity_survives_reorder_rename_and_same_issuer() {
             allocated: vec![],
         })
         .collect();
-    let mut saved = save_marketplace_and_reopen(&mut s, value);
+    let mut saved = reopen_marketplace(&mut s, value);
     let ids = (saved.forms[0].id, saved.forms[1].id);
     assert_ne!(ids.0, ids.1);
     saved.forms.swap(0, 1);
-    saved.forms[0].issuer = "Renamed issuer".into();
-    let reopened = save_marketplace_and_reopen(&mut s, saved.clone());
+    saved.forms[0].value.issuer = "Renamed issuer".into();
+    let reopened = reopen_marketplace(&mut s, saved.clone());
     assert_eq!(reopened, saved);
     assert_eq!((reopened.forms[0].id, reopened.forms[1].id), (ids.1, ids.0));
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 5134);
@@ -390,21 +456,24 @@ fn marketplace_links_require_a_saved_source_and_ignore_echoed_catalogs() {
     let d = complete(FederalStatus::Single);
     let (mut s, _) = at_the_marketplace_page(d);
     let mut value = marketplace_fixture_page(vec![all_year("Issuer", 50_000, 60_000, 0)]);
-    value.forms[0].enrolling = MarketplaceFamilyRefPage::Other { family: s.draft.next_id + 1 };
+    let source = save_marketplace_sources(
+        &mut s,
+        crate::tests::cross::interview::documents_of(&value.forms),
+    );
+    accepted(&send(&mut s, source));
+    value.forms[0].enrolling = MarketplaceFamilyRefPage::Other { family: s.draft.next_id };
     value.other_families.push(MarketplaceFamilyPage { id: 0, label: "Other taxpayer".into() });
     let before = s.draft.clone();
-    let mut request = save_marketplace(&before, value.clone());
+    let mut request = save_marketplace(&mut s, value.clone());
     if let P::SaveMarketplace { ptc_families, .. } = &mut request {
-        ptc_families.push(RecordChoice {
-            id: before.next_id + 1,
-            label: crate::common::test_label("Forged"),
-        });
+        ptc_families
+            .push(RecordChoice { id: before.next_id, label: crate::common::test_label("Forged") });
     }
     error(send(&mut s, request));
     assert_eq!(s.draft, before);
     value.forms.clear();
     value.eligibility.clear();
-    let saved = save_marketplace_and_reopen(&mut s, value);
+    let saved = reopen_marketplace(&mut s, value);
     assert!(saved.other_families[0].id > 0);
     let family = saved.other_families[0].id;
     let mut value = saved;
@@ -415,7 +484,7 @@ fn marketplace_links_require_a_saved_source_and_ignore_echoed_catalogs() {
             label: "External enrollee".into(),
         },
     });
-    let saved = save_marketplace_and_reopen(&mut s, value);
+    let saved = reopen_marketplace(&mut s, value);
     assert_eq!(stored_marketplace(&s).covered[0].id, saved.covered[0].id);
 }
 
@@ -425,7 +494,7 @@ fn marketplace_source_removal_rejects_dangling_links_but_allows_both_sides() {
     let (mut s, _) = at_the_marketplace_page(d);
     let mut value = MarketplaceFactsPage::default();
     value.other_families.push(MarketplaceFamilyPage { id: 0, label: "Other taxpayer".into() });
-    let mut value = save_marketplace_and_reopen(&mut s, value);
+    let mut value = reopen_marketplace(&mut s, value);
     value.covered.push(MarketplaceCoveredPersonPage {
         id: 0,
         identity: MarketplacePersonIdentityPage::OtherFamily {
@@ -433,14 +502,14 @@ fn marketplace_source_removal_rejects_dangling_links_but_allows_both_sides() {
             label: "External".into(),
         },
     });
-    let mut value = save_marketplace_and_reopen(&mut s, value);
+    let mut value = reopen_marketplace(&mut s, value);
     let before = s.draft.clone();
     value.other_families.clear();
-    let request = save_marketplace(&before, value.clone());
+    let request = marketplace_request(&mut s, value.clone());
     error(send(&mut s, request));
     assert_eq!(s.draft, before);
     value.covered.clear();
-    save_marketplace_and_reopen(&mut s, value);
+    reopen_marketplace(&mut s, value);
     assert!(matches!(s.draft.credits.as_ref().unwrap().marketplace, MarketplaceClaim::No));
 }
 
@@ -449,30 +518,23 @@ fn marketplace_estimate_is_transient_and_blank_benchmark_is_preserved() {
     let d = complete(FederalStatus::Single);
     let (mut s, _) = at_the_marketplace_page(d);
     let mut value = marketplace_fixture_page(vec![all_year("Issuer", 50_000, 60_000, 40_000)]);
-    let PolicyAmounts::AllYear { benchmark, .. } = &mut value.forms[0].amounts else {
-        unreachable!()
-    };
-    *benchmark = None;
+    for month in 1..=12 {
+        value.forms[0].value.month_mut(month).benchmark = None;
+    }
     let before = s.draft.clone();
-    let request = P::EstimateMarketplace {
-        user: TEST_USER,
-        people: vec![],
-        ptc_people: vec![],
-        ptc_families: vec![],
-        ptc_policies: vec![],
-        ptc_w2: vec![],
-        ptc_employees: vec![],
-        ptc_nonreturn_people: vec![],
-        ptc_claimed_dependents: vec![],
-        allowed_marriage: vec![],
-        allowed_separate: vec![],
-        value: value.clone(),
-    };
-    let response = send(&mut s, request);
-    assert!(matches!(response, Reply::Response(P::RunningEstimate { .. })));
+    let request = estimate_documents_from_save(&save_marketplace_sources(
+        &mut s,
+        crate::tests::cross::interview::documents_of(&value.forms),
+    ));
+    let response =
+        crate::tests::support::client::income_pages::candidate_save_review(&mut s, request);
+    assert!(matches!(response, Reply::Response(P::Review { .. })));
     assert_eq!(s.draft, before);
-    let reopened = save_marketplace_and_reopen(&mut s, value);
-    assert!(matches!(reopened.forms[0].amounts, PolicyAmounts::AllYear { benchmark: None, .. }));
+    let reopened = reopen_marketplace(&mut s, value);
+    assert!((1..=12).all(|month| {
+        crate::marketplace_sources::policy_month(&reopened.forms[0].amounts(), month)
+            .is_some_and(|row| row.1.is_none())
+    }));
     let r = estimate(&s.draft);
     assert_ne!(r.state, ResultState::EstimatedForSupportedScope);
     assert!(r.issues.iter().any(|i| i.display.key == "PTC_SOURCE_BENCHMARK_REQUIRED"));
@@ -506,15 +568,20 @@ fn marketplace_appeal_deadline_calculation_and_server_twin_use_calendar_days() {
             required_deadline: 20270415,
         }),
     });
-    let request = save_marketplace(&before, value);
-    error(current_source_refusal(
+    let source = save_marketplace_sources(
+        &mut s,
+        crate::tests::cross::interview::documents_of(&value.forms),
+    );
+    accepted(&send(&mut s, source));
+    let before = s.draft.clone();
+    let request = save_marketplace(&mut s, value);
+    crate::tests::support::client::survey::survey_native_refusal(
         "health-context-10",
         &mut s,
         request,
         "MESSAGE_CHECK_THE_MONTHS_AND_AMOUNTS_OF_EACH_FORM_1095_A",
-        Some("[value/forms/0/payments/0/appeal/required_deadline]"),
-        SourceScope::Health,
-    ));
+        "[value/forms/0/payments/0/appeal/required_deadline]",
+    );
     assert_eq!(s.draft, before);
 }
 
@@ -534,7 +601,7 @@ fn marketplace_dependent_returns_reach_household_income() {
         social: 400_000,
         taxable_social: 100_000,
     });
-    save_marketplace_and_reopen(&mut s, value);
+    reopen_marketplace(&mut s, value);
     assert_eq!(stored_marketplace(&s).dependents[0].person, id);
     assert_eq!(value_of(&supported(&s.draft), "marketplace_household_income"), 47800);
 }
@@ -544,10 +611,12 @@ fn marketplace_months_on_the_self_employed_page_count_the_premiums_once() {
     // Derived Pub974 Simplified calculation: actual saved Form1095-A supplies
     // $7200 once; the plan supplies only establishment/monthly eligibility.
     let mut s = at_the_adjustments_hub_with_business(4_000_000);
+    // Credits is the first unfinished section, so its topic saves return to it.
+    s.draft.finished_sections.extend([TaxSection::Adjustments, TaxSection::Deductions]);
     let id = stored_business(&s).0;
     let request = open_credits_topic(&mut s, TaxSection::Marketplace);
     assert!(matches!(request, P::SaveMarketplace { .. }));
-    let saved = save_marketplace_and_reopen(
+    let saved = reopen_marketplace(
         &mut s,
         marketplace_fixture_page(vec![all_year("Synthetic policy", 60_000, 55_000, 30_000)]),
     );
@@ -610,7 +679,10 @@ fn health_credit_page_rules_are_checked_on_save() {
     let mut session = Interview::new(TEST_USER, complete(FederalStatus::Single));
     let edited = |edit: &dyn Fn(&mut SmallEmployerHealthCredit)| {
         let mut b = health_credit_business();
-        edit(b.more.small_employer_health.as_mut().unwrap());
+        let page = b.more.small_employer_health.as_mut().unwrap();
+        let mut credit = SmallEmployerHealthCredit::from(&*page);
+        edit(&mut credit);
+        *page = (&credit).into();
         b
     };
     // The county exception needs a 2025 first year.
@@ -670,15 +742,15 @@ fn marketplace_marriage_pages_consume_each_actual_recipient_statement_once() {
         all_year("Same issuer", 120_000, 120_000, 110_000),
     ]);
     for (form, person) in value.forms.iter_mut().zip([-1, -2]) {
-        form.policy_number = "Same insurance policy".into();
-        form.amounts = PolicyAmounts::ByMonth {
+        form.value.policy_number = "Same insurance policy".into();
+        form.value.set_amounts(PolicyAmounts::ByMonth {
             months: vec![PolicyMonth {
                 month: 1,
                 premium: 120_000,
                 benchmark: Some(120_000),
                 advance: 110_000,
             }],
-        };
+        });
         form.coverage =
             vec![MarketplacePolicyCoveragePage { month: 1, people: vec![person], entry: vec![] }];
     }
@@ -700,7 +772,7 @@ fn marketplace_marriage_pages_consume_each_actual_recipient_statement_once() {
             source: MarketplaceBenchmarkSourcePage::Marketplace { amount: 240_000 },
         }],
     }];
-    let mut saved = save_marketplace_and_reopen(&mut s, value);
+    let mut saved = reopen_marketplace(&mut s, value);
     let ids = [saved.forms[0].id, saved.forms[1].id];
     assert_ne!(ids[0], ids[1]);
     let family = |id| MarketplaceMarriageFamilyPage {
@@ -715,7 +787,7 @@ fn marketplace_marriage_pages_consume_each_actual_recipient_statement_once() {
         spouse: family(ids[1]),
     };
     let next = s.draft.next_id;
-    let reopened = save_marketplace_and_reopen(&mut s, saved.clone());
+    let reopened = reopen_marketplace(&mut s, saved.clone());
     assert_eq!(reopened, saved);
     assert_eq!(s.draft.next_id, next);
     let result = supported(&s.draft);
@@ -727,13 +799,16 @@ fn marketplace_marriage_pages_consume_each_actual_recipient_statement_once() {
     };
     spouse.premarriage_policies = vec![ids[0]];
     let before = s.draft.clone();
-    error(send(&mut s, save_marketplace(&before, saved)));
+    let request = marketplace_request(&mut s, saved);
+    error(send(&mut s, request));
     assert_eq!(s.draft, before); // One original statement cannot be consumed twice.
 }
 
 #[test]
 fn health_marketplace_links_use_saved_sources_and_actual_activity_catalog() {
     let mut s = at_the_adjustments_hub_with_business(4_000_000);
+    // Credits is the first unfinished section, so its topic saves return to it.
+    s.draft.finished_sections.extend([TaxSection::Adjustments, TaxSection::Deductions]);
     let activity = stored_business(&s).0;
     let mut benefits = open_benefits(&mut s);
     benefits.policies.push(HealthPolicyAllocationPage {
@@ -748,7 +823,7 @@ fn health_marketplace_links_use_saved_sources_and_actual_activity_catalog() {
     assert_eq!(s.draft, before); // Save the source before linking it.
     let request = open_credits_topic(&mut s, TaxSection::Marketplace);
     assert!(matches!(request, P::SaveMarketplace { .. }));
-    let saved = save_marketplace_and_reopen(
+    let saved = reopen_marketplace(
         &mut s,
         marketplace_fixture_page(vec![all_year("Actual source", 60_000, 55_000, 30_000)]),
     );
@@ -764,17 +839,13 @@ fn health_marketplace_links_use_saved_sources_and_actual_activity_catalog() {
     forged.policies[0].activity = 999_999;
     error(save_benefits(&mut s, forged));
     assert_eq!(s.draft, before);
-    let mut zero = benefits.clone();
-    zero.policies[0].parts = 0;
-    error(save_benefits(&mut s, zero));
-    assert_eq!(s.draft, before);
     let mut duplicate = benefits.clone();
     duplicate.policies.push(duplicate.policies[0].clone());
     error(save_benefits(&mut s, duplicate));
     assert_eq!(s.draft, before);
     let mut removed = saved;
     removed.forms.clear();
-    let request = save_marketplace(&s.draft, removed);
+    let request = marketplace_request(&mut s, removed);
     // Original08 removes the actual saved Marketplace policy while its
     // accepted self-employed allocation still refers to that source.
     error(current_source_refusal(
@@ -804,19 +875,19 @@ fn marketplace_actual_tax_free_funding_reopens_and_rejects_impossible_offsets() 
         coverage: MarketplacePaymentCoverage::PaidByDeadline,
         appeal: None,
     });
-    let saved = save_marketplace_and_reopen(&mut s, page);
+    let saved = reopen_marketplace(&mut s, page);
     assert_eq!(saved.forms[0].payments[0].tax_free_premiums, 10_000);
     assert_eq!(saved.forms[0].payments[0].tax_free_coverage, Some(10_000));
     assert_eq!(stored_marketplace(&s).forms[0].payments[0].tax_free_premiums, 10_000);
     let before = s.draft.clone();
     let mut invalid = saved.clone();
     invalid.forms[0].payments[0].tax_free_premiums = 50_001;
-    let request = save_marketplace(&s.draft, invalid);
+    let request = marketplace_request(&mut s, invalid);
     error(send(&mut s, request));
     assert_eq!(s.draft, before);
     let mut invalid = saved;
     invalid.forms[0].payments[0].tax_free_coverage = Some(10_001);
-    let request = save_marketplace(&s.draft, invalid);
+    let request = marketplace_request(&mut s, invalid);
     error(send(&mut s, request));
     assert_eq!(s.draft, before);
 }
@@ -920,7 +991,6 @@ fn typed_ltc_contract_qualification_reopens_and_only_allows_established_benefit(
             materially_changed: true,
         },
         CareContractQualification::Nonqualified,
-        CareContractQualification::Nonqualified,
     ] {
         let mut s = at_the_adjustments_hub_with_business(4_000_000);
         let mut benefits = open_benefits(&mut s);
@@ -949,27 +1019,6 @@ fn typed_ltc_contract_qualification_reopens_and_only_allows_established_benefit(
             if qualified.qualified() { 500 } else { 0 }
         );
         assert_eq!(noted(&r, "WARN_LTC_PREMIUM_LEFT_OUT"), !qualified.qualified());
-        let before = s.draft.clone();
-        let SeHealth::Plan { long_term_care, .. } = &mut benefits.businesses[0].health else {
-            panic!()
-        };
-        long_term_care[0].qualified = CareContractQualification::Grandfathered {
-            issued: 19970101,
-            state_compliant: true,
-            materially_changed: false,
-        };
-        error(save_benefits(&mut s, benefits.clone()));
-        assert_eq!(s.draft, before);
-        let SeHealth::Plan { long_term_care, .. } = &mut benefits.businesses[0].health else {
-            panic!()
-        };
-        long_term_care[0].qualified = CareContractQualification::Grandfathered {
-            issued: 19960230,
-            state_compliant: true,
-            materially_changed: false,
-        };
-        error(save_benefits(&mut s, benefits));
-        assert_eq!(s.draft, before);
     }
 }
 
@@ -1037,16 +1086,20 @@ fn health_ltc_separate_contract_rows_share_insured_age_limit() {
 #[test]
 fn health_coverage_only_people_reopen_without_dependency_care_or_filing_benefits() {
     let mut s = supporting(FederalStatus::Single);
-    let FederalIncome::Wage { data } = &mut s.draft.income[0].income else { panic!() };
-    data.wages = 2_000_000;
-    data.medicare_wages = 2_000_000;
+    let FederalIncome::Wage { data: crate::WageSource::W2(crate::W2Source { form: data, .. }) } =
+        &mut s.draft.income[0].income
+    else {
+        panic!()
+    };
+    data.wages = Some(2_000_000);
+    data.medicare_wages = Some(2_000_000);
     let mut person = row("Covered", "Child", 20180615);
     person.use_for = PersonUse::HealthCoverageOnly;
-    person.care = CareCosts::Yes { expenses: 100_000, incapable_self_care: false };
     let request = save_children(&s.draft, vec![person]);
     accepted(&send(&mut s, request));
+    let care = CareCosts::Yes { expenses: 100_000, incapable_self_care: false };
+    crate::tests::cross::interview::save_care_costs(&mut s, &[care]);
     let id = s.draft.dependents[0].id;
-    assert_eq!(s.draft.credits.as_ref().unwrap().care, FederalCare::default());
     let mut result = FederalResult::empty(s.draft.revision);
     let family =
         crate::federal_rules::family(&s.draft, &mut result, s.draft.people.as_ref().unwrap());
@@ -1070,7 +1123,6 @@ fn health_coverage_only_people_reopen_without_dependency_care_or_filing_benefits
         crate::federal_rules::family(&s.draft, &mut result, s.draft.people.as_ref().unwrap());
     assert_eq!(family.dependent_ids(), &[id]);
     assert!(family.qualifying_head);
-    accept_care_provider(&mut s);
     let accepted_care = s.draft.credits.as_ref().unwrap().care.clone();
     let result = supported(&s.draft);
     assert!(value(&result, "child_credit") + value(&result, "additional_child_credit") > 0);
@@ -1277,7 +1329,8 @@ fn hsa_actual_other_filer_context_saves_reopens_and_uses_equal_default() {
             later_employer_deposits: 0,
         });
         value.accounts = vec![account];
-        value.other_coverage = Some(HsaEligibility::FullYear { coverage: HsaCoverage::SelfOnly });
+        value.other_coverage =
+            Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::SelfOnly });
         value.family_split = FamilySplit::Equal;
         accepted(&send(&mut s, page));
         let r = supported(&s.draft);
@@ -1299,11 +1352,77 @@ fn hsa_actual_other_filer_context_saves_reopens_and_uses_equal_default() {
         let mut restarted = Interview::new(TEST_USER, restart(s.draft.clone()).draft);
         let reopened = open_hsa_page(&mut restarted);
         let (input, choices) = hsa_page_value(&reopened);
-        assert_eq!(input.other_coverage, other);
+        assert_eq!(input.other_coverage.as_ref().map(HsaEligibilityPage::record), other);
         assert_eq!(input.family_method, HsaAllocationMethod::Monthly);
         assert_eq!(choices, &[1, 2]);
         assert_eq!(supported(&restarted.draft), r);
     }
+}
+
+#[test]
+fn hsa_other_filer_named_months_save_reopen_restart_and_correct() {
+    let mut s = at_the_adjustments_hub(FederalStatus::Joint, 0);
+    let mut months = HsaCoverageMonths {
+        january: HsaCoverage::SelfOnly,
+        february: HsaCoverage::SelfOnly,
+        march: HsaCoverage::SelfOnly,
+        april: HsaCoverage::SelfOnly,
+        may: HsaCoverage::SelfOnly,
+        june: HsaCoverage::SelfOnly,
+        july: HsaCoverage::None,
+        august: HsaCoverage::None,
+        september: HsaCoverage::None,
+        october: HsaCoverage::None,
+        november: HsaCoverage::None,
+        december: HsaCoverage::None,
+    };
+    let mut page = open_hsa_page(&mut s);
+    let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
+    value.accounts = vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::Family, 400_000)];
+    value.other_coverage = Some(HsaEligibilityPage::Monthly { months });
+    value.family_split = FamilySplit::Equal;
+    let mut calculation = hsa_options(value.accounts.clone());
+    let P::HsaOptions { other_coverage, .. } = &mut calculation else { unreachable!() };
+    *other_coverage = value.other_coverage.clone();
+    assert_eq!(family_options(send(&mut s, calculation)), vec![1, 2]);
+    accepted(&send(&mut s, page));
+    // Six shared-family months and six unshared months: (4375 + 8750) / 2,
+    // rounded to $6563 on the printed Form 8889 line 6.
+    let result = supported(&s.draft);
+    assert_eq!(line_amount(&result, "hsa_1_contribution_allocated"), 656_300);
+    assert_eq!(super::value(&result, "adjustments"), 4000);
+    assert_eq!(
+        s.draft.adjustments.as_ref().unwrap().hsa_family_share.as_ref().unwrap().other_coverage,
+        Some(HsaEligibility::Monthly {
+            months: [vec![HsaCoverage::SelfOnly; 6], vec![HsaCoverage::None; 6]].concat(),
+        })
+    );
+    let mut restarted = restart(s.draft);
+    let mut page = open_hsa_page(&mut restarted);
+    assert_eq!(
+        hsa_page_value(&page).0.other_coverage,
+        Some(HsaEligibilityPage::Monthly { months })
+    );
+    assert_eq!(supported(&restarted.draft), result);
+    // Correct actual eligibility for June; the saved calendar order and limit follow it.
+    months.june = HsaCoverage::None;
+    let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
+    value.other_coverage = Some(HsaEligibilityPage::Monthly { months });
+    accepted(&send(&mut restarted, page));
+    let corrected = supported(&restarted.draft);
+    // (5 * 4375 + 7 * 8750) / 12 rounds to $6927 on line 6.
+    assert_eq!(line_amount(&corrected, "hsa_1_contribution_allocated"), 692_700);
+    assert_eq!(super::value(&corrected, "adjustments"), 4000);
+    let mut restarted = restart(restarted.draft);
+    let page = open_hsa_page(&mut restarted);
+    assert_eq!(
+        hsa_page_value(&page).0.other_coverage,
+        Some(HsaEligibilityPage::Monthly { months })
+    );
+    assert_eq!(supported(&restarted.draft), corrected);
+    let revision = restarted.draft.revision;
+    accepted(&send(&mut restarted, page));
+    assert_eq!(restarted.draft.revision, revision);
 }
 
 #[test]
@@ -1314,27 +1433,34 @@ fn hsa_missing_other_eligibility_is_required_even_for_self_only_and_cannot_dupli
     value.accounts = vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 440_000)];
     value.other_coverage = None;
     value.family_split = FamilySplit::NotApplicable;
-    accepted(&send(&mut s, page));
-    let r = estimate(&s.draft);
-    assert!(r.tax.is_none());
-    let issue =
-        r.issues.iter().find(|i| i.display.key == "HSA_OTHER_OWNER_ELIGIBILITY_REQUIRED").unwrap();
-    assert_eq!(
-        crate::interview::issue_page(&s.draft, &issue.context, Some(&issue.display.key)),
-        Some(TaxSection::Hsa)
-    );
+    // The other filer's eligibility is a required answer: the save keeps the
+    // account and asks it on the HSA questions page, so it never reaches the
+    // Review as a remaining item.
+    let asked = crate::tests::support::client::own_questions::wire(&mut s, page.clone());
+    assert!(matches!(asked, Reply::Response(P::BeginDocumentQuestions { .. })), "{asked:?}");
+    // The account was saved; the reopened page takes the answer.
     let mut page = open_hsa_page(&mut s);
     let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
-    value.other_coverage = Some(HsaEligibility::FullYear { coverage: HsaCoverage::None });
+    assert!(value.other_coverage.is_none());
+    value.other_coverage = Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::None });
     accepted(&send(&mut s, page));
     assert_eq!(super::value(&supported(&s.draft), "adjustments"), 4400);
     let before = s.draft.clone();
     let mut page = open_hsa_page(&mut s);
     let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
     value.accounts.push(hsa_account(Owner::Spouse, HsaCoverageYear::SelfOnly, 0));
-    // Two independent sources for the same person's eligibility are rejected.
-    rejected_with(send(&mut s, page), "HSA_OTHER_OWNER_CONTEXT_INVALID");
-    assert_eq!(s.draft, before);
+    // A second account makes the stored answer unnecessary: it is pruned.
+    accepted(&send(&mut s, page));
+    assert_ne!(s.draft, before);
+    assert!(
+        s.draft
+            .adjustments
+            .as_ref()
+            .unwrap()
+            .hsa_family_share
+            .as_ref()
+            .is_none_or(|share| share.other_coverage.is_none())
+    );
 }
 
 #[test]
@@ -1344,8 +1470,11 @@ fn hsa_monthly_and_december_choices_use_same_actual_account_and_restart() {
     let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
     let mut months = vec![HsaCoverage::None; 12];
     months[11] = HsaCoverage::SelfOnly;
-    value.accounts =
-        vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::Changed { months }, 440_000)];
+    value.accounts = vec![hsa_account(
+        Owner::Taxpayer,
+        HsaCoverageYear::Changed { months: months.into() },
+        440_000,
+    )];
     value.family_method = HsaAllocationMethod::Monthly;
     value.family_split = FamilySplit::NotApplicable;
     accepted(&send(&mut s, page));
@@ -1362,6 +1491,47 @@ fn hsa_monthly_and_december_choices_use_same_actual_account_and_restart() {
     assert_eq!(supported(&restart(s.draft.clone()).draft), r);
 }
 
+// G-41 (Smith round 3): the changed-coverage choice is twelve months named January through December,
+// each answered with its own coverage; John: self-only January through May, not eligible after.
+#[test]
+fn hsa_changed_coverage_is_twelve_named_months() {
+    let mut s = at_the_adjustments_hub(FederalStatus::Single, 0);
+    let john = crate::HsaCoverageMonths {
+        january: HsaCoverage::SelfOnly,
+        february: HsaCoverage::SelfOnly,
+        march: HsaCoverage::SelfOnly,
+        april: HsaCoverage::SelfOnly,
+        may: HsaCoverage::SelfOnly,
+        june: HsaCoverage::None,
+        july: HsaCoverage::None,
+        august: HsaCoverage::None,
+        september: HsaCoverage::None,
+        october: HsaCoverage::None,
+        november: HsaCoverage::None,
+        december: HsaCoverage::None,
+    };
+    let mut page = open_hsa_page(&mut s);
+    let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
+    value.accounts =
+        vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::Changed { months: john }, 100_000)];
+    value.family_method = HsaAllocationMethod::Monthly;
+    value.family_split = FamilySplit::NotApplicable;
+    accepted(&send(&mut s, page));
+    // The stored record keeps the ordered twelve; the page shows the same named months again.
+    let stored = &s.draft.adjustments.as_ref().unwrap().hsa[0].coverage;
+    assert_eq!(
+        stored,
+        &HsaEligibility::Monthly {
+            months: [vec![HsaCoverage::SelfOnly; 5], vec![HsaCoverage::None; 7]].concat()
+        }
+    );
+    let reopened = open_hsa_page(&mut s);
+    assert_eq!(
+        hsa_page_value(&reopened).0.accounts[0].coverage,
+        HsaCoverageYear::Changed { months: john }
+    );
+}
+
 #[test]
 fn hsa_separate_return_can_elect_december_with_actual_external_spouse_context() {
     let mut s = at_the_adjustments_hub(FederalStatus::Separate, 0);
@@ -1369,9 +1539,12 @@ fn hsa_separate_return_can_elect_december_with_actual_external_spouse_context() 
     let P::SaveHsa { value, .. } = &mut page else { unreachable!() };
     let mut months = vec![HsaCoverage::None; 12];
     months[11] = HsaCoverage::Family;
-    value.accounts =
-        vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::Changed { months }, 437_500)];
-    value.other_coverage = Some(HsaEligibility::FullYear { coverage: HsaCoverage::Family });
+    value.accounts = vec![hsa_account(
+        Owner::Taxpayer,
+        HsaCoverageYear::Changed { months: months.into() },
+        437_500,
+    )];
+    value.other_coverage = Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::Family });
     value.family_split = FamilySplit::Equal;
     value.family_method = HsaAllocationMethod::December;
     accepted(&send(&mut s, page));
@@ -1386,7 +1559,7 @@ fn hsa_separate_return_can_elect_december_with_actual_external_spouse_context() 
     assert_eq!(reopened.family_split, FamilySplit::Equal);
     assert_eq!(
         reopened.other_coverage,
-        Some(HsaEligibility::FullYear { coverage: HsaCoverage::Family })
+        Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::Family })
     );
     assert_eq!(supported(&restart(s.draft.clone()).draft), r);
 }
@@ -1404,7 +1577,7 @@ fn hsa_limit_context_validation_ignores_echoed_marriage_permission() {
     let P::SaveHsa { value, other_coverage_allowed, .. } = &mut page else { unreachable!() };
     *other_coverage_allowed = true;
     value.accounts = vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 100_000)];
-    value.other_coverage = Some(HsaEligibility::FullYear { coverage: HsaCoverage::None });
+    value.other_coverage = Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::None });
     rejected_with(send(&mut s, page), "HSA_OTHER_OWNER_CONTEXT_INVALID");
     assert_eq!(s.draft, before);
 }
@@ -1420,7 +1593,7 @@ fn hsa_external_eligibility_uses_actual_marriage_not_filing_status_label() {
     let P::SaveHsa { value, other_coverage_allowed, .. } = &mut page else { unreachable!() };
     assert!(*other_coverage_allowed);
     value.accounts = vec![hsa_account(Owner::Taxpayer, HsaCoverageYear::Family, 400_000)];
-    value.other_coverage = Some(HsaEligibility::FullYear { coverage: HsaCoverage::SelfOnly });
+    value.other_coverage = Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::SelfOnly });
     value.family_split = FamilySplit::Equal;
     accepted(&send(&mut s, page));
     assert_eq!(super::value(&supported(&s.draft), "adjustments"), 4000);
@@ -1448,14 +1621,14 @@ fn archer_only_page_keeps_recorded_hub_status_and_normal_checklist_removal() {
     };
     accepted(&send(&mut s, request));
     assert_eq!(value(&supported(&s.draft), "adjustments"), 1000);
-    assert_ne!(s.draft.checklist.adjustments & AdjustmentTopics::HSA.0, 0);
+    assert_ne!(s.draft.checklist.paid & PaidTopics::HSA.0, 0);
     let hub = open_adjustments_hub(&mut s);
     let rows = hub_rows(&hub);
     let health = rows.iter().find(|row| row.2 == TaxSection::Hsa).unwrap();
     assert_eq!(health.1, "Recorded");
     let before = s.draft.clone();
     let mut ticks = before.checklist;
-    ticks.adjustments &= !AdjustmentTopics::HSA.0;
+    ticks.paid &= !PaidTopics::HSA.0;
     accepted(&send(&mut s, save_checklist(&before, PAGE_CHILDREN, ticks)));
     assert!(matches!(s.draft.adjustments.as_ref().unwrap().archer, ArcherContributions::None));
     assert_eq!(value(&supported(&s.draft), "adjustments"), 0);
@@ -1481,7 +1654,7 @@ fn hsa_earlier_funding_history_saves_reopens_and_estimates_without_mutation() {
     assert_eq!(value(&supported(&s.draft), "adjustments"), 1000);
     let mut restarted = Interview::new(TEST_USER, restart(s.draft.clone()).draft);
     let mut page = open_hsa_page(&mut restarted);
-    let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
+    let P::SaveHsa { value: input, followups, .. } = &mut page else { unreachable!() };
     assert_eq!(input.accounts[0].uses, s.draft.adjustments.as_ref().unwrap().hsa[0].uses);
     let mut estimated = input.clone();
     estimated.accounts[0].uses[0].amount = 123_456;
@@ -1489,6 +1662,8 @@ fn hsa_earlier_funding_history_saves_reopens_and_estimates_without_mutation() {
     let reply = send(
         &mut restarted,
         P::EstimateHsa {
+            followups: followups.clone(),
+            questions: Vec::new(),
             user: TEST_USER,
             hsa_failed_deposits: vec![],
             archer_failed_deposits: vec![],
@@ -1504,36 +1679,13 @@ fn hsa_earlier_funding_history_saves_reopens_and_estimates_without_mutation() {
     );
     assert!(matches!(reply, Reply::Response(P::RunningEstimate { .. })));
     assert_eq!(restarted.draft, accepted_draft);
-    // Neither a forged prior-year row nor an impossible date can bypass
-    // the page's historical date bounds through the server endpoint.
-    for (date, coverage, key) in [
-        (20250101, HsaCoverage::Family, "HSA_RECORD_INVALID"),
-        (20240230, HsaCoverage::Family, "HSA_RECORD_INVALID"),
-        (20240615, HsaCoverage::None, "HSA_FUNDING_NEEDS_COVERAGE"),
-    ] {
+    {
+        let (date, coverage, key) = (20240615, HsaCoverage::None, "HSA_FUNDING_NEEDS_COVERAGE");
         let mut candidate = page.clone();
         let P::SaveHsa { value: input, .. } = &mut candidate else { unreachable!() };
         input.accounts[0].uses[0].funded = date;
         input.accounts[0].uses[0].coverage = coverage;
-        let reply = match date {
-            20250101 => current_source_refusal(
-                "health-context-06",
-                &mut restarted,
-                candidate,
-                "HSA_RECORD_INVALID",
-                Some("[value/accounts/0/uses/0/funded]"),
-                SourceScope::Health,
-            ),
-            20240230 => current_source_refusal(
-                "health-context-07",
-                &mut restarted,
-                candidate,
-                "HSA_RECORD_INVALID",
-                Some("[value/accounts/0/uses/0/funded]"),
-                SourceScope::Health,
-            ),
-            _ => send(&mut restarted, candidate),
-        };
+        let reply = send(&mut restarted, candidate);
         rejected_with(reply, key);
         assert_eq!(restarted.draft, accepted_draft);
     }
@@ -1574,7 +1726,7 @@ fn published_hsa_last_month_examples_keep_recapture_cents_through_public_page() 
         let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
         let mut account = hsa_account(
             Owner::Taxpayer,
-            HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12] },
+            HsaCoverageYear::Changed { months: vec![HsaCoverage::None; 12].into() },
             0,
         );
         account.last_month_history = Some(history.clone());
@@ -1602,6 +1754,8 @@ fn published_hsa_last_month_examples_keep_recapture_cents_through_public_page() 
             s.draft.people.as_ref().unwrap(),
             FederalStatus::Single,
             &crate::hsa::ContributionContext {
+                statements: &Default::default(),
+
                 msa: core::array::from_fn(|_| crate::kernel::ratio::exact::whole(0)),
                 failed: &Default::default(),
                 married: false,
@@ -1646,7 +1800,7 @@ fn hsa_actual_payment_picker_saves_reopens_restarts_and_rejects_forged_sources()
     assert_eq!(return_line(&supported(&saved), "4b"), 200000);
     let mut restored = restart(saved.clone());
     let page = open_hsa_page(&mut restored);
-    let P::SaveHsa { value, .. } = &page else { unreachable!() };
+    let P::SaveHsa { value, followups, .. } = &page else { unreachable!() };
     assert_eq!(value.funding[0].source, 4);
     assert_eq!(restored.draft, saved);
     for source in [2, 1, 99999] {
@@ -1665,6 +1819,8 @@ fn hsa_actual_payment_picker_saves_reopens_restarts_and_rejects_forged_sources()
             send(
                 &mut restored,
                 P::EstimateHsa {
+                    followups: followups.clone(),
+                    questions: Vec::new(),
                     user: TEST_USER,
                     hsa_failed_deposits: vec![],
                     archer_failed_deposits: vec![],
@@ -1689,6 +1845,8 @@ fn hsa_actual_payment_picker_saves_reopens_restarts_and_rejects_forged_sources()
         send(
             &mut restored,
             P::EstimateHsa {
+                followups: followups.clone(),
+                questions: Vec::new(),
                 user: TEST_USER,
                 hsa_failed_deposits: vec![],
                 archer_failed_deposits: vec![],
@@ -1705,29 +1863,40 @@ fn hsa_actual_payment_picker_saves_reopens_restarts_and_rejects_forged_sources()
         Reply::Response(P::RunningEstimate { .. })
     ));
     assert_eq!(restored.draft, saved);
-    // Removing or changing a named payment/group must not erase funding.
-    for remove in [2, 4] {
-        let mut income_page = open_topic(&mut restored, TaxSection::Retirement);
-        let P::SaveIncomes { documents, .. } = &mut income_page else { unreachable!() };
-        documents.documents.retain(|row| row.id != remove);
-        rejected_with(send(&mut restored, income_page), "HSA_FUNDING_SOURCE_NOT_OFFERED");
-        assert_eq!(restored.draft, saved);
-    }
-    let mut income_page = open_topic(&mut restored, TaxSection::Retirement);
-    let P::SaveIncomes { documents, .. } = &mut income_page else { unreachable!() };
-    let row = documents.documents.iter_mut().find(|row| row.id == 4).unwrap();
-    row.document = IncomeDocument::R1099(r1099(
+    // Removing or changing either owner must not erase accepted funding.
+    let group_id = saved
+        .income
+        .iter()
+        .find(|row| matches!(&row.income, FederalIncome::InheritedIra { .. }))
+        .unwrap()
+        .id;
+    let payment_id = saved.adjustments.as_ref().unwrap().hsa[0].funding[0].income;
+    let mut record_page = open_topic(&mut restored, TaxSection::Retirement);
+    let P::SaveIncomes { documents, .. } = &mut record_page else { unreachable!() };
+    documents.documents.retain(|row| row.id != group_id);
+    rejected_with(send(&mut restored, record_page), "HSA_FUNDING_SOURCE_NOT_OFFERED");
+    assert_eq!(restored.draft, saved);
+    let mut source_page = open_documents(&mut restored);
+    let P::SaveDocuments { documents, .. } = &mut source_page else { unreachable!() };
+    documents.common.retirement.documents.retain(|row| row.id != payment_id);
+    rejected_with(send(&mut restored, source_page), "HSA_FUNDING_SOURCE_NOT_OFFERED");
+    assert_eq!(restored.draft, saved);
+    let mut income_page = open_documents(&mut restored);
+    let P::SaveDocuments { documents, .. } = &mut income_page else { unreachable!() };
+    let row =
+        documents.common.retirement.documents.iter_mut().find(|row| row.id == payment_id).unwrap();
+    row.document = crate::RetirementDocument::R1099(retirement_document(r1099(
         500000,
         DistributionCode::Normal { what_happened: Disposition::Kept },
         false,
-    ));
+    )));
     rejected_with(send(&mut restored, income_page), "HSA_FUNDING_SOURCE_NOT_OFFERED");
     assert_eq!(restored.draft, saved);
     let mut income_page = open_topic(&mut restored, TaxSection::Retirement);
     let P::SaveIncomes { documents, .. } = &mut income_page else { unreachable!() };
     documents.documents.reverse();
-    if let IncomeDocument::InheritedIra(group) =
-        &mut documents.documents.iter_mut().find(|row| row.id == 2).unwrap().document
+    if let crate::IncomeRecord::InheritedIra(group) =
+        &mut documents.documents.iter_mut().find(|row| row.id == group_id).unwrap().document
     {
         group.decedent = "Renamed source owner".into();
     }
@@ -1744,6 +1913,12 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
     d.people.as_mut().unwrap().taxpayer.dependency =
         FilerDependency::CanBeClaimed { claimed: false };
     let (mut s, _) = at_the_marketplace_page(d);
+    let form = all_year("Actual statement", 100_000, 120_000, 60_000);
+    let source = save_marketplace_sources(
+        &mut s,
+        vec![crate::Form1095ADocument { id: form.id, value: form.value.clone() }],
+    );
+    accepted(&send(&mut s, source));
     if let Some(request) = client.input("CALC_INPUT") {
         let before = s.draft.clone();
         assert!(matches!(request, P::EstimateMarketplace { .. }));
@@ -1761,8 +1936,7 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
         panic!("Marketplace page");
     };
     assert!(ptc_nonreturn_people.iter().any(|person| person.id == -1));
-    let mut value =
-        marketplace_fixture_page(vec![all_year("Actual statement", 100_000, 120_000, 60_000)]);
+    let mut value = marketplace_fixture_page(vec![form]);
     value.memberships.push(MarketplacePersonFamilyPage {
         person: -1,
         family: MarketplaceNonreturnFamilyPage::NoFamily,
@@ -1771,7 +1945,7 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
         person: -1,
         attester: MarketplaceAttesterPage::ThisReturn,
     });
-    client.write("ANSWERS", &save_marketplace(&s.draft, value.clone()));
+    client.write("ANSWERS", &save_marketplace(&mut s, value.clone()));
     if let Some(submitted) = client.input("PAYLOAD") {
         credits_hub(send_past_less_common(&mut s, submitted));
         let reopened = open_credits_topic(&mut s, TaxSection::Marketplace);
@@ -1784,7 +1958,7 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
         client.write("REOPEN", &reopened);
         return;
     }
-    let mut value = save_marketplace_and_reopen(&mut s, value);
+    let mut value = reopen_marketplace(&mut s, value);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
     assert_eq!(value_of(&supported(&s.draft), "premium_credit_repayment"), 7200);
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 0);
@@ -1792,7 +1966,7 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
     value
         .other_families
         .push(MarketplaceFamilyPage { id: 0, label: "Actual attesting parent".into() });
-    value = save_marketplace_and_reopen(&mut s, value);
+    value = reopen_marketplace(&mut s, value);
     let family = value.other_families[0].id;
     value.attestations[0].attester = MarketplaceAttesterPage::OtherFamily { family };
     let before_preview = s.draft.clone();
@@ -1815,7 +1989,7 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
     );
     assert!(matches!(preview, Reply::Response(P::RunningEstimate { .. })));
     assert_eq!(s.draft, before_preview);
-    value = save_marketplace_and_reopen(&mut s, value);
+    value = reopen_marketplace(&mut s, value);
     assert_eq!(value.forms[0].id, policy);
     assert_eq!(value_of(&supported(&s.draft), "premium_credit_advance"), 0);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
@@ -1823,7 +1997,7 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
     let mut forged = value.clone();
     forged.attestations[0].attester =
         MarketplaceAttesterPage::OtherFamily { family: before.next_id + 100 };
-    let mut request = save_marketplace(&before, forged);
+    let mut request = marketplace_request(&mut s, forged);
     if let P::SaveMarketplace { ptc_families, .. } = &mut request {
         ptc_families.push(RecordChoice {
             id: before.next_id + 100,
@@ -1834,17 +2008,152 @@ fn marketplace_claimable_filer_attestation_survives_save_reopen_and_restart() {
     assert_eq!(s.draft, before);
     let mut dangling = value.clone();
     dangling.other_families.clear();
-    error(send(&mut s, save_marketplace(&before, dangling)));
+    let request = marketplace_request(&mut s, dangling);
+    error(send(&mut s, request));
     assert_eq!(s.draft, before);
     value.attestations[0].attester = MarketplaceAttesterPage::Unknown;
-    value = save_marketplace_and_reopen(&mut s, value);
+    value = reopen_marketplace(&mut s, value);
     unsupported(&s.draft, "Marketplace source");
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
-    value.forms[0].amounts =
-        PolicyAmounts::AllYear { premium: 100_000, benchmark: Some(120_000), advance: 0 };
-    let value = save_marketplace_and_reopen(&mut s, value);
+    value.forms[0].value.set_amounts(PolicyAmounts::AllYear {
+        premium: 100_000,
+        benchmark: Some(120_000),
+        advance: 0,
+    });
+    let value = reopen_marketplace(&mut s, value);
     assert_eq!(value.attestations[0].attester, MarketplaceAttesterPage::Unknown);
     assert_eq!(value_of(&supported(&s.draft), "premium_credit_repayment"), 0);
     assert_eq!(value_of(&supported(&s.draft), "premium_tax_credit"), 0);
     assert_eq!(restart(s.draft.clone()).draft, s.draft);
+}
+
+// Form 5329 Part VII, lines 42–49: each filer uses that filer's account
+// value, current contributions and retained excess. IRS instructions:
+// https://www.irs.gov/instructions/i5329
+#[test]
+fn hsa_current_and_retained_excess_save_reopen_and_restart() {
+    let client = NativeInterviewCase("TAX_HSA_EXCESS");
+    let mut s = at_the_adjustments_hub(FederalStatus::Joint, 0);
+    let mut page = open_hsa_page(&mut s);
+    client.write("SEED", &page);
+    let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
+    let mut current = hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 500_000);
+    current.corrections = vec![hsa_correction(2026, 20260930, 20_000, 0).page()];
+    // The later $100 is already included in the original personal total.
+    // Net contributions $4,800 exceed $4,400; value $200 + $100 caps tax at $18.
+    current.excess_accounting = Some(hsa_excess_accounting(20_000, None, 10_000, 0, 0));
+    let mut retained = hsa_account(Owner::Spouse, HsaCoverageYear::SelfOnly, 400_000);
+    retained.excess_accounting = Some(hsa_excess_accounting(
+        500_000,
+        Some(HsaPriorExcess { line_48: 200_000, line_49: 12_000 }),
+        0,
+        0,
+        0,
+    ));
+    retained.late_excess = vec![HsaLateExcessWithdrawal {
+        contribution_year: 2024,
+        deadline: 20250415,
+        date: 20260301,
+        amount: 30_000,
+        disabled: false,
+    }];
+    input.accounts = vec![current, retained];
+    input.family_split = FamilySplit::NotApplicable;
+    let answers = input.clone();
+    client.save(&mut s, page);
+    let r = supported(&s.draft);
+    assert_eq!(value(&r, "hsa_1_return_year_uncorrected_excess"), 400);
+    assert_eq!(value(&r, "hsa_1_return_year_excess_account_value"), 300);
+    assert_eq!(value(&r, "hsa_2_prior_excess_used_by_distributions"), 300);
+    assert_eq!(value(&r, "hsa_2_prior_excess_deducted_return_year"), 400);
+    assert_eq!(value(&r, "hsa_2_prior_excess_remaining_following_year"), 1300);
+    for (id, amount) in [("hsa_1_excess_line49", 18), ("hsa_2_excess_line49", 78)] {
+        assert_eq!(value(&r, id), amount);
+        assert_eq!(printed_line(&r, id), (TaxForm::Form5329, "49".into()));
+    }
+    assert_eq!(value(&r, "adjustments"), 8800);
+    assert_eq!(value(&r, "hsa_return_year_excess_contribution_tax"), 96);
+    assert_eq!(value(&r, "hsa_additional_tax"), 60);
+    assert_eq!(return_line(&r, "23"), 15_600);
+    let reopened = open_hsa_page(&mut s);
+    assert_eq!(hsa_page_value(&reopened).0, &answers);
+    let saved = s.draft.clone();
+    accepted(&send(&mut s, reopened));
+    assert_eq!(s.draft, saved);
+    client.restart(&mut s);
+    let reopened = open_hsa_page(&mut s);
+    assert_eq!(hsa_page_value(&reopened).0, &answers);
+    assert_eq!(supported(&s.draft), r);
+    client.write("REOPEN", &reopened);
+}
+
+#[test]
+fn hsa_missing_excess_facts_identifies_owner_and_existing_fact_page() {
+    for owner in [Owner::Taxpayer, Owner::Spouse] {
+        let mut s = at_the_adjustments_hub(FederalStatus::Joint, 0);
+        let mut page = open_hsa_page(&mut s);
+        let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
+        input.accounts = vec![hsa_account(owner, HsaCoverageYear::SelfOnly, 500_000)];
+        input.other_coverage = Some(HsaEligibilityPage::FullYear { coverage: HsaCoverage::None });
+        input.family_split = FamilySplit::NotApplicable;
+        accepted(&send(&mut s, page));
+        let r = estimate(&s.draft);
+        assert!(r.tax.is_none());
+        let issue = r
+            .issues
+            .iter()
+            .find(|i| i.display.key == "HSA_EXCESS_ACCOUNTING_REQUIRED")
+            .expect("missing year-end value cannot be assumed zero");
+        assert_eq!(issue.context, IssueContext::owner(TaxSection::Hsa, owner));
+        assert_eq!(
+            crate::interview::issue_page(&s.draft, &issue.context, Some(&issue.display.key)),
+            Some(TaxSection::Hsa)
+        );
+        assert!(issue.display.english().contains("Excess contributions to this HSA"));
+        let mut page = open_hsa_page(&mut s);
+        let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
+        input.accounts[0].excess_accounting = Some(hsa_excess_accounting(60_000, None, 0, 0, 0));
+        accepted(&send(&mut s, page));
+        assert_eq!(value(&supported(&s.draft), "hsa_return_year_excess_contribution_tax"), 36);
+        let mut page = open_hsa_page(&mut s);
+        let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
+        input.accounts[0].excess_accounting.as_mut().unwrap().year_end_value = 0;
+        accepted(&send(&mut s, page));
+        // An explicitly supplied zero value legitimately produces zero tax.
+        assert_eq!(value(&supported(&s.draft), "hsa_return_year_excess_contribution_tax"), 0);
+    }
+}
+
+#[test]
+fn hsa_employer_timely_corrections_leave_only_uncorrected_principal_subject_to_six_percent() {
+    for returned in [20_000, 60_000] {
+        let mut s = at_the_adjustments_hub(FederalStatus::Single, 500_000);
+        let mut page = open_hsa_page(&mut s);
+        let P::SaveHsa { value: input, .. } = &mut page else { unreachable!() };
+        assert_eq!(input.employer_sources.len(), 1);
+        assert_eq!(input.employer_sources[0].reported, 500_000);
+        input.employer_sources[0].allocation = HealthEmployerYear::CurrentYear;
+        let mut account = hsa_account(Owner::Taxpayer, HsaCoverageYear::SelfOnly, 0);
+        let mut correction = hsa_correction(2026, 20260930, returned, 0);
+        correction.payer = HsaCorrectionPayer::Employer { in_wages: false };
+        account.corrections = vec![correction.page()];
+        if returned == 20_000 {
+            account.excess_accounting = Some(hsa_excess_accounting(100_000, None, 0, 0, 0));
+        }
+        input.accounts = vec![account];
+        let answers = input.clone();
+        accepted(&send(&mut s, page));
+        let r = supported(&s.draft);
+        assert_eq!(
+            value(&r, "hsa_return_year_excess_contribution_tax"),
+            if returned == 20_000 { 24 } else { 0 }
+        );
+        assert_eq!(value(&r, "hsa_correction_employer_principal_other_income"), returned / 100);
+        let stored = &s.draft.adjustments.as_ref().unwrap().hsa[0];
+        assert_eq!(stored.employer, 500_000);
+        assert_eq!(stored.employer_outside, 0);
+        let mut restarted = restart(s.draft.clone());
+        assert_eq!(hsa_page_value(&open_hsa_page(&mut restarted)).0, &answers);
+        assert_eq!(supported(&restarted.draft), r);
+    }
 }

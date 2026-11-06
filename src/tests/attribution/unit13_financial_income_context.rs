@@ -1,6 +1,101 @@
 use super::*;
 
 #[test]
+fn unit13_financial_income_context_joint_share_drives_native_income_withholding_and_preferences() {
+    use crate::tests::cross::interview::accepted;
+    use crate::tests::support::builders::native_income::native_int1099;
+    use crate::tests::support::builders::{
+        fixture_document_names, information_return_answers_and_owners, named_document,
+        set_fixture_recipient, set_joint_financial_share,
+    };
+    use crate::tests::support::client::income_pages::save_documents;
+    let draft = injured_return((60_000, 5_000), (20_000, 500), 0, allocation());
+    // Printed for both spouses: the papers name them.
+    let joint = fixture_document_names(&draft, -3).unwrap().recipient;
+    let mut papers = vec![
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Int1099(interest_document(native_int1099(
+                "Synthetic joint bank".into(),
+                100_000,
+            ))),
+        },
+        IncomeSource::InterestDividend {
+            value: crate::InterestDividendDocument::Div1099(dividend_document(dividend_source(
+                FederalDividend {
+                    withholding: 10_001,
+                    ..native_dividend(200_001, 100_001, 300_001)
+                },
+            ))),
+        },
+    ];
+    for source in &mut papers {
+        set_fixture_recipient(source, &joint);
+    }
+    let papers: Vec<_> =
+        papers.into_iter().map(|source| named_document(&draft, -3, 0, source)).collect();
+    let mut session = Interview::new(TEST_USER, draft);
+    let request = save_documents(&mut session, papers.clone());
+    accepted(&send(&mut session, request));
+    let ids = session
+        .draft
+        .income
+        .iter()
+        .filter(|entry| {
+            matches!(entry.income, FederalIncome::Interest { .. } | FederalIncome::Dividend { .. })
+        })
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>();
+    let mut request =
+        information_return_answers_and_owners(&mut session, &papers, TaxSection::InterestDividends)
+            .unwrap();
+    set_joint_financial_share(&mut session, &mut request, &ids, 40);
+    accepted(&send(&mut session, request));
+    // Instructions for Form 8379, lines 13b and 19: allocate joint income
+    // and its withholding to the spouses who own it. Pub. 550 preserves the
+    // qualified-dividend and capital-gain character of those same amounts.
+    for (injured, income, withheld, taxes) in [
+        (Owner::Taxpayer, [2_400, 3_600], [5_040, 560], [5_119, 513]),
+        (Owner::Spouse, [3_600, 2_400], [560, 5_040], [513, 5_119]),
+    ] {
+        session.draft.injured_spouse.as_mut().unwrap().injured = injured;
+        let result = supported(&session.draft);
+        for (suffix, expected) in [("a", 6_000), ("b", income[0]), ("c", income[1])] {
+            assert_eq!(value(&result, &alloc::format!("form_8379_line_13b_{suffix}")), expected);
+        }
+        for (suffix, expected) in [("a", 5_600), ("b", withheld[0]), ("c", withheld[1])] {
+            assert_eq!(value(&result, &alloc::format!("form_8379_line_19_{suffix}")), expected);
+        }
+        // MFS taxable income is 46,300/7,500. Preferred income 1,600/2,400
+        // leaves ordinary income 44,700/5,100: Tax Table taxes 5,119/513.
+        let explanation = &result
+            .lines
+            .iter()
+            .find(|row| row.id == "form_8379_injured_share_of_tax")
+            .unwrap()
+            .explanation;
+        assert!(matches!(
+            &explanation.args[..],
+            [_, MessageArg::Currency { minor_units: first, .. }, MessageArg::Currency { minor_units: second, .. }]
+                if [*first, *second] == taxes
+        ));
+        assert_eq!(estimate(&restart(session.draft.clone()).draft), result);
+    }
+    // A normal joint return reports the complete source once: 80,000 wages
+    // + 1,000 interest + 2,000 dividends + 3,000 capital gain = 86,000 AGI.
+    session.draft.injured_spouse = None;
+    session.draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
+    let result = supported(&session.draft);
+    assert_eq!(value(&result, "agi"), 86_000);
+    for (line, cents) in
+        [("2b", 100_000), ("3b", 200_000), ("3a", 100_000), ("7a", 300_000), ("25b", 10_000)]
+    {
+        assert_eq!(return_line(&result, line), cents);
+    }
+    assert_eq!(result.tax, Some(548_300));
+    assert_eq!(result.refund, Some(11_700));
+}
+
+#[test]
 fn unit13_financial_income_context_known_medicaid_class_tie_preserves_changed_filer_credit() {
     for (filer, allowed) in [(CarryFiler::You, 4884), (CarryFiler::Spouse, 479)] {
         for claim in [None, Some(Owner::Taxpayer), Some(Owner::Spouse)] {
@@ -10,10 +105,10 @@ fn unit13_financial_income_context_known_medicaid_class_tie_preserves_changed_fi
                     draft.injured_spouse.as_mut().unwrap().injured = injured;
                 } else {
                     draft.injured_spouse = None;
-                    draft.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+                    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
                 }
                 let mut interest = income(savings_income(1000, 0));
-                interest.owner = Owner::Spouse;
+                interest.owner = crate::DocumentOwner::Spouses;
                 add(&mut draft, interest);
                 changed_filer_carry(&mut draft, filer);
                 let baseline = supported(&draft);
@@ -24,7 +119,7 @@ fn unit13_financial_income_context_known_medicaid_class_tie_preserves_changed_fi
                 assert_eq!(baseline.tax, Some((5363 - allowed) * 100));
 
                 let FederalIncome::Wage { data } = &mut draft.income[0].income else { panic!() };
-                data.other_box12.push(W2CodeAmount { code: W2Code::II, amount: 50 });
+                edit_wage(data).other_box12.push(W2CodeAmount { code: W2Code::II, amount: 50 });
                 add(&mut draft, source_medicaid(Owner::Taxpayer, 50));
                 if reversed {
                     draft.income.reverse();
@@ -62,14 +157,14 @@ fn unit13_financial_income_context_four_cells_keep_whole_native_owner_rounding()
     let mut base = injured_return((59_999, 5_000), (20_000, 500), 0, allocation());
     for entry in &mut base.income {
         let FederalIncome::Wage { data } = &mut entry.income else { panic!() };
-        data.inmate_pay = 50;
+        edit_wage(data).inmate_pay = 50;
     }
     let mut draft = base.clone();
     for owner in [Owner::Taxpayer, Owner::Spouse] {
         let mut entry = income(FederalIncome::OtherIncome {
             data: OtherIncomeItem { amount: 50, withholding: 0, kind: OtherIncomeKind::InmatePay },
         });
-        entry.owner = owner;
+        entry.owner = crate::DocumentOwner::from(owner);
         add(&mut draft, entry);
     }
     let result = supported(&draft);
@@ -84,7 +179,7 @@ fn unit13_financial_income_context_four_cells_keep_whole_native_owner_rounding()
             .iter()
             .map(|entry| NativeIncomeComponent {
                 id: entry.id,
-                owner: usize::from(entry.owner == Owner::Spouse),
+                owner: usize::from(entry.owner == crate::DocumentOwner::Spouses),
                 category: IncomeCategory::InmatePay,
                 source_cents: Some(exact::whole(50)),
                 rest_cents: Some(exact::whole(
@@ -119,7 +214,10 @@ fn unit13_financial_income_context_four_cells_keep_whole_native_owner_rounding()
         claim.injured = injured;
         let totals = actual_liability_totals(&result);
         let projection = crate::injured_spouse::owners::project_sources(
-            &draft,
+            crate::related_forms::RelatedFormContext::original(
+                &draft,
+                &crate::related_forms::effective_claimants(&draft),
+            ),
             &result,
             Some(&claim),
             &facts,
@@ -145,7 +243,10 @@ fn unit13_financial_income_context_unknown_capital_is_not_repaired_by_class_flag
     facts.income_categories.source_class_unavailable = true;
     let totals = actual_liability_totals(&result);
     let projection = crate::injured_spouse::owners::project_sources(
-        &draft,
+        crate::related_forms::RelatedFormContext::original(
+            &draft,
+            &crate::related_forms::effective_claimants(&draft),
+        ),
         &result,
         None,
         &facts,
@@ -162,12 +263,18 @@ fn unit13_financial_income_context_half_cent_2106_uses_native_line1a_class_resid
             for reversed in [false, true] {
                 let mut draft = injured_return((60_000, 5_000), (20_000, 500), 0, allocation());
                 draft.injured_spouse.as_mut().unwrap().injured = injured;
-                let entry = draft.income.iter_mut().find(|entry| entry.owner == owner).unwrap();
+                let entry = draft
+                    .income
+                    .iter_mut()
+                    .find(|entry| entry.owner == crate::DocumentOwner::from(owner))
+                    .unwrap();
                 let FederalIncome::Wage { data } = &mut entry.income else { panic!() };
-                data.wages += 50;
+                edit_wage(data).wages += 50;
                 let employer = entry.id;
                 draft.adjustments.as_mut().unwrap().employee_expenses =
                     vec![EmployeeExpenseClaim {
+                        improvement_buildings: Vec::new(),
+                        equipment_assets: vec![],
                         dot_hours_of_service: false,
                         leased_vehicles: vec![],
                         owner,
@@ -230,7 +337,7 @@ fn unit13_financial_income_context_four_cells_changed_filer_claim_diagnostic() {
                 let mut draft = injured_return((59_999, 5_000), (20_000, 500), 0, allocation());
                 for entry in &mut draft.income {
                     let FederalIncome::Wage { data } = &mut entry.income else { panic!() };
-                    data.inmate_pay = 50;
+                    edit_wage(data).inmate_pay = 50;
                 }
                 for owner in [Owner::Taxpayer, Owner::Spouse] {
                     let mut entry = income(FederalIncome::OtherIncome {
@@ -240,14 +347,14 @@ fn unit13_financial_income_context_four_cells_changed_filer_claim_diagnostic() {
                             kind: OtherIncomeKind::InmatePay,
                         },
                     });
-                    entry.owner = owner;
+                    entry.owner = crate::DocumentOwner::from(owner);
                     add(&mut draft, entry);
                 }
                 if let Some(injured) = claim {
                     draft.injured_spouse.as_mut().unwrap().injured = injured;
                 } else {
                     draft.injured_spouse = None;
-                    draft.checklist.whole_return &= !WholeReturnTopics::INJURED_SPOUSE.0;
+                    draft.set_situations(SpouseSituations::INJURED_SPOUSE.0, false);
                 }
                 let ordinary = supported(&draft);
                 assert_eq!(value(&ordinary, "agi"), 80_000);

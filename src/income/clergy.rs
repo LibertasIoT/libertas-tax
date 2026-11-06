@@ -1,4 +1,4 @@
-// Coverage: Pub. 517 clergy and religious workers — Unit41 R6–R14.
+// Coverage: Pub. 517 clergy and religious workers.
 //   ClergyRecord owns minister/religious-order/practitioner status, approved
 //   Form4361 and Form4029; MinisterHousing owns actual parsonage/allowance facts.
 //   W2Coverage separates ordinary, church employee and ministerial wages;
@@ -8,8 +8,7 @@
 //   expense amounts separately feed SE. Religious exemptions retain ordinary
 //   income and remove only their statutory SE/credit source portions. Totalization
 //   removes SE tax; retained EIC/ACTC treatment follows the approved statutory
-//   reading of1401(c),1402(a),32(c)(2),24(d), with the broad IRS worksheet wording
-//   explicitly qualified in the private source audit. Form2441 excludes exempt
+//   reading of1401(c),1402(a),32(c)(2),24(d). Form2441 excludes exempt
 //   ministerial SE/housing and retains ordinary taxable wages.
 //   Tests: tests/income/abroad_clergy.rs F1/F4/F5 and independent exemption, credit,
 //   notary/totalization overlap, page/save/restart and owner-isolation controls;
@@ -17,9 +16,10 @@
 //   Outside this record: retired-minister pension housing designations and
 //   refunds of earlier SE tax. Vow-of-poverty order income belongs to the order
 //   and is not entered; services outside the order use their ordinary source.
-use crate::kernel::lines::{LineValue, emit, row};
-use crate::kernel::phase;
+pub use crate::clergy_source::{ClergyClaim, ClergyRole, MinisterHousing};
+use crate::kernel::lines::{LineValue, row};
 use crate::kernel::ratio::{dollars, fraction};
+use crate::line_emission::emit;
 use crate::{BusinessActivity, FederalDraft, FederalIncome, FederalResult, Owner};
 use alloc::{collections::BTreeMap, format};
 use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
@@ -29,172 +29,6 @@ use libertas_macros::{LibertasAvroDecode, LibertasAvroEncode, LibertasExport};
 pub struct ClergyRecord {
     /// Your status
     pub role: ClergyRole,
-}
-
-/// Status for self-employment tax
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum ClergyRole {
-    /// Minister of a church (ordained, commissioned or licensed), including a cantor or Christian Science reader
-    /// Your pay for ministerial services, including as the church's employee, is self-employment income (Schedule SE line 2) unless your Form 4361 exemption is approved.
-    Minister {
-        /// Housing the church provides or designates
-        #[libertas_default(None)]
-        housing: MinisterHousing,
-        /// Your Form 4361 exemption from self-employment tax is approved
-        /// The IRS returned your Form 4361 marked approved; it is irrevocable and covers only ministerial earnings. An application still pending or denied: No (the tax is due).
-        form_4361: bool,
-        /// Unreimbursed expenses of your ministerial work as a church employee
-        /// Not deductible for income tax; subtracted from your self-employment earnings. Leave zero if none or if your Form 4361 is approved.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        employee_expenses: i64,
-    },
-    /// Member of a religious order who has not taken a vow of poverty
-    ReligiousOrderMember {
-        /// Your Form 4361 exemption from self-employment tax is approved
-        form_4361: bool,
-        /// Unreimbursed expenses of your work for the order as its employee
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        employee_expenses: i64,
-    },
-    /// Christian Science practitioner
-    ChristianSciencePractitioner {
-        /// Your Form 4361 exemption from self-employment tax is approved
-        form_4361: bool,
-        /// Unreimbursed employee expenses of your practice
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        employee_expenses: i64,
-    },
-    /// Member of a recognized religious sect with an approved Form 4029
-    /// No self-employment tax on any of your self-employment income. Wages are free of Social Security and Medicare tax only when the employer also holds an approved Form 4029 (its W-2 shows "Form 4029" in box 14 and no boxes 3 to 6).
-    ReligiousSect,
-}
-
-/// Housing from the church
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub enum MinisterHousing {
-    /// None
-    None,
-    /// A parsonage the church provides
-    Parsonage {
-        /// Fair rental value of the parsonage for 2026, furnished
-        /// What it would cost to rent a comparable furnished home in a similar location. Excluded from income; added to your self-employment earnings.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        fair_rental_value: i64,
-        /// Allowance designated for utilities
-        /// The amount the church designated in advance for utility costs; W-2 box 1 leaves it out. Zero if none.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        utility_allowance: i64,
-        /// Utilities you actually paid
-        /// Any allowance above this is taxable (Form 1040 line 1h "Excess allowance").
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        #[libertas_default(0)]
-        utilities_paid: i64,
-    },
-    /// A housing or rental allowance the church designated
-    Allowance {
-        /// Amount officially designated in advance as a housing or rental allowance for 2026, including any utility part
-        /// From the church's resolution, budget or your contract; W-2 box 1 leaves it out.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        designated: i64,
-        /// Amount you used in 2026 to rent or provide your home, including utilities
-        /// Rent or mortgage payments, repairs, furnishings, utilities and similar costs of the home.
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        spent: i64,
-        /// Fair rental value of the home for 2026, furnished, plus the cost of utilities
-        #[libertas_money("USD", 2)]
-        #[libertas_number(min = 0)]
-        fair_rental_value: i64,
-    },
-}
-
-/// Clergy record for one person on this return
-#[derive(Clone, Debug, PartialEq, Eq, LibertasAvroEncode, LibertasAvroDecode, LibertasExport)]
-pub struct ClergyClaim {
-    /// Person whose ministerial services or approved religious exemption this records
-    pub owner: Owner,
-    /// Ministerial status and its applicable housing and exemption facts
-    pub role: ClergyRole,
-}
-
-impl ClergyRole {
-    fn housing_amounts(&self) -> [i64; 3] {
-        match self {
-            Self::Minister { housing, .. } => housing.amounts(),
-            _ => [0; 3],
-        }
-    }
-
-    pub(crate) fn valid(&self) -> bool {
-        let amount = |v: i64| (0..=100000000000).contains(&v);
-        amount(self.employee_expenses())
-            && match self {
-                Self::Minister {
-                    housing:
-                        MinisterHousing::Parsonage {
-                            fair_rental_value,
-                            utility_allowance,
-                            utilities_paid,
-                        },
-                    ..
-                } => [*fair_rental_value, *utility_allowance, *utilities_paid]
-                    .into_iter()
-                    .all(amount),
-                Self::Minister {
-                    housing: MinisterHousing::Allowance { designated, spent, fair_rental_value },
-                    ..
-                } => [*designated, *spent, *fair_rental_value].into_iter().all(amount),
-                _ => true,
-            }
-    }
-    pub(crate) fn exempt(&self) -> bool {
-        match self {
-            Self::Minister { form_4361, .. }
-            | Self::ReligiousOrderMember { form_4361, .. }
-            | Self::ChristianSciencePractitioner { form_4361, .. } => *form_4361,
-            Self::ReligiousSect => false,
-        }
-    }
-    fn employee_expenses(&self) -> i64 {
-        match self {
-            Self::Minister { employee_expenses, .. }
-            | Self::ReligiousOrderMember { employee_expenses, .. }
-            | Self::ChristianSciencePractitioner { employee_expenses, .. } => *employee_expenses,
-            Self::ReligiousSect => 0,
-        }
-    }
-}
-impl MinisterHousing {
-    // All source and intermediate amounts are cents. Each existing downstream
-    // form applies its own whole-dollar boundary, never an extra rounding here.
-    fn amounts(&self) -> [i64; 3] {
-        match *self {
-            Self::None => [0; 3],
-            Self::Parsonage { fair_rental_value, utility_allowance, utilities_paid } => {
-                let utilities = phase::cap(utility_allowance, [utilities_paid]);
-                [
-                    fair_rental_value + utilities,
-                    utility_allowance - utilities,
-                    fair_rental_value + utility_allowance,
-                ]
-            }
-            Self::Allowance { designated, spent, fair_rental_value } => {
-                let excluded = phase::cap(designated, [spent, fair_rental_value]);
-                [excluded, designated - excluded, designated]
-            }
-        }
-    }
 }
 
 #[derive(Default)]
@@ -218,17 +52,28 @@ pub(crate) fn business(data: &crate::FederalBusiness) -> bool {
 
 #[cfg(test)]
 pub(crate) fn calculate(d: &FederalDraft, owner: Owner) -> ClergyResult {
-    match calculate_with_section179(d, owner, None, None) {
+    let source_claims = crate::related_forms::effective_claimants(d);
+    calculate_with_claims(d, owner, &source_claims)
+}
+
+#[cfg(test)]
+pub(crate) fn calculate_with_claims(
+    d: &FederalDraft,
+    owner: Owner,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> ClergyResult {
+    match calculate_with_section179_with_claims(d, owner, None, None, source_claims) {
         Ok(value) => value,
         Err(_) => unreachable!("legacy clergy calculation has no selected allocation"),
     }
 }
 
-pub(crate) fn calculate_with_section179(
+pub(crate) fn calculate_with_section179_with_claims(
     d: &FederalDraft,
     owner: Owner,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<ClergyResult, crate::Section179PreparedIssue> {
     let role = d
         .screening
@@ -247,10 +92,12 @@ pub(crate) fn calculate_with_section179(
     out.wages = d
         .income
         .iter()
-        .filter(|e| e.owner == owner)
+        .filter(|e| e.owner == crate::DocumentOwner::from(owner))
         .filter_map(|e| match &e.income {
-            FederalIncome::Wage { data } if data.coverage == crate::W2Coverage::Ministerial => {
-                Some(data.wages)
+            FederalIncome::Wage { data }
+                if crate::FederalWage::from(data).coverage == crate::W2Coverage::Ministerial =>
+            {
+                Some(crate::FederalWage::from(data).wages)
             }
             _ => None,
         })
@@ -258,7 +105,7 @@ pub(crate) fn calculate_with_section179(
     let businesses: alloc::vec::Vec<_> = d
         .income
         .iter()
-        .filter(|e| e.owner == owner)
+        .filter(|e| e.owner == crate::DocumentOwner::from(owner))
         .filter_map(|e| match &e.income {
             FederalIncome::Business { data } if business(data) => Some((e.id, data)),
             _ => None,
@@ -269,9 +116,16 @@ pub(crate) fn calculate_with_section179(
         + housing[0]
         + housing[1];
     for (id, data) in businesses {
-        let expenses = crate::section179_return::expenses(d, id, data, selected, home)?;
+        let expenses = crate::section179_return::expenses_with_claims(
+            d,
+            id,
+            data,
+            selected,
+            home,
+            source_claims,
+        )?;
         out.business_profit += data.receipts() - expenses
-            + selected.map_or(0, |allocation| allocation.ordinary_risk_adjustment(id));
+            + selected.map_or(0, |allocation| allocation.ordinary_limit_adjustment(id));
         let disallowed = if out.tax_free_total > 0 {
             fraction(expenses, housing[0], out.tax_free_total)
         } else {
@@ -297,67 +151,131 @@ impl ClergyResult {
 }
 // Only the new source exclusions; CRP/statutory wages retain their existing owners.
 
-pub(crate) fn business_se_exclusion_with_section179(
+// Distinct native source characters: an income exclusion from SE and an
+// expense correction for Chapter1 are not interchangeable for1411. A whole
+// exempt trade retains both parts of its Chapter1 net outside SE.
+#[derive(Default)]
+pub(crate) struct BusinessSourceAmounts {
+    pub excluded_cents: i64,
+    pub expense_correction_cents: i64,
+    pub whole_excluded: bool,
+}
+
+pub(crate) fn business_se_exclusion_with_section179_with_claims(
     d: &FederalDraft,
     id: i64,
     data: &crate::FederalBusiness,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
+    Ok(business_source_with_section179_with_claims(d, id, data, selected, home, source_claims)?
+        .excluded_cents)
+}
+
+pub(crate) fn business_source_with_section179_with_claims(
+    d: &FederalDraft,
+    id: i64,
+    data: &crate::FederalBusiness,
+    selected: Option<&crate::Section179PreparedAllocation>,
+    home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
+) -> Result<BusinessSourceAmounts, crate::Section179PreparedIssue> {
     let Some(entry) = d.income.iter().find(|e| e.id == id) else {
         return match selected {
             Some(_) => Err(crate::Section179PreparedIssue::UnknownSource(id)),
-            None => Ok(0),
+            None => Ok(BusinessSourceAmounts::default()),
         };
     };
     if let Some(allocation) = selected {
         // Admit the actual direct source through its canonical selected owner.
         allocation.allowed(id)?;
     }
-    let facts = calculate_with_section179(d, entry.owner, selected, home)?;
+    let facts = calculate_with_section179_with_claims(
+        d,
+        entry.owner.owned(),
+        selected,
+        home,
+        source_claims,
+    )?;
     let profit = data.earned_receipts()
-        + crate::federal_rules::farm_routed_income(
+        + crate::federal_rules::farm_routed_income_with_claims(
             d,
-            usize::from(entry.owner == Owner::Spouse),
+            usize::from(entry.owner == crate::DocumentOwner::Spouses),
             id,
+            source_claims,
         )?
-        - crate::section179_return::expenses(d, id, data, selected, home)?
-        + selected.map_or(0, |allocation| allocation.ordinary_risk_adjustment(id));
-    Ok(
-        if facts.sect
-            || (facts.exempt && business(data))
-            || matches!(
-                data.source,
-                crate::BusinessSource::ForeignServices { totalization_exempt: true, .. }
-            )
-        {
-            profit
-        } else {
-            data.notary_profit
-        },
-    )
+        - crate::section179_return::expenses_with_claims(
+            d,
+            id,
+            data,
+            selected,
+            home,
+            source_claims,
+        )?
+        + selected.map_or(0, |allocation| allocation.ordinary_limit_adjustment(id));
+    let whole_excluded = facts.sect
+        || (facts.exempt && business(data))
+        || matches!(
+            data.source,
+            crate::BusinessSource::ForeignServices { totalization_exempt: true, .. }
+        );
+    Ok(BusinessSourceAmounts {
+        excluded_cents: if whole_excluded { profit } else { data.notary_profit },
+        expense_correction_cents: facts.nondeductible_by_business.get(&id).copied().unwrap_or(0),
+        whole_excluded,
+    })
 }
 
-pub(crate) fn earned_adjustments_with_section179(
+pub(crate) fn earned_adjustments_with_section179_with_claims(
     d: &FederalDraft,
     owner: Owner,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<(i64, i64), crate::Section179PreparedIssue> {
     let mut compensation = 0;
     let mut totalization = 0;
-    for e in d.income.iter().filter(|e| e.owner == owner) {
+    for e in d.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(owner)) {
         if let FederalIncome::Business { data } = &e.income {
-            let excluded = business_se_exclusion_with_section179(d, e.id, data, selected, home)?;
-            compensation += excluded + nondeductible_with_section179(d, e.id, selected, home)?;
+            let excluded = business_se_exclusion_with_section179_with_claims(
+                d,
+                e.id,
+                data,
+                selected,
+                home,
+                source_claims,
+            )?;
+            compensation += excluded
+                + nondeductible_with_section179_with_claims(
+                    d,
+                    e.id,
+                    selected,
+                    home,
+                    source_claims,
+                )?;
             if matches!(
                 data.source,
                 crate::BusinessSource::ForeignServices { totalization_exempt: true, .. }
             ) {
                 // Totalization cannot restore a notary or approved religious
                 // service exemption into a credit's earned-income base.
-                if !(calculate_with_section179(d, owner, selected, home)?.sect
-                    || calculate_with_section179(d, owner, selected, home)?.exempt
+                if !(calculate_with_section179_with_claims(
+                    d,
+                    owner,
+                    selected,
+                    home,
+                    source_claims,
+                )?
+                .sect
+                    || calculate_with_section179_with_claims(
+                        d,
+                        owner,
+                        selected,
+                        home,
+                        source_claims,
+                    )?
+                    .exempt
                         && business(data))
                 {
                     totalization += excluded - data.notary_profit;
@@ -386,11 +304,12 @@ pub(crate) fn before179_nondeductible(
 // The single tax-free expense-allocation owner; callers keep their actual tax,
 // SE, QBI or health responsibility and never substitute a second ratio.
 
-pub(crate) fn nondeductible_with_section179(
+pub(crate) fn nondeductible_with_section179_with_claims(
     d: &FederalDraft,
     id: i64,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<i64, crate::Section179PreparedIssue> {
     let Some(entry) = d.income.iter().find(|e| e.id == id) else {
         return match selected {
@@ -402,11 +321,17 @@ pub(crate) fn nondeductible_with_section179(
         // Admit the actual direct source through its canonical selected owner.
         allocation.allowed(id)?;
     }
-    Ok(calculate_with_section179(d, entry.owner, selected, home)?
-        .nondeductible_by_business
-        .get(&id)
-        .copied()
-        .unwrap_or(0))
+    Ok(calculate_with_section179_with_claims(
+        d,
+        entry.owner.owned(),
+        selected,
+        home,
+        source_claims,
+    )?
+    .nondeductible_by_business
+    .get(&id)
+    .copied()
+    .unwrap_or(0))
 }
 
 pub(crate) fn lines(r: &mut FederalResult, owner: Owner, facts: &ClergyResult) {
@@ -504,16 +429,17 @@ impl SeExemption {
     }
 }
 
-pub(crate) fn se_exemption_with_section179(
+pub(crate) fn se_exemption_with_section179_with_claims(
     d: &FederalDraft,
     owner: Owner,
     net: i64,
     selected: Option<&crate::Section179PreparedAllocation>,
     home: Option<&crate::home_office::HomeContext>,
+    source_claims: &alloc::collections::BTreeMap<i64, i64>,
 ) -> Result<SeExemption, crate::Section179PreparedIssue> {
-    let clergy = calculate_with_section179(d, owner, selected, home)?;
+    let clergy = calculate_with_section179_with_claims(d, owner, selected, home, source_claims)?;
     let mut out = SeExemption::default();
-    for e in d.income.iter().filter(|e| e.owner == owner) {
+    for e in d.income.iter().filter(|e| e.owner == crate::DocumentOwner::from(owner)) {
         if let FederalIncome::Business { data } = &e.income {
             out.notary_profit += data.notary_profit;
             out.totalization |= matches!(

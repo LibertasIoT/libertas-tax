@@ -178,8 +178,11 @@ fn unit13_ltc_cent_closed_annual_zero_needs_no_owner_choice() {
                         };
                     }
                     FederalIncome::LtcBenefits { data } => {
-                        data.benefits =
-                            if entry.owner == Owner::Taxpayer { 21_525 } else { 21_524 };
+                        data.form.benefits = Some(if entry.owner == crate::DocumentOwner::Yours {
+                            21_525
+                        } else {
+                            21_524
+                        });
                     }
                     _ => {}
                 }

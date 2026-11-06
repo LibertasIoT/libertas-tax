@@ -1,12 +1,14 @@
 use crate::tests::support::client::write_native_draft;
-// Independent approved Unit41 map fixtures: Pub517, ScheduleSE and Form8801.
+// Independent fixtures: Pub517, ScheduleSE and Form8801.
 use super::*;
+use crate::tests::support::client::income_pages::open_documents;
 use alloc::format;
 
 fn minister() -> FederalDraft {
     let mut d = empty_return(FederalStatus::Single);
     let mut pay = wage(1, Owner::Taxpayer, 5_950_000, 600_000);
     if let FederalIncome::Wage { data } = &mut pay.income {
+        let mut data = edit_wage(data);
         data.coverage = W2Coverage::Ministerial;
         data.social_wages = 0;
         data.social_tax = 0;
@@ -145,22 +147,30 @@ fn unit41_wages_clergy_record_roundtrips_and_enforces_owner_uniqueness() {
     let Reply::Edit(mut page) = from_review(&mut session, TaxSection::Wages) else {
         panic!("Wages editor");
     };
-    let P::SaveIncomes { documents, .. } = &mut page else {
+    let P::SaveWagesAnswers { records, .. } = &mut page else {
         panic!("Wages save");
     };
-    let record =
-        document(0, IncomeDocument::Clergy(ClergyRecord { role: ClergyRole::ReligiousSect }));
-    documents.documents = vec![record.clone()];
+    let record = document(
+        0,
+        IncomeSource::Record {
+            value: crate::IncomeRecord::Clergy(ClergyRecord { role: ClergyRole::ReligiousSect }),
+        },
+    );
+    records.documents = vec![
+        crate::IncomeRecordItem::from_income(record.clone())
+            .and_then(crate::WagesRecordItem::from_income)
+            .unwrap(),
+    ];
     accepted(&send(&mut session, page));
     let saved = session.draft.clone();
     let Reply::Edit(page) = from_review(&mut session, TaxSection::Wages) else {
         panic!("Wages reopen");
     };
-    let P::SaveIncomes { documents, .. } = &page else {
+    let P::SaveWagesAnswers { records, .. } = &page else {
         panic!("Wages reopen save");
     };
-    assert_eq!(documents.documents.len(), 1);
-    assert_eq!(documents.documents[0].document, record.document);
+    assert_eq!(records.documents.len(), 1);
+    assert_eq!(records.documents[0].clone().into_income().into_income().document, record.document);
     accepted(&send(&mut session, page));
     assert_eq!(
         session.draft.screening.as_ref().unwrap().clergy,
@@ -169,10 +179,14 @@ fn unit41_wages_clergy_record_roundtrips_and_enforces_owner_uniqueness() {
     let Reply::Edit(mut page) = from_review(&mut session, TaxSection::Wages) else {
         panic!("Wages reopen");
     };
-    let P::SaveIncomes { documents, .. } = &mut page else {
+    let P::SaveWagesAnswers { records, .. } = &mut page else {
         panic!("Wages save");
     };
-    documents.documents.push(record);
+    records.documents.push(
+        crate::IncomeRecordItem::from_income(record)
+            .and_then(crate::WagesRecordItem::from_income)
+            .unwrap(),
+    );
     let before = session.draft.clone();
     rejected_with(send(&mut session, page), "CLERGY_TWICE");
     assert_eq!(session.draft, before);
@@ -312,7 +326,7 @@ fn unit41_minister_sep_uses_taxable_trade_profit_and_only_trade_half_se() {
     let FederalIncome::Business { data } = &mut d.income[1].income else {
         panic!("ministerial fees");
     };
-    data.retirement = BusinessRetirement::Sep { contribution: 32_400, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 32_400, rate: 25.0 };
     // Pub560 starts with ScheduleC line31:1,600+133 housing-expense addback.
     // Only this business's113 half-SE deduction reduces its1,620 capacity;
     // the25% plan rate becomes20%, giving an independent324 contribution.
@@ -326,9 +340,7 @@ fn unit41_minister_sep_uses_taxable_trade_profit_and_only_trade_half_se() {
 fn unit41_removing_spouse_prunes_both_personal_records_through_normal_setup() {
     use crate::tests::cross::interview::{accepted, save_setup};
     let mut d = empty_return(FederalStatus::Joint);
-    d.checklist = crate::tests::cross::interview::income_ticks(
-        IncomeTopics::WAGES.0 | IncomeTopics::SELF_EMPLOYMENT.0,
-    );
+    d.checklist = crate::tests::cross::interview::activities(ActivityTopics::BUSINESS.0);
     d.screening.as_mut().unwrap().clergy = vec![
         ClergyClaim { owner: Owner::Taxpayer, role: ClergyRole::ReligiousSect },
         ClergyClaim { owner: Owner::Spouse, role: ClergyRole::ReligiousSect },
@@ -348,21 +360,21 @@ fn unit41_removing_spouse_prunes_both_personal_records_through_normal_setup() {
 }
 
 #[test]
-fn unit41_unticking_wages_and_self_employment_clears_supporting_records_normally() {
-    use crate::tests::cross::interview::{accepted, from_review, income_ticks, tick};
+fn unit41_removing_a_business_clears_its_optional_method_and_keeps_clergy_records() {
+    use crate::tests::cross::interview::{accepted, activities, save_businesses};
     let mut d = empty_return(FederalStatus::Single);
-    d.checklist = income_ticks(IncomeTopics::WAGES.0 | IncomeTopics::SELF_EMPLOYMENT.0);
+    d.checklist = activities(ActivityTopics::BUSINESS.0);
+    add(&mut d, income(cash_business(0)));
     d.screening.as_mut().unwrap().clergy =
         vec![ClergyClaim { owner: Owner::Taxpayer, role: ClergyRole::ReligiousSect }];
     d.screening.as_mut().unwrap().optional_se =
         vec![SeElection { owner: Owner::Taxpayer, farm: false, nonfarm: Some(se_history()) }];
     let mut session = Interview::new(TEST_USER, d);
-    let page = from_review(&mut session, TaxSection::Checklist);
-    accepted(&send(&mut session, tick(page, income_ticks(0))));
-    let screening = session.draft.screening.as_ref().unwrap();
-    assert!(screening.clergy.is_empty());
-    assert!(screening.optional_se.is_empty());
+    accepted(&save_businesses(&mut session, vec![]));
     assert!(session.draft.income.is_empty());
+    let screening = session.draft.screening.as_ref().unwrap();
+    assert_eq!(screening.clergy.len(), 1);
+    assert!(screening.optional_se.is_empty());
 }
 
 #[test]
@@ -432,11 +444,13 @@ fn unit41_clergy_credit_earned_income_distinguishes_housing_and_approved_4361() 
     let FederalIncome::Wage { data } = &mut pay.income else {
         panic!("ministerial wage");
     };
+    let mut data = edit_wage(data);
     data.coverage = W2Coverage::Ministerial;
     data.social_wages = 0;
     data.social_tax = 0;
     data.medicare_wages = 0;
     data.medicare_tax = 0;
+    drop(data);
     add(&mut d, pay);
     d.dependents.push(child(d.next_id));
     d.next_id += 1;
@@ -489,7 +503,9 @@ pub(in crate::tests) fn bonus_return() -> FederalDraft {
     let mut d = empty_return(FederalStatus::Single);
     let mut pay = wage(1, Owner::Taxpayer, 15_000_000, 900_000);
     let FederalIncome::Wage { data } = &mut pay.income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.abroad = 15_000_000;
+    drop(data);
     add(&mut d, pay);
     let mut claim = foreign_claim(Owner::Taxpayer);
     claim.qualification = ForeignQualification::Residence {
@@ -516,7 +532,9 @@ fn unit41_prior_only_uses_actual_2025_history_without_2026_qualification() {
     let mut d = empty_return(FederalStatus::Single);
     let mut pay = wage(1, Owner::Taxpayer, 1_000_000, 0);
     let FederalIncome::Wage { data } = &mut pay.income else { unreachable!() };
+    let mut data = edit_wage(data);
     data.abroad = 1_000_000;
+    drop(data);
     add(&mut d, pay);
     let mut claim = foreign_claim(Owner::Taxpayer);
     claim.qualification = ForeignQualification::PriorYearOnly;
@@ -593,10 +611,10 @@ fn unit41_prior_and_award_pages_roundtrip_and_reject_cross_page_source_loss() {
         panic!("Work abroad")
     };
     let P::SaveIncomes { documents, .. } = &mut page else { panic!("SaveIncomes") };
-    let IncomeDocument::Form2555(form) = &mut documents
+    let crate::IncomeRecord::Form2555(form) = &mut documents
         .documents
         .iter_mut()
-        .find(|d| matches!(d.document, IncomeDocument::Form2555(_)))
+        .find(|d| matches!(d.document, crate::IncomeRecord::Form2555(_)))
         .unwrap()
         .document
     else {
@@ -604,20 +622,28 @@ fn unit41_prior_and_award_pages_roundtrip_and_reject_cross_page_source_loss() {
     };
     form.prior_year_pay = 100000;
     // Same candidate adds the actual source pay and its disjoint prior split.
-    documents.documents.push(document(
-        0,
-        IncomeDocument::ForeignPay(ForeignPay { employer: "Late salary".into(), wages: 100000 }),
-    ));
+    documents.documents.push(
+        crate::IncomeRecordItem::from_income(document(
+            0,
+            IncomeSource::Record {
+                value: crate::IncomeRecord::ForeignPay(ForeignPay {
+                    employer: "Late salary".into(),
+                    wages: 100000,
+                }),
+            },
+        ))
+        .unwrap(),
+    );
     accepted(&send(&mut session, page));
     let saved = session.draft.clone();
     let Reply::Edit(page) = from_review(&mut session, TaxSection::WorkAbroad) else {
         panic!("Reopen")
     };
     let P::SaveIncomes { documents, .. } = &page else { panic!("SaveIncomes") };
-    let IncomeDocument::Form2555(form) = &documents
+    let crate::IncomeRecord::Form2555(form) = &documents
         .documents
         .iter()
-        .find(|d| matches!(d.document, IncomeDocument::Form2555(_)))
+        .find(|d| matches!(d.document, crate::IncomeRecord::Form2555(_)))
         .unwrap()
         .document
     else {
@@ -625,32 +651,37 @@ fn unit41_prior_and_award_pages_roundtrip_and_reject_cross_page_source_loss() {
     };
     assert_eq!(form, &Form2555::from_record(&saved.screening.as_ref().unwrap().foreign_earned[0]));
     assert_eq!(value(&supported(&saved), "foreign_earned_taxpayer_income"), 122500);
-    let Reply::Edit(mut wage_page) = from_review(&mut session, TaxSection::Wages) else {
-        panic!("Wages")
+    let mut wage_page = open_documents(&mut session);
+    let P::SaveDocuments { documents, .. } = &mut wage_page else { panic!("SaveDocuments") };
+    let crate::WageDocument::W2(pay) = &mut documents.common.wages.documents[0].document else {
+        panic!("W2")
     };
-    let P::SaveIncomes { documents, .. } = &mut wage_page else { panic!("SaveIncomes") };
-    let IncomeDocument::W2(pay) = &mut documents.documents[0].document else { panic!("W2") };
-    pay.answers.abroad = 2_000_000;
+    // The refused answer is registered with a paper of its own (its control number), so the
+    // harness's restoration of the original W-2 does not replay it.
+    pay.control_number = "refused-awards".into();
+    let mut answers = stored_w2_answers(&session.draft, 0);
+    answers.abroad = W2Amount::of(2_000_000);
+    wage_document(W2Source { form: pay.clone(), answers });
     rejected_with(
         current_income_refusal(
             "income-source-76",
             &mut session,
             wage_page,
             "ISSUE_FOREIGN_AWARDS_ABOVE_PAY",
-            "[documents/documents/0/document/answers/abroad]",
+            "[documents/common/wages/documents/0/document/answers/abroad]",
         ),
         "ISSUE_FOREIGN_AWARDS_ABOVE_PAY",
     );
     assert_eq!(session.draft, saved);
     let mut bad = page;
     let P::SaveIncomes { documents, .. } = &mut bad else { unreachable!() };
-    documents.documents.retain(|d| !matches!(d.document, IncomeDocument::ForeignPay(_)));
+    documents.documents.retain(|d| !matches!(d.document, crate::IncomeRecord::ForeignPay(_)));
     // Direct1000 +award30000 still fits W2gross150000; raise actual direct to
     //120001 so its disjoint source total exceeds150000 by exactly one dollar.
-    let IncomeDocument::Form2555(form) = &mut documents
+    let crate::IncomeRecord::Form2555(form) = &mut documents
         .documents
         .iter_mut()
-        .find(|d| matches!(d.document, IncomeDocument::Form2555(_)))
+        .find(|d| matches!(d.document, crate::IncomeRecord::Form2555(_)))
         .unwrap()
         .document
     else {
@@ -680,7 +711,7 @@ fn unit41_notary_gross_page_roundtrips_and_rejects_gross_below_net() {
         panic!("Self employment")
     };
     let P::SaveIncomes { documents, .. } = &mut page else { panic!("SaveIncomes") };
-    let IncomeDocument::Business(business) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::Business(business) = &mut documents.documents[0].document else {
         panic!("Business")
     };
     business.more.notary_profit = 500000;
@@ -691,7 +722,7 @@ fn unit41_notary_gross_page_roundtrips_and_rejects_gross_below_net() {
         panic!("Reopen")
     };
     let P::SaveIncomes { documents, .. } = &mut page else { panic!("SaveIncomes") };
-    let IncomeDocument::Business(business) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::Business(business) = &mut documents.documents[0].document else {
         panic!("Business")
     };
     assert_eq!(business.more.notary_gross, Some(500000));
@@ -751,7 +782,7 @@ fn unit19_retained_source_witness_schedule_one_clergy_business() {
     let mut page = open_topic(&mut session, TaxSection::SelfEmployment);
     record("reopened-editor.avro", &page.to_avro());
     let P::SaveIncomes { documents, .. } = &mut page else { unreachable!() };
-    let IncomeDocument::Business(business) = &mut documents.documents[0].document else {
+    let crate::IncomeRecord::Business(business) = &mut documents.documents[0].document else {
         unreachable!()
     };
     business.expenses.other[0].amount = 30000;

@@ -29,6 +29,9 @@ pub(crate) enum RentalBuildingRecovery {
     Residential275,
     Commercial315,
     Commercial39,
+    // Pub. 946: ADS residential rental property placed after December 31, 2017.
+    // https://www.irs.gov/publications/p946
+    Ads30,
     Ads40,
 }
 impl RentalBuildingRecovery {
@@ -37,6 +40,7 @@ impl RentalBuildingRecovery {
             Self::Residential275 => 660,
             Self::Commercial315 => 756,
             Self::Commercial39 => 936,
+            Self::Ads30 => 720,
             Self::Ads40 => 960,
         }
     }

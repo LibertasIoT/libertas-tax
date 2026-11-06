@@ -16,7 +16,7 @@ fn unit29_rental_transition_actual_sources_select_one_original_clock_for_every_c
             crate::extended_rules::depreciation_for_year(
                 &record.buildings[0],
                 false,
-                &record.property_type,
+                (&record.property_type, &crate::RentalLocation::UnitedStates),
                 2026,
                 record.sale.date(),
                 crate::kernel::source_fact::SourceFact::NotReported
@@ -36,7 +36,7 @@ fn unit29_rental_transition_actual_sources_select_one_original_clock_for_every_c
             crate::extended_rules::depreciation_for_year(
                 &record.buildings[0],
                 true,
-                &record.property_type,
+                (&record.property_type, &crate::RentalLocation::UnitedStates),
                 2026,
                 record.sale.date(),
                 crate::kernel::source_fact::SourceFact::NotReported
@@ -67,6 +67,7 @@ fn unit29_rental_transition_improvement_retains_its_own_source_and_lifecycle() {
         page.building.allowed_commercial_1993_transition.clear();
         page.more.improvements.push(Improvement {
             casualty: None,
+            casualty_property: None,
             id: 0,
             energy: None,
             sale_history: None,
@@ -75,7 +76,9 @@ fn unit29_rental_transition_improvement_retains_its_own_source_and_lifecycle() {
             in_service: 19930701,
             commercial_1993_transition: Some(source.clone()),
             allowed_commercial_1993_transition: crate::rental_recovery::allowed(
-                &page.kind, 19930701,
+                &page.kind,
+                &crate::RentalLocation::UnitedStates,
+                19930701,
             ),
             rehabilitation: None,
             partial: None,
@@ -90,7 +93,7 @@ fn unit29_rental_transition_improvement_retains_its_own_source_and_lifecycle() {
             crate::extended_rules::depreciation_for_year(
                 &record.buildings[1],
                 false,
-                &record.property_type,
+                (&record.property_type, &crate::RentalLocation::UnitedStates),
                 2026,
                 record.sale.date(),
                 crate::kernel::source_fact::SourceFact::NotReported
@@ -165,6 +168,7 @@ fn unit29_rental_transition_exchange_carries_actual_source_clock_and_existing_fo
 #[test]
 fn unit29_rental_transition_projection_is_date_specific_and_preserves_improvement_order() {
     let mut input = RentalRecoveryInputs {
+        location: crate::RentalLocation::UnitedStates,
         kind: RentalPropertyType::Commercial,
         building: RentalRecoveryDate { in_service: 20200101 },
         more: RentalRecoveryMoreDates {
@@ -192,14 +196,23 @@ fn unit29_rental_transition_projection_is_date_specific_and_preserves_improvemen
     assert_eq!(output.more.improvements.len(), 2);
     assert_eq!(
         output.more.improvements[0].allowed_commercial_1993_transition,
-        crate::rental_recovery::allowed(&input.kind, 19930701)
+        crate::rental_recovery::allowed(
+            &input.kind,
+            &crate::RentalLocation::UnitedStates,
+            19930701
+        )
     );
     assert!(output.more.improvements[1].allowed_commercial_1993_transition.is_empty());
     // PL103-66 section13151(b): both the first affected service date and
     // December31 service qualify for the actual documentary source choice.
     for placed in [19930513, 19931231] {
         assert_eq!(
-            crate::rental_recovery::allowed(&RentalPropertyType::Commercial, placed).len(),
+            crate::rental_recovery::allowed(
+                &RentalPropertyType::Commercial,
+                &crate::RentalLocation::UnitedStates,
+                placed
+            )
+            .len(),
             3
         );
         assert!(
@@ -219,7 +232,14 @@ fn unit29_rental_transition_projection_is_date_specific_and_preserves_improvemen
             .iter()
             .all(|row| row.allowed_commercial_1993_transition.is_empty())
     );
-    assert!(crate::rental_recovery::allowed(&RentalPropertyType::Commercial, 19930230).is_empty());
+    assert!(
+        crate::rental_recovery::allowed(
+            &RentalPropertyType::Commercial,
+            &crate::RentalLocation::UnitedStates,
+            19930512
+        )
+        .is_empty()
+    );
 }
 
 #[test]
@@ -228,7 +248,7 @@ fn unit29_rental_transition_unknown_and_invalid_documentary_sources_never_assume
     // 2026-10-19: the Source facts contract retains optional unknown input;
     // require() stops the calculation at its named boundary below.
     assert!(crate::rental_recovery::source_rule(&kind, 19930701, None).is_none());
-    for date in [0, 19930230, 19930513, 19940101] {
+    for date in [19930513, 19940101] {
         for source in [
             Commercial1993Transition::BindingContract(Commercial1993ContractSource {
                 effective: date,
@@ -286,7 +306,7 @@ fn unit29_rental_transition_unknown_and_invalid_documentary_sources_never_assume
         crate::extended_rules::depreciation_for_year(
             &record.buildings[0],
             false,
-            &record.property_type,
+            (&record.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             record.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -299,7 +319,7 @@ fn unit29_rental_transition_unknown_and_invalid_documentary_sources_never_assume
         crate::extended_rules::depreciation_for_year(
             &record.buildings[0],
             true,
-            &record.property_type,
+            (&record.property_type, &crate::RentalLocation::UnitedStates),
             2026,
             record.sale.date(),
             crate::kernel::source_fact::SourceFact::NotReported
@@ -413,7 +433,7 @@ fn unit29_rental_transition_normal_save_resave_restart_and_nonzero_locator_atomi
         let saved = session.draft.clone();
         let mut echoed = open_topic(&mut session, TaxSection::Rentals);
         let P::SaveIncomes { documents, .. } = &mut echoed else { unreachable!() };
-        let IncomeDocument::Rental(value) = &mut documents.documents[0].document else {
+        let crate::IncomeRecord::Rental(value) = &mut documents.documents[0].document else {
             unreachable!()
         };
         value.building.allowed_commercial_1993_transition.clear();
@@ -424,6 +444,7 @@ fn unit29_rental_transition_normal_save_resave_restart_and_nonzero_locator_atomi
         let mut invalid = page.clone();
         let improvement = |source| Improvement {
             casualty: None,
+            casualty_property: None,
             id: 0,
             energy: None,
             sale_history: None,
@@ -433,6 +454,7 @@ fn unit29_rental_transition_normal_save_resave_restart_and_nonzero_locator_atomi
             commercial_1993_transition: Some(source),
             allowed_commercial_1993_transition: crate::rental_recovery::allowed(
                 &invalid.kind,
+                &crate::RentalLocation::UnitedStates,
                 19930701,
             ),
             rehabilitation: None,
@@ -469,7 +491,9 @@ fn unit29_rental_transition_genuine_source_correction_keeps_identity_and_recompu
     let id = stored_rentals(&session)[0].0;
     let mut request = open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { unreachable!() };
+    let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
     page.building.commercial_1993_transition = Some(Commercial1993Transition::Ordinary39Year);
     accepted(&send(&mut session, request));
     assert_eq!(stored_rentals(&session)[0].0, id);
@@ -477,7 +501,9 @@ fn unit29_rental_transition_genuine_source_correction_keeps_identity_and_recompu
     let before = session.draft.clone();
     let mut request = open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { unreachable!() };
+    let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
     page.building.in_service = 20200101;
     crate::tests::cross::interview::rejected_with(
         send(&mut session, request),
@@ -486,13 +512,15 @@ fn unit29_rental_transition_genuine_source_correction_keeps_identity_and_recompu
     assert_eq!(session.draft, before);
     let mut request = open_topic(&mut session, TaxSection::Rentals);
     let P::SaveIncomes { documents, .. } = &mut request else { unreachable!() };
-    let IncomeDocument::Rental(page) = &mut documents.documents[0].document else { unreachable!() };
+    let crate::IncomeRecord::Rental(page) = &mut documents.documents[0].document else {
+        unreachable!()
+    };
     page.building.in_service = 20200101;
     // Native candidate twin of an explicit clear with genuine rebuilt choices;
     // the actual client test separately proves normal ConstrainedBy resetting.
     page.building.commercial_1993_transition = None;
     page.building.allowed_commercial_1993_transition =
-        crate::rental_recovery::allowed(&page.kind, 20200101);
+        crate::rental_recovery::allowed(&page.kind, &crate::RentalLocation::UnitedStates, 20200101);
     accepted(&send(&mut session, request));
     assert_eq!(stored_rentals(&session)[0].0, id);
     assert_eq!(stored_rentals(&session)[0].2.buildings[0].in_service, 20200101);

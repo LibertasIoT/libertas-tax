@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"order": 565000, "rule": {"select": "^<NextYearEstimate>", "flatten": true}}
+  ]
+}

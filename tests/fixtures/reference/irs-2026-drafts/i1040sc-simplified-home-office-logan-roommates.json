@@ -1,0 +1,106 @@
+{
+ "source": {
+  "title": "Instructions for Schedule C (Form 1040) (2026 draft)",
+  "edition": "TREASURY/IRS AND OMB USE ONLY DRAFT, 2026",
+  "page": "PDF p. 12",
+  "example": "Shared space, Example (Logan)",
+  "url": "https://www.irs.gov/pub/irs-dft/i1040sc--dft.pdf",
+  "fetched": "2026-10-20",
+  "sha256": "27a6e185504f442c363b2d659a33cfc61613b669025cb2bd3de2ec81599009f9"
+ },
+ "source_year": 2026,
+ "year_policy": "same-year",
+ "neutral_facts": [
+  {
+   "fact": "the business is a cash-method sole proprietorship with $20,000 gross receipts and no expenses",
+   "reason": "the example gives no business income; the simplified deduction cannot exceed the profit, so ample receipts keep the cap from binding"
+  },
+  {
+   "fact": "filer born 1980-06-15, rents the home, and the space is the principal place of business",
+   "reason": "the example gives none of these"
+  }
+ ],
+ "filing": "Single",
+ "birth": 19800615,
+ "pages": [
+  {
+   "page": "business",
+   "receipts": 20000
+  },
+  {
+   "page": "home_office",
+   "months": [
+    [
+     1,
+     31,
+     150
+    ],
+    [
+     2,
+     28,
+     150
+    ],
+    [
+     3,
+     31,
+     150
+    ],
+    [
+     4,
+     30,
+     150
+    ],
+    [
+     5,
+     31,
+     150
+    ],
+    [
+     6,
+     30,
+     150
+    ],
+    [
+     7,
+     31,
+     150
+    ],
+    [
+     8,
+     31,
+     150
+    ],
+    [
+     9,
+     30,
+     150
+    ],
+    [
+     10,
+     31,
+     150
+    ],
+    [
+     11,
+     30,
+     150
+    ],
+    [
+     12,
+     31,
+     150
+    ]
+   ]
+  }
+ ],
+ "expected": [
+  {
+   "form": "SchC",
+   "line": "30",
+   "amount": 750,
+   "provenance": "derived",
+   "derivation": "allowable square feet x $5 (Schedule C line 30 simplified method); the printed figure is the average monthly allowable square footage"
+  }
+ ],
+ "expected_state": "EstimatedForSupportedScope"
+}

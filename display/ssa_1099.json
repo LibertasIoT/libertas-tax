@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"order": 35000, "rule": {"select": "^<Rrb1099R>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_3", "box_4", "box_5", "box_6", "gross", "box_8", "withholding"]}]}},
+    {"order": 36000, "rule": {"select": "^<Rrb1099R>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "recipient"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_3", "box_4", "box_5", "box_6", "gross", "box_8", "withholding"]}]}},
+    {"order": 37000, "rule": {"select": "^<FormRrb1099RPaper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "recipient", "claim_number_and_payee_code"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_3", "box_4", "box_5", "box_6", "gross", "box_8", "withholding", "medicare_premiums"]}]}},
+    {"order": 38000, "rule": {"select": "^<FormRrb1099RPaper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "recipient", "claim_number_and_payee_code"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["box_3", "box_4", "box_5", "box_6", "gross", "box_8", "withholding", "medicare_premiums"]}]}},
+    {"order": 43000, "rule": {"select": "^<Ssa1099Paper>", "when": {"mode": "view"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "tax_year", "recipient", "claim_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["benefits_paid", "benefits_repaid_to_ssa", "net_benefits", "voluntary_federal_income_tax_withheld", "description_of_amount_in_box_3", "description_of_amount_in_box_4"]}]}},
+    {"order": 44000, "rule": {"select": "^<Ssa1099Paper>", "when": {"mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_PERSON_IDENTITY", "fields": ["issuer", "tax_year", "recipient", "claim_number"]}, {"title": "DISPLAY_DOCUMENT_DETAILS", "fields": ["benefits_paid", "benefits_repaid_to_ssa", "net_benefits", "voluntary_federal_income_tax_withheld", "description_of_amount_in_box_3", "description_of_amount_in_box_4"]}]}},
+    {"order": 507000, "rule": {"select": "^<RailroadRecipient>", "flatten": true}}
+  ]
+}

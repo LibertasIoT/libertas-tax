@@ -1,0 +1,8 @@
+{
+  "rules": [
+    {"order": 307000, "rule": {"select": "^<ForeignLossAccount>", "layout": "split", "direction": "row", "regions": [{"ratio": 1, "fields": ["category", "regular"]}, {"ratio": 1, "fields": ["amt"]}]}},
+    {"order": 600000, "rule": {"select": "^<ForeignLossHistory>", "flatten": true}},
+    {"order": 964000, "rule": {"select": "^<ForeignLossAccount>", "when": {"width": "compact", "mode": "view"}, "layout": "tabs", "sections": [{"title": "DISPLAY_FLOSS_CATEGORY", "fields": ["category"]}, {"title": "DISPLAY_FLOSS_REGULAR", "fields": ["regular"]}, {"title": "DISPLAY_FLOSS_AMT", "fields": ["amt"]}]}},
+    {"order": 965000, "rule": {"select": "^<ForeignLossAccount>", "when": {"width": "compact", "mode": "edit"}, "layout": "rows", "sections": [{"title": "DISPLAY_FLOSS_CATEGORY", "fields": ["category"]}, {"title": "DISPLAY_FLOSS_REGULAR", "fields": ["regular"]}, {"title": "DISPLAY_FLOSS_AMT", "fields": ["amt"]}]}}
+  ]
+}

@@ -62,7 +62,7 @@ fn farm_aviation_kerosene_type_1_reaches_schedule_c_and_partner_payment() {
     let claim =
         data.fuel_tax_credit.as_mut().unwrap().fuels.aviation_kerosene_farm.as_mut().unwrap();
     claim.taxed_at_244_application.as_mut().unwrap().actual_cost = 20_000;
-    claim.taxed_at_244_application.as_mut().unwrap().thousandths_of_gallon = 0;
+    claim.taxed_at_244_application.as_mut().unwrap().gallons = 0.0;
     assert!(crate::federal_rules::validate_income_amount(&rejected.income[1].income).is_err());
 
     let mut wrong_source = draft.clone();
@@ -190,12 +190,12 @@ fn farm_aviation_gasoline_type_1_reaches_schedule_f_and_partner_payment() {
     let farm =
         data.fuel_tax_credit.as_mut().unwrap().fuels.aviation_gasoline_farm.as_mut().unwrap();
     farm.aerial_application.as_mut().unwrap().actual_cost = 20_000;
-    farm.aerial_application.as_mut().unwrap().thousandths_of_gallon = 0;
+    farm.aerial_application.as_mut().unwrap().gallons = 0.0;
     assert!(crate::federal_rules::validate_income_amount(&draft.income[1].income).is_err());
     let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
     let farm =
         data.fuel_tax_credit.as_mut().unwrap().fuels.aviation_gasoline_farm.as_mut().unwrap();
-    farm.aerial_application.as_mut().unwrap().thousandths_of_gallon = 100_000;
+    farm.aerial_application.as_mut().unwrap().gallons = 100.0;
     let FederalIncome::Partnership { data } = &mut draft.income[2].income else { unreachable!() };
     let claim = data.fuel_tax_credit.as_mut().unwrap();
     claim.farm_activity = false;
@@ -284,7 +284,8 @@ fn farm_fuel_lines_use_farm_rates_and_one_rounded_payment() {
             gasoline_farm: Some(fuel_use(100_000, 30_000)),
             diesel_farm: Some(fuel_use(100_000, 40_000)),
             ..empty_fuel_lines()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::FullCostDeducted,
         records_complete: true,
     });
@@ -325,7 +326,8 @@ fn farm_kerosene_fuel_uses_reach_form_4136_lines_4a_and_4b() {
             kerosene_off_highway: Some(fuel_use(10_000, 1_000)),
             kerosene_farm: Some(fuel_use(20_000, 2_000)),
             ..empty_fuel_lines()
-        },
+        }
+        .into(),
         expense_treatment: FederalFuelExpenseTreatment::FullCostDeducted,
         records_complete: true,
     });
@@ -453,7 +455,7 @@ fn farm_joint_owners_use_separate_se_calculations_and_shared_return() {
     let mut d = empty_return(FederalStatus::Joint);
     add(&mut d, income(raised_farm(40000, 10000)));
     let mut spouse = income(raised_farm(30000, 10000));
-    spouse.owner = Owner::Spouse;
+    spouse.owner = crate::DocumentOwner::Spouses;
     add(&mut d, spouse);
     let r = supported(&d);
     assert_eq!(value(&r, "self_employment_tax"), 7065);
@@ -490,7 +492,7 @@ fn farm_health_and_sep_deductions_do_not_reduce_se_profit() {
         }],
         establishment: crate::HealthEstablishment::SoleProprietor,
     };
-    data.retirement = BusinessRetirement::Sep { rate: 2500, contribution: 800000 };
+    data.retirement = BusinessRetirement::Sep { rate: 25.0, contribution: 800000 };
     add(&mut d, income(entry));
     let r = supported(&d);
     assert_eq!(value(&r, "self_employment_tax"), 7065);
@@ -519,11 +521,6 @@ fn farm_unknown_elections_losses_and_duplicate_inventory_block_completed_return(
     let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
     let BusinessActivity::Farming { data: farm } = &mut data.activity else { unreachable!() };
     farm.specials.limitations.clear();
-    farm.accounting =
-        FarmAccounting::Cash { receipts: vec![FarmReceipt::Resale { amount: -1, cost: 0 }] };
-    assert!(!d.valid_stored());
-    let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
-    let BusinessActivity::Farming { data: farm } = &mut data.activity else { unreachable!() };
     farm.accounting = FarmAccounting::Cash {
         receipts: vec![FarmReceipt::Resale { amount: 1000000, cost: 100000 }],
     };
@@ -662,12 +659,6 @@ fn farm_accrual_unknown_accounting_and_invalid_source_amounts_do_not_finalize() 
             .iter()
             .any(|issue| issue.display.key == "ISSUE_FARM_METHOD_TRANSITION_SOURCE")
     );
-    let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
-    let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
-    data.specials.limitations.clear();
-    let FarmAccounting::Accrual { purchases, .. } = &mut data.accounting else { unreachable!() };
-    *purchases = -1;
-    assert!(!d.valid_stored());
 }
 
 #[test]
@@ -711,7 +702,12 @@ fn farm_nol_requires_explicit_valid_waiver_and_preserves_the_carryback_choice() 
 fn farm_waiver_preserves_distinct_regular_and_amt_losses() {
     let mut d = farm_loss_return();
     waive_farm_carryback(&mut d);
-    add(&mut d, income(FederalIncome::Interest { data: native_exempt_interest(500000, 500000) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest {
+            data: interest_source(native_exempt_interest(500000, 500000)),
+        }),
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "current_net_operating_loss"), 20000);
     assert_eq!(value(&r, "amt_current_net_operating_loss"), 15000);
@@ -745,7 +741,7 @@ fn farm_joint_loss_waiver_is_return_wide_and_does_not_erase_other_spouse_se_tax(
     d.income = vec![wage(1, Owner::Taxpayer, 1000000, 0)];
     add(&mut d, income(raised_farm(20000, 0)));
     let mut entry = income(raised_farm(0, 50000));
-    entry.owner = Owner::Spouse;
+    entry.owner = crate::DocumentOwner::Spouses;
     add(&mut d, entry);
     waive_farm_carryback(&mut d);
     let r = supported(&d);
@@ -791,6 +787,12 @@ fn farm_crop_deferral_applies_to_all_eligible_payments_and_keeps_withholding_cur
         ));
         let r = supported(&d);
         let id = d.income[0].id;
+        let insurance = &crate::farm::sources(&d).next().unwrap().farm.insurance;
+        assert_eq!(insurance.current_total(), 2_500_000);
+        let claims = crate::related_forms::effective_claimants(&d);
+        let resolved = crate::farm_insurance_paper::resolved(&d, id, &claims).unwrap();
+        assert_eq!(resolved.current_total(), 2_500_000);
+        assert_eq!(resolved.income(true), taxable * 100);
         assert_eq!(value(&r, &alloc::format!("farm_{id}_crop_insurance_before_deferral")), 25000);
         assert_eq!(value(&r, &alloc::format!("farm_{id}_crop_insurance_taxable")), taxable);
         assert_eq!(
@@ -837,28 +839,34 @@ fn farm_crop_accrual_includes_insurance_and_leaves_out_ineligible_deferral() {
     let mut entry = accrual_farm(30000, 0, 0, 0, 10000);
     let FederalIncome::Business { data } = &mut entry else { unreachable!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
-    data.insurance = crop_records(
-        vec![CropPayment::Physical { crop: "Grain".into(), amount: 3000000, year: 2026 }],
-        0,
-        false,
-        0,
+    install_crop_records(
+        data,
+        crop_records(
+            vec![CropPayment::Physical { crop: "Grain".into(), amount: 3000000, year: 2026 }],
+            0,
+            false,
+            0,
+        ),
     );
     add(&mut d, income(entry));
     assert_eq!(supported(&d).tax, Some(973000));
     let FederalIncome::Business { data } = &mut d.income[0].income else { unreachable!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
-    data.insurance = crop_records(
-        vec![CropPayment::Physical { crop: "Grain".into(), amount: 3000000, year: 2026 }],
-        0,
-        true,
-        0,
+    install_crop_records(
+        data,
+        crop_records(
+            vec![CropPayment::Physical { crop: "Grain".into(), amount: 3000000, year: 2026 }],
+            0,
+            true,
+            0,
+        ),
     );
     let r = supported(&d);
     assert_eq!(r.tax, Some(973000));
     assert!(noted(&r, "WARN_CROP_PRACTICE_DEFERRAL_LEFT_OUT"));
     let FederalIncome::Business { data } = &mut d.income[0].income else { unreachable!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
-    data.insurance = crop_records(vec![], 30000, false, 0);
+    install_crop_records(data, crop_records(vec![], 30000, false, 0));
     unsupported(&d, "Crop insurance accounting");
 }
 
@@ -905,12 +913,6 @@ fn farm_crop_invalid_or_unsubstantiated_deferral_never_silently_qualifies() {
         let r = supported(&crop_return(crop_records(vec![payment], 0, true, 0)));
         assert_eq!(r.tax, Some(973000));
         assert!(noted(&r, "WARN_CROP_PRACTICE_DEFERRAL_LEFT_OUT"));
-    }
-    for payment in [
-        CropPayment::Other { amount: -1 },
-        CropPayment::Physical { crop: "Grain".into(), amount: 100, year: 2027 },
-    ] {
-        assert!(!crop_return(crop_records(vec![payment], 0, false, 0)).valid_stored());
     }
 }
 #[test]
@@ -1097,13 +1099,13 @@ fn farm_crp_health_and_sep_limits_use_se_subject_earnings() {
         }],
         establishment: crate::HealthEstablishment::SoleProprietor,
     };
-    data.retirement = BusinessRetirement::Sep { rate: 2500, contribution: 500000 };
+    data.retirement = BusinessRetirement::Sep { rate: 25.0, contribution: 500000 };
     let r = supported(&d);
     assert_eq!(value(&r, &alloc::format!("business_{id}_sep_limit")), 5576);
     assert_eq!(value(&r, "agi"), 36880);
     assert_eq!(r.tax, Some(598600));
     let FederalIncome::Business { data } = &mut d.income[0].income else { unreachable!() };
-    data.retirement = BusinessRetirement::Sep { rate: 2500, contribution: 600000 };
+    data.retirement = BusinessRetirement::Sep { rate: 25.0, contribution: 600000 };
     unsupported(&d, "Business retirement");
 }
 #[test]
@@ -1147,7 +1149,7 @@ fn farm_crp_one_spouses_exclusion_does_not_remove_other_spouses_se_earnings() {
     let a = crp_return(0, &[(20000, true)]);
     add(&mut d, a.income[0].clone());
     let mut b = income(raised_farm(40000, 10000));
-    b.owner = Owner::Spouse;
+    b.owner = crate::DocumentOwner::Spouses;
     add(&mut d, b);
     let r = supported(&d);
     assert_eq!(return_line(&r, "8"), 5000000);
@@ -1269,21 +1271,23 @@ fn farm_averaging_recomputes_base_year_rate_schedules_not_filing_tables() {
 #[test]
 fn farm_averaging_does_not_create_offsetting_amt() {
     let mut d = averaging_return(60000);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.screening.as_mut().unwrap().iso_exercises =
         vec![iso_exercise("Averaging AMT test", 1000.0, 1000, 4000)];
     let r = supported(&d);
     // TMT $19,304 exceeds averaged $14,628 but not unaveraged $20,978.
     assert_eq!(value(&r, "alternative_minimum_tax"), 0);
     assert_eq!(r.tax, Some(2875300));
-    d.screening.as_mut().unwrap().iso_exercises[0].market_price = 7000;
+    d.screening.as_mut().unwrap().iso_exercises[0].form.market_price = 7000;
     let r = supported(&d);
-    // AMTI 194,348 less exemption 90,100: 26% = 27,104.
-    // AMT remains 27,104 - 20,978 = 6,126, not 27,104 - 14,628.
-    assert_eq!(value(&r, "alternative_minimum_tax"), 6126);
-    assert_eq!(r.tax, Some(3487900));
+    // 2026-11-02: automatic itemizing keeps TMT27,104 and uses the
+    // unaveraged regular24,842 for AMT, giving2,262.
+    assert_eq!(value(&r, "alternative_minimum_tax"), 2262);
+    assert_eq!(r.tax, Some(3455700));
     let mut ordinary = d.clone();
     ordinary.screening.as_mut().unwrap().farm_averaging = None;
+    // Without averaging both routes have the same total tax. The existing
+    // tie preference keeps the larger standard deduction and its6,126 AMT.
     assert_eq!(value(&supported(&ordinary), "alternative_minimum_tax"), 6126);
 }
 
@@ -1375,7 +1379,7 @@ fn farm_averaging_eligible_income_includes_owner_deductions_and_qbi() {
     let mut d = averaging_return(60000);
     se_health(&mut d, 1, 5000);
     let FederalIncome::Business { data } = &mut d.income[1].income else { panic!() };
-    data.retirement = BusinessRetirement::Sep { contribution: 1000000, rate: 2500 };
+    data.retirement = BusinessRetirement::Sep { contribution: 1000000, rate: 25.0 };
     let r = supported(&d);
     assert_eq!(value(&r, "qbi_deduction"), 15587);
     assert_eq!(value(&r, "farm_averaging_eligible_income"), 62348);
@@ -1644,7 +1648,7 @@ fn farm_averaging_joint_sole_farmer_uses_own_single_base_years() {
         .iter_mut()
         .find(|e| matches!(e.income, FederalIncome::Business { .. }))
         .unwrap()
-        .owner = Owner::Spouse;
+        .owner = crate::DocumentOwner::Spouses;
     assert_eq!(supported(&d).tax, r.tax);
     let extra = income(raised_farm(1000, 0));
     add(&mut d, extra);
@@ -1775,7 +1779,7 @@ fn farm_averaging_current_foreign_special_gains_use_reduced_income() {
 #[test]
 fn farm_averaging_statement_foreign_credit_preserves_unaveraged_amt() {
     let mut d = averaging_return(60000);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     averaging_statement_credit(&mut d);
     let r = supported(&d);
     // Additional1k interest: reduced current tax7747 + base increments7101.
@@ -1786,12 +1790,13 @@ fn farm_averaging_statement_foreign_credit_preserves_unaveraged_amt() {
     d.screening.as_mut().unwrap().iso_exercises =
         vec![iso_exercise("Foreign-credit averaging AMT", 1000.0, 1000, 7000)];
     let r = supported(&d);
-    // TMT27364 less300; unaveraged regular21218 less300 =>AMT6146.
-    assert_eq!(value(&r, "alternative_minimum_tax"), 6146);
-    assert_eq!(r.tax, Some(3481900));
+    // 2026-11-02: automatic itemizing uses unaveraged25,082 against
+    // TMT27,364. The same300 credit on each side leaves AMT2,282.
+    assert_eq!(value(&r, "alternative_minimum_tax"), 2282);
+    assert_eq!(r.tax, Some(3449700));
     let mut no_credit = d.clone();
     no_credit.credits.as_mut().unwrap().foreign_tax = ForeignTaxClaim::No;
-    assert_eq!(value(&supported(&no_credit), "alternative_minimum_tax"), 6146);
+    assert_eq!(value(&supported(&no_credit), "alternative_minimum_tax"), 2282);
     raise_payee_statement_tax(&mut d, 1);
     unsupported(&d, "Foreign tax credit");
 }
@@ -1852,16 +1857,16 @@ fn farm_averaging_nonfarm_losses_reduce_farm_qbi_once() {
 #[test]
 fn farm_averaging_reit_qbi_is_not_a_farm_deduction() {
     let mut d = averaging_return(60000);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     add(
         &mut d,
         income(FederalIncome::Dividend {
-            data: FederalDividend {
+            data: dividend_source(FederalDividend {
                 ordinary: 500000,
-                section199a: ReitDividends::Reported { amount: 500000, eligible: true },
+                section199a: ReitDividends::Reported { amount: 500000, eligible: Some(true) },
                 special: crate::DividendSpecial::NoneOfThese,
                 ..Default::default()
-            },
+            }),
         }),
     );
     let r = supported(&d);
@@ -1869,20 +1874,27 @@ fn farm_averaging_reit_qbi_is_not_a_farm_deduction() {
     assert_eq!(value(&r, "farm_averaging_qbi_deduction"), 18587);
     assert_eq!(value(&r, "farm_averaging_eligible_income"), 74348);
     assert_eq!(r.tax, Some(2963300));
-    // With no wages, the overall taxable-income limit needs further attribution.
+    // 2026-11-02: without wages, automatic itemizing avoids the taxable-income
+    // cap, retaining the source-supported farm QBI allocation and averaging.
     d.income.retain(|e| !matches!(e.income, FederalIncome::Wage { .. }));
-    let omitted = supported(&d);
-    assert!(noted(&omitted, "WARN_FARM_AVERAGING_ALLOCATION_LEFT_OUT"));
+    let kept = supported(&d);
+    assert!(!noted(&kept, "WARN_FARM_AVERAGING_ALLOCATION_LEFT_OUT"));
+    assert_eq!(value(&kept, "qbi_deduction"), 19587);
+    assert_eq!(value(&kept, "farm_averaging_qbi_deduction"), 18587);
+    assert_eq!(value(&kept, "farm_averaging_eligible_income"), 74348);
     let mut regular = d.clone();
     regular.screening.as_mut().unwrap().farm_averaging = None;
-    assert_eq!(omitted.tax, supported(&regular).tax);
+    assert!(kept.tax < supported(&regular).tax);
 }
 
 #[test]
 fn farm_averaging_personal_medical_deduction_preserves_farm_income() {
     let mut d = averaging_return(30000);
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     itemized(d.deductions.as_mut().unwrap()).medical = 10000000;
     let r = supported(&d);
     // AGI152935 less medical88530 (100000 minus 7.5% AGI11470).
@@ -1900,7 +1912,10 @@ fn farm_averaging_personal_medical_deduction_preserves_farm_income() {
 fn farm_averaging_personal_property_tax_allows_itemizing_but_income_tax_needs_allocation() {
     let mut d = averaging_return(60000);
     let facts = itemized(d.deductions.as_mut().unwrap()).clone();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Itemized { facts };
+    {
+        d.deductions.as_mut().unwrap().itemized = facts;
+        d.deductions.as_mut().unwrap().itemize_override = Some(ItemizeOverride::Itemize);
+    };
     itemized(d.deductions.as_mut().unwrap()).personal_property_taxes = 2500000;
     let r = supported(&d);
     // AGI152935 less personal SALT25000 and QBI18587 =109348.
@@ -1929,8 +1944,9 @@ fn farm_averaging_automatic_deductions_compare_total_tax_including_amt() {
     assert_eq!(value(&r, "regular_income_tax"), 18165);
     assert_eq!(value(&r, "alternative_minimum_tax"), 2262);
     assert_eq!(r.tax, Some(3455700));
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
-    assert_eq!(supported(&d).tax, Some(3487900));
+    // 2026-11-02: clearing the override keeps the existing lower final liability.
+    d.deductions.as_mut().unwrap().itemize_override = None;
+    assert_eq!(supported(&d).tax, Some(3455700));
 }
 
 #[test]
@@ -2072,23 +2088,13 @@ fn farm_conservation_counts_program_ccc_and_insurance_receipts_in_gross_farm_inc
     let r = supported(&d);
     assert_eq!(value(&r, "farm_2_conservation_deduction"), 35000);
     assert_eq!(value(&r, "farm_2_conservation_carryforward"), 10000);
-    // A CCC loan record and crop insurance records do not stop the pool either;
+    // Crop insurance records do not stop the pool either;
     // custom hire is excluded; unresolved cost-sharing, other income and CRP
     // character omit the elective pool, preserving ordinary income.
     let FederalIncome::Business { data } = &mut d.income[1].income else { unreachable!() };
     let BusinessActivity::Farming { data } = &mut data.activity else { unreachable!() };
-    data.ccc = Some(FarmCcc {
-        method: CccMethod::Loan,
-        lots: vec![],
-        withholding: 0,
-        source: ccc_source(&CccMethod::Loan),
-    });
-    data.insurance = FarmInsurance::Payments {
-        current: vec![],
-        previous_deferred: 0,
-        election: CropDeferral::Include,
-        withholding: 0,
-    };
+    data.insurance =
+        FarmInsuranceRecords::Payments { current: vec![], previous_deferred: 0, withholding: 0 };
     assert!(data.conservation_source_ready());
     for refused in [FarmReceipt::CostSharing { amount: 100 }, FarmReceipt::Other { amount: 100 }] {
         let FarmAccounting::Cash { receipts } = &mut data.accounting else { unreachable!() };
@@ -2292,7 +2298,7 @@ fn conservation_checks_other_farm_sources_and_ownership_before_sharing_limit() {
     assert_eq!(value(&result, "farm_2_conservation_deduction"), 30000);
     let mut d = conservation_return();
     let mut e = income(raised_farm(10000, 2000));
-    e.owner = Owner::Spouse;
+    e.owner = crate::DocumentOwner::Spouses;
     add(&mut d, e);
     let mut joint = complete(FederalStatus::Joint);
     joint.next_id = d.next_id;
@@ -2362,7 +2368,7 @@ fn conservation_death_acceleration_follows_farm_owner_not_any_deceased_spouse() 
     let living_farmer = supported(&d);
     assert_eq!(value(&living_farmer, "farm_2_conservation_assessment_available"), 70);
     assert_eq!(value(&living_farmer, "farm_2_conservation_assessment_deferred"), 560);
-    d.income[1].owner = Owner::Spouse;
+    d.income[1].owner = crate::DocumentOwner::Spouses;
     let deceased_farmer = supported(&d);
     assert_eq!(value(&deceased_farmer, "farm_2_conservation_assessment_available"), 630);
     assert_eq!(value(&deceased_farmer, "farm_2_conservation_assessment_deferred"), 0);
@@ -2610,7 +2616,10 @@ fn direct_farm_land_sale_produces_complete_return_and_survives_restart() {
     assert_eq!(value(&v, "taxable_income"), 153648);
     assert_eq!(v.tax, Some(4207400));
     let mut investment = d.clone();
-    add(&mut investment, income(FederalIncome::Interest { data: native_interest(1000000, 0) }));
+    add(
+        &mut investment,
+        income(FederalIncome::Interest { data: interest_source(native_interest(1000000, 0)) }),
+    );
     let v = supported(&investment);
     assert_eq!(value(&v, "agi"), 202935);
     assert_eq!(value(&v, "net_investment_income_tax"), 112);
@@ -2838,7 +2847,8 @@ fn farmland_tax_installment_election_retains_facts_and_reconciles_complete_retur
     assert_eq!(baseline.balance.unwrap() - result.balance.unwrap(), 450000);
 
     let mut overpaid = d.clone();
-    overpaid.payments.as_mut().unwrap().estimated = Some(5000000);
+    overpaid.payments.as_mut().unwrap().estimated =
+        crate::tests::support::builders::unknown_estimated(5000000, PaymentPayer::Taxpayer);
     let overpaid = supported(&overpaid);
     assert_eq!(overpaid.refund, Some(overpaid.payments.unwrap() - 3660800));
     assert_eq!(overpaid.balance, Some(0));
@@ -2965,7 +2975,10 @@ fn farmland_installments_apply_rate_bands_once_for_all_elected_sales() {
 #[test]
 fn farmland_installments_leave_niit_and_self_employment_tax_current() {
     let mut d = farmland_installment_return();
-    add(&mut d, income(FederalIncome::Interest { data: native_interest(1000000, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Interest { data: interest_source(native_interest(1000000, 0)) }),
+    );
     let r = supported(&d);
     assert_eq!(value(&r, "agi"), 202935);
     assert_eq!(value(&r, "self_employment_tax"), 14130);
@@ -3229,7 +3242,7 @@ fn farmland_installments_reuse_schedule_j_election_and_retained_years() {
     // the actual $62,000 election is preserved.
     d.income.retain(|entry| !matches!(entry.income, FederalIncome::ForeignEmployment { .. }));
     d.income[0] = wage(1, Owner::Taxpayer, 0, 0);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.screening.as_mut().unwrap().farm_averaging.as_mut().unwrap().elected = 6200000;
     let r = supported(&d);
     assert_eq!(value(&r, "farm_averaging_elected_income"), 62000);
@@ -3297,7 +3310,7 @@ fn farmland_installments_keep_amt_current_without_credit_coordination() {
 #[test]
 fn farmland_installments_with_amt_cap_hypothetical_credits_but_preserve_actual_credits() {
     let mut d = farmland_installment_return();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     farmland_basis_mut(&mut d).amt = 0;
     farmland_basis_mut(&mut d).prior_amt_conservation = 0;
     d.credits.as_mut().unwrap().adoption_carry =
@@ -3362,7 +3375,7 @@ fn farmland_credit_aggregate_cap_eliminates_hypothetical_amt_dependency() {
         }
     }
     let mut d = farmland_installment_return();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     farmland_basis_mut(&mut d).amt = 0;
     farmland_basis_mut(&mut d).prior_amt_conservation = 0;
     // Part I can have negative net regular income tax: preserve actual
@@ -3404,7 +3417,8 @@ fn farmland_installment_credit_excess_reconciles_payment_and_overpayment() {
     assert_eq!(r.refund, Some(45800));
     assert_eq!(r.balance, Some(0));
     assert_eq!(supported(&restart(d.clone()).draft).refund, r.refund);
-    d.payments.as_mut().unwrap().estimated = Some(20000);
+    d.payments.as_mut().unwrap().estimated =
+        crate::tests::support::builders::unknown_estimated(20000, PaymentPayer::Taxpayer);
     let paid = supported(&d);
     assert_eq!(paid.tax, r.tax);
     assert_eq!(paid.farmland_installments, r.farmland_installments);
@@ -3422,7 +3436,7 @@ fn farmland_installment_credit_excess_reconciles_payment_and_overpayment() {
 #[test]
 fn farmland_installments_exclude_minimum_credit_at_zero_and_positive_capacity() {
     let mut d = farmland_installment_return();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let mut history = minimum_tax_history();
     history.amt = 0;
     history.carry = 0;
@@ -3487,7 +3501,7 @@ fn farm_ccc_forfeiture_release_is_not_a_loss_or_repeat_of_prior_income() {
     let mut bad = d.clone();
     ccc_mut(&mut bad).lots[0].origin = CccOrigin::Current;
     unsupported(&bad, "CCC loan settlement");
-    for (year, surplus) in [(2027, 0), (1899, 0), (2026, -1)] {
+    for (year, surplus) in [(2027, 0), (1899, 0)] {
         let mut bad = d.clone();
         ccc_mut(&mut bad).lots[0].disposition =
             CccDisposition::Forfeited { year, surplus, deficiency: 0 };
@@ -3542,15 +3556,12 @@ fn farm_ccc_regulation_example_keeps_surplus_and_paid_losses_separate() {
     let mut bad = d.clone();
     ccc_mut(&mut bad).lots[0].origin = CccOrigin::PriorExcluded;
     unsupported(&bad, "CCC paid deficiency");
-    for amount in [-1, 50001] {
+    {
+        let amount = 50001;
         let mut bad = d.clone();
         ccc_mut(&mut bad).lots[0].disposition =
             CccDisposition::Forfeited { year: 2026, surplus: 0, deficiency: amount };
-        if amount < 0 {
-            assert!(!bad.valid_stored());
-        } else {
-            unsupported(&bad, "CCC paid deficiency");
-        }
+        unsupported(&bad, "CCC paid deficiency");
     }
 }
 
@@ -4016,8 +4027,6 @@ fn farm_poultry_resale_requires_reconciled_basis() {
     s.poultry[0].year = 2025;
     s.poultry[0].deducted = 1200001;
     assert!(!s.valid());
-    s.poultry[0].deducted = -1;
-    assert!(!s.valid());
 }
 
 #[test]
@@ -4106,8 +4115,6 @@ fn farm_production_poultry_prior_records_require_reconciled_basis() {
     s.production_carry = vec![production_poultry_carry(12000, 4000)];
     s.production_carry[0].deducted = 1200001;
     assert!(!s.valid());
-    s.production_carry[0].deducted = -1;
-    assert!(!s.valid());
 }
 #[test]
 fn farm_prepaid_single_cost_farm_uses_taxpayers_other_farm_expenses() {
@@ -4176,7 +4183,7 @@ fn farm_prepaid_binding_multi_cost_is_proportional_and_joint_owner_is_combined()
     let mut joint = complete(FederalStatus::Joint);
     joint.next_id = d.next_id;
     joint.income = d.income.clone();
-    joint.income[1].owner = Owner::Spouse;
+    joint.income[1].owner = crate::DocumentOwner::Spouses;
     let r = supported(&joint);
     assert_eq!(value(&r, &alloc::format!("farm_{}_supplies_deduction", joint.income[0].id)), 6000);
     assert_eq!(value(&r, &alloc::format!("farm_{}_supplies_deduction", joint.income[1].id)), 3000);
@@ -4196,7 +4203,7 @@ fn farm_prepaid_binding_multi_cost_is_proportional_and_joint_owner_is_combined()
 #[test]
 fn farmland_minimum_credit_preserves_actual_tax_and_statutory_deferral_separately() {
     let mut d = farmland_installment_return();
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     let before = supported(&d);
     d.credits.as_mut().unwrap().minimum_tax =
         Some(crate::MinimumTaxHistories::from_current_unit(minimum_tax_history()));
@@ -4299,7 +4306,7 @@ fn farmland_averaging_zero_comparison_has_no_rounding_residual_or_source_mutatio
 fn farmland_capped_averaging_reuses_foreign_preference_sources_with_separate_output() {
     let mut d = farmland_installment_return();
     d.income[0] = wage(1, Owner::Taxpayer, 0, 0);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.screening.as_mut().unwrap().farm_averaging =
         averaging_return(62000).screening.unwrap().farm_averaging;
     let facts = d.screening.as_mut().unwrap().farm_averaging.as_mut().unwrap();
@@ -4371,7 +4378,7 @@ fn farm_land_final_return_uses_linked_owner_on_joint_return() {
     spouse.died.as_mut().unwrap().ordinary = true;
     let r = supported(&d); // Taxpayer owns this farm and is alive.
     assert!(r.tax.is_some());
-    d.income[1].owner = Owner::Spouse;
+    d.income[1].owner = crate::DocumentOwner::Spouses;
     unsupported(&d, "Farm land final-return allocation");
     farmland_sales_mut(&mut d)[0].sold = 20260615;
     let r = supported(&d);
@@ -4384,7 +4391,7 @@ fn partner_nonfarm_optional_method_uses_shared_source_totals_and_weights() {
     add(&mut d, income(cash_business(1000)));
     let business_id = d.income.last().unwrap().id;
     let mut partner = ordinary_partner_source(1000, true);
-    partner.limited_for_se = false;
+    partner.limited_for_se = Some(false);
     partner.reported_se = Some(100000);
     partner.se_gross = Some(PartnerSeGross::Nonfarm { gross: 900000 });
     let source = partner
@@ -4441,7 +4448,7 @@ fn partner_farm_and_nonfarm_optional_methods_share_one_cap() {
     for gross in [PartnerSeGross::Farm { gross: 900000 }, PartnerSeGross::Nonfarm { gross: 600000 }]
     {
         let mut partner = ordinary_partner_source(1000, true);
-        partner.limited_for_se = false;
+        partner.limited_for_se = Some(false);
         partner.reported_se = Some(100000);
         partner.se_gross = Some(gross);
         let source = partner
@@ -4478,7 +4485,7 @@ fn partner_farm_and_nonfarm_optional_methods_share_one_cap() {
     .unwrap();
     assert_eq!(result.net, 6924); // Nonfarm remains actual, farm optional gets no 92.35% reduction.
     if let FederalIncome::Partnership { data } = &mut d.income[1].income {
-        data.limited_for_se = true;
+        data.limited_for_se = Some(true);
     }
     assert!(
         crate::optional_se::calculate_with_partners(
@@ -4543,7 +4550,7 @@ pub(in crate::tests) fn cooperative(
     // These synthetic source cases use original-patron notices redeemed at
     // stated value. The printed box 5 amount does not establish that history.
     if redeemed > 0 {
-        let mut allocation = crate::cooperative::automatic(&data, None);
+        let mut allocation = crate::cooperative::automatic(&data);
         allocation.redemptions.push(CoopRedemption {
             kind: CoopNoticeKind::Patronage,
             distribution: CoopDistributionBox::Redeemed,
@@ -4556,7 +4563,7 @@ pub(in crate::tests) fn cooperative(
     }
     data
 }
-fn schedule_f_lines(r: &FederalResult) -> Vec<(alloc::string::String, i64)> {
+pub(in crate::tests) fn schedule_f_lines(r: &FederalResult) -> Vec<(alloc::string::String, i64)> {
     crate::draft_return(r)
         .iter()
         .filter(|row| row.form_line.as_ref().is_some_and(|f| f.form == TaxForm::ScheduleF))
@@ -4590,7 +4597,7 @@ fn farm_cooperative_distributions_reach_schedule_f_line_3_se_qbi_and_the_return(
     patr.withholding = 30_000;
     patr.qualified_payments = 800_000;
     patr.allocations[0].qualified_payments = 800_000;
-    add(&mut d, income(FederalIncome::Cooperative { data: patr }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(patr) }));
     let r = supported(&d);
     let farm = d.income[0].id;
     let coop = d.income[1].id;
@@ -4636,18 +4643,18 @@ fn farm_cooperative_box_8_below_the_taxable_distributions_leaves_the_farm_qbi() 
     add(&mut d, income(raised_farm(40000, 10000)));
     let mut patr = cooperative(1_600_000, 100_000, 300_000, 200_000);
     cooperative_personal(&mut patr, 200_000);
-    add(&mut d, income(FederalIncome::Cooperative { data: patr }));
+    add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(patr) }));
     assert_eq!(value(&supported(&d), "qbi_deduction"), 5293);
     let coop = d.income[2].id;
     let FederalIncome::Cooperative { data } = &mut d.income[2].income else { unreachable!() };
-    data.qualified_items = 2_000_000;
-    data.allocations[0].qualified_items = 2_000_000;
+    data.form.qualified_items = 2_000_000;
+    data.more.allocations[0].qualified_items = 2_000_000;
     let r = supported(&d);
     assert_eq!(value(&r, "qbi_deduction"), 9293);
     assert_eq!(value(&r, &alloc::format!("cooperative_{coop}_nonqualified")), 0);
     let FederalIncome::Cooperative { data } = &mut d.income[2].income else { unreachable!() };
-    data.qualified_items = 1_900_000;
-    data.allocations[0].qualified_items = 1_900_000;
+    data.form.qualified_items = 1_900_000;
+    data.more.allocations[0].qualified_items = 1_900_000;
     let r = supported(&d);
     assert_eq!(value(&r, "qbi_deduction"), 9093);
     assert_eq!(value(&r, &alloc::format!("cooperative_{coop}_nonqualified")), 1000);
@@ -4662,16 +4669,11 @@ fn farm_cooperative_source_limits_preserve_known_income_and_benefit_only_omissio
         add(&mut d, income(raised_farm(40000, 10000)));
         d
     };
-    let refused = |d: &FederalDraft, needle: &str| {
-        let r = estimate(d);
-        assert_eq!(r.state, ResultState::Unsupported, "{needle}: {r:?}");
-        assert!(r.issues.iter().any(|i| i.message.contains(needle)), "{needle}: {r:?}");
-    };
     let with = |edit: fn(&mut FederalCooperative)| {
         let mut d = base.clone();
         let mut patr = cooperative(1_000_000, 0, 0, 0);
         edit(&mut patr);
-        add(&mut d, income(FederalIncome::Cooperative { data: patr }));
+        add(&mut d, income(FederalIncome::Cooperative { data: cooperative_source(patr) }));
         d
     };
     let plain = supported(&with(|_| {}));
@@ -4727,8 +4729,20 @@ fn farm_cooperative_source_limits_preserve_known_income_and_benefit_only_omissio
     // No farm for the owner: the taxable distributions have no Schedule F.
     let mut d = empty_return(FederalStatus::Single);
     add(&mut d, wage(0, Owner::Taxpayer, 4_000_000, 0));
-    add(&mut d, income(FederalIncome::Cooperative { data: cooperative(1_000_000, 0, 0, 0) }));
-    refused(&d, "actual same-owner");
+    add(
+        &mut d,
+        income(FederalIncome::Cooperative {
+            data: cooperative_source(cooperative(1_000_000, 0, 0, 0)),
+        }),
+    );
+    let r = estimate(&d);
+    assert_eq!(r.state, ResultState::Unsupported, "{r:?}");
+    missing_related_activity(
+        &d,
+        &r,
+        crate::related_forms::DocumentKind::Patr1099,
+        &[TaxSection::SelfEmployment, TaxSection::Farming],
+    );
     // A statement that is entirely personal purchases needs no farm and
     // adds nothing but its withholding.
     let mut personal = cooperative(1_000_000, 0, 0, 0);
@@ -4736,7 +4750,7 @@ fn farm_cooperative_source_limits_preserve_known_income_and_benefit_only_omissio
     personal.withholding = 5_000;
     personal.allocations[0].id = d.next_id;
     d.next_id += 1;
-    d.income[1].income = FederalIncome::Cooperative { data: personal };
+    d.income[1].income = FederalIncome::Cooperative { data: cooperative_source(personal) };
     let r = supported(&d);
     assert_eq!(return_line(&r, "25b"), 5_000);
     assert_eq!(value(&r, "agi"), 40000);
@@ -4935,12 +4949,6 @@ fn schedule_c_business_with_a_farm_only_expense_line_is_refused_by_name() {
             }),
             "{:?}",
             r.issues
-        );
-        assert!(
-            FederalEstimate::from(r)
-                .issues
-                .iter()
-                .any(|issue| status_text(&issue.message).contains(needle))
         );
     }
     // The same record on a farm is accepted.
@@ -5200,7 +5208,12 @@ fn farm_transition_boundary_retains_its_routed_cooperative_statement() {
     let BusinessActivity::Farming { data: records } = &mut data.activity else { panic!() };
     records.specials.limitations = vec![3];
     add(&mut d, income(farm));
-    add(&mut d, income(FederalIncome::Cooperative { data: cooperative(1_000_000, 0, 0, 0) }));
+    add(
+        &mut d,
+        income(FederalIncome::Cooperative {
+            data: cooperative_source(cooperative(1_000_000, 0, 0, 0)),
+        }),
+    );
     let before = d.clone();
     let result = estimate(&d);
     assert_eq!(result.tax, None);
@@ -5213,7 +5226,7 @@ fn farm_transition_boundary_retains_its_routed_cooperative_statement() {
     let mut notices = vec![];
     let working = crate::unknowns::supported(&d, &mut notices).unwrap_or_else(|| d.clone());
     assert_eq!(working.income.len(), 3);
-    assert!(working.income.iter().any(|entry|matches!(&entry.income,FederalIncome::Cooperative{data} if data.patronage==1_000_000)));
+    assert!(working.income.iter().any(|entry|matches!(&entry.income,FederalIncome::Cooperative{data} if data.form.patronage==1_000_000)));
     assert_eq!(d, before);
 }
 
@@ -5227,4 +5240,289 @@ fn farm_prepaid_deposit_does_not_require_an_unclaimed_section179_supply_ceiling(
     let result = supported(&d);
     assert_eq!(farm_supply_value(&d, &result, "deduction"), 0);
     assert_eq!(farm_supply_value(&d, &result, "remaining"), 10_000);
+}
+
+#[test]
+fn conservation_livestock_production_gross_matches_cfr_and_irs_examples() {
+    // Reg1.175-5(a)(2): $10,000 crops + $500 breeding gain; $100 tractor,
+    // $8,000 land gain and $100 interest are not agricultural production gross.
+    // https://www.govinfo.gov/content/pkg/CFR-2025-title26-vol4/pdf/CFR-2025-title26-vol4-sec1-175-5.pdf
+    let mut draft = conservation_livestock_return(10_000, 500, Some(LivestockPurpose::Breeding));
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    data.assets.push(farmer_gross_asset(100, Livestock::No));
+    add(
+        &mut draft,
+        income(FederalIncome::Interest { data: interest_source(native_interest(10_000, 0)) }),
+    );
+    let mut land_source = raised_farm(0, 0);
+    let FederalIncome::Business { data } = &mut land_source else { unreachable!() };
+    let BusinessActivity::Farming { data: farm } = &mut data.activity else { unreachable!() };
+    let mut sale = farm_land_sale(20000101, 20260601);
+    sale.basis = 1_000_000;
+    sale.proceeds = 1_800_000;
+    sale.selling = 0;
+    sale.conservation = 0;
+    set_land_sales(farm, vec![sale], &mut draft.next_id);
+    add(&mut draft, income(land_source));
+    let result = supported(&draft);
+    assert_eq!(value(&result, "farm_2_conservation_income_limit"), 2625);
+    assert_eq!(value(&result, "farm_2_conservation_deduction"), 2625);
+    // Pub225ch5: $85,000 production + $15,000 cull breeding gain = $100,000.
+    let draft = conservation_livestock_return(85_000, 15_000, Some(LivestockPurpose::Breeding));
+    assert_eq!(value(&supported(&draft), "farm_2_conservation_deduction"), 25_000);
+}
+
+#[test]
+fn conservation_livestock_purpose_distinguishes_production_sport_and_unavailable() {
+    for (purpose, expected) in [
+        (Some(LivestockPurpose::Draft), 2625),
+        (Some(LivestockPurpose::Dairy), 2625),
+        (Some(LivestockPurpose::Sport), 2500),
+        (None, 0),
+    ] {
+        let draft = conservation_livestock_return(10_000, 500, purpose);
+        let result = supported(&draft);
+        assert_eq!(value(&result, "farm_2_conservation_deduction"), expected);
+        assert_eq!(noted(&result, "WARN_FARM_CONSERVATION_GROSS_SOURCE"), purpose.is_none());
+        assert_eq!(value(&result, "business_2_asset_0_disposal_gain"), 500);
+        if purpose.is_none() {
+            let note = result
+                .review_notes
+                .iter()
+                .find(|note| note.display.key == "WARN_FARM_CONSERVATION_GROSS_SOURCE")
+                .unwrap();
+            assert_eq!(
+                crate::interview::issue_pages(&draft, note.context.as_ref().unwrap(), None),
+                vec![TaxSection::Farming]
+            );
+        }
+    }
+}
+
+#[test]
+fn conservation_livestock_excluded_current_transactions_keep_gross_unavailable() {
+    for case in 0..3 {
+        let mut draft =
+            conservation_livestock_return(10_000, 500, Some(LivestockPurpose::Breeding));
+        let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+        let AssetDisposal::Disposed { how: DisposalKind::Sold { payment, buyer, .. }, .. } =
+            &mut data.assets[0].disposal
+        else {
+            unreachable!()
+        };
+        match case {
+            0 => {
+                *payment = SalePayment::Installment {
+                    assumed_debt: 0,
+                    payments: 25_000,
+                    interest: NoteInterest::Adequate,
+                    special: false,
+                }
+            }
+            1 => *buyer = Buyer::Relative,
+            _ => {
+                data.assets[0].disposal = AssetDisposal::Disposed {
+                    date: 20260601,
+                    how: DisposalKind::Condemned {
+                        award: 50_000,
+                        expenses: 0,
+                        replacement_cost: 0,
+                    },
+                }
+            }
+        }
+        let result = supported(&draft);
+        assert_eq!(value(&result, "farm_2_conservation_deduction"), 0);
+        assert!(noted(&result, "WARN_FARM_CONSERVATION_GROSS_SOURCE"));
+    }
+}
+
+#[test]
+fn conservation_livestock_regular_and_amt_gains_use_their_own_basis() {
+    let mut draft = conservation_livestock_return(10_000, 500, Some(LivestockPurpose::Breeding));
+    let FederalIncome::Business { data } = &mut draft.income[1].income else { unreachable!() };
+    let id = data.assets[0].id;
+    let disposal = data.assets[0].disposal.clone();
+    data.assets[0] = continuing_asset(200_000, 20250110, EquipmentClass::Five, 40_000, disposal);
+    data.assets[0].id = id;
+    // Synthetic purchase and first-service dates are separate source facts.
+    // Acquisition before September28,2017 requires the distinct150% AMT history.
+    data.assets[0].acquired = 20170927;
+    let EquipmentHistory::Continuing { amt, .. } = &mut data.assets[0].history else {
+        unreachable!()
+    };
+    *amt = EquipmentAmtHistory::Separate {
+        prior_depreciation: 30_000,
+        schedule: EquipmentSchedule::Tables { initial_bonus: 0 },
+    };
+    let AssetDisposal::Disposed { how: DisposalKind::Sold { proceeds, .. }, .. } =
+        &mut data.assets[0].disposal
+    else {
+        unreachable!()
+    };
+    *proceeds = 260_000;
+    // Regular: $2,000 - $400 - $320 = $1,280 basis; $1,320 gain.
+    // AMT150%: $2,000 - $300 - $255 = $1,445 basis; $1,155 gain.
+    let claims = crate::related_forms::effective_claimants(&draft);
+    let regular =
+        crate::asset_sale::conservation_livestock_gross_with_claims(&draft, false, &claims)
+            .unwrap();
+    let alternative =
+        crate::asset_sale::conservation_livestock_gross_with_claims(&draft, true, &claims).unwrap();
+    assert_eq!(regular.get(&2), Some(&132_000));
+    assert_eq!(alternative.get(&2), Some(&115_500));
+    let result = supported(&draft);
+    assert_eq!(line_amount(&result, "farm_2_conservation_income_limit"), 283_000);
+    assert_eq!(line_amount(&result, "farm_2_conservation_deduction"), 283_000);
+    assert_eq!(line_amount(&result, "farm_2_conservation_amt_deduction"), 278_875);
+}
+
+#[test]
+fn conservation_livestock_farm_rental_uses_the_same_pool() {
+    let mut draft = conservation_livestock_return(10_000, 500, Some(LivestockPurpose::Breeding));
+    let FederalIncome::Business { data } = &draft.income[1].income else { unreachable!() };
+    let BusinessActivity::Farming { data: farm } = &data.activity else { unreachable!() };
+    let mut rental = farm_rental_data(0, 0);
+    rental.farm = farm.clone();
+    rental.assets = data.assets.clone();
+    draft.income[1].income = FederalIncome::FarmRental { data: rental };
+    let result = supported(&draft);
+    assert_eq!(line_amount(&result, "farm_2_conservation_income_limit"), 262_500);
+    assert_eq!(line_amount(&result, "farm_2_conservation_deduction"), 262_500);
+}
+
+#[test]
+fn conservation_zero_livestock_gain_needs_no_production_purpose() {
+    let draft = conservation_livestock_return(10_000, 0, None);
+    let result = supported(&draft);
+    assert_eq!(value(&result, "farm_2_conservation_deduction"), 2500);
+    assert!(!noted(&result, "WARN_FARM_CONSERVATION_GROSS_SOURCE"));
+}
+
+#[test]
+fn conservation_livestock_community_gain_is_attributed_once() {
+    let mut draft = conservation_livestock_return(10_000, 500, Some(LivestockPurpose::Breeding));
+    draft.setup = complete(FederalStatus::Separate).setup;
+    answer_separate_pages(&mut draft);
+    draft.setup.as_mut().unwrap().community_property = community_arizona();
+    let FederalIncome::Wage { data } = &draft.income[0].income else { unreachable!() };
+    let data = FederalWage::from(data);
+    draft.income[0] = community_w2_draft(data.wages, 0, data.withholding, 0).income.remove(0);
+    draft.income[1].community = CommunityShare::Community;
+    let claims = crate::related_forms::effective_claimants(&draft);
+    let gross = crate::asset_sale::conservation_livestock_gross_with_claims(&draft, false, &claims)
+        .unwrap();
+    assert_eq!(gross.get(&2), Some(&25_000));
+    let result = supported(&draft);
+    assert_eq!(line_amount(&result, "form8958_gain_2_total"), 50_000);
+    assert_eq!(line_amount(&result, "form8958_gain_2_this_return"), 25_000);
+    crate::tests::federal::schedules_1_3::assert_form_8958_divided_sources_conserve(
+        &draft, &result,
+    );
+    assert_eq!(
+        result
+            .lines
+            .iter()
+            .find(|line| line.id == "farm_2_conservation_income_limit")
+            .unwrap()
+            .amount,
+        131_250
+    );
+}
+
+#[test]
+fn farm_ccc_printed_market_gain_reconciles_by_owner_and_counts_once() {
+    const ISSUE: &str =
+        "ISSUE_FORM_1099_G_BOX_9_MARKET_GAIN_CANNOT_BE_RECONCILED_TO_THIS_RETURN_S_165FF0EF";
+    for split in [false, true] {
+        let mut draft = ccc_return(
+            CccOrigin::Current,
+            CccMethod::Loan,
+            CccDisposition::Redeemed { year: 2026, paid: 285_000, sale: None },
+            0,
+        );
+        ccc_mut(&mut draft).lots[0].principal = 300_000;
+        ccc_mut(&mut draft).withholding = 0;
+        for amount in if split { vec![10_000, 5_000] } else { vec![15_000] } {
+            let mut paper = government_unemployment(0, &[], 0);
+            let FederalIncome::GovernmentPayment { data } = &mut paper.income else {
+                unreachable!()
+            };
+            data.form.market_gain = Some(amount);
+            add(&mut draft, paper);
+        }
+        let report = supported(&draft);
+        assert!(!report.issues.iter().any(|issue| issue.display.key == ISSUE));
+        assert_eq!(return_line(&report, "8"), 15_000);
+        assert_eq!(ccc_value(&draft, &report, "taxable_market_gain"), 150);
+        assert!(schedule_f_lines(&report).contains(&("4b".into(), 15_000)));
+        let FederalIncome::GovernmentPayment { data } = &mut draft.income[1].income else {
+            unreachable!()
+        };
+        *data.form.market_gain.as_mut().expect("printed box 9") += 100;
+        assert!(estimate(&draft).issues.iter().any(|issue| issue.display.key == ISSUE));
+        let FederalIncome::GovernmentPayment { data } = &mut draft.income[1].income else {
+            unreachable!()
+        };
+        data.form.market_gain = Some(if split { 10_000 } else { 15_000 });
+        // Equal totals from another recipient never substantiate this owner's loan.
+        let joint = empty_return(FederalStatus::Joint);
+        draft.setup = joint.setup;
+        draft.people = joint.people;
+        draft.income[1].owner = crate::DocumentOwner::Spouses;
+        assert!(estimate(&draft).issues.iter().any(|issue| issue.display.key == ISSUE));
+    }
+}
+
+#[test]
+fn farm_linked_taxable_grant_enters_other_income_once_and_retains_source_withholding() {
+    for accrual in [false, true] {
+        let mut draft = empty_return(FederalStatus::Single);
+        add(
+            &mut draft,
+            income(if accrual { accrual_farm(10_000, 0, 0, 0, 0) } else { raised_farm(10_000, 0) }),
+        );
+        let farm = draft.income[0].id;
+        let mut paper = government_unemployment(0, &[], 37);
+        let FederalIncome::GovernmentPayment { data } = &mut paper.income else { unreachable!() };
+        data.form.taxable_grants = Some(50_000);
+        add(&mut draft, paper);
+        let FederalIncome::GovernmentPayment { data } = &draft.income[1].income else {
+            unreachable!()
+        };
+        let component = data.component_ids.grant;
+        claim_related_component(&mut draft, farm, component);
+        let report = supported(&draft);
+        let lines = schedule_f_lines(&report);
+        assert!(lines.contains(&((if accrual { "43" } else { "8" }).into(), 50_000)), "{lines:?}");
+        let program = if accrual { "39a" } else { "4a" };
+        assert_eq!(
+            lines.iter().find(|(line, _)| line == program).map_or(0, |(_, amount)| *amount),
+            0,
+            "{lines:?}",
+        );
+        assert_eq!(return_line(&report, "8"), 1_050_000);
+        assert_eq!(report.payment_withholding.as_ref().unwrap().forms_1099, 3_700);
+        assert_eq!(value(&report, &alloc::format!("farm_{farm}_net_profit")), 10_500);
+    }
+}
+
+#[test]
+fn farm_rental_linked_taxable_grant_enters_form_4835_other_income_once() {
+    let mut draft = empty_return(FederalStatus::Single);
+    add(&mut draft, income(FederalIncome::FarmRental { data: farm_rental_data(10_000, 0) }));
+    let farm = draft.income[0].id;
+    let mut paper = government_unemployment(0, &[], 37);
+    let FederalIncome::GovernmentPayment { data } = &mut paper.income else { unreachable!() };
+    data.form.taxable_grants = Some(50_000);
+    add(&mut draft, paper);
+    let FederalIncome::GovernmentPayment { data } = &draft.income[1].income else { unreachable!() };
+    let component = data.component_ids.grant;
+    claim_related_component(&mut draft, farm, component);
+    let report = supported(&draft);
+    assert_eq!(value(&report, &alloc::format!("farm_rental_{farm}_other_income")), 500);
+    assert_eq!(value(&report, &alloc::format!("farm_rental_{farm}_gross_income")), 10_500);
+    assert_eq!(value(&report, &alloc::format!("farm_rental_{farm}_program_payments")), 0);
+    assert_eq!(return_line(&report, "8"), 1_050_000);
+    assert_eq!(report.payment_withholding.as_ref().unwrap().forms_1099, 3_700);
 }

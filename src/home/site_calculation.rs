@@ -65,9 +65,12 @@ fn casualty(
     claim: &HomeOfficeClaim,
     context: &HomeContext,
 ) -> Result<[i64; 3], &'static str> {
-    let events = draft.deductions.as_ref().map_or(&[][..], |ded| &ded.personal_casualties);
+    let events = crate::home_sites::casualty_events(draft, false).map_err(|issue| match issue {
+        crate::Section179PreparedIssue::SourceBoundaryUnavailable(_, key) => key,
+        _ => "HOME_CASUALTY_OUTPUT_UNAVAILABLE",
+    })?;
     let hypothetical = crate::casualty::all_personal_allowances(
-        events,
+        &events,
         context.modified_agi_cents.get(&site.id).copied().unwrap_or(0),
     )
     .map_err(|_| "HOME_CASUALTY_OUTPUT_UNAVAILABLE")?;
@@ -117,7 +120,7 @@ fn casualty(
         }
         let whole_allowance = row
             .qualified_cents
-            .checked_add(if super::itemizes(draft) { row.ordinary_cents } else { 0 })
+            .checked_add(if context.itemizes.unwrap_or(true) { row.ordinary_cents } else { 0 })
             .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
         hypothetical_whole =
             hypothetical_whole.checked_add(whole_allowance).ok_or("HOME_OUTPUT_UNAVAILABLE")?;
@@ -149,8 +152,8 @@ pub(super) fn calculate(
         for claim in &site.claims {
             let result = (|| {
                 if claim.qualifies() && draft.income.iter().any(|entry| {
-                    entry.owner == claim.owner
-                        && matches!(&entry.income, FederalIncome::HomeSale { data } if data.gain() > 0)
+                    entry.owner == crate::DocumentOwner::from(claim.owner)
+                        && matches!(&entry.income, FederalIncome::HomeSale { data } if !data.other_property() && crate::HomeSale::from(data).gain() > 0)
                 }) {
                     return Err("HOME_GAIN_ATTRIBUTION_SOURCE_UNAVAILABLE");
                 }
@@ -192,21 +195,21 @@ pub(super) fn calculate(
                     gross = gross
                         .checked_add(ratio::fraction(
                             income.gross_cents,
-                            i64::from(activity.gross_share),
+                            crate::kernel::natural::units(activity.gross_share, 100),
                             10000,
                         ))
                         .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
                     expenses = expenses
                         .checked_add(ratio::fraction(
                             income.operating_cents,
-                            i64::from(activity.expense_period_share),
+                            crate::kernel::natural::units(activity.expense_period_share, 100),
                             10000,
                         ))
                         .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
                     expenses = expenses
                         .checked_add(ratio::fraction(
                             super::losses(draft, data)?,
-                            i64::from(activity.expense_period_share),
+                            crate::kernel::natural::units(activity.expense_period_share, 100),
                             10000,
                         ))
                         .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
@@ -215,7 +218,7 @@ pub(super) fn calculate(
                 let income = net_income.max(0);
                 let mut lines = super::Lines {
                     l8: net_income,
-                    itemizes: super::itemizes(draft),
+                    itemizes: context.itemizes.unwrap_or(true),
                     ..Default::default()
                 };
                 let mut casualty_parts = [0; 3];
@@ -268,6 +271,11 @@ pub(super) fn calculate(
                         .deductions
                         .as_ref()
                         .map_or(0, |ded| ded.state_local_taxes())
+                        // Beneficiary taxes retain their Schedule A character;
+                        // only this home's actual tax supplies the business share
+                        // (i1041sk1 box 11 code B; i8829 Line 11 Worksheet).
+                        .checked_add(context.estate_salt_cents)
+                        .ok_or("HOME_OUTPUT_UNAVAILABLE")?
                         .checked_add(
                             ratio::checked_sum(
                                 draft
@@ -280,7 +288,7 @@ pub(super) fn calculate(
                             .ok_or("HOME_OUTPUT_UNAVAILABLE")?,
                         )
                         .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
-                    let unlimited_taxes = if super::itemizes(draft) {
+                    let unlimited_taxes = if context.itemizes.unwrap_or(true) {
                         taxes.min((context.salt_cap_cents - (all_taxes - taxes)).max(0))
                     } else {
                         0
@@ -291,9 +299,9 @@ pub(super) fn calculate(
                                 .paid_fraction(claim.owner)
                                 .ok_or("HOME_PAYMENT_SHARE_UNAVAILABLE")?;
                     let loans =
-                        draft.deductions.as_ref().map_or(&[][..], |ded| ded.mortgage_loans());
+                        draft.deductions.as_ref().map_or_else(Vec::new, |ded| ded.mortgage_loans().unwrap_or_default());
                     let allowances =
-                        crate::mortgage_limit::loan_allowances(loans, super::separate(draft));
+                        crate::mortgage_limit::loan_allowances(&loans, super::separate(draft));
                     let mut qualified = 0i64;
                     let mut regular = 0i64;
                     for loan in allowances
@@ -332,7 +340,7 @@ pub(super) fn calculate(
                             .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
                     }
                     let qualified = amount(&(exact::whole(qualified) * &share))?;
-                    let regular = if super::itemizes(draft) {
+                    let regular = if context.itemizes.unwrap_or(true) {
                         amount(&(exact::whole(regular) * share))?
                     } else {
                         0
@@ -351,10 +359,10 @@ pub(super) fn calculate(
                     lines.w7a = all_taxes - taxes;
                     lines.w_magi_test = !lines.step1
                         && lines.w7a < if super::separate(draft) { 2_020_000 } else { 4_040_000 };
-                    if super::itemizes(draft) && lines.step1 {
+                    if context.itemizes.unwrap_or(true) && lines.step1 {
                         lines.l11b = amount(&columns.indirect[0])?;
                         lines.l12a = amount(&columns.direct[0])?;
-                    } else if super::itemizes(draft) {
+                    } else if context.itemizes.unwrap_or(true) {
                         lines.l11a = unlimited_taxes;
                         lines.l12a = unlimited_taxes;
                     }
@@ -369,18 +377,18 @@ pub(super) fn calculate(
                     } else {
                         amount(&(exact::whole(qualified - regular) / &business_fraction))?
                     };
-                    lines.l17 = if super::itemizes(draft) {
+                    lines.l17 = if context.itemizes.unwrap_or(true) {
                         taxes - unlimited_taxes
                     } else {
                         amount(&columns.indirect[0])?
                     };
                     lines.l23a = amount(&columns.direct[1..].iter().cloned().sum())?
-                        .checked_add(if super::itemizes(draft) { lines.l17 } else { 0 })
+                        .checked_add(if context.itemizes.unwrap_or(true) { lines.l17 } else { 0 })
                         .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
                     lines.l23b = ratio::checked_sum([
                         amount(&columns.indirect[1..].iter().cloned().sum())?,
                         lines.l16,
-                        if super::itemizes(draft) { 0 } else { lines.l17 },
+                        if context.itemizes.unwrap_or(true) { 0 } else { lines.l17 },
                     ])
                     .ok_or("HOME_OUTPUT_UNAVAILABLE")?;
                     lines.l24 = amount(&(exact::whole(lines.l23b) * &business_fraction))?;
@@ -486,7 +494,8 @@ pub(super) fn report_lines(
     site: &HomeOfficeSite,
     claim: &HomeOfficeClaim,
 ) {
-    use crate::kernel::lines::{LineValue, emit as emit_lines, row as calculation_row};
+    use crate::kernel::lines::{LineValue, row as calculation_row};
+    use crate::line_emission::emit as emit_lines;
     use crate::{FormLine, TaxForm};
     let l = &calculation.lines;
     if !claim.qualifies() || matches!(claim.method, OfficeMethod::Simplified { .. }) {

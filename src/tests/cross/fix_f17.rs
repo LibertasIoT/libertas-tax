@@ -3,9 +3,9 @@
 // Form 8958 row, the scholarship election searches the whole included range, and a Roth IRA
 // excess contribution returned with earnings (code 8J, box 7b unchecked) is an IRA amount.
 use super::*;
-use crate::tests::cross::interview::{accepted, document, r1099, save_topic};
+use crate::tests::cross::interview::{accepted, document, r1099};
 extern crate std;
-use crate::{PartnerIncome, PartnerIncomeCode};
+use crate::{PartnerIncomeCode, PartnerIncomeTotal};
 
 fn cents(d: i64) -> i64 {
     d * 100
@@ -40,21 +40,23 @@ pub(in crate::tests) fn k3_base(extra_us: i64) -> FederalDraft {
     d
 }
 fn funded(partner: &mut PartnerK1) {
-    partner.regular.basis.opening = cents(50_000);
+    partner.regular.basis.opening = Some(cents(50_000));
     partner.regular.risk.start =
         ScorpRiskStart::Detailed { capacity: cents(50_000), profit: 0, loss: 0 };
 }
-fn with_k3_partner(d: &mut FederalDraft, items: Vec<PartnerIncome>) {
+fn with_k3_partner(d: &mut FederalDraft, items: Vec<PartnerIncomeTotal>) {
     if let FederalIncome::Partnership { data } = &mut d.income[1].income {
-        funded(data);
-        data.income = items;
+        let mut native = data.clone();
+        funded(&mut native);
+        native.income = items;
+        *data = native;
     }
 }
 pub(in crate::tests) fn line_3e(r: &FederalResult) -> i64 {
     form_1116_any(r, false, "_gross_income_all_sources")
 }
-fn item(code: PartnerIncomeCode, dollars: i64) -> PartnerIncome {
-    PartnerIncome { code, amount: cents(dollars) }
+fn item(code: PartnerIncomeCode, dollars: i64) -> PartnerIncomeTotal {
+    PartnerIncomeTotal { code, amount: cents(dollars) }
 }
 
 #[test]
@@ -109,13 +111,14 @@ fn d2_k3_partner_code_s_and_r_are_inside_the_k3_gross_once() {
 
 fn community_royalty(depletion: RoyaltyDepletion) -> FederalResult {
     let mut d = complete(FederalStatus::Separate);
-    d.deductions.as_mut().unwrap().choice = DeductionSelection::Standard;
+    d.deductions.as_mut().unwrap().itemize_override = None;
     d.income = vec![wage(1, Owner::Taxpayer, 3_000_000, 300_000)];
     d.next_id = 2;
     add(
         &mut d,
         income(FederalIncome::Royalty {
             data: FederalRoyalty {
+                related: alloc::vec![],
                 kind: RoyaltyKind::OilGas,
                 receipts: cents(10_000),
                 advance: 0,
@@ -173,12 +176,19 @@ fn roth_return(printed: &str, ira: bool) -> FederalResult {
         r1099(cents(7_650), DistributionCode::Corrective { excess_deferral: 0 }, ira),
         printed,
     );
-    r.taxable = cents(150);
+    r.source_mut().form.taxable = Some(cents(150));
     let mut s = Interview::new(TEST_USER, d.clone());
-    let reply = send(
-        &mut s,
-        save_topic(&d, TaxSection::Retirement, vec![document(0, IncomeDocument::R1099(r))]),
-    );
+    let reply = {
+        crate::tests::support::client::save_retirement_fixture(
+            &mut s,
+            vec![document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )],
+        )
+    };
     accepted(&reply);
     supported(&s.draft)
 }
@@ -201,16 +211,27 @@ fn hoh_student(wages: i64, inclusion: ScholarshipInclusion) -> FederalDraft {
     d.people.as_mut().unwrap().taxpayer.birth_date = 19980301;
     d.income[0] = wage(1, Owner::Taxpayer, wages, 100_000);
     add_child(&mut d);
-    d.credits.as_mut().unwrap().education = vec![FederalEducation {
-        student: -1,
-        method: EducationChoice::AmericanOpportunity,
-        expenses: FederalEducationExpenses {
-            tuition: 400_000,
-            assistance: 400_000,
-            scholarship_in_income: inclusion,
-            ..education_expenses(400_000)
-        },
-    }];
+    set_education(
+        d.credits.as_mut().unwrap(),
+        vec![{
+            let mut pair = native_education(
+                -1,
+                FederalEducationExpenses {
+                    tuition: 400_000,
+                    assistance: 400_000,
+                    scholarship_in_income: inclusion,
+                    ..education_expenses(400_000)
+                },
+                EducationChoice::AmericanOpportunity,
+            );
+
+            pair.0.id = 0;
+            pair.0.half_time = true;
+            pair.0.graduate = false;
+            pair.1.more.american_opportunity_used_up = Some(false);
+            pair
+        }],
+    );
     d
 }
 fn net(r: &FederalResult) -> i64 {
@@ -250,7 +271,7 @@ fn s1_scorp_loan_repayment_gain_is_in_line_3e_once() {
     crate::tests::foreign::foreign::add_named(
         &mut d,
         "S LLC",
-        FederalIncome::Scorp { data: source },
+        FederalIncome::Scorp { data: scorp_source(source) },
     );
     let r = supported(&d);
     assert_eq!(value(&r, "scorp_ordinary_loan_gain"), 2_000);
@@ -304,15 +325,31 @@ fn filer(birth: u32) -> FederalDraft {
     d.people.as_mut().unwrap().taxpayer.birth_date = birth;
     d
 }
-fn form(printed: &str, ira: bool, gross: i64, taxable: i64, code: DistributionCode) -> R1099 {
+fn form(
+    printed: &str,
+    ira: bool,
+    gross: i64,
+    taxable: i64,
+    code: DistributionCode,
+) -> crate::R1099Answered {
     let mut r = printed_as(r1099(cents(gross), code, ira), printed);
-    r.taxable = cents(taxable);
+    r.source_mut().form.taxable = Some(cents(taxable));
     r
 }
-fn save_forms(d: &FederalDraft, forms: Vec<R1099>) -> FederalResult {
+fn save_forms(d: &FederalDraft, forms: Vec<crate::R1099Answered>) -> FederalResult {
     let mut s = Interview::new(TEST_USER, d.clone());
-    let documents = forms.into_iter().map(|r| document(0, IncomeDocument::R1099(r))).collect();
-    accepted(&send(&mut s, save_topic(d, TaxSection::Retirement, documents)));
+    let documents = forms
+        .into_iter()
+        .map(|r| {
+            document(
+                0,
+                IncomeSource::Retirement {
+                    value: crate::RetirementDocument::R1099(retirement_document(r)),
+                },
+            )
+        })
+        .collect();
+    accepted(&{ crate::tests::support::client::save_retirement_fixture(&mut s, documents) });
     supported(&s.draft)
 }
 fn additional_tax(r: &FederalResult) -> i64 {
@@ -384,16 +421,16 @@ fn s8_home_purchase_repayment_leaves_form_8606_line_7() {
     let mut d = filer(19860909);
     d.income[0] = wage(1, Owner::Taxpayer, 12_000_000, 2_000_000);
     let mut e = basis_distribution(Owner::Taxpayer, 20_000, RetirementTreatment::Early);
-    let FederalIncome::Retirement { data } = &mut e.income else { panic!() };
-    data.box7 = crate::DistributionCodes::CODE_1.0;
-    data.disaster = DisasterDistribution::HomePurchase {
+    let data = e.income.r1099_source_mut().unwrap();
+    data.form.box7 = crate::DistributionCodes::CODE_1.0;
+    data.disaster = Some(DisasterDistribution::HomePurchase {
         fema: 4900,
         began: 20260301,
         ended: 20260320,
         declared: 20260415,
         distributed: 20260210,
         taxable_repaid: cents(8_000),
-    };
+    });
     add(&mut d, e);
     d.adjustments.as_mut().unwrap().ira_basis =
         vec![prior_ira_basis(Owner::Taxpayer, 6_000, 30_000)];
@@ -421,7 +458,7 @@ fn s7_new_nullable_fields_declare_a_null_default() {
             "#[libertas_default($null)]\n    pub interest_term: Option<crate::GainTerm>,"
         )
     );
-    let model = include_str!("../../federal/federal_model.rs");
+    let model = crate::federal_model::HUB_SOURCE;
     assert!(model.contains(
         "#[libertas_default($null)]\n        current: Option<FederalMortgageCertificate>,"
     ));

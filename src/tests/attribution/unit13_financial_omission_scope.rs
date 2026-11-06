@@ -1,4 +1,4 @@
-// 2026-10-16 D05: record-based confirmations are explicit Yes/No; negative fixtures test No.
+// Record-based confirmations are explicit Yes/No; negative fixtures test No.
 use super::*;
 
 use crate::tests::support::assert::injured_credit::financial_omission_scope::money;
@@ -15,7 +15,13 @@ fn financial_omission_scope_empty_foreign_claim_is_informational_with_positive_r
         assert!(r.financial_source_scope_complete);
         let mut notes = r.review_notes.clone();
         let count = notes.len();
-        let scope = crate::unknowns::supported_with_scope(&d, &mut notes);
+        let scope = crate::unknowns::supported_with_scope(
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
+            &mut notes,
+        );
         assert!(scope.financial_source_scope_complete);
         assert_eq!(notes.len(), count);
         let mut plain = d.clone();
@@ -30,7 +36,7 @@ fn financial_omission_scope_empty_foreign_claim_is_informational_with_positive_r
 fn financial_omission_scope_declined_foreign_claim_preserves_availability() {
     let mut d = positive_refund();
     let FederalIncome::Wage { data } = &mut d.income[0].income else { panic!() };
-    data.wages = 2900000;
+    edit_wage(data).wages = 2900000;
     add(&mut d, income(foreign_pay(1000)));
     let mut claim = foreign_claim(Owner::Taxpayer);
     claim.tax_home = false;
@@ -41,7 +47,13 @@ fn financial_omission_scope_declined_foreign_claim_preserves_availability() {
         assert!(r.financial_source_scope_complete);
         let mut notes = r.review_notes.clone();
         let count = notes.len();
-        let scope = crate::unknowns::supported_with_scope(&d, &mut notes);
+        let scope = crate::unknowns::supported_with_scope(
+            crate::related_forms::RelatedFormContext::original(
+                &d,
+                &crate::related_forms::effective_claimants(&d),
+            ),
+            &mut notes,
+        );
         assert!(scope.financial_source_scope_complete);
         assert_eq!(notes.len(), count);
     }
@@ -52,7 +64,8 @@ fn financial_omission_scope_known_nominee_treatment_preserves_financial_availabi
     let mut d = positive_refund();
     let mut entry = income(savings_income(20, 0));
     let FederalIncome::Interest { data } = &mut entry.income else { panic!() };
-    data.nominee = Some(crate::InterestNominee { taxable: 1000, ..Default::default() });
+    edit_interest(data).nominee =
+        Some(crate::InterestNominee { taxable: 1000, ..Default::default() });
     add(&mut d, entry);
     for d in [d.clone(), persisted(d)] {
         let r = money(&d, 30010);

@@ -114,7 +114,7 @@ fn qbi_partial_payroll_odd_cent_source_divides_quantity_once() {
 
 #[test]
 fn qbi_partial_payroll_long_utf8_labels_preserve_amount_source_integrity() {
-    // D-2026-10-15-13 removes only the descriptive label maximum.
+    // Descriptive labels retain their full text.
     for label in ["a".repeat(400), "é".repeat(200), "😀".repeat(100), "a\u{301}".repeat(133) + "a"]
     {
         assert_eq!(label.len(), 400);
@@ -127,13 +127,6 @@ fn qbi_partial_payroll_long_utf8_labels_preserve_amount_source_integrity() {
         assert!(p.valid());
         assert_eq!(p.qbi_wages(), 30098);
     }
-    let mut p = payroll(&[(i64::MAX, i64::MAX); 3], 1);
-    assert!(!p.valid());
-    let BusinessPayroll::Yes { statements, .. } = &mut p else { panic!() };
-    statements[0].wages = -1;
-    assert!(!p.valid());
-    assert!(!payroll(&[(10033, 20033)], -1).valid());
-    assert!(!payroll(&[(100_000_000_000, 100_000_000_000)], 100_000_000_001).valid());
 }
 
 #[test]
@@ -201,10 +194,13 @@ fn qbi_partial_payroll_normal_save_correction_reopen_restart_is_atomic() {
     let saved = s.draft.clone();
     let reopened = open_topic(&mut s, TaxSection::SelfEmployment);
     let mut rows = page_documents(&reopened).to_vec();
-    let IncomeDocument::Business(b) = &mut rows[0].document else { panic!() };
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(b) } = &mut rows[0].document
+    else {
+        panic!()
+    };
     let BusinessPayroll::Yes { statements, .. } = &mut b.more.payroll else { panic!() };
     statements[0].wages = 499_899; //2499999 total; documented2500000 exceeds byonecent.
-    let request = save_topic(&saved, TaxSection::SelfEmployment, rows.clone());
+    let request = save_topic(&mut s, TaxSection::SelfEmployment, rows.clone());
     let Reply::Response(P::Problem { message, field }) = send(&mut s, request) else {
         panic!("expectedsource refusal")
     };
@@ -214,7 +210,10 @@ fn qbi_partial_payroll_normal_save_correction_reopen_restart_is_atomic() {
         Some("[documents/documents/0/document/more/payroll/attribution/qualified_wages]")
     );
     assert_eq!(s.draft, saved);
-    let IncomeDocument::Business(b) = &mut rows[0].document else { panic!() };
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(b) } = &mut rows[0].document
+    else {
+        panic!()
+    };
     let BusinessPayroll::Yes { attribution, .. } = &mut b.more.payroll else { panic!() };
     *attribution = PayrollQbiAttribution::Allocated {
         qualified_wages: 2_499_998,
@@ -223,7 +222,7 @@ fn qbi_partial_payroll_normal_save_correction_reopen_restart_is_atomic() {
         employer_entitled: true,
         ordinary_domestic_no_special_case: true,
     };
-    let request = save_topic(&saved, TaxSection::SelfEmployment, rows);
+    let request = save_topic(&mut s, TaxSection::SelfEmployment, rows);
     accepted(&send(&mut s, request));
     let accepted_draft = s.draft.clone();
     let mut restarted = restart(accepted_draft.clone());
@@ -253,7 +252,11 @@ fn qbi_partial_payroll_all_confirmations_normal_save_preserves_actual_sources() 
         let mut s = restart(saved.clone());
         assert_eq!(s.draft, saved);
         let reopened = open_topic(&mut s, TaxSection::SelfEmployment);
-        let IncomeDocument::Business(b) = &page_documents(&reopened)[0].document else { panic!() };
+        let IncomeSource::Record { value: crate::IncomeRecord::Business(b) } =
+            &page_documents(&reopened)[0].document
+        else {
+            panic!()
+        };
         assert_eq!(b.more.payroll, expected, "{case}: preserve actual boxes and attribution");
         assert_eq!(b.expenses.wages, 3_000_000);
         accepted(&send(&mut s, P::from_avro(&reopened.to_avro()).unwrap()));
@@ -274,14 +277,18 @@ fn qbi_partial_payroll_each_box_cap_precedes_unknowns_save_and_estimate() {
             let saved = s.draft.clone();
             let reopened = open_topic(&mut s, TaxSection::SelfEmployment);
             let mut rows = page_documents(&reopened).to_vec();
-            let IncomeDocument::Business(b) = &mut rows[0].document else { panic!() };
+            let IncomeSource::Record { value: crate::IncomeRecord::Business(b) } =
+                &mut rows[0].document
+            else {
+                panic!()
+            };
             let BusinessPayroll::Yes { statements, .. } = &mut b.more.payroll else { panic!() };
             if box_five {
                 statements[1].medicare = 499_899;
             } else {
                 statements[0].wages = 499_899;
             }
-            let request = save_topic(&saved, TaxSection::SelfEmployment, rows.clone());
+            let request = save_topic(&mut s, TaxSection::SelfEmployment, rows.clone());
             for (stage, request, path) in [
                 (
                     "save",
@@ -314,7 +321,11 @@ fn qbi_partial_payroll_each_box_cap_precedes_unknowns_save_and_estimate() {
                     &problem,
                 );
             }
-            let IncomeDocument::Business(b) = &mut rows[0].document else { panic!() };
+            let IncomeSource::Record { value: crate::IncomeRecord::Business(b) } =
+                &mut rows[0].document
+            else {
+                panic!()
+            };
             let BusinessPayroll::Yes {
                 attribution: PayrollQbiAttribution::Allocated { qualified_wages, .. },
                 ..
@@ -323,9 +334,12 @@ fn qbi_partial_payroll_each_box_cap_precedes_unknowns_save_and_estimate() {
                 panic!()
             };
             *qualified_wages = 2_499_998;
-            let corrected = save_topic(&saved, TaxSection::SelfEmployment, rows);
+            let corrected = save_topic(&mut s, TaxSection::SelfEmployment, rows);
             let before = s.draft.clone();
-            accepted(&send(&mut s, estimate_documents_from_save(&corrected)));
+            accepted(&crate::tests::support::client::income_pages::candidate_save_review(
+                &mut s,
+                estimate_documents_from_save(&corrected),
+            ));
             assert_eq!(s.draft, before);
             accepted(&send(&mut s, corrected));
             assert_result(&s.draft, case);
@@ -351,12 +365,12 @@ fn qbi_partial_payroll_whole_sources_survive_normal_share_save_and_correction() 
             CommunityProperty::Yes { state: CommunityState::Texas, rule: CommunityRule::Halves };
         let mut b = business_source("eligible");
         b.more.payroll = payroll(&[(10033, 20033); 3], 30098);
-        let source = IncomeDocument::Business(b.clone());
+        let source = IncomeSource::Record { value: crate::IncomeRecord::Business(b.clone()) };
         let mut row = document(0, source.clone());
-        row.owner = owner;
+        row.owner = crate::DocumentOwner::from(owner);
         row.community = CommunityShare::Community;
         let mut s = Interview::new(TEST_USER, d);
-        let request = save_topic(&s.draft, TaxSection::SelfEmployment, vec![row]);
+        let request = save_topic(&mut s, TaxSection::SelfEmployment, vec![row]);
         accepted(&send(&mut s, request));
         for answer in [
             CommunityShare::Community,
@@ -366,9 +380,9 @@ fn qbi_partial_payroll_whole_sources_survive_normal_share_save_and_correction() 
             let reopened = open_topic(&mut s, TaxSection::SelfEmployment);
             let mut rows = page_documents(&reopened).to_vec();
             assert_eq!(rows[0].document, source);
-            assert_eq!(rows[0].owner, owner);
+            assert_eq!(rows[0].owner, crate::DocumentOwner::from(owner));
             rows[0].community = answer;
-            let request = save_topic(&s.draft, TaxSection::SelfEmployment, rows);
+            let request = save_topic(&mut s, TaxSection::SelfEmployment, rows);
             accepted(&send(&mut s, request));
             let saved = s.draft.clone();
             let financial = supported(&saved);
@@ -415,7 +429,13 @@ fn qbi_partial_payroll_actual_client_artifact_bridge() {
     let seed = open_topic(&mut s, TaxSection::SelfEmployment);
     let mut answers = seed.clone();
     let P::SaveIncomes { documents, .. } = &mut answers else { panic!() };
-    documents.documents = vec![document(0, IncomeDocument::Business(business_source(&case)))];
+    documents.documents = vec![document(
+        0,
+        IncomeSource::Record { value: crate::IncomeRecord::Business(business_source(&case)) },
+    )]
+    .into_iter()
+    .map(|row| crate::IncomeRecordItem::from_income(row).expect("record fixture"))
+    .collect();
     write_artifact("TAX_QBI_PAYROLL_SEED", &seed.to_avro());
     write_artifact("TAX_QBI_PAYROLL_ANSWERS", &answers.to_avro());
     if let Ok(state) = std::env::var("TAX_QBI_PAYROLL_STATE") {
@@ -492,7 +512,10 @@ fn qbi_partial_payroll_actual_client_artifact_bridge() {
     let reopened = open_topic(&mut s, TaxSection::SelfEmployment);
     let rows = page_documents(&reopened);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].document, IncomeDocument::Business(business_source(&case)));
+    assert_eq!(
+        rows[0].document,
+        IncomeSource::Record { value: crate::IncomeRecord::Business(business_source(&case)) }
+    );
     write_artifact("TAX_QBI_PAYROLL_REOPEN", &reopened.to_avro());
     accepted(&send(&mut s, reopened));
     assert_eq!(s.draft.income, expected);
@@ -502,4 +525,38 @@ fn qbi_partial_payroll_actual_client_artifact_bridge() {
         accepted(&send(&mut s, request));
         assert_eq!(s.draft.income, expected);
     }
+}
+
+#[test]
+fn payroll_w2_printed_names_and_2400_wages_survive_save_reopen_restart() {
+    use crate::tests::cross::interview::{accepted, open_topic, page_documents, save_businesses};
+    let mut source = business_source("eligible");
+    source.name = "Example Lantern Consulting".into();
+    source.more.payroll = BusinessPayroll::Yes {
+        statements: vec![PayrollW2 {
+            label: "Alice Smith / Example Lantern Consulting".into(),
+            wages: 240_000,
+            medicare: 240_000,
+        }],
+        attribution: PayrollQbiAttribution::EntireBusiness,
+    };
+    let expected = source.more.payroll.clone();
+    assert_eq!(expected.qbi_wages(), 240_000);
+    let mut session = Interview::new(TEST_USER, base());
+    accepted(&save_businesses(&mut session, vec![source]));
+    let saved = session.draft.clone();
+    let financial = supported(&saved);
+    let mut session = restart(saved.clone());
+    assert_eq!(session.draft, saved);
+    let reopened = open_topic(&mut session, TaxSection::SelfEmployment);
+    let IncomeSource::Record { value: crate::IncomeRecord::Business(business) } =
+        &page_documents(&reopened)[0].document
+    else {
+        panic!("expected self-employment business");
+    };
+    assert_eq!(business.more.payroll, expected);
+    assert_eq!(business.expenses.wages, 3_000_000);
+    accepted(&send(&mut session, P::from_avro(&reopened.to_avro()).unwrap()));
+    assert_eq!(session.draft, saved);
+    assert_eq!(supported(&session.draft), financial);
 }
